@@ -84,13 +84,19 @@ export const createProviderProcess = (
   const close = (): Promise<void> =>
     (closing ??= (async () => {
       child.stdin.end();
-      signalGroup('SIGTERM');
       const controller = new AbortController();
       try {
-        const exited = await Promise.race([
+        let exited = await Promise.race([
           closed.then(() => true),
           wait(5000, false, { signal: controller.signal }),
         ]);
+        if (!exited) {
+          signalGroup('SIGTERM');
+          exited = await Promise.race([
+            closed.then(() => true),
+            wait(5000, false, { signal: controller.signal }),
+          ]);
+        }
         if (!exited) signalGroup('SIGKILL');
         await closed;
         // an exited parent may leave other members of this owned group running

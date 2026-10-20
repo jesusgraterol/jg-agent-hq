@@ -1,7 +1,18 @@
 // @vitest-environment node
 import { execFile } from 'node:child_process';
 import { connect } from 'node:net';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -102,7 +113,7 @@ test('owner-only IPC survives abandoned clients; shutdown releases SQLite and th
     }
     await runtime.close();
     await runtime.closed;
-    expect(await readdir(stateRoot)).toStrictEqual(['hq.sqlite']);
+    expect(await readdir(stateRoot)).toStrictEqual(['action.key', 'hq.sqlite']);
     const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'), { readOnly: true });
     try {
       const rows = database
@@ -415,7 +426,7 @@ test.each(['malformed', 'oversized', 'partial', 'empty'])(
       const pids = PidsSchema.parse(JSON.parse(await readFile(join(root, 'pids.json'), 'utf8')));
       expect(isAlive(pids.parent)).toBe(false);
       expect(isAlive(pids.child)).toBe(false);
-      expect(await readdir(stateRoot)).toStrictEqual(['hq.sqlite']);
+      expect(await readdir(stateRoot)).toStrictEqual(['action.key', 'hq.sqlite']);
     } finally {
       vi.unstubAllEnvs();
       await rm(root, { recursive: true, force: true });
@@ -452,16 +463,47 @@ test('a corrupt SQLite file fails worker startup without deleting stored content
   const stateRoot = join(root, 'state');
   try {
     await mkdir(stateRoot, { mode: 0o700 });
+    await writeFile(join(stateRoot, 'action.key'), Buffer.alloc(32, 1), { mode: 0o600 });
     await writeFile(join(stateRoot, 'hq.sqlite'), 'corrupt SQLite content', { mode: 0o600 });
     await expect(createAgentHq({ stateRoot, allowedRoots: [root] })).rejects.toThrow(
       'The HQ store failed',
     );
-    expect(await readdir(stateRoot)).toStrictEqual(['hq.sqlite']);
+    expect(await readdir(stateRoot)).toStrictEqual(['action.key', 'hq.sqlite']);
     expect(await readFile(join(stateRoot, 'hq.sqlite'), 'utf8')).toBe('corrupt SQLite content');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test.each(['missing', 'truncated', 'oversized', 'linked'])(
+  'an existing store with a %s action key cannot silently replace its receipt identity',
+  async (mode) => {
+    const root = await mkdtemp(join(tmpdir(), 'jg-hq-action-key-'));
+    const stateRoot = join(root, 'state');
+    try {
+      await mkdir(stateRoot, { mode: 0o700 });
+      await writeFile(join(stateRoot, 'hq.sqlite'), 'preserved database bytes', { mode: 0o600 });
+      if (mode === 'linked') {
+        const keyPath = join(root, 'external.key');
+        await writeFile(keyPath, Buffer.alloc(32, 1), { mode: 0o600 });
+        await symlink(keyPath, join(stateRoot, 'action.key'));
+      } else if (mode !== 'missing')
+        await writeFile(
+          join(stateRoot, 'action.key'),
+          Buffer.alloc(mode === 'truncated' ? 16 : 64, 1),
+          { mode: 0o600 },
+        );
+      await expect(createAgentHq({ stateRoot, allowedRoots: [root] })).rejects.toThrow(
+        'The HQ action key is unavailable',
+      );
+      expect(await readFile(join(stateRoot, 'hq.sqlite'), 'utf8')).toBe('preserved database bytes');
+      expect(await readdir(stateRoot)).not.toContain('hq-owner.json');
+      if (mode === 'missing') expect(await readdir(stateRoot)).not.toContain('action.key');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test('lost native output makes the provider unavailable while the independent host and store remain usable', async () => {
   await withRuntime(async ({ workspaceRoot, control, request }) => {
@@ -570,13 +612,179 @@ test(
         result: { state: 'stopped' },
       });
       await hostClosed;
-      expect(await readdir(stateRoot)).toStrictEqual(['hq.sqlite']);
+      expect(await readdir(stateRoot)).toStrictEqual(['action.key', 'hq.sqlite']);
     } finally {
       if (host?.exitCode === null) {
         host.kill('SIGTERM');
         await hostClosed?.catch(() => undefined);
       }
       await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'a crashed host retains ownership evidence and requires explicit recovery before queued work can continue',
+  { timeout: 20_000 },
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'jg-hq-crash-'));
+    const stateRoot = join(root, 'state');
+    let host: ReturnType<typeof execFile> | undefined;
+    let hostClosed: Promise<void> | undefined;
+    let recovered: IAgentHq | undefined;
+    const until = async <T>(read: () => Promise<T>, ready: (result: T) => boolean): Promise<T> => {
+      const deadline = Date.now() + 3000;
+      let result = await read();
+      while (!ready(result) && Date.now() < deadline) {
+        await wait(10);
+        result = await read();
+      }
+      expect(ready(result)).toBe(true);
+      return result;
+    };
+    try {
+      const bin = await installCodexFixture(root);
+      const env = {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        JG_HQ_FIXTURE_DIRECTORY: root,
+        JG_HQ_FIXTURE_WORKSPACE: root,
+      };
+      host = execFile(
+        process.execPath,
+        [
+          new URL('../../dist/cli/cli.js', import.meta.url).pathname,
+          'serve',
+          '--state-root',
+          stateRoot,
+          '--workspace-root',
+          root,
+        ],
+        { env },
+      );
+      hostClosed = new Promise<void>((resolve) => host!.once('close', () => resolve()));
+      await new Promise<void>((resolve, reject) => {
+        let output = '';
+        host!.once('error', reject);
+        host!.once('close', () => reject(new Error('host exited before readiness')));
+        host!.stdout!.on('data', (chunk: Buffer) => {
+          output += chunk;
+          if (output.includes('\n')) resolve();
+        });
+      });
+      const status = await requestAgentHq(stateRoot, { kind: 'status' });
+      if (status.kind !== 'status') throw new Error('wrong response');
+      const epoch = status.result.runtimeEpoch;
+      const created = await requestAgentHq(stateRoot, {
+        kind: 'action',
+        action: {
+          id: randomUUID(),
+          runtimeEpoch: epoch,
+          command: {
+            kind: 'thread-create',
+            provider: 'codex',
+            workspaceRoot: root,
+            name: 'recover-work',
+          },
+        },
+      });
+      if (created.kind !== 'action') throw new Error('wrong response');
+      const threadId = created.result.threadId!;
+      await until(
+        () => requestAgentHq(stateRoot, { kind: 'managed-thread', threadId }),
+        (response) => response.kind === 'managed-thread' && response.result?.state === 'idle',
+      );
+      await writeFile(join(root, 'control.json'), JSON.stringify({ holdTurn: true }));
+      const actionId = randomUUID();
+      await requestAgentHq(stateRoot, {
+        kind: 'action',
+        action: {
+          id: actionId,
+          runtimeEpoch: epoch,
+          command: { kind: 'message', threadId, text: 'Work interrupted by the host crash' },
+        },
+      });
+      const active = await until(
+        () => requestAgentHq(stateRoot, { kind: 'managed-thread', threadId }),
+        (response) => response.kind === 'managed-thread' && response.result?.state === 'running',
+      );
+      if (active.kind !== 'managed-thread') throw new Error('wrong response');
+      const queuedId = randomUUID();
+      await requestAgentHq(stateRoot, {
+        kind: 'action',
+        action: {
+          id: queuedId,
+          runtimeEpoch: epoch,
+          command: {
+            kind: 'queue',
+            threadId,
+            expectedTurnId: active.result!.activeTurnId!,
+            text: 'Only continue after explicit recovery',
+          },
+        },
+      });
+      const oldOwner = await readFile(join(stateRoot, 'hq-owner.json'), 'utf8');
+      host.kill('SIGKILL');
+      await hostClosed;
+      const pids = PidsSchema.parse(JSON.parse(await readFile(join(root, 'pids.json'), 'utf8')));
+      await until(async () => !isAlive(pids.parent) && !isAlive(pids.child), Boolean);
+      await expect(createAgentHq({ stateRoot, allowedRoots: [root] })).rejects.toThrow(
+        'already owned',
+      );
+      expect(await readFile(join(stateRoot, 'hq-owner.json'), 'utf8')).toBe(oldOwner);
+      expect(JSON.parse(oldOwner)).toMatchObject({ nonce: epoch, pid: host.pid });
+      // Explicit operator recovery in this disposable fixture follows proof that the exact owner and children stopped.
+      expect((await lstat(join(stateRoot, 'hq.sock'))).isSocket()).toBe(true);
+      await rm(join(stateRoot, 'hq.sock'));
+      await rm(join(stateRoot, 'hq-owner.json'));
+      vi.stubEnv('PATH', env.PATH);
+      vi.stubEnv('JG_HQ_FIXTURE_DIRECTORY', root);
+      vi.stubEnv('JG_HQ_FIXTURE_WORKSPACE', root);
+      recovered = await createAgentHq({ stateRoot, allowedRoots: [root] });
+      expect(await recovered.request({ kind: 'managed-thread', threadId })).toMatchObject({
+        result: { id: threadId, name: 'recover-work', ownership: 'uncertain', state: 'unknown' },
+      });
+      expect(await recovered.request({ kind: 'receipt', actionId: queuedId })).toMatchObject({
+        result: { delivery: 'queued' },
+      });
+      const newStatus = await recovered.request({ kind: 'status' });
+      if (newStatus.kind !== 'status') throw new Error('wrong response');
+      const recoveryId = randomUUID();
+      await recovered.request({
+        kind: 'action',
+        action: {
+          id: recoveryId,
+          runtimeEpoch: newStatus.result.runtimeEpoch,
+          command: {
+            kind: 'thread-recover',
+            threadId,
+            recovery: { kind: 'resume' },
+            operatorConfirmation: 'The exact crashed owner and native children have stopped',
+          },
+        },
+      });
+      await until(
+        () => recovered!.request({ kind: 'managed-thread', threadId }),
+        (response) => response.kind === 'managed-thread' && response.result?.state === 'idle',
+      );
+      expect(await recovered.request({ kind: 'receipt', actionId: queuedId })).toMatchObject({
+        result: { delivery: 'queued' },
+      });
+      const calls = await readFile(join(root, 'calls.jsonl'), 'utf8');
+      expect(
+        calls.split('\n').filter((line) => line.includes('"method":"turn/start"')),
+      ).toHaveLength(1);
+    } finally {
+      try {
+        if (host?.exitCode === null && host.signalCode === null) {
+          host.kill('SIGTERM');
+          await hostClosed;
+        }
+        await recovered?.close();
+        await rm(root, { recursive: true, force: true });
+      } finally {
+        vi.unstubAllEnvs();
+      }
     }
   },
 );

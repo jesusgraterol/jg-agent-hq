@@ -1,6 +1,33 @@
 import { z } from 'zod';
 
-import { MAX_PAGE_SIZE, ThreadSummarySchema, type IThreadSummary } from '../contracts/index.js';
+import {
+  MAX_PAGE_SIZE,
+  ThreadSummarySchema,
+  ErrorKindSchema,
+  type IThreadSummary,
+  type IActionReceipt,
+  type IManagedThread,
+  type IActionSummary,
+  type ILifecycleEvent,
+} from '../contracts/index.js';
+
+import {
+  AdmissionSchema,
+  NativeOutcomeSchema,
+  NativeObservationSchema,
+  ControlPageSchema,
+  EventPageSchema,
+  ApprovalRecordSchema,
+  type IAdmission,
+  type INativeOutcome,
+  type INativeObservation,
+  type IControlPage,
+  type IEventPage,
+  type IApprovalRecord,
+  type IAdmissionResult,
+  type IDispatch,
+  type IObservationResult,
+} from './control/index.js';
 
 // worker messages are closed, bounded operations rather than arbitrary SQL
 export const StoreCommandSchema = z.discriminatedUnion('kind', [
@@ -11,6 +38,30 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     observedAt: z.number().int(),
   }),
   z.strictObject({ kind: z.literal('close') }),
+  z.strictObject({ kind: z.literal('action-read'), id: z.uuid() }),
+  z.strictObject({ kind: z.literal('thread-read'), id: z.uuid() }),
+  z.strictObject({ kind: z.literal('native-thread-read'), nativeId: z.string().min(1).max(4096) }),
+  z.strictObject({
+    kind: z.literal('native-threads'),
+    nativeIds: z.array(z.string().min(1).max(4096)).max(128),
+  }),
+  z.strictObject({
+    kind: z.literal('threads'),
+    workspaceRoot: z.string().min(1),
+    page: ControlPageSchema,
+  }),
+  z.strictObject({
+    kind: z.literal('actions'),
+    threadId: z.uuid(),
+    page: ControlPageSchema,
+  }),
+  z.strictObject({ kind: z.literal('events'), page: EventPageSchema }),
+  z.strictObject({ kind: z.literal('admit'), input: AdmissionSchema }),
+  z.strictObject({ kind: z.literal('outcome'), input: NativeOutcomeSchema }),
+  z.strictObject({ kind: z.literal('observe'), input: NativeObservationSchema }),
+  z.strictObject({ kind: z.literal('claim-queue'), threadId: z.uuid() }),
+  z.strictObject({ kind: z.literal('approval'), input: ApprovalRecordSchema }),
+  z.strictObject({ kind: z.literal('release') }),
 ]);
 export type IStoreCommand = z.infer<typeof StoreCommandSchema>;
 export const StoreRequestSchema = z.strictObject({
@@ -19,16 +70,135 @@ export const StoreRequestSchema = z.strictObject({
 });
 export const StoreResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('ready') }),
-  z.object({ kind: z.literal('result'), id: z.number().int(), error: z.string().nullable() }),
+  z.object({
+    kind: z.literal('result'),
+    id: z.number().int(),
+    result: z.unknown(),
+    error: z.object({ message: z.string(), kind: ErrorKindSchema }).nullable(),
+  }),
 ]);
 export const StoreWorkerSchema = z.strictObject({
   databasePath: z.string().min(1),
   runtimeEpoch: z.uuid(),
+  actionKey: z.instanceof(Uint8Array).refine((key) => key.length === 32),
 });
 
 // the worker owns persistence; callers cannot submit arbitrary statements
 export type IStore = {
   readonly isAvailable: boolean;
+  /**
+   * Persists one native discovery page without transcript bodies.
+   * @returns A promise resolved after the discovery transaction commits.
+   * @throws
+   * - -1: The HQ store failed
+   */
   remember(threads: IThreadSummary[], nextCursor: string | null): Promise<void>;
+  /**
+   * Reads one selected receipt, including its undelivered queued text.
+   * @returns The selected receipt, or null when its UUID is unknown.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  getAction(id: string): Promise<IActionReceipt | null>;
+  /**
+   * Reads the immutable HQ identity and current control state.
+   * @returns The HQ control record, or null when its UUID is unknown.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  getThread(id: string): Promise<IManagedThread | null>;
+  /**
+   * Resolves the unique provider session without claiming control.
+   * @returns The registered control record, or null for an external session.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  getThreadByNativeId(nativeId: string): Promise<IManagedThread | null>;
+  /**
+   * Resolves one bounded native discovery page in a single worker operation.
+   * @returns The matching control records for the supplied native page.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  getNativeThreads(nativeIds: string[]): Promise<IManagedThread[]>;
+  /**
+   * Reads one workspace-scoped creation/UUID seek page.
+   * @returns One descending page and whether another seek page exists.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  listThreads(
+    workspaceRoot: string,
+    page: IControlPage,
+  ): Promise<{ data: IManagedThread[]; hasMore: boolean }>;
+  /**
+   * Reads one thread-scoped seek page without queued message bodies.
+   * @returns One descending metadata page and whether another seek page exists.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  listActions(
+    threadId: string,
+    page: IControlPage,
+  ): Promise<{ data: IActionSummary[]; hasMore: boolean }>;
+  /**
+   * Replays one thread-scoped metadata page in sequence order.
+   * @returns One ascending sequence page and whether more events exist.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  listEvents(page: IEventPage): Promise<{ data: ILifecycleEvent[]; hasMore: boolean }>;
+  /**
+   * Atomically records the digest and fences native dispatch.
+   * @returns The durable receipt, current thread and the one permitted dispatch identity.
+   * @throws
+   * - -1: The HQ store failed
+   * - -1: The HQ action conflicts with its recorded state
+   */
+  admit(input: IAdmission): Promise<IAdmissionResult>;
+  /**
+   * Applies only an exact current native request acknowledgement or failure.
+   * @returns The refreshed receipt, or null for an unknown action.
+   * @throws
+   * - -1: The HQ store failed
+   * - -1: The HQ action conflicts with its recorded state
+   */
+  applyOutcome(input: INativeOutcome): Promise<IActionReceipt | null>;
+  /**
+   * Applies ordered native evidence without confusing delivery with completion.
+   * @returns The current thread and whether its queue may advance.
+   * @throws
+   * - -1: The HQ store failed
+   * - -1: The HQ action conflicts with its recorded state
+   */
+  observe(input: INativeObservation): Promise<IObservationResult>;
+  /**
+   * Claims one ready undelivered message for exactly one native dispatch.
+   * @returns One claimed dispatch payload, or null when the queue must wait.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  claimQueued(threadId: string): Promise<IDispatch | null>;
+  /**
+   * Records native request identity and scope fingerprint without its prompt body.
+   * @returns The stable approval identity and current thread, or null for an uncontrolled turn.
+   * @throws
+   * - -1: The HQ store failed
+   * - -1: The HQ action conflicts with its recorded state
+   */
+  openApproval(input: IApprovalRecord): Promise<{ id: string; thread: IManagedThread } | null>;
+  /**
+   * Marks native controls inactive only after proven native shutdown.
+   * @returns A promise resolved after control release is committed.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  releaseControls(): Promise<void>;
+  /**
+   * Closes SQLite and waits for the worker to exit.
+   * @returns A promise resolved after SQLite closes and the worker exits.
+   * @throws
+   * - -1: The HQ store failed
+   */
   close(): Promise<void>;
 };

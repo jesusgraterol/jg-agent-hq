@@ -10,22 +10,24 @@ import {
 
 // additive native responses are narrowed to fields this adapter actually uses
 export const NativeThreadSchema = z.object({
-  id: z.string().min(1),
-  cwd: z.string().min(1),
+  id: z.string().min(1).max(4096),
+  cwd: z.string().min(1).max(4096),
   name: z.string().nullable().optional(),
   createdAt: z.number().int().safe(),
   updatedAt: z.number().int().safe(),
   status: z.object({ type: z.enum(['notLoaded', 'idle', 'systemError', 'active']) }),
 });
 export const NativeTurnSchema = z.object({
-  id: z.string().min(1),
+  id: z.string().min(1).max(4096),
   status: z.enum(['completed', 'interrupted', 'failed', 'inProgress']),
   startedAt: z.number().int().safe().nullable().optional(),
   completedAt: z.number().int().safe().nullable().optional(),
 });
 export const NativeItemSchema = z.object({
-  turnId: z.string().min(1),
-  item: z.object({ id: z.string().min(1), type: z.string() }).catchall(z.unknown()),
+  turnId: z.string().min(1).max(4096),
+  item: z
+    .object({ id: z.string().min(1).max(4096), type: z.string().min(1).max(256) })
+    .catchall(z.unknown()),
 });
 export const NativeThreadPageSchema = z.object({
   data: z.array(NativeThreadSchema).max(MAX_PAGE_SIZE),
@@ -62,7 +64,15 @@ export type INativeItem = z.infer<typeof NativeItemSchema>;
 export type INativeUsage = z.infer<typeof NativeUsageSchema>;
 export type INativePage<T> = { data: T[]; nextCursor: string | null };
 
-// all conversation bodies stay native; this adapter returns bounded read models
+// callbacks are owned by the runtime, independently of connected clients
+export type ICodexEvents = {
+  notify(method: string, params: unknown): void;
+  request(id: string | number, method: string, params: unknown): void;
+  lateResponse(id: string, result: unknown, error: unknown): void;
+  unavailable(): void;
+};
+
+// native read models and explicit control operations; execution settings remain with Codex
 export type ICodexProvider = {
   userAgent: string;
   readonly isAvailable: boolean;
@@ -81,5 +91,84 @@ export type ICodexProvider = {
     turnId?: string,
   ): Promise<INativePage<IHistoryItem>>;
   readUsage(): Promise<IUsageSnapshot>;
+  /** Installs runtime-owned callbacks independently of client connections. */
+  setEvents(events: ICodexEvents): void;
+  /**
+   * Creates an empty native thread using the configured execution settings.
+   * @returns The created native thread metadata.
+   * @throws
+   * - -1: The Codex integration failed
+   */
+  startThread(requestId: string, workspaceRoot: string): Promise<INativeThread>;
+  /**
+   * Loads one explicitly adopted thread without hydrating its complete history.
+   * @returns The resumed native thread metadata.
+   * @throws
+   * - -1: The Codex integration failed
+   */
+  resumeThread(requestId: string, nativeId: string): Promise<INativeThread>;
+  /**
+   * Sets the native readable name with the admitted request identity.
+   * @returns A promise resolved after native name acknowledgement.
+   * @throws
+   * - -1: The Codex integration failed
+   */
+  nameThread(requestId: string, nativeId: string, name: string): Promise<void>;
+  /**
+   * Starts idle input without overriding model, sandbox or approval policy.
+   * @returns The accepted native turn metadata.
+   * @throws
+   * - -1: The Codex integration failed
+   */
+  startTurn(requestId: string, nativeId: string, text: string): Promise<INativeTurn>;
+  /**
+   * Steers only the required active native turn and verifies its response identity.
+   * @returns The acknowledged native turn identity.
+   * @throws
+   * - -1: The Codex integration failed
+   */
+  steer(requestId: string, nativeId: string, expectedTurnId: string, text: string): Promise<string>;
+  /**
+   * Requests interruption; its acknowledgement does not prove completion.
+   * @returns A promise resolved after native interruption-request acknowledgement.
+   * @throws
+   * - -1: The Codex integration failed
+   */
+  interrupt(requestId: string, nativeId: string, nativeTurnId: string): Promise<void>;
+  /**
+   * Requests cleanup of the controlled thread’s native background terminals.
+   * @returns A promise resolved after native cleanup-request acknowledgement.
+   * @throws
+   * - -1: The Codex integration failed
+   */
+  cleanTerminals(requestId: string, nativeId: string): Promise<void>;
+  /**
+   * Verifies an empty native terminal page before releasing control.
+   * @returns A promise resolved only when the native terminal page is empty.
+   * @throws
+   * - -1: The Codex integration failed
+   */
+  verifyTerminalsClosed(nativeId: string): Promise<void>;
+  /**
+   * Unsubscribes one cleaned native thread and validates the resulting state.
+   * @returns A promise resolved after Codex confirms it no longer subscribes to this thread.
+   * @throws
+   * - -1: The Codex integration failed
+   */
+  unsubscribe(requestId: string, nativeId: string): Promise<void>;
+  /**
+   * Writes an exact native request response; resolution arrives separately.
+   * @returns A promise resolved after the native transport accepts the response.
+   * @throws
+   * - -1: The HQ transport failed
+   */
+  reply(id: string | number, result: unknown): Promise<void>;
+  /**
+   * Rejects an unsupported native request without granting permissions.
+   * @returns A promise resolved after the native transport accepts the rejection.
+   * @throws
+   * - -1: The HQ transport failed
+   */
+  reject(id: string | number): Promise<void>;
   close(): Promise<void>;
 };

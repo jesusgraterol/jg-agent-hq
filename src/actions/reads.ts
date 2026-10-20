@@ -1,0 +1,130 @@
+import { Exception } from 'error-message-utils';
+import { z } from 'zod';
+
+import type { IHqRequest, IHqResponse, IManagedThread } from '../contracts/index.js';
+import { resolveWorkspaceTarget } from '../runtime/state/index.js';
+import { decodeHistoryCursor, encodeHistoryCursor } from '../sessions/index.js';
+import type { IStore } from '../store/index.js';
+
+import type { createActions } from './actions.js';
+
+type IControlRead = Extract<
+  IHqRequest,
+  {
+    kind:
+      | 'receipt'
+      | 'managed-threads'
+      | 'managed-thread'
+      | 'actions'
+      | 'events'
+      | 'approvals'
+      | 'live-items';
+  }
+>;
+const PositionSchema = z.strictObject({ createdAt: z.number().int(), id: z.uuid() });
+
+/**
+ * Validates the application-owned seek position after the shared query-binding check.
+ * @throws
+ * - -1: The HQ cursor does not match this request
+ */
+const readPosition = (
+  cursor: string | undefined,
+  filters: object,
+): z.infer<typeof PositionSchema> | null => {
+  const decoded = decodeHistoryCursor(cursor, filters);
+  if (!decoded) return null;
+  try {
+    return PositionSchema.parse(JSON.parse(decoded));
+  } catch (cause) {
+    throw new Exception(
+      'The HQ cursor does not match this request',
+      undefined,
+      { kind: 'invalid-request' },
+      { cause },
+    );
+  }
+};
+
+/** Encodes the final row's complete ordering tuple only when another page exists. */
+const nextPageCursor = (
+  page: { data: { createdAt: number; id: string }[]; hasMore: boolean },
+  filters: object,
+): string | null => {
+  const last = page.data.at(-1);
+  return encodeHistoryCursor(
+    page.hasMore && last ? JSON.stringify({ createdAt: last.createdAt, id: last.id }) : null,
+    filters,
+  );
+};
+
+/**
+ * Authorizes bounded control reads and binds seek positions to their exact query.
+ * @returns The selected record or bounded page.
+ * @throws
+ * - -1: The HQ action conflicts with its recorded state
+ * - -1: The HQ cursor does not match this request
+ * - -1: The HQ target is outside the allowed workspaces
+ * - -1: The HQ store failed
+ */
+export const readControl = async (
+  command: IControlRead,
+  store: IStore,
+  actions: ReturnType<typeof createActions>,
+  roots: string[],
+): Promise<IHqResponse> => {
+  const authorize = async (thread: IManagedThread | null): Promise<void> => {
+    if (thread) await resolveWorkspaceTarget(thread.workspaceRoot, roots);
+  };
+  if (command.kind === 'receipt') {
+    const receipt = await store.getAction(command.actionId);
+    if (receipt?.threadId) await authorize(await store.getThread(receipt.threadId));
+    return { kind: 'receipt', result: receipt };
+  }
+  if (command.kind === 'managed-threads') {
+    const { cursor, ...filters } = command;
+    filters.workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, roots);
+    const page = await store.listThreads(filters.workspaceRoot, {
+      limit: command.limit,
+      position: readPosition(cursor, filters),
+    });
+    return {
+      kind: 'managed-threads',
+      result: { data: page.data, nextCursor: nextPageCursor(page, filters) },
+    };
+  }
+  if (command.kind === 'actions') {
+    const { cursor, ...filters } = command;
+    await authorize(await store.getThread(command.threadId));
+    const page = await store.listActions(command.threadId, {
+      limit: command.limit,
+      position: readPosition(cursor, filters),
+    });
+    return {
+      kind: 'actions',
+      result: { data: page.data, nextCursor: nextPageCursor(page, filters) },
+    };
+  }
+  const thread = await store.getThread(command.threadId);
+  await authorize(thread);
+  if (command.kind === 'managed-thread') return { kind: command.kind, result: thread };
+  if (!thread)
+    throw new Exception('The HQ action conflicts with its recorded state', undefined, {
+      kind: 'state-conflict',
+    });
+  if (command.kind === 'events')
+    return {
+      kind: 'events',
+      result: await store.listEvents({
+        threadId: thread.id,
+        after: command.after,
+        limit: command.limit,
+      }),
+    };
+  if (command.kind === 'approvals')
+    return { kind: 'approvals', result: actions.approvals(thread.id) };
+  return {
+    kind: 'live-items',
+    result: thread.nativeId ? actions.live.read(thread.nativeId) : { data: [], hasGap: false },
+  };
+};

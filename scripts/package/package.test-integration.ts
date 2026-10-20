@@ -2,7 +2,8 @@
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import ts from 'typescript';
 import { expect, test } from 'vitest';
 import { z } from 'zod';
 
@@ -113,21 +114,53 @@ test(
         timeout: 10_000,
       });
       expect(help).toContain('serve|status|stop|threads|thread|turns|items|usage');
-      const contracts = await readdir(join(ROOT, 'dist/contracts'));
-      for (const filename of contracts.filter((filename) => filename.endsWith('.js'))) {
-        const source = await readFile(join(ROOT, 'dist/contracts', filename), 'utf8');
-        const imports = Array.from(
-          source.matchAll(/(?:from\s*|import\s*)['"]([^'"]+)['"]/g),
-          (match) => match[1],
+      const contractRoot = join(ROOT, 'dist/contracts');
+      const pending = [join(contractRoot, 'index.js')];
+      const visited = new Set<string>();
+      while (pending.length) {
+        const filename = pending.pop()!;
+        if (visited.has(filename)) continue;
+        visited.add(filename);
+        const source = ts.createSourceFile(
+          filename,
+          await readFile(filename, 'utf8'),
+          ts.ScriptTarget.Latest,
+          true,
+          ts.ScriptKind.JS,
         );
-        expect(
-          imports.every(
-            (specifier) =>
-              specifier === 'zod' ||
-              (specifier.startsWith('./') && !specifier.slice(2).includes('/')),
-          ),
-        ).toBe(true);
+        const inspect = (node: ts.Node): void => {
+          const specifier =
+            ts.isImportDeclaration(node) || ts.isExportDeclaration(node)
+              ? node.moduleSpecifier
+              : ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
+                ? node.arguments[0]
+                : undefined;
+          if (specifier) {
+            expect(ts.isStringLiteral(specifier)).toBe(true);
+            if (ts.isStringLiteral(specifier) && specifier.text !== 'zod') {
+              expect(specifier.text.startsWith('.')).toBe(true);
+              const target = resolve(dirname(filename), specifier.text);
+              const local = relative(contractRoot, target);
+              expect(
+                !isAbsolute(local) &&
+                  local !== '..' &&
+                  !local.startsWith('../') &&
+                  !local.startsWith('..\\'),
+              ).toBe(true);
+              expect(
+                local
+                  .split(/[\\/]/)
+                  .some((part) => ['_archive', '_archives', '_backup', '_backups'].includes(part)),
+              ).toBe(false);
+              expect(target.endsWith('.js')).toBe(true);
+              pending.push(target);
+            }
+          }
+          ts.forEachChild(node, inspect);
+        };
+        inspect(source);
       }
+      expect(visited.size).toBeGreaterThan(1);
       expect((await readdir(join(ROOT, 'dist/locks'))).some((name) => name.includes('test-'))).toBe(
         false,
       );

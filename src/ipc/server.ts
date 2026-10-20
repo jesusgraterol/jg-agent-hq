@@ -11,6 +11,7 @@ import {
   type IHqResponse,
   type IIpcResponse,
 } from '../contracts/index.js';
+import { toPublicError } from '../errors/index.js';
 
 import {
   IPC_TIMEOUT_MS,
@@ -19,7 +20,6 @@ import {
   MAX_REQUEST_BYTES,
 } from './constants.js';
 import { createLineDecoder } from './framing.js';
-import { toPublicError } from './utilities.js';
 
 /**
  * Serves closed HQ commands over an owner-only Unix socket. Disconnects do not own host lifetime.
