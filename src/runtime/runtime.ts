@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import { HqRequestSchema, type IHqRequestInput, type IHqResponse } from '../contracts/index.js';
 import { createActions, readControl } from '../actions/index.js';
+import { createHandoffs } from '../handoffs/index.js';
 import { CONTROL_SOCKET, createIpcServer } from '../ipc/index.js';
 import {
   createCodexProvider,
@@ -247,6 +248,8 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           kind: 'usage',
           result: await (command.provider === 'claude' ? claude.readUsage() : native.readUsage()),
         };
+      case 'handoff':
+        return { kind: 'handoff', result: await handoffs.handle(command.command) };
       case 'plan':
         return { kind: 'plan', result: await plans.handle(command.command) };
       case 'skills':
@@ -318,6 +321,15 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       }
     }
   };
+  const handoffs = createHandoffs(
+    projection,
+    actions,
+    skills,
+    plans,
+    request,
+    allowedRoots,
+    ownership.owner.nonce,
+  );
   try {
     ipc = await createIpcServer(join(stateRoot, CONTROL_SOCKET), ownership.owner.nonce, request);
   } catch (error) {

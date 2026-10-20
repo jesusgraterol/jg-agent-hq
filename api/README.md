@@ -209,3 +209,43 @@ Guided native input adds `plan: { kind: 'execution', authorizationId, milestoneI
 Selected status/admission/queue observations detect external contract edits or milestone deletion, persist a closed gate and request exact bound-thread interruption. These observations grant no operator authority and report uncertain in-flight effects. The finalized baseline retains identities and completion evidence for explicit reconciliation of direct CLI edits. Invalid artifacts fail explicitly. No directory scan or filesystem watcher is used. Status projects Revising, approval/breakdown requirements, Ready, In progress, Completed and Blocked independently of provider process state.
 
 Retained evidence pages bind their collection, page size and exact coordination hash. Reads do not load complete collections into the client; SQLite rebuilds the replaceable projection only when its selected authoritative file changes. The file has a hard size/record bound and rejects growth beyond it without discarding evidence.
+
+## Cross-provider handoffs
+
+Use the existing JSON client, `jg-agent-hq request --state-root <directory>`, or `runtime.request({ kind: 'handoff', command })`. All commands are closed contracts exported through `jg-agent-hq/contracts`.
+
+| Command   | Required fields                                                                                                                | Result                                                                              |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| `create`  | `id` (UUID), `runtimeEpoch`, `sourceThreadId`, `purpose` (`challenge` or `review`); optional `commit` (exact current Git HEAD) | Saved handoff and opposite-provider thread creation receipt.                        |
+| `show`    | `id`                                                                                                                           | Selected handoff, retained findings and separate creation/review/feedback delivery. |
+| `preview` | `id`, `phase` (`review` or `feedback`)                                                                                         | Exact native invocation, immutable target ID and preview digest; no native input.   |
+| `send`    | `id`, `phase`, `expectedPreviewDigest`                                                                                         | Explicit delivery through the existing action ledger.                               |
+| `collect` | `id`, `turnId`, `itemId`; optional `limit`/`cursor` for the selected native history page                                       | One immutable completed reviewer message, with its hash and native references.      |
+| `list`    | `workspaceRoot`; optional `sourceThreadId`, `limit`, `cursor`                                                                  | Seek page of summaries, without finding bodies.                                     |
+
+Example creation request:
+
+```json
+{
+  "kind": "handoff",
+  "command": {
+    "kind": "create",
+    "id": "72dbce82-598b-4aa5-8c5b-2b79157adbcc",
+    "runtimeEpoch": "512c7c32-6aaf-417d-89ae-9cd792f65e11",
+    "sourceThreadId": "eaa4c6e3-199f-4f70-b683-0e5aa29c4c74",
+    "purpose": "challenge"
+  }
+}
+```
+
+Use the current runtime epoch and actual managed source ID from the runtime reads. Creation verifies source access through the provider's authoritative history interface, records native/source/repository/revision references, and saves the intent before admitting reviewer creation. `challenge` resolves the installed `jg-challenge-session`; `review` resolves `jg-review-session`. Reviewer input contains exact source references, not a copied transcript. Missing, disabled or ambiguous native skills remain unavailable. No skill-file parser, copied workflow or global installation is added.
+
+Creation may still be pending when its response arrives. Read `show` until its creation is delivered, then request a preview. Preview states are `ready`, `missing-skill`, `skill-unavailable`, `target-unavailable`, `source-changed` and `findings-unavailable`. Preview saves no input and grants no native permission. Sending requires the exact ready preview digest. IDs and immutable phase intents make identical retries return the same action receipt; a changed payload or preview with the same identity conflicts. An unavailable or uncertain target is never replaced or resumed by a read or retry. If an intent was saved before native admission and the host restarted, retain it for inspection and create a new handoff only after establishing that no native input was admitted.
+
+Collection reads exactly the requested native page through the provider adapter and accepts only one non-truncated agent message from the handoff's completed reviewer turn. Finding bodies are limited to 8 KiB UTF-8, never silently shortened. To select a later page, use the same `limit`, turn filter and preceding cursor as the native items read. A different message or changed body cannot overwrite collected findings. Full histories remain with the native CLIs. Persisted reviewer references retain the exact native session, turn and item identities.
+
+Feedback resolves installed `jg-feedback` in the author thread and carries the selected findings with exact source, reviewer, item, revision and commit references. Source contract or selected Git HEAD changes invalidate an unsent preview. The action's optional `expectedPlan` guards the author's captured revision under the existing plan lock; explicit `null` requires an unbound thread. This guard applies only to `message` and `queue`, grants no execution scope, and cannot answer tool permissions. Known native identities cannot be reassigned; existing control admission preserves the exact author for queued feedback. Existing revision gates pause stale queued feedback. Neither handoff delivery nor a completed assessment turn means recommendations were accepted or implementation was authorized.
+
+Delivery is `prepared`, `queued`, `submitted`, `delivered`, `uncertain`, `failed` or `canceled`; native `completion` is separately null, `completed`, `failed` or `interrupted`. Acknowledgement alone becomes `delivered`. Busy destinations use native next-turn queues, including while waiting for permissions; feedback is never written as a permission answer. Pending native permissions remain explicit actions on their own channels. No automatic feedback, response loop, approval or publication follows collection.
+
+Lists use indexed `createdAt DESC, id DESC` seek ordering, default 32/max 128, and cursors bound to the workspace, source filter and page size. Concurrent newer inserts do not reappear on continuation; deleted unseen records disappear. Summaries do not transfer retained finding bodies through the worker. SQLite owns the small private `handoff` and `handoff_dispatch` records alongside existing actions. No database migration or transcript mirror is required. Reads are fresh and bounded; no separate cache is used.

@@ -8,6 +8,11 @@ import {
   ManagedThreadSchema,
   type IThreadSummary,
 } from '../contracts/index.js';
+import {
+  HandoffRecordSchema,
+  HandoffDispatchSchema,
+  HandoffPageSchema,
+} from '../handoffs/index.js';
 import { ClaudeHistoryReadSchema } from '../providers/claude/history/index.js';
 
 import {
@@ -192,6 +197,15 @@ export const createStore = async (
     get isAvailable() {
       return isAvailable;
     },
+    getHandoff: (id) => request({ kind: 'handoff-read', id }, HandoffRecordSchema.nullable()),
+    prepareHandoff: (record) => request({ kind: 'handoff-prepare', record }, HandoffRecordSchema),
+    getHandoffDispatch: (id, phase) =>
+      request({ kind: 'handoff-dispatch-read', id, phase }, HandoffDispatchSchema.nullable()),
+    prepareHandoffDispatch: (dispatch) =>
+      request({ kind: 'handoff-dispatch-prepare', dispatch }, HandoffDispatchSchema),
+    collectHandoff: (id, findings) =>
+      request({ kind: 'handoff-collect', id, findings }, HandoffRecordSchema),
+    listHandoffs: (page) => request({ kind: 'handoff-list', page }, HandoffPageSchema),
     readClaudeHistory: (command) =>
       request({ kind: 'claude-history', request: command }, ClaudeHistoryReadSchema),
     projectPlanRevision: async (projection) => {

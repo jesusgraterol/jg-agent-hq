@@ -29,6 +29,8 @@ export type IAgentHq = {
    * - -1: The HQ runtime is not running
    * - -1: The HQ target is outside the allowed workspaces
    * - -1: The HQ cursor does not match this request
+   * - -1: The HQ handoff is unavailable
+   * - -1: The HQ handoff operation failed
    * - -1: The HQ skill is unavailable
    * - -1: The HQ action conflicts with its recorded state
    * - -1: The Codex integration failed

@@ -132,3 +132,26 @@ export type { IPlanReconciliationEntry } from './plans/index.js';
 // guided plan scope
 export { PlanActionScopeSchema, ActionPlanContextSchema } from './actions/index.js';
 export type { IPlanActionScope, IActionPlanContext } from './actions/index.js';
+
+// explicit cross-provider handoffs
+export {
+  HandoffSourceSchema,
+  HandoffFindingsSchema,
+  HandoffPhaseSchema,
+  HandoffCommandSchema,
+  HandoffDeliverySchema,
+  HandoffSummarySchema,
+  HandoffSchema,
+  HandoffPreviewSchema,
+  HandoffResultSchema,
+} from './handoffs/index.js';
+export type {
+  IHandoffCommand,
+  IHandoffPhase,
+  IHandoffSource,
+  IHandoffFindings,
+  IHandoff,
+  IHandoffSummary,
+  IHandoffPreview,
+  IHandoffResult,
+} from './handoffs/index.js';

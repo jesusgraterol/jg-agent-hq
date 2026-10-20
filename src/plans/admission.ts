@@ -122,6 +122,15 @@ export const createPlanAdmission = (
           (command.kind === 'native-reply' &&
             command.response.kind !== 'answers' &&
             ['decline', 'cancel'].includes(command.response.decision));
+        if ('expectedPlan' in action) {
+          if (!['message', 'queue'].includes(command.kind) || !threadId) conflict();
+          const expected = action.expectedPlan;
+          if (binding?.directory !== expected?.directory) conflict();
+          if (expected) {
+            const current = await readPlan(expected.directory);
+            if (!isSamePlanRevision(expected.observedRevision, current.revision)) conflict();
+          }
+        }
         if (action.plan) {
           if (
             !['message', 'queue', 'steer', 'thread-resume', 'thread-recover'].includes(

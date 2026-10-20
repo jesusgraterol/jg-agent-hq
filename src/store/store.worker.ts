@@ -6,6 +6,7 @@ import { Exception, extractMessage } from 'error-message-utils';
 import { getErrorKind } from '../errors/index.js';
 import { ClaudeHistoryModel } from '../providers/claude/history/index.js';
 
+import { HandoffsModel } from './handoffs/index.js';
 import { ControlModel } from './control/index.js';
 import { PlansModel } from './plans/index.js';
 import { StoreRequestSchema, StoreWorkerSchema } from './types.js';
@@ -20,6 +21,7 @@ const database = new DatabaseSync(options.databasePath, {
 database.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
 database.exec(await readFile(new URL('./schema.sql', import.meta.url), 'utf8'));
 const plans = new PlansModel(database);
+const handoffs = new HandoffsModel(database);
 const controls = new ControlModel(database, options.runtimeEpoch, options.actionKey, plans);
 const claudeHistory = new ClaudeHistoryModel(database);
 const remember = database.prepare(`INSERT INTO native_history_index
@@ -44,6 +46,24 @@ port.on('message', (message: unknown) => {
     }
     let result: unknown = null;
     switch (command.kind) {
+      case 'handoff-read':
+        result = handoffs.get(command.id);
+        break;
+      case 'handoff-prepare':
+        result = handoffs.prepare(command.record);
+        break;
+      case 'handoff-dispatch-read':
+        result = handoffs.getDispatch(command.id, command.phase);
+        break;
+      case 'handoff-dispatch-prepare':
+        result = handoffs.prepareDispatch(command.dispatch);
+        break;
+      case 'handoff-collect':
+        result = handoffs.collect(command.id, command.findings);
+        break;
+      case 'handoff-list':
+        result = handoffs.list(command.page);
+        break;
       case 'plan-revision-project':
         plans.projectRevision(command.projection);
         break;

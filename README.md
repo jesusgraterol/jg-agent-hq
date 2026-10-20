@@ -48,6 +48,14 @@ Finalization assigns milestone UUIDs and returns the complete canonical sequence
 
 Begin a revision before native planning. HQ stops bound implementation threads and their owned background work, captures partial-work evidence, and keeps execution paused while the CLI revises the plan and regenerates milestones. The finalizer carries exact matches automatically and asks for one confirmation covering every unmatched completed or partial milestone. Equivalent rewording preserves the original completion evidence. Changed requirements remain pending. Present and approve the canonical sequence, then explicitly authorize the new execution scope and mode. Neither approval nor restart resumes implementation. See the [revision recovery contract](api/README.md#revision-and-progress-recovery).
 
+## Cross-provider feedback
+
+Create a handoff with the JSON request interface: `kind: 'handoff'` and a `create` command containing a UUID, current `runtimeEpoch`, managed `sourceThreadId` and `purpose: 'challenge' | 'review'`. Creation opens a short-named reviewer session with the opposite provider, without sending a prompt. Preview the exact native skill invocation, then explicitly send its digest. Both CLIs keep their own skills, tool permissions and conversation histories.
+
+Collect one completed reviewer message by its exact native turn/item reference. Preview and explicitly send it through `jg-feedback` to the original author. Feedback remains untrusted advice; delivery and native turn completion grant no plan approval, execution authority or acceptance of recommendations. Busy authors receive queued feedback through the existing action ledger. An uncertain send is never automatically retried.
+
+`handoff-show --id <uuid>` reads one handoff; `handoffs --workspace-root <path>` pages the inbox. The [handoff reference](api/README.md#cross-provider-handoffs) describes creation, preview, send and native findings collection through the same CLI's JSON request interface.
+
 ## Project blueprint
 
 - `src/index.ts`: the explicit public package boundary.
@@ -59,6 +67,7 @@ Begin a revision before native planning. HQ stops bound implementation threads a
 - `src/sessions/`: authorized, cursor-bound history reads and short label suggestions.
 - `src/plans/`: execution digests, milestone finalization, revision checkpoints, retained verification and explicit plan authority.
 - `src/skills/`: bounded native catalogs, invocation previews and explicit input preparation.
+- `src/handoffs/`: explicit cross-provider challenges, selected native findings and author assessment links.
 - `src/actions/`: durable action dispatch, native input routing and bounded live presentation.
 - `src/store/`: SQLite discovery metadata and the action/control ledger in one worker.
 - `src/contracts/`: browser-safe command and response contracts.
