@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": [
+    "**/*.test-unit.*",
+    "**/*.test-integration.*",
+    "**/*.test-e2e.*",
+    "**/*.test-bench.*",
+    "**/_archive/**",
+    "**/_archives/**",
+    "**/_backup/**",
+    "**/_backups/**"
+  ]
+}
