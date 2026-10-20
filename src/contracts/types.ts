@@ -127,10 +127,15 @@ export const RuntimeStatusSchema = z.object({
   pid: z.number().int().positive(),
   startedAt: z.number().int(),
   store: z.enum(['ready', 'unavailable']),
-  codex: z.object({ state: z.enum(['ready', 'unavailable']), userAgent: z.string() }),
+  codex: z.object({
+    state: z.enum(['ready', 'unavailable']),
+    userAgent: z.string(),
+    steering: z.literal('available'),
+  }),
   claude: z.object({
     state: z.enum(['idle', 'ready', 'unavailable']),
     version: z.string().nullable(),
+    steering: z.literal('unavailable'),
   }),
 });
 export type IRuntimeStatus = z.infer<typeof RuntimeStatusSchema>;

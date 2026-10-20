@@ -17,7 +17,7 @@ ON native_history_index (provider, workspace_root, created_at DESC, native_id DE
 
 CREATE TABLE IF NOT EXISTS thread (
   id TEXT NOT NULL,
-  provider TEXT NOT NULL CHECK (provider = 'codex'),
+  provider TEXT NOT NULL CHECK (provider IN ('codex', 'claude')),
   native_id TEXT CHECK (native_id IS NULL OR length(native_id) > 0),
   name TEXT NOT NULL COLLATE NOCASE,
   workspace_root TEXT NOT NULL,

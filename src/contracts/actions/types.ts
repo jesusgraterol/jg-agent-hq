@@ -11,13 +11,13 @@ const ActiveTargetFields = { threadId: ThreadIdSchema, expectedTurnId: NativeIdS
 export const ActionCommandSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('thread-create'),
-    provider: z.literal('codex'),
+    provider: z.enum(['codex', 'claude']),
     workspaceRoot: z.string().min(1).max(4096),
     name: NameSchema,
   }),
   z.strictObject({
     kind: z.literal('thread-adopt'),
-    provider: z.literal('codex'),
+    provider: z.enum(['codex', 'claude']),
     workspaceRoot: z.string().min(1).max(4096),
     nativeId: NativeIdSchema,
     name: NameSchema,
@@ -115,7 +115,7 @@ export type IActionSummary = z.infer<typeof ActionSummarySchema>;
 // control is separate from the native thread's discovery title and historical visibility
 export const ManagedThreadSchema = z.object({
   id: ThreadIdSchema,
-  provider: z.literal('codex'),
+  provider: z.enum(['codex', 'claude']),
   nativeId: NativeIdSchema.nullable(),
   name: NameSchema,
   workspaceRoot: z.string(),
@@ -162,6 +162,7 @@ export const NativeApprovalSchema = z.object({
         question: z.string(),
         isSecret: z.boolean(),
         isOther: z.boolean(),
+        allowsMultiple: z.boolean(),
         options: z.array(z.object({ label: z.string(), description: z.string() })).nullable(),
       }),
     )

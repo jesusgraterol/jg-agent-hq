@@ -90,18 +90,24 @@ export class ControlModel {
   }
 
   /** Resolves a registered native session without claiming it. */
-  public getThreadByNativeId(nativeId: string): IManagedThread | null {
-    const thread = this.__nativeThread(nativeId);
+  public getThreadByNativeId(
+    provider: IManagedThread['provider'],
+    nativeId: string,
+  ): IManagedThread | null {
+    const thread = this.__nativeThread(provider, nativeId);
     return thread ? toManagedThread(thread) : null;
   }
 
   /** Resolves one native discovery page in a single indexed worker operation. */
-  public getNativeThreads(nativeIds: string[]): IManagedThread[] {
+  public getNativeThreads(
+    provider: IManagedThread['provider'],
+    nativeIds: string[],
+  ): IManagedThread[] {
     return this.__database
       .prepare(
-        `SELECT ${THREAD_COLUMNS} FROM thread WHERE provider = 'codex' AND native_id IN (SELECT json_each.value FROM json_each(?))`,
+        `SELECT ${THREAD_COLUMNS} FROM thread WHERE provider = ? AND native_id IN (SELECT json_each.value FROM json_each(?))`,
       )
-      .all(JSON.stringify(nativeIds))
+      .all(provider, JSON.stringify(nativeIds))
       .map((row) => toManagedThread(ThreadRowSchema.parse(row)));
   }
 
@@ -243,15 +249,16 @@ export class ControlModel {
           const nativeId = command.kind === 'thread-adopt' ? prepared.nativeId : null;
           if (command.kind === 'thread-adopt' && (!nativeId || nativeId !== command.nativeId))
             this.__conflict();
-          if (nativeId && this.__nativeThread(nativeId)) this.__conflict();
+          if (nativeId && this.__nativeThread(command.provider, nativeId)) this.__conflict();
           const threadId = randomUUID();
           this.__database
             .prepare(
               `INSERT INTO thread (id, provider, native_id, name, workspace_root, ownership, runtime_epoch, pending_action_id, state, registration_action_id, created_at, updated_at)
-            VALUES (?, 'codex', ?, ?, ?, 'managed', ?, ?, ?, ?, ?, ?)`,
+            VALUES (?, ?, ?, ?, ?, 'managed', ?, ?, ?, ?, ?, ?)`,
             )
             .run(
               threadId,
+              command.provider,
               nativeId ?? null,
               command.name,
               prepared.workspaceRoot,
@@ -624,7 +631,7 @@ export class ControlModel {
    */
   public openApproval(approval: IApprovalRecord): { id: string; thread: IManagedThread } | null {
     return this.__transaction(() => {
-      const thread = this.__nativeThread(approval.nativeThreadId);
+      const thread = this.__nativeThread(approval.provider, approval.nativeThreadId);
       if (
         !thread ||
         thread.ownership !== 'managed' ||
@@ -691,36 +698,47 @@ export class ControlModel {
       const now = Date.now();
       if (observation.kind === 'native-unavailable') {
         const affected = this.__database
-          .prepare('SELECT id FROM thread WHERE runtime_epoch = ? LIMIT ?')
-          .all(this.__epoch, CONTROLLED_THREAD_CAPACITY);
-        this.__database
           .prepare(
-            "UPDATE thread SET ownership = 'uncertain', state = 'unknown', updated_at = ? WHERE runtime_epoch = ?",
+            'SELECT id FROM thread WHERE runtime_epoch = ? AND provider = ? AND (? IS NULL OR native_id = ?) LIMIT ?',
           )
-          .run(now, this.__epoch);
-        this.__database
-          .prepare(
-            "UPDATE action SET delivery = 'uncertain', updated_at = ? WHERE runtime_epoch = ? AND delivery = 'submitted'",
-          )
-          .run(now, this.__epoch);
-        this.__database
-          .prepare(
-            "UPDATE action SET queue_ready = 0 WHERE runtime_epoch = ? AND delivery = 'queued'",
-          )
-          .run(this.__epoch);
-        this.__database
-          .prepare(
-            "UPDATE native_approval SET state = 'expired', updated_at = ? WHERE runtime_epoch = ? AND state = 'pending'",
-          )
-          .run(now, this.__epoch);
-        for (const thread of affected)
-          this.__event('native-unavailable', z.uuid().parse(thread.id), null);
+          .all(
+            this.__epoch,
+            observation.provider,
+            observation.nativeThreadId ?? null,
+            observation.nativeThreadId ?? null,
+            CONTROLLED_THREAD_CAPACITY,
+          );
+        for (const row of affected) {
+          const id = z.uuid().parse(row.id);
+          this.__database
+            .prepare(
+              "UPDATE thread SET ownership = 'uncertain', state = 'unknown', updated_at = ? WHERE id = ?",
+            )
+            .run(now, id);
+          this.__database
+            .prepare(
+              "UPDATE action SET delivery = 'uncertain', updated_at = ? WHERE thread_id = ? AND delivery = 'submitted'",
+            )
+            .run(now, id);
+          this.__database
+            .prepare(
+              "UPDATE action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
+            )
+            .run(id);
+          this.__database
+            .prepare(
+              "UPDATE native_approval SET state = 'expired', updated_at = ? WHERE thread_id = ? AND state = 'pending'",
+            )
+            .run(now, id);
+          this.__event('native-unavailable', id, null);
+        }
         return { thread: null, canDispatchQueued: false };
       }
-      const thread = this.__nativeThread(observation.nativeThreadId);
+      const thread = this.__nativeThread(observation.provider, observation.nativeThreadId);
       if (!thread || thread.runtime_epoch !== this.__epoch)
         return { thread: null, canDispatchQueued: false };
       const tuple = [
+        observation.provider,
         observation.kind,
         observation.nativeThreadId,
         'nativeTurnId' in observation ? observation.nativeTurnId : null,
@@ -806,6 +824,27 @@ export class ControlModel {
               )
               .run(thread.id);
         }
+      } else if (observation.kind === 'request-canceled') {
+        const approval = this.__database
+          .prepare(
+            "SELECT reply_action_id FROM native_approval WHERE thread_id = ? AND runtime_epoch = ? AND native_request_id = ? AND state = 'pending'",
+          )
+          .get(thread.id, this.__epoch, observation.requestId);
+        if (approval) {
+          this.__database
+            .prepare(
+              "UPDATE native_approval SET state = 'expired', updated_at = ? WHERE thread_id = ? AND runtime_epoch = ? AND native_request_id = ? AND state = 'pending'",
+            )
+            .run(now, thread.id, this.__epoch, observation.requestId);
+          if (approval.reply_action_id)
+            this.__database
+              .prepare(
+                "UPDATE action SET delivery = 'uncertain', updated_at = ? WHERE id = ? AND delivery = 'submitted'",
+              )
+              .run(now, z.uuid().parse(approval.reply_action_id));
+          this.__refreshApprovalState(thread, now);
+        }
+        eventKind = 'approval-resolved';
       } else if (observation.kind === 'request-resolved') {
         const approval = this.__database
           .prepare(
@@ -823,27 +862,7 @@ export class ControlModel {
                 "UPDATE action SET delivery = 'acknowledged', failure = NULL, updated_at = ? WHERE id = ? AND delivery IN ('submitted', 'uncertain')",
               )
               .run(now, replyId);
-          const remaining = this.__database
-            .prepare(
-              "SELECT kind FROM native_approval WHERE thread_id = ? AND native_turn_id = ? AND state = 'pending' AND is_blocking = 1 LIMIT 1",
-            )
-            .get(thread.id, thread.active_turn_id);
-          if (
-            thread.active_turn_id &&
-            thread.state !== 'stopping' &&
-            thread.ownership === 'managed'
-          )
-            this.__database
-              .prepare('UPDATE thread SET state = ?, updated_at = ? WHERE id = ?')
-              .run(
-                remaining
-                  ? remaining.kind === 'question'
-                    ? 'waiting-input'
-                    : 'waiting-approval'
-                  : 'running',
-                now,
-                thread.id,
-              );
+          this.__refreshApprovalState(thread, now);
         }
         eventKind = 'approval-resolved';
       } else if (observation.kind === 'item-started' || observation.kind === 'item-completed')
@@ -908,6 +927,28 @@ export class ControlModel {
     return row ? ThreadRowSchema.parse(row) : null;
   }
 
+  /** Recomputes the visible wait state after one of several native prompts ends. */
+  private __refreshApprovalState(thread: IThreadRow, now: number): void {
+    if (!thread.active_turn_id || thread.state === 'stopping' || thread.ownership !== 'managed')
+      return;
+    const remaining = this.__database
+      .prepare(
+        "SELECT kind FROM native_approval WHERE thread_id = ? AND native_turn_id = ? AND state = 'pending' AND is_blocking = 1 LIMIT 1",
+      )
+      .get(thread.id, thread.active_turn_id);
+    this.__database
+      .prepare('UPDATE thread SET state = ?, updated_at = ? WHERE id = ?')
+      .run(
+        remaining
+          ? remaining.kind === 'question'
+            ? 'waiting-input'
+            : 'waiting-approval'
+          : 'running',
+        now,
+        thread.id,
+      );
+  }
+
   private __action(id: string): IActionRow | null {
     const row = this.__database
       .prepare(`SELECT ${ACTION_COLUMNS} FROM action WHERE id = ?`)
@@ -915,10 +956,13 @@ export class ControlModel {
     return row ? ActionRowSchema.parse(row) : null;
   }
 
-  private __nativeThread(nativeId: string): IThreadRow | null {
+  private __nativeThread(
+    provider: IManagedThread['provider'],
+    nativeId: string,
+  ): IThreadRow | null {
     const row = this.__database
-      .prepare(`SELECT ${THREAD_COLUMNS} FROM thread WHERE provider = 'codex' AND native_id = ?`)
-      .get(nativeId);
+      .prepare(`SELECT ${THREAD_COLUMNS} FROM thread WHERE provider = ? AND native_id = ?`)
+      .get(provider, nativeId);
     return row ? ThreadRowSchema.parse(row) : null;
   }
 

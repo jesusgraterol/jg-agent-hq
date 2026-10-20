@@ -18,8 +18,9 @@ export const createProviderProcess = (
   args: string[],
   receive: (message: unknown) => void,
   stopped: (failure: unknown) => void,
+  cwd?: string,
 ): IProviderProcess => {
-  const child = spawn(executable, args, { detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(executable, args, { detached: true, stdio: ['pipe', 'pipe', 'pipe'], cwd });
   let isRunning = true;
   let closing: Promise<void> | undefined;
   const closed = new Promise<void>((resolve) =>

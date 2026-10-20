@@ -1,11 +1,16 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { CLAUDE_CONTROL_SOURCE } from './claude-control.js';
+
 // only the external Claude executable is doubled; its transport, files and worker remain real
 const FIXTURE_SOURCE = String.raw`#!/usr/bin/env node
 import {readFileSync,appendFileSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {createInterface} from 'node:readline';
+import {startClaudeControl} from './claude-control.mjs';
+if(process.argv.includes('--permission-prompt-tool=stdio'))startClaudeControl();
+else {
 const root=process.env.JG_HQ_FIXTURE_DIRECTORY;
 writeFileSync(join(root,'claude-pid.json'),JSON.stringify({pid:process.pid}));
 const lines=createInterface({input:process.stdin});
@@ -29,6 +34,7 @@ lines.on('line',line=>{
  }
 });
 lines.on('close',()=>{process.exitCode=0;});
+}
 `;
 
 /** Installs a disposable POSIX native-boundary fixture next to the Codex fixture. */
@@ -37,6 +43,9 @@ export const installClaudeFixture = async (directory: string): Promise<string> =
   await mkdir(bin, { recursive: true });
   await writeFile(join(directory, 'claude-control.json'), '{}');
   await writeFile(join(directory, 'claude-calls.jsonl'), '');
+  await writeFile(join(bin, 'claude-control.mjs'), CLAUDE_CONTROL_SOURCE);
+  await writeFile(join(directory, 'claude-pids.jsonl'), '');
+  await writeFile(join(directory, 'claude-starts.jsonl'), '');
   await writeFile(join(bin, 'claude'), FIXTURE_SOURCE, { mode: 0o755 });
   return bin;
 };

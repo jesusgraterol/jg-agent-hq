@@ -39,6 +39,22 @@ export class LiveItems {
     }
   }
 
+  /** Marks missing native stream evidence without discarding the surviving presentation. */
+  public markGap(nativeId: string): void {
+    const thread = this.__threads.get(nativeId);
+    if (thread) thread.hasGap = true;
+  }
+
+  /** Replaces an ephemeral stream identity when the native persisted identity arrives. */
+  public replace(nativeId: string, turnId: string, itemId: string): void {
+    const thread = this.__threads.get(nativeId);
+    const key = JSON.stringify([turnId, itemId]);
+    const entry = thread?.items.get(key);
+    if (!thread || !entry) return;
+    this.__bytes -= entry.bytes;
+    thread.items.delete(key);
+  }
+
   /** Appends bounded text; a truncated prefix is never presented as the complete item. */
   public append(nativeId: string, turnId: string, itemId: string, delta: string): void {
     const thread = this.__threads.get(nativeId);

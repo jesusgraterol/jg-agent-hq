@@ -1,5 +1,5 @@
 // transport
-export type { IProviderProcess } from './types.js';
+export type { IProviderProcess, INativePrompt } from './types.js';
 export { createProviderProcess } from './process.js';
 
 // Codex
@@ -18,3 +18,6 @@ export type { ICodexProvider, ICodexEvents, ICodexPrompt } from './codex/index.j
 
 // Claude reads
 export { createClaudeProvider } from './claude/index.js';
+
+// Claude control
+export { createClaudeControl } from './claude/control/index.js';
