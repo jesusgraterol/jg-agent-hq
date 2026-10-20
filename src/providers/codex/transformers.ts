@@ -30,6 +30,7 @@ export const toThreadSummary = (thread: INativeThread): IThreadSummary =>
     nativeState: thread.status.type,
     ownership: 'external',
     managedId: null,
+    historyState: 'available',
   });
 
 /**

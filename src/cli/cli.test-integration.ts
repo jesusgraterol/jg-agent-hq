@@ -5,12 +5,37 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { setTimeout as wait } from 'node:timers/promises';
 import { createAgentHq } from 'jg-agent-hq';
 import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
-import { installCodexFixture } from '../../scripts/test-support/index.js';
+import { installCodexFixture, withClaudeRuntime } from '../../scripts/test-support/index.js';
+
+test('dedicated CLI provider selection reads real Claude IPC and rejects unsupported providers', async () => {
+  await withClaudeRuntime(async ({ stateRoot }) => {
+    const run = promisify(execFile);
+    const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
+    const response = await run(
+      process.execPath,
+      [cli, 'usage', '--state-root', stateRoot, '--provider', 'claude'],
+      { timeout: 5000 },
+    );
+    expect(JSON.parse(response.stdout)).toMatchObject({
+      schemaVersion: 1,
+      kind: 'usage',
+      result: { provider: 'claude', state: 'available' },
+    });
+    await expect(
+      run(
+        process.execPath,
+        [cli, 'usage', '--state-root', stateRoot, '--provider', 'unsupported'],
+        { timeout: 5000 },
+      ),
+    ).rejects.toThrow();
+  });
+});
 
 const runClient = (stateRoot: string, chunks: Buffer[], extra: string[] = []) =>
   new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {

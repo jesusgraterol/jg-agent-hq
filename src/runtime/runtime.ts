@@ -5,7 +5,11 @@ import { z } from 'zod';
 import { HqRequestSchema, type IHqRequestInput, type IHqResponse } from '../contracts/index.js';
 import { createActions, readControl } from '../actions/index.js';
 import { CONTROL_SOCKET, createIpcServer } from '../ipc/index.js';
-import { createCodexProvider, type ICodexProvider } from '../providers/index.js';
+import {
+  createCodexProvider,
+  createClaudeProvider,
+  type ICodexProvider,
+} from '../providers/index.js';
 import { readNativeHistory } from '../sessions/index.js';
 import { createStore } from '../store/index.js';
 
@@ -15,6 +19,7 @@ import {
   prepareActionKey,
   prepareStateRoot,
   resolveAllowedRoots,
+  resolveWorkspaceTarget,
 } from './state/index.js';
 import { AgentHqOptionsSchema, type IAgentHq, type IAgentHqOptions } from './types.js';
 
@@ -75,6 +80,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   }
   const native = provider;
   const projection = store;
+  const claude = createClaudeProvider(projection);
   const actions = createActions(native, projection, allowedRoots, ownership.owner.nonce, actionKey);
   let resolveClosed: () => void = () => undefined;
   let rejectClosed: (error: unknown) => void = () => undefined;
@@ -88,7 +94,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const close = (): Promise<void> =>
     (closing ??= (async () => {
       try {
-        const results = await Promise.allSettled([ipc?.close(), actions.close()]);
+        const results = await Promise.allSettled([ipc?.close(), actions.close(), claude.close()]);
         const storeCleanup = await Promise.allSettled([projection.close()]);
         results.push(...storeCleanup);
         const failure = results.find((result) => result.status === 'rejected');
@@ -132,6 +138,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
               state: native.isAvailable ? 'ready' : 'unavailable',
               userAgent: native.userAgent,
             },
+            claude: { state: claude.state, version: claude.version },
           },
         };
       case 'stop': {
@@ -141,7 +148,10 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
         return { kind: 'stop', result: { accepted: true, runtimeEpoch: ownership.owner.nonce } };
       }
       case 'usage':
-        return { kind: 'usage', result: await native.readUsage() };
+        return {
+          kind: 'usage',
+          result: await (command.provider === 'claude' ? claude.readUsage() : native.readUsage()),
+        };
       case 'action':
         return { kind: 'action', result: await actions.submit(command.action) };
       case 'receipt':
@@ -153,6 +163,10 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       case 'live-items':
         return readControl(command, projection, actions, allowedRoots);
       default: {
+        if (command.provider === 'claude') {
+          const workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, allowedRoots);
+          return claude.readHistory({ ...command, workspaceRoot });
+        }
         const response = await readNativeHistory(command, native, projection, allowedRoots);
         if (command.kind === 'items' && response.kind === 'items')
           actions.live.reconcile(command.nativeId, response.result.data);

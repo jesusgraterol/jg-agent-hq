@@ -4,6 +4,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { Exception, extractMessage } from 'error-message-utils';
 
 import { getErrorKind } from '../errors/index.js';
+import { ClaudeHistoryModel } from '../providers/claude/history/index.js';
 
 import { ControlModel } from './control/index.js';
 import { StoreRequestSchema, StoreWorkerSchema } from './types.js';
@@ -18,6 +19,7 @@ const database = new DatabaseSync(options.databasePath, {
 database.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
 database.exec(await readFile(new URL('./schema.sql', import.meta.url), 'utf8'));
 const controls = new ControlModel(database, options.runtimeEpoch, options.actionKey);
+const claudeHistory = new ClaudeHistoryModel(database);
 const remember = database.prepare(`INSERT INTO native_history_index
   (provider, native_id, workspace_root, name, created_at, updated_at, native_state, observed_at, runtime_epoch, continuation_cursor)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -32,6 +34,7 @@ port.on('message', (message: unknown) => {
   const { id, command } = parsed.data;
   try {
     if (command.kind === 'close') {
+      claudeHistory.close();
       database.close();
       port.postMessage({ kind: 'result', id, result: null, error: null });
       port.close();
@@ -39,6 +42,9 @@ port.on('message', (message: unknown) => {
     }
     let result: unknown = null;
     switch (command.kind) {
+      case 'claude-history':
+        result = claudeHistory.read(command.request);
+        break;
       case 'action-read':
         result = controls.getAction(command.id);
         break;
