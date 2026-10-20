@@ -40,13 +40,13 @@ test('uses bounded real HTTP reads and verifies exact release and deployment con
         );
         return;
       }
+      if (target.hostname === 'www.npmjs.com') {
+        response.writeHead(403).end('Browser authentication required');
+        return;
+      }
       if (target.origin !== SITE_CONFIG.url) {
         const title =
-          target.hostname === 'github.com'
-            ? 'jesusgraterol/jg-agent-hq'
-            : target.hostname === 'www.npmjs.com'
-              ? 'jg-agent-hq'
-              : target.hostname;
+          target.hostname === 'github.com' ? 'jesusgraterol/jg-agent-hq' : target.hostname;
         response.end(
           mode === 'wrong-content'
             ? `Missing destination: ${title}`

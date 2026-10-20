@@ -24,7 +24,7 @@ The unmodified jg mark and slash favicon come from the public `jg-personal-astro
 
 ## CI and delivery
 
-The build emits only static files in `website/dist/`. Public destination checks require the exact root version on npm, plus the expected GitHub/npm/jg-skills/jg-packages content. The deployment verifier then checks canonical pages, Markdown, discovery, image availability and real missing-page behavior at the fixed HTTPS origin.
+The build emits only static files in `website/dist/`. Public destination checks require the exact root version from npm's registry API, plus the expected GitHub/jg-skills/jg-packages content. npm's browser page can reject automated reads and is not a deployment dependency. The deployment verifier then checks canonical pages, Markdown, discovery, image availability and real missing-page behavior at the fixed HTTPS origin.
 
 `.github/workflows/check.yml` runs `pnpm check` on pull requests to `main`, pushes to `main` and manual dispatches. Both Node 24.15.0 (the engine floor) and 24.22.0 (the qualified LTS) must pass. Installs use the frozen workspace lockfile, its existing narrow dependency-build policy and pnpm's lockfile-keyed package store cache. Browser installation includes Chromium's runner OS dependencies. Refresh the qualified LTS deliberately when updating release qualification.
 

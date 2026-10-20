@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as wait } from 'node:timers/promises';
@@ -20,8 +20,9 @@ import { expect, test } from 'vitest';
 
 import {
   withClaudeRuntime,
+  writeFixtureControl,
   type IClaudeFixture,
-} from '../../scripts/test-support/claude-runtime.js';
+} from '../../scripts/test-support/index.js';
 
 const names = ['jg-challenge-session', 'jg-review-session', 'jg-feedback'];
 const until = async <T>(read: () => Promise<T>, ready: (result: T) => boolean): Promise<T> => {
@@ -39,16 +40,8 @@ const setup = async (
   provider: 'codex' | 'claude' = 'codex',
   purpose: 'challenge' | 'review' = 'challenge',
 ) => {
-  const writeControl = async (filename: string, settings: object) => {
-    const target = join(fixture.root, filename);
-    const temporary = join(fixture.root, `${randomUUID()}.json`);
-    try {
-      await writeFile(temporary, JSON.stringify({ skillNames: names, ...settings }));
-      await rename(temporary, target);
-    } finally {
-      await rm(temporary, { force: true });
-    }
-  };
+  const writeControl = (filename: 'control.json' | 'claude-control.json', settings: object) =>
+    writeFixtureControl(fixture.root, filename, { skillNames: names, ...settings });
   const control = (settings: object) => writeControl('control.json', settings);
   const claudeControl = (settings: object) => writeControl('claude-control.json', settings);
   await control({});
