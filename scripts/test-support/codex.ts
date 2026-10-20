@@ -65,8 +65,8 @@ else {
     if (method === 'skills/list') {
       if(control.releaseThreadId)complete(control.releaseThreadId);
       if(control.skillsFailure){respond(request.id,{data:'invalid'});return;}
-      const skills = Array.from({length:control.skillCount??2},(_,index)=>{
-        const name=index===0&&control.planSkill?control.planSkill:(control.skillRevision?'changed-':'')+(index===0?'explicit-skill':index===1?'implicit-skill':'skill-'+index);
+      const skills = Array.from({length:control.skillNames?.length??control.skillCount??2},(_,index)=>{
+        const name=control.skillNames?.[index]??(index===0&&control.planSkill?control.planSkill:(control.skillRevision?'changed-':'')+(index===0?'explicit-skill':index===1?'implicit-skill':'skill-'+index));
         return {name,description:control.skillDescriptionSize?'d'.repeat(control.skillDescriptionSize):'Native installed skill '+index,path:join(directory,'skills',name,'SKILL.md'),scope:'user',enabled:!(control.disabledSkill&&index===0),dependencies:{tools:[{type:'mcp',value:'example',description:'Native declared prerequisite'}]}};
       });
       respond(request.id,{data:[{cwd:control.wrongSkillRoot??params.cwds[0],skills,errors:control.skillErrors?[{}]:[]}]});return;
@@ -83,6 +83,7 @@ else {
     }
     if (method === 'thread/name/set') { managed.get(params.threadId).name=params.name;respond(request.id,{});return; }
     if (method === 'turn/start') {
+      if (control.rejectTurn) { process.stdout.write(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic input rejection'}})+'\n');return; }
       const thread = managed.get(params.threadId);
       const turn = {id:'native-turn-'+(++turnSequence),status:'inProgress'};
       thread.activeTurn=turn.id;

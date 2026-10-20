@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, PUBLIC_ERROR_MESSAGES } from './constants.js';
 import { SkillIdSchema, SkillPageSchema, SkillPreviewSchema } from './skills/index.js';
 
+import { HandoffCommandSchema, HandoffResultSchema } from './handoffs/index.js';
+
 import { NativeIdSchema } from './identities/index.js';
 import { PlanCommandSchema, PlanResultSchema } from './plans/index.js';
 import {
@@ -30,6 +32,7 @@ const TargetFields = {
 export const HqRequestSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('status') }),
   z.strictObject({ kind: z.literal('plan'), command: PlanCommandSchema }),
+  z.strictObject({ kind: z.literal('handoff'), command: HandoffCommandSchema }),
   z.strictObject({ kind: z.literal('stop') }),
   z.strictObject({
     kind: z.literal('threads'),
@@ -164,6 +167,7 @@ const PageResultFields = { nextCursor: CursorSchema.nullable(), source: z.litera
 export const HqResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('status'), result: RuntimeStatusSchema }),
   z.object({ kind: z.literal('plan'), result: PlanResultSchema }),
+  z.object({ kind: z.literal('handoff'), result: HandoffResultSchema }),
   z.object({
     kind: z.literal('stop'),
     result: z.object({ accepted: z.literal(true), runtimeEpoch: z.uuid() }),

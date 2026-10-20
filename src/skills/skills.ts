@@ -22,6 +22,21 @@ const PositionSchema = z.strictObject({
 const digest = (input: object): string =>
   createHash('sha256').update(JSON.stringify(input)).digest('hex');
 
+/** Produces an exact invocation from native metadata without loading the skill content. */
+const toSkillPreview = (
+  provider: 'codex' | 'claude',
+  skill: ISkill | undefined,
+  skillArguments: string,
+): ISkillPreview => {
+  if (!skill) return { state: 'missing', skill: null, text: null };
+  if (!skill.isEnabled) return { state: 'disabled', skill, text: null };
+  return {
+    state: 'ready',
+    skill,
+    text: `${provider === 'codex' ? '$' : '/'}${skill.name}${skillArguments ? ` ${skillArguments}` : ''}`,
+  };
+};
+
 /**
  * Reads bounded native inventories without interpreting skill files or installing workflows.
  * @returns Thread-scoped discovery, exact previews and explicit input preparation.
@@ -90,6 +105,24 @@ export const createSkills = (
     }
   };
   return {
+    /** Resolves one unambiguous native name from a single bounded inventory read.
+     * @returns An exact preview, or an explicit missing/disabled/unavailable state.
+     * @throws
+     * - -1: The HQ target is outside the allowed workspaces
+     * - -1: The HQ store failed
+     */
+    async previewName(
+      threadId: string,
+      name: string,
+      skillArguments: string,
+    ): Promise<ISkillPreview> {
+      const result = await scan(threadId);
+      if (!result) return { state: 'unavailable', skill: null, text: null };
+      const matches = result.skills.filter((skill) => skill.name === name);
+      if (matches.length > 1 || (!matches.length && result.unavailableCount))
+        return { state: 'unavailable', skill: null, text: null };
+      return toSkillPreview(result.provider, matches[0], skillArguments);
+    },
     /**
      * Pages the native inventory with a content revision guard; an inventory change invalidates continuation.
      * @returns One bounded page, or explicit unavailable state without a successful empty fallback.
@@ -170,13 +203,7 @@ export const createSkills = (
       const result = await scan(threadId);
       if (!result) return { state: 'unavailable', skill: null, text: null };
       const skill = result.skills.find((skill) => skill.id === skillId);
-      if (!skill) return { state: 'missing', skill: null, text: null };
-      if (!skill.isEnabled) return { state: 'disabled', skill, text: null };
-      return {
-        state: 'ready',
-        skill,
-        text: `${result.provider === 'codex' ? '$' : '/'}${skill.name}${skillArguments ? ` ${skillArguments}` : ''}`,
-      };
+      return toSkillPreview(result.provider, skill, skillArguments);
     },
     /**
      * Prepares one explicitly selected input while leaving skill contents and permissions native.

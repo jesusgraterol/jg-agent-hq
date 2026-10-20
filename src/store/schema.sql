@@ -169,3 +169,24 @@ CREATE INDEX IF NOT EXISTS idx_tp__directory_thread_id ON thread_plan (directory
 
 CREATE UNIQUE INDEX IF NOT EXISTS uidx_tp__authorization_id_milestone_id_execution
 ON thread_plan (authorization_id, milestone_id) WHERE authorization_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS handoff (
+ id TEXT NOT NULL,
+ workspace_root TEXT NOT NULL,
+ source_thread_id TEXT NOT NULL,
+ created_at INTEGER NOT NULL,
+ intent TEXT NOT NULL,
+ CONSTRAINT pk_h__id PRIMARY KEY (id),
+ CONSTRAINT fk_h__source_thread_id FOREIGN KEY (source_thread_id) REFERENCES thread(id)
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_h__workspace_root_created_at_id_desc ON handoff (workspace_root, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_h__workspace_root_source_thread_id_created_at_id_desc ON handoff (workspace_root, source_thread_id, created_at DESC, id DESC);
+CREATE TABLE IF NOT EXISTS handoff_dispatch (
+ handoff_id TEXT NOT NULL,
+ phase TEXT NOT NULL CHECK (phase IN ('review', 'feedback')),
+ action_id TEXT NOT NULL,
+ intent TEXT NOT NULL,
+ CONSTRAINT pk_hd__handoff_id_phase PRIMARY KEY (handoff_id, phase),
+ CONSTRAINT uq_hd__action_id UNIQUE (action_id),
+ CONSTRAINT fk_hd__handoff_id FOREIGN KEY (handoff_id) REFERENCES handoff(id)
+) STRICT;

@@ -111,7 +111,11 @@ export const ActionEnvelopeSchema = z
     runtimeEpoch: z.uuid(),
     command: ActionCommandSchema,
     plan: PlanActionScopeSchema.optional(),
+    expectedPlan: ActionPlanContextSchema.nullable().optional(),
   })
+  .refine(
+    (action) => !('expectedPlan' in action) || ['message', 'queue'].includes(action.command.kind),
+  )
   .refine((action) => new TextEncoder().encode(JSON.stringify(action)).length <= 32_768);
 export type IActionEnvelope = z.infer<typeof ActionEnvelopeSchema>;
 
