@@ -189,7 +189,12 @@ test('steering stays bound to its active turn, while interrupt acknowledgement k
         text: 'Wrong target',
       }),
     );
-    expect(stale.delivery).toBe('failed');
+    expect(stale).toMatchObject({ delivery: 'failed', threadId: thread.id });
+    const rejected = await fixture.request({ kind: 'actions', threadId: thread.id });
+    if (rejected.kind !== 'actions') throw new Error('wrong response');
+    expect(
+      rejected.result.data.some((entry) => entry.id === stale.id && entry.delivery === 'failed'),
+    ).toBe(true);
     const steer = await fixture.submit(
       fixture.envelope({
         kind: 'steer',
@@ -729,6 +734,9 @@ test('native output loss keeps delivery uncertain and restart never resends its 
       ownership: 'uncertain',
       state: 'unknown',
     });
+    const events = await fixture.request({ kind: 'events', threadId: thread.id, limit: 128 });
+    if (events.kind !== 'events') throw new Error('wrong response');
+    expect(events.result.data.some((event) => event.kind === 'native-unavailable')).toBe(true);
     await fixture.submit(action);
     await fixture.runtime.close();
     await fixture.control({});
@@ -1022,6 +1030,33 @@ test('shutdown waits for admission and cannot start inference after native clean
     } finally {
       database.close();
     }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('shutdown interrupts every active session before waiting for their individual acknowledgements', async () => {
+  const fixture = await setup();
+  try {
+    await fixture.control({ holdTurn: true });
+    for (const name of ['stop-one', 'stop-two', 'stop-three', 'stop-four']) {
+      const { thread } = await fixture.create(name);
+      await fixture.submit(
+        fixture.envelope({ kind: 'message', threadId: thread.id, text: 'Keep this turn active' }),
+      );
+      await fixture.until(
+        () => fixture.thread(thread.id),
+        (entry) => entry.state === 'running',
+      );
+    }
+    // The external fixture withholds each acknowledgement until all four sessions receive interruption.
+    await fixture.control({ holdTurn: true, interruptBarrier: 4 });
+    await fixture.runtime.close();
+    const calls = (await fixture.calls()).map((call) => call.method);
+    expect(calls.filter((method) => method === 'turn/interrupt')).toHaveLength(4);
+    expect(calls.lastIndexOf('turn/interrupt')).toBeLessThan(
+      calls.indexOf('thread/backgroundTerminals/clean'),
+    );
   } finally {
     await fixture.close();
   }

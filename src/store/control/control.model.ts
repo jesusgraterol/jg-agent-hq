@@ -222,6 +222,17 @@ export class ControlModel {
           now,
           now,
         );
+      // rejected controls still belong in the known session's action history
+      const targetId =
+        'threadId' in command
+          ? command.threadId
+          : 'queuedActionId' in command
+            ? this.__action(command.queuedActionId)?.thread_id
+            : null;
+      if (targetId && this.__thread(targetId))
+        this.__database
+          .prepare('UPDATE action SET thread_id = ? WHERE id = ?')
+          .run(targetId, action.id);
       this.__database.exec('SAVEPOINT admission');
       let dispatchActionId: string | null = action.id;
       try {
@@ -273,9 +284,6 @@ export class ControlModel {
           } else threadId = command.threadId;
           const thread = this.__thread(threadId);
           if (!thread) this.__conflict();
-          this.__database
-            .prepare('UPDATE action SET thread_id = ? WHERE id = ?')
-            .run(threadId, action.id);
           if (command.kind === 'queue-cancel') {
             this.__database
               .prepare(
@@ -682,6 +690,9 @@ export class ControlModel {
     return this.__transaction(() => {
       const now = Date.now();
       if (observation.kind === 'native-unavailable') {
+        const affected = this.__database
+          .prepare('SELECT id FROM thread WHERE runtime_epoch = ? LIMIT ?')
+          .all(this.__epoch, CONTROLLED_THREAD_CAPACITY);
         this.__database
           .prepare(
             "UPDATE thread SET ownership = 'uncertain', state = 'unknown', updated_at = ? WHERE runtime_epoch = ?",
@@ -702,7 +713,8 @@ export class ControlModel {
             "UPDATE native_approval SET state = 'expired', updated_at = ? WHERE runtime_epoch = ? AND state = 'pending'",
           )
           .run(now, this.__epoch);
-        this.__event('native-unavailable', null, null);
+        for (const thread of affected)
+          this.__event('native-unavailable', z.uuid().parse(thread.id), null);
         return { thread: null, canDispatchQueued: false };
       }
       const thread = this.__nativeThread(observation.nativeThreadId);

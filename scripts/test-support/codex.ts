@@ -32,6 +32,7 @@ else {
   const managed = new Map();
   let threadSequence = 0;
   let turnSequence = 0;
+  const interrupts = [];
   const complete = (threadId,status = 'completed') => {
     const thread = managed.get(threadId);
     if (!thread?.activeTurn) return;
@@ -95,6 +96,14 @@ else {
       respond(request.id,{turnId:params.expectedTurnId});return;
     }
     if (method === 'turn/interrupt') {
+      if (control.interruptBarrier) {
+        interrupts.push(request);
+        if (interrupts.length >= control.interruptBarrier) for (const pending of interrupts.splice(0)) {
+          respond(pending.id,{});
+          complete(pending.params.threadId,'interrupted');
+        }
+        return;
+      }
       respond(request.id,{});
       setTimeout(() => complete(params.threadId,'interrupted'),control.interruptDelay || 1);
       return;

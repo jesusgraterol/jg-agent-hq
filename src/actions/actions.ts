@@ -625,16 +625,18 @@ export const createActions = (
       try {
         await Promise.allSettled([...admissions]);
         // Active turn IDs come from ordered native evidence, never from an interrupt acknowledgement.
-        for (const nativeId of controlled) {
-          const thread = await store.getThreadByNativeId(nativeId);
-          if (native.isAvailable && thread?.activeTurnId) {
-            try {
-              await native.interrupt(`${randomUUID()}:shutdown`, nativeId, thread.activeTurnId);
-            } catch {
-              /* native process termination below remains mandatory */
+        await Promise.all(
+          [...controlled].map(async (nativeId) => {
+            const thread = await store.getThreadByNativeId(nativeId);
+            if (native.isAvailable && thread?.activeTurnId) {
+              try {
+                await native.interrupt(`${randomUUID()}:shutdown`, nativeId, thread.activeTurnId);
+              } catch {
+                /* native process termination below remains mandatory */
+              }
             }
-          }
-        }
+          }),
+        );
         await Promise.allSettled([...tasks]);
         await lane.catch(() => undefined);
         if (native.isAvailable)
