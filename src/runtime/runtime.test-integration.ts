@@ -24,7 +24,7 @@ import { HqResponseSchema, type IHqRequestInput } from 'jg-agent-hq/contracts';
 import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
-import { installCodexFixture } from '../../scripts/test-support/index.js';
+import { installCodexFixture, writeFixtureControl } from '../../scripts/test-support/index.js';
 
 const execute = promisify(execFile);
 const PidsSchema = z.object({ parent: z.number(), child: z.number() });
@@ -67,7 +67,7 @@ const withRuntime = async (
       stateRoot,
       workspaceRoot,
       runtime,
-      control: (settings) => writeFile(join(root, 'control.json'), JSON.stringify(settings)),
+      control: (settings) => writeFixtureControl(root, 'control.json', settings),
       request: (command) => requestAgentHq(stateRoot, command),
     });
   } finally {

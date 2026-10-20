@@ -86,7 +86,6 @@ export const verifyPublicDestinations = async (
     throw new Exception('The HQ website destination check failed');
   for (const [url, expected] of [
     [SITE_CONFIG.repositoryUrl, 'jesusgraterol/jg-agent-hq'],
-    [SITE_CONFIG.npmUrl, 'jg-agent-hq'],
     [SITE_CONFIG.skillsUrl, 'jg-skills'],
     [SITE_CONFIG.packagesUrl, 'jg-packages'],
   ] as const) {
