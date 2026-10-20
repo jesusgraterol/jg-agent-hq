@@ -22,13 +22,14 @@ const main = async (): Promise<void> => {
       cursor: { type: 'string' },
       limit: { type: 'string' },
       search: { type: 'string' },
+      provider: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
     },
   });
   const [kind] = positionals;
   if (values.help || !kind || kind === 'help') {
     process.stdout.write(
-      'jg-agent-hq serve|status|stop|threads|thread|turns|items|usage|request --state-root <path> [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>]\nrequest reads one validated HQ command as JSON from stdin.\n',
+      'jg-agent-hq serve|status|stop|threads|thread|turns|items|usage|request --state-root <path> [--provider codex|claude] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>]\nrequest reads one validated HQ command as JSON from stdin.\n',
     );
     return;
   }
@@ -76,7 +77,14 @@ const main = async (): Promise<void> => {
     return;
   }
   if (kind === 'serve') {
-    if (values['native-id'] || values['turn-id'] || values.cursor || values.limit || values.search)
+    if (
+      values['native-id'] ||
+      values['turn-id'] ||
+      values.cursor ||
+      values.limit ||
+      values.search ||
+      values.provider
+    )
       throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
     const runtime = await createAgentHq({ stateRoot, allowedRoots: roots });
     const onInterrupt = (): void => {
@@ -106,7 +114,10 @@ const main = async (): Promise<void> => {
   const payload = Object.fromEntries(
     [
       ['kind', kind],
-      ['provider', kind === 'status' || kind === 'stop' ? undefined : 'codex'],
+      [
+        'provider',
+        kind === 'status' || kind === 'stop' ? values.provider : (values.provider ?? 'codex'),
+      ],
       ['workspaceRoot', roots[0]],
       ['nativeId', values['native-id']],
       ['turnId', values['turn-id']],

@@ -9,7 +9,10 @@ import {
   type IManagedThread,
   type IActionSummary,
   type ILifecycleEvent,
+  HqRequestSchema,
 } from '../contracts/index.js';
+import type { IHistoryRequest } from '../sessions/index.js';
+import type { IClaudeHistoryRead } from '../providers/claude/history/index.js';
 
 import {
   AdmissionSchema,
@@ -31,6 +34,7 @@ import {
 
 // worker messages are closed, bounded operations rather than arbitrary SQL
 export const StoreCommandSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('claude-history'), request: HqRequestSchema }),
   z.strictObject({
     kind: z.literal('remember'),
     threads: z.array(ThreadSummarySchema).max(MAX_PAGE_SIZE),
@@ -86,6 +90,15 @@ export const StoreWorkerSchema = z.strictObject({
 // the worker owns persistence; callers cannot submit arbitrary statements
 export type IStore = {
   readonly isAvailable: boolean;
+  /**
+   * Runs the Claude-owned, version-checked incremental reader in the filesystem worker.
+   * @returns One history page or a private indexing marker, without persisting conversation bodies.
+   * @throws
+   * - -1: The HQ store failed
+   * - -1: The Claude history is unavailable
+   * - -1: The HQ cursor does not match this request
+   */
+  readClaudeHistory(command: IHistoryRequest): Promise<IClaudeHistoryRead>;
   /**
    * Persists one native discovery page without transcript bodies.
    * @returns A promise resolved after the discovery transaction commits.

@@ -1,6 +1,6 @@
 # jg-agent-hq
 
-Workspace primitives for native coding agents. The public API provides owner-aware filesystem locks and a local controller for Codex threads, live input, native history and actual account usage.
+Workspace primitives for native coding agents. The public API provides owner-aware filesystem locks, Codex thread control and live input, Claude and Codex history, and actual account usage.
 
 Requires Node.js 24.15.0 or later on Linux or macOS. The lock protocol uses POSIX ownership, private directories and process-liveness probes. Windows is outside the supported host contract.
 
@@ -24,9 +24,11 @@ Install Codex and sign in through its native CLI, then start `jg-agent-hq serve 
 
 The Node API exposes `createAgentHq({ stateRoot, allowedRoots })` and `requestAgentHq(stateRoot, command)`. Configuration comes from these trusted operator inputs. Coding-instruction files are not runtime configuration.
 
-The controller owns its SQLite worker and Codex app-server independently of client connections. Private state contains the lifetime owner, Unix socket and SQLite discovery metadata. Conversation bodies remain with Codex and are fetched through its paged native APIs. Browsing never resumes an external session or starts inference. Quota windows come from native account observations, with explicit stale and unavailable states.
+The controller owns its SQLite worker and native connections independently of client connections. Private state contains the lifetime owner, Unix socket and SQLite discovery metadata. Conversation bodies remain in the native providers' storage. Browsing never resumes an external session or starts inference. Quota windows come from native account observations, with explicit stale and unavailable states.
 
-The current Codex read contract was exercised against CLI 0.163.0 on Linux. Unsupported native responses fail explicitly. `jg-agent-hq/contracts` contains browser-safe schemas and types; importing it does not import the host runtime.
+The current read contracts were exercised against Codex 0.163.0 and Claude Code 2.1.304 on Linux. Unsupported native responses fail explicitly. `jg-agent-hq/contracts` contains browser-safe schemas and types; importing it does not import the host runtime.
+
+Use `--provider claude` for Claude history and usage; the default is `codex`. Claude connects lazily through its native structured CLI, with normal settings enabled and no user prompt. Usage requests explicitly disable the optional transcript-behavior scan. Its local history reader supports the qualified 2.1.304 format only, keeps byte locations rather than conversation bodies in SQLite, and reports unsupported history as unavailable. File history cannot establish current execution state. See the [reader limits and freshness contract](api/README.md#claude-history).
 
 Explicit actions create, name, adopt, resume and close threads; send idle messages; steer an exact running turn; queue the next message; interrupt; and answer native questions or permissions. Actions have stable UUIDs and durable receipts. Repeating the same request returns its receipt; changing that UUID's payload conflicts. A lost acknowledgement stays uncertain until the exact native response arrives or the operator makes an explicit recovery choice. HQ never resends uncertain input.
 
@@ -41,6 +43,7 @@ Use `jg-agent-hq request --state-root <directory>` with a closed HQ command on s
 - `src/runtime/`: trusted configuration and lifetime ownership.
 - `src/ipc/` and `src/cli/`: private local commands and the installed executable.
 - `src/providers/codex/`: native history and account protocol.
+- `src/providers/claude/`: native structured usage and the version-checked, worker-owned local history reader.
 - `src/sessions/`: authorized, cursor-bound history reads.
 - `src/actions/`: durable action dispatch, native input routing and bounded live presentation.
 - `src/store/`: SQLite discovery metadata and the action/control ledger in one worker.

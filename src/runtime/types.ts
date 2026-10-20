@@ -24,6 +24,8 @@ export type IAgentHq = {
    * - -1: The HQ cursor does not match this request
    * - -1: The HQ action conflicts with its recorded state
    * - -1: The Codex integration failed
+   * - -1: The Claude integration failed
+   * - -1: The Claude history is unavailable
    * - -1: The HQ store failed
    */
   request(command: IHqRequestInput): Promise<IHqResponse>;

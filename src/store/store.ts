@@ -7,6 +7,7 @@ import {
   ManagedThreadSchema,
   type IThreadSummary,
 } from '../contracts/index.js';
+import { ClaudeHistoryReadSchema } from '../providers/claude/history/index.js';
 
 import {
   AdmissionResultSchema,
@@ -184,6 +185,8 @@ export const createStore = async (
     get isAvailable() {
       return isAvailable;
     },
+    readClaudeHistory: (command) =>
+      request({ kind: 'claude-history', request: command }, ClaudeHistoryReadSchema),
     /** Persists only discovery metadata, not transcript bodies. */
     remember: async (threads: IThreadSummary[], nextCursor: string | null) => {
       await request({ kind: 'remember', threads, nextCursor, observedAt: Date.now() }, z.null());

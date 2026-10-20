@@ -15,3 +15,6 @@ export {
   toApprovalPresentation,
 } from './codex/index.js';
 export type { ICodexProvider, ICodexEvents, ICodexPrompt } from './codex/index.js';
+
+// Claude reads
+export { createClaudeProvider } from './claude/index.js';

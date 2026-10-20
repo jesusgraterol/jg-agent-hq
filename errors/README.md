@@ -36,6 +36,8 @@ These contracts use the default code `-1`. An Exception's `data.kind` classifies
 | -1   | The HQ target is outside the allowed workspaces |
 | -1   | The HQ cursor does not match this request       |
 | -1   | The Codex integration failed                    |
+| -1   | The Claude integration failed                   |
+| -1   | The Claude history is unavailable               |
 | -1   | The HQ transport failed                         |
 | -1   | The HQ store failed                             |
 | -1   | The HQ runtime is not running                   |

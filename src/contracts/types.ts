@@ -18,7 +18,7 @@ const PageFields = {
   cursor: CursorSchema.optional(),
 };
 const TargetFields = {
-  provider: z.literal('codex'),
+  provider: z.enum(['codex', 'claude']),
   workspaceRoot: z.string().min(1).max(4096),
   nativeId: NativeIdSchema,
 };
@@ -29,7 +29,7 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('stop') }),
   z.strictObject({
     kind: z.literal('threads'),
-    provider: z.literal('codex'),
+    provider: TargetFields.provider,
     workspaceRoot: TargetFields.workspaceRoot,
     search: z.string().max(1024).optional(),
     ...PageFields,
@@ -42,7 +42,7 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     turnId: NativeIdSchema.optional(),
     ...PageFields,
   }),
-  z.strictObject({ kind: z.literal('usage'), provider: z.literal('codex') }),
+  z.strictObject({ kind: z.literal('usage'), provider: TargetFields.provider }),
   z.strictObject({ kind: z.literal('action'), action: ActionEnvelopeSchema }),
   z.strictObject({ kind: z.literal('receipt'), actionId: z.uuid() }),
   z.strictObject({
@@ -66,21 +66,22 @@ export type IHqRequestInput = z.input<typeof HqRequestSchema>;
 
 // native discovery is external/read-only until explicitly adopted for control
 export const ThreadSummarySchema = z.object({
-  provider: z.literal('codex'),
+  provider: z.enum(['codex', 'claude']),
   nativeId: NativeIdSchema,
   workspaceRoot: z.string(),
   name: z.string().nullable(),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
-  nativeState: z.enum(['notLoaded', 'idle', 'systemError', 'active']),
+  nativeState: z.enum(['notLoaded', 'idle', 'systemError', 'active', 'unknown']),
   ownership: z.enum(['external', 'managed', 'uncertain']),
   managedId: z.uuid().nullable(),
+  historyState: z.enum(['available', 'unavailable']),
 });
 export type IThreadSummary = z.infer<typeof ThreadSummarySchema>;
 
 export const TurnSummarySchema = z.object({
   nativeId: NativeIdSchema,
-  state: z.enum(['completed', 'interrupted', 'failed', 'inProgress']),
+  state: z.enum(['completed', 'interrupted', 'failed', 'inProgress', 'unknown']),
   startedAt: z.number().int().nullable(),
   completedAt: z.number().int().nullable(),
 });
@@ -112,7 +113,7 @@ export const UsageWindowSchema = z.object({
   resetsAt: z.number().int().nullable(),
 });
 export const UsageSnapshotSchema = z.object({
-  provider: z.literal('codex'),
+  provider: z.enum(['codex', 'claude']),
   state: z.enum(['available', 'exhausted', 'stale', 'unavailable']),
   source: z.literal('native'),
   observedAt: z.number().int().nullable(),
@@ -127,6 +128,10 @@ export const RuntimeStatusSchema = z.object({
   startedAt: z.number().int(),
   store: z.enum(['ready', 'unavailable']),
   codex: z.object({ state: z.enum(['ready', 'unavailable']), userAgent: z.string() }),
+  claude: z.object({
+    state: z.enum(['idle', 'ready', 'unavailable']),
+    version: z.string().nullable(),
+  }),
 });
 export type IRuntimeStatus = z.infer<typeof RuntimeStatusSchema>;
 const PageResultFields = { nextCursor: CursorSchema.nullable(), source: z.literal('native') };
