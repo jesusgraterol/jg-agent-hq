@@ -4,6 +4,7 @@ import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, PUBLIC_ERROR_MESSAGES } from './const
 import { SkillIdSchema, SkillPageSchema, SkillPreviewSchema } from './skills/index.js';
 
 import { NativeIdSchema } from './identities/index.js';
+import { PlanCommandSchema, PlanResultSchema } from './plans/index.js';
 import {
   ActionEnvelopeSchema,
   ActionReceiptSchema,
@@ -28,6 +29,7 @@ const TargetFields = {
 // only implemented operations can be admitted; native RPC is never exposed
 export const HqRequestSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('status') }),
+  z.strictObject({ kind: z.literal('plan'), command: PlanCommandSchema }),
   z.strictObject({ kind: z.literal('stop') }),
   z.strictObject({
     kind: z.literal('threads'),
@@ -161,6 +163,7 @@ export type IRuntimeStatus = z.infer<typeof RuntimeStatusSchema>;
 const PageResultFields = { nextCursor: CursorSchema.nullable(), source: z.literal('native') };
 export const HqResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('status'), result: RuntimeStatusSchema }),
+  z.object({ kind: z.literal('plan'), result: PlanResultSchema }),
   z.object({
     kind: z.literal('stop'),
     result: z.object({ accepted: z.literal(true), runtimeEpoch: z.uuid() }),

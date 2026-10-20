@@ -1,6 +1,6 @@
 # jg-agent-hq
 
-Workspace primitives for native coding agents. The public API provides owner-aware filesystem locks, Claude and Codex thread control, live input and history, and actual account usage.
+Workspace primitives for native coding agents. The public API provides owner-aware filesystem locks, Claude and Codex thread control, live input and history, actual account usage, and revision-bound plan authority.
 
 Requires Node.js 24.15.0 or later on Linux or macOS. The lock protocol uses POSIX ownership, private directories and process-liveness probes. Windows is outside the supported host contract.
 
@@ -40,6 +40,12 @@ Use `skills --thread-id <id> --state-root <directory>` to browse the controlled 
 
 Use `jg-agent-hq request --state-root <directory>` with a closed HQ command on stdin for action and control reads. The [API reference](api/README.md) describes action envelopes, receipts and reconnect reads.
 
+## Plan coordination
+
+`plan-status --directory <path>` and `plan-milestones --directory <path>` inspect a selected ordinary planning directory. No project registry is required. Mutations use the existing `request` JSON command with `kind: 'plan'`; see the [plan command reference](api/README.md#plan-coordination).
+
+Finalization assigns milestone UUIDs and returns the complete canonical sequence. Plan approval, sequence approval and scoped execution authorization are separate explicit operator actions. None sends native input or answers tool permissions. `coordination.json` holds current records beside the plan. SQLite retains write replay identities and a replaceable, paged milestone projection. Keep both when recovering interrupted writes. A pending write blocks further mutation until its original action is reconciled.
+
 ## Project blueprint
 
 - `src/index.ts`: the explicit public package boundary.
@@ -49,6 +55,7 @@ Use `jg-agent-hq request --state-root <directory>` with a closed HQ command on s
 - `src/providers/codex/`: native history and account protocol.
 - `src/providers/claude/`: native structured control and usage, plus the version-checked, worker-owned local history reader.
 - `src/sessions/`: authorized, cursor-bound history reads and short label suggestions.
+- `src/plans/`: execution digests, initial milestone finalization and explicit plan authority.
 - `src/skills/`: bounded native catalogs, invocation previews and explicit input preparation.
 - `src/actions/`: durable action dispatch, native input routing and bounded live presentation.
 - `src/store/`: SQLite discovery metadata and the action/control ledger in one worker.

@@ -15,6 +15,7 @@ import { readNativeHistory } from '../sessions/index.js';
 import { suggestThreadName } from '../sessions/names/index.js';
 import { createSkills } from '../skills/index.js';
 import { createStore } from '../store/index.js';
+import { createPlans } from '../plans/index.js';
 
 import {
   claimRuntimeOwner,
@@ -91,6 +92,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const projection = store;
   const claude = createClaudeProvider(projection);
   const claudeControl = createClaudeControl(claudeAdditionalDirectories);
+  const plans = createPlans(stateRoot, allowedRoots, projection);
   const skills = createSkills(native, claudeControl, projection, allowedRoots);
   const actions = createActions(
     native,
@@ -194,6 +196,8 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           kind: 'usage',
           result: await (command.provider === 'claude' ? claude.readUsage() : native.readUsage()),
         };
+      case 'plan':
+        return { kind: 'plan', result: await plans.handle(command.command) };
       case 'skills':
         return { kind: command.kind, result: await skills.list(command) };
       case 'skill-preview':

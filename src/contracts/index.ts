@@ -65,3 +65,32 @@ export type {
   ISkillPreview,
   IMessageInput,
 } from './skills/index.js';
+
+// plan revisions and explicit authority
+export {
+  PlanDigestSchema,
+  PlanRevisionSchema,
+  PlanMetadataSchema,
+  PlanTargetSchema,
+  PlanOperatorActionSchema,
+  PlanCommandSchema,
+  PlanApprovalSchema,
+  PlanExecutionSchema,
+  PlanFinalizationSchema,
+  PlanCoordinationSchema,
+  PlanMilestoneSchema,
+  PlanStatusSchema,
+  PlanResultSchema,
+} from './plans/index.js';
+export type {
+  IPlanRevision,
+  IPlanMetadata,
+  IPlanTarget,
+  IPlanOperatorAction,
+  IPlanCommand,
+  IPlanCommandInput,
+  IPlanCoordination,
+  IPlanMilestone,
+  IPlanStatus,
+  IPlanResult,
+} from './plans/index.js';

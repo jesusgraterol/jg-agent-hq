@@ -30,6 +30,21 @@ export type IAgentHq = {
    * - -1: The Claude integration failed
    * - -1: The Claude history is unavailable
    * - -1: The HQ store failed
+   * - -1: The HQ plan is invalid
+   * - -1: The HQ plan operation failed
+   * - -1: The HQ lock acquisition arguments are invalid
+   * - -1: The HQ lock requires Linux or macOS
+   * - -1: The HQ runtime directory must be a real directory
+   * - -1: The HQ runtime directory must be private and owned by the current user
+   * - -1: The HQ lock must be a regular file
+   * - -1: The HQ lock must be private and owned by the current user
+   * - -1: The HQ lock owner exceeds the supported size
+   * - -1: The HQ lock owner could not be read. Inspect .runtime/hq.lock
+   * - -1: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
+   * - -1: The HQ lock has an inactive owner
+   * - -1: The HQ lock owner could not be verified
+   * - -1: Timed out waiting for the HQ lock
+   * - -1: HQ lock ownership changed before release
    */
   request(command: IHqRequestInput): Promise<IHqResponse>;
   /**

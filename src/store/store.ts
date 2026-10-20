@@ -9,6 +9,8 @@ import {
 } from '../contracts/index.js';
 import { ClaudeHistoryReadSchema } from '../providers/claude/history/index.js';
 
+import { PlanWriteIntentSchema, PlanProjectionResultSchema } from '../plans/index.js';
+
 import {
   AdmissionResultSchema,
   ObservationResultSchema,
@@ -187,6 +189,20 @@ export const createStore = async (
     },
     readClaudeHistory: (command) =>
       request({ kind: 'claude-history', request: command }, ClaudeHistoryReadSchema),
+    getPlanOperation: (id) =>
+      request({ kind: 'plan-operation', id }, PlanWriteIntentSchema.nullable()),
+    getPendingPlanOperationId: (directory) =>
+      request({ kind: 'plan-pending', directory }, z.uuid().nullable()),
+    preparePlanOperation: (intent) =>
+      request({ kind: 'plan-prepare', intent }, PlanWriteIntentSchema),
+    completePlanOperation: async (id) => {
+      await request({ kind: 'plan-complete', id }, z.null());
+    },
+    projectPlan: async (projection) => {
+      await request({ kind: 'plan-project', projection }, z.null());
+    },
+    listPlanMilestones: (page) =>
+      request({ kind: 'plan-milestones', page }, PlanProjectionResultSchema),
     /** Persists only discovery metadata, not transcript bodies. */
     remember: async (threads: IThreadSummary[], nextCursor: string | null) => {
       await request({ kind: 'remember', threads, nextCursor, observedAt: Date.now() }, z.null());

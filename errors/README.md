@@ -44,10 +44,14 @@ These contracts use the default code `-1`. An Exception's `data.kind` classifies
 | -1   | The HQ action conflicts with its recorded state |
 | -1   | The HQ action key is unavailable                |
 | -1   | The HQ skill is unavailable                     |
+| -1   | The HQ plan is invalid                          |
+| -1   | The HQ plan operation failed                    |
 
 State safety rejects non-private ownership, symlinks and non-regular files. Runtime ownership is never reclaimed automatically. Transport failure includes malformed, oversized or incomplete frames and bounded-request/lifecycle failures. Native history and subscription failures remain unavailable, never successful empty results. Claude control rejects missing or non-idle initialization, invalid native session identities and malformed lifecycle evidence. Failed delivery remains uncertain when no exact native rejection or acknowledgement establishes its outcome.
 
 A native or worker startup failure whose cleanup could not be confirmed carries internal `cleanupUnconfirmed: true`. The runtime retains its owner record in that case rather than allowing a new host to assume its resources have stopped.
+
+Plan validation rejects unsupported framing, duplicate or misplaced milestone IDs, invalid frontmatter boundaries, non-regular artifacts and oversized inputs. Plan operation failures retain safe operation diagnostics inside the trusted host. Stale revisions, presentation hashes, replay payload conflicts, revoked authority and unresolved writes use the existing action-state conflict contract. Neither validation nor write recovery can grant native permissions.
 
 ## Public error messages
 

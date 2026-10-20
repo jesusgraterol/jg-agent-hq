@@ -118,3 +118,25 @@ CREATE TABLE IF NOT EXISTS event (
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_e__thread_id_sequence ON event (thread_id, sequence);
+
+CREATE TABLE IF NOT EXISTS plan_operation (
+  id TEXT NOT NULL,
+  directory TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('prepared', 'completed')),
+  intent TEXT NOT NULL,
+  CONSTRAINT pk_po__id PRIMARY KEY (id)
+) STRICT;
+CREATE UNIQUE INDEX IF NOT EXISTS uidx_po__directory_prepared ON plan_operation (directory) WHERE state = 'prepared';
+
+CREATE TABLE IF NOT EXISTS plan_milestone (
+  directory TEXT NOT NULL,
+  ordinal INTEGER NOT NULL CHECK (ordinal > 0),
+  milestone TEXT NOT NULL,
+  CONSTRAINT pk_pm__directory_ordinal PRIMARY KEY (directory, ordinal)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS plan_projection (
+  directory TEXT NOT NULL,
+  source_hash TEXT,
+  CONSTRAINT pk_pp__directory PRIMARY KEY (directory)
+) STRICT;
