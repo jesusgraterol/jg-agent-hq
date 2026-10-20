@@ -20,8 +20,24 @@ Run `pnpm --dir website assets:generate`. One Chromium renderer uses device scal
 
 The unmodified jg mark and slash favicon come from the public `jg-personal-astro-ui/jg-mark.svg` and `jg-personal-astro-ui/jg-favicon.svg` exports. That package and its source are MIT licensed in [jg-packages](https://github.com/jesusgraterol/jg-packages/tree/main/packages/jg-personal-astro-ui). Ubuntu Sans and Ubuntu Sans Mono use the bundled Fontsource variable-font packages at 5.3.0, under the Ubuntu Font Licence 1.0; each package includes its license. The jg mark contains outlined type from Ubuntu Sans Mono. Lucide icons are ISC licensed. No Moldea assets, private screenshots or system/network fonts are used.
 
-## Delivery boundary
+## CI and delivery
 
 The build emits only static files in `website/dist/`. Public destination checks require the exact root version on npm, plus the expected GitHub/npm/jg-skills/jg-packages content. The deployment verifier then checks canonical pages, Markdown, discovery, image availability and real missing-page behavior at the fixed HTTPS origin.
 
-CI, manual npm release, Pages/domain setup and deployment/rollback operations belong to the next delivery milestone. This milestone establishes a locally verified artifact and does not claim a live deployment.
+`.github/workflows/check.yml` runs `pnpm check` on pull requests to `main`, pushes to `main` and manual dispatches. Both Node 24.15.0 (the engine floor) and 24.22.0 (the qualified LTS) must pass. Installs use the frozen workspace lockfile, its existing narrow dependency-build policy and pnpm's lockfile-keyed package store cache. Browser installation includes Chromium's runner OS dependencies. Refresh the qualified LTS deliberately when updating release qualification.
+
+Only the floor-Node job uploads `website/dist`, and only on `main`. Deployment waits for the entire matrix, checks the exact npm release/public destinations, then deploys that same Pages artifact without rebuilding. The deploy job alone has Pages/OIDC write permissions. Pull requests have no deployment or production credentials. Superseded pull-request runs can be canceled; an active main deployment is allowed to finish. There is no npm publisher, release/tag trigger or provider secret in the workflow.
+
+The repository's Pages source must be GitHub Actions, with custom domain `jg-agent-hq.jesusgraterol.dev` and working HTTPS DNS/certificate configuration. The `github-pages` environment should permit deployment from `main`. A successful workflow is followed by `verify:deployment`, which checks actual HTTPS content, direct Markdown media types/content, discovery, assets and an actual missing-page 404. A locally passing build does not establish a live deployment.
+
+## Manual npm release
+
+The initial public version is `0.1.0`. Inspect and test the exact tarball in an isolated consumer, retain its SHA-256 and publish that file from the operator's authenticated npm CLI. Do not rebuild or repack between verification and publication. Complete npm's required security/2FA flow directly; do not put credentials or verification codes in repository files or chat.
+
+After publication, run `pnpm --dir website verify:public-destinations`, then dispatch the workflow on `main`. Inspect the actual completed Actions run and HTTPS result. Every later public contract correction owns a manual versioned release before private consumers update their exact pins. Website-only changes need no runtime release when packed contents stay unchanged.
+
+## Rollback
+
+For a website regression, revert the responsible source change through `development` and a PR to `main`, then let the same checks and release gate produce/deploy its verified artifact. Keep the fixed production origin. Do not substitute an unverified local build or deploy a pull-request artifact. If deployment fails, inspect that run before retrying; a failed gate publishes no replacement site.
+
+npm versions are immutable. A package defect requires a corrected version and another verified manual publication, followed by exact consumer-pin updates. Preserve the failing release evidence; do not overwrite a published version or add a compatibility path to conceal it.
