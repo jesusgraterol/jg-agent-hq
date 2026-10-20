@@ -10,6 +10,8 @@ The shared `jg-personal-astro-ui@0.3.1` public components, theme/prose CSS, Mark
 
 Install the workspace from the root and install its pinned Playwright Chromium. `pnpm check:package` checks only the runtime, including a real tarball consumer. `pnpm --dir website check` checks the site. `pnpm check` composes both. Root build/type/test/format inputs exclude the website; the publishable package's explicit file list excludes all website files and dependencies.
 
+Signed Git integration fixtures create their own disposable author/signing metadata. Git and `ssh-keygen` must be available; the tests do not require your Git identity or SSH agent.
+
 Website `check` builds once, then reuses that artifact for real DOM validation, deliberate damaged-artifact cases and production browser journeys. Unit, integration and E2E scripts select separate categories; no tests live under Astro's route directory. Run changed integration files three consecutive times without retries. Browser checks include 320px, tablet and desktop, both system themes, keyboard/focus/menu/theme persistence, clipboard success/failure and external-link notices. Network destination checks do not run during local builds.
 
 Artifact verification uses one Chromium instance with scripts and resource loading disabled, closes it in `finally`, and checks local references/anchors, metadata, canonical Markdown, discovery, image dimensions and forbidden build output. Production browser tests exercise actual scripts and fonts. These checks establish Chromium on the tested host; other browser engines and macOS need their own runtime evidence.

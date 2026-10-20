@@ -26,6 +26,36 @@ import {
 } from '../../scripts/test-support/claude-runtime.js';
 
 const run = promisify(execFile);
+
+/**
+ * Creates a fixture-owned Git identity and signing key without changing user configuration.
+ * @returns Completion after the fixture-local signing configuration is written.
+ */
+const initializeGit = async (fixture: IClaudeFixture): Promise<void> => {
+  const signingKey = join(fixture.root, 'signing-key');
+  const allowedSigners = join(fixture.root, 'allowed-signers');
+  await run('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', signingKey], {
+    timeout: 5000,
+  });
+  await writeFile(
+    allowedSigners,
+    `fixture@example.com ${await readFile(`${signingKey}.pub`, 'utf8')}`,
+  );
+  const git = (...args: string[]) =>
+    run('git', args, { cwd: fixture.workspaceRoot, timeout: 5000 });
+  await git('init', '-b', 'development');
+  for (const [name, setting] of [
+    ['user.name', 'HQ fixture'],
+    ['user.email', 'fixture@example.com'],
+    ['gpg.format', 'ssh'],
+    ['gpg.ssh.program', 'ssh-keygen'],
+    ['gpg.ssh.allowedSignersFile', allowedSigners],
+    ['user.signingkey', signingKey],
+  ] as const) {
+    await git('config', '--local', name, setting);
+  }
+};
+
 const operator = (): IPlanOperatorAction => ({
   id: randomUUID(),
   operatorId: 'fixture-operator',
@@ -600,9 +630,10 @@ test('checkpoint fingerprints exact partial checkout paths without staging, rese
     const plan = await setup(fixture);
     const git = (...args: string[]) =>
       run('git', args, { cwd: fixture.workspaceRoot, timeout: 5000 });
-    await git('init', '-b', 'development');
+    await initializeGit(fixture);
     await git('add', '--', 'greeting.mjs', 'verify-greeting.mjs');
     await git('commit', '-m', 'test: establish revision checkpoint', '-s', '-S');
+    await git('verify-commit', 'HEAD');
     await writeFile(
       join(fixture.workspaceRoot, 'partial.txt'),
       'unfinished catalog work\n'.repeat(262144),
@@ -649,7 +680,7 @@ test.each([
 ])('checkout selection rejects %s before reading or changing it', async (path) => {
   await withClaudeRuntime(async (fixture) => {
     const plan = await setup(fixture);
-    await run('git', ['init', '-b', 'development'], { cwd: fixture.workspaceRoot, timeout: 5000 });
+    await initializeGit(fixture);
     await run('git', ['add', '--', 'greeting.mjs'], { cwd: fixture.workspaceRoot, timeout: 5000 });
     await run('git', ['commit', '-m', 'test: establish path boundary', '-s', '-S'], {
       cwd: fixture.workspaceRoot,
@@ -1270,7 +1301,7 @@ test.each(['hard-link', 'parent-link'] as const)(
       const plan = await setup(fixture);
       const git = (...args: string[]) =>
         run('git', args, { cwd: fixture.workspaceRoot, timeout: 5000 });
-      await git('init', '-b', 'development');
+      await initializeGit(fixture);
       await git('add', '--', 'greeting.mjs');
       await git('commit', '-m', 'test: establish link boundary', '-s', '-S');
       const outside = join(fixture.root, 'outside.txt');
