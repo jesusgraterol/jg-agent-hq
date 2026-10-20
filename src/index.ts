@@ -20,4 +20,4 @@ export { requestAgentHq } from './ipc/index.js';
 
 // pure execution revision contracts
 export { computePlanRevision } from './plans/index.js';
-export type { IPlanContract } from './plans/index.js';
+export type { IPlanContract, IPlanContractParser } from './plans/index.js';

@@ -15,7 +15,7 @@ import { readNativeHistory } from '../sessions/index.js';
 import { suggestThreadName } from '../sessions/names/index.js';
 import { createSkills } from '../skills/index.js';
 import { createStore } from '../store/index.js';
-import { createPlans } from '../plans/index.js';
+import { createPlans, type IPlanStopJob } from '../plans/index.js';
 
 import {
   claimRuntimeOwner,
@@ -63,6 +63,9 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const claudeAdditionalDirectories = parsed.data.claudeAdditionalDirectories?.length
     ? await resolveAllowedRoots(parsed.data.claudeAdditionalDirectories)
     : [];
+  const coordinationRoot = parsed.data.coordinationRoot
+    ? (await resolveAllowedRoots([parsed.data.coordinationRoot]))[0]!
+    : undefined;
   const stateRoot = await prepareStateRoot(parsed.data.stateRoot);
   const ownership = await claimRuntimeOwner(stateRoot);
   let store: Awaited<ReturnType<typeof createStore>> | undefined;
@@ -92,7 +95,13 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const projection = store;
   const claude = createClaudeProvider(projection);
   const claudeControl = createClaudeControl(claudeAdditionalDirectories);
-  const plans = createPlans(stateRoot, allowedRoots, projection);
+  const plans = createPlans(
+    coordinationRoot ?? stateRoot,
+    allowedRoots,
+    projection,
+    ownership.owner.nonce,
+    parsed.data.parsePlanContract,
+  );
   const skills = createSkills(native, claudeControl, projection, allowedRoots);
   const actions = createActions(
     native,
@@ -115,6 +124,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     ownership.owner.nonce,
     actionKey,
     skills,
+    plans,
   );
   let resolveClosed: () => void = () => undefined;
   let rejectClosed: (error: unknown) => void = () => undefined;
@@ -125,9 +135,50 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   // close() still reports errors; the lifetime promise may be awaited later by its owner
   void closed.catch(() => undefined);
   let closing: Promise<void> | undefined;
+  const revisionJobs = new Map<string, Promise<void>>();
+  plans.setStopHandler((job: IPlanStopJob) => {
+    if (closing) return;
+    if (revisionJobs.has(job.phaseActionId)) return;
+    if (revisionJobs.size >= 32)
+      throw new Exception('The HQ action conflicts with its recorded state', undefined, {
+        kind: 'state-conflict',
+      });
+    const task = (async () => {
+      let isQuiescent = false;
+      try {
+        await actions.quiescePlan(job.controls);
+        isQuiescent = true;
+        if (job.kind === 'observation') await plans.finishObservation(job, true);
+        else if (job.kind === 'revision')
+          await plans.checkpoint({ directory: job.directory }, job.revisionId, job.phaseActionId);
+      } catch (cause) {
+        try {
+          if (job.kind === 'observation') await plans.finishObservation(job, false);
+          else if (job.kind === 'revision')
+            await plans.blockRevision(
+              { directory: job.directory },
+              job.revisionId,
+              job.phaseActionId,
+              isQuiescent ? 'checkpoint-unavailable' : 'native-quiescence-unavailable',
+            );
+          else
+            process.stderr.write(
+              `Unable to confirm native cleanup for invalid plan ${job.phaseActionId}.\n`,
+            );
+        } catch {
+          process.stderr.write(`Unable to persist blocked revision ${job.phaseActionId}.\n`);
+        }
+      } finally {
+        plans.stopFinished(job.phaseActionId);
+        revisionJobs.delete(job.phaseActionId);
+      }
+    })();
+    revisionJobs.set(job.phaseActionId, task);
+  });
   const close = (): Promise<void> =>
     (closing ??= (async () => {
       try {
+        await Promise.allSettled([...revisionJobs.values()]);
         const results = await Promise.allSettled([ipc?.close(), actions.close(), claude.close()]);
         const storeCleanup = await Promise.allSettled([projection.close()]);
         results.push(...storeCleanup);

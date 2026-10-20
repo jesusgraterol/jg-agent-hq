@@ -4,12 +4,17 @@ import { z } from 'zod';
 
 import {
   ActionReceiptSchema,
+  ActionPlanContextSchema,
   ManagedThreadSchema,
   type IThreadSummary,
 } from '../contracts/index.js';
 import { ClaudeHistoryReadSchema } from '../providers/claude/history/index.js';
 
-import { PlanWriteIntentSchema, PlanProjectionResultSchema } from '../plans/index.js';
+import {
+  PlanWriteIntentSchema,
+  PlanProjectionResultSchema,
+  PlanRevisionPageResultSchema,
+} from '../plans/index.js';
 
 import {
   AdmissionResultSchema,
@@ -189,6 +194,17 @@ export const createStore = async (
     },
     readClaudeHistory: (command) =>
       request({ kind: 'claude-history', request: command }, ClaudeHistoryReadSchema),
+    projectPlanRevision: async (projection) => {
+      await request({ kind: 'plan-revision-project', projection }, z.null());
+    },
+    listPlanRevision: (page) =>
+      request({ kind: 'plan-revision-page', page }, PlanRevisionPageResultSchema),
+    getThreadPlan: (threadId) =>
+      request({ kind: 'thread-plan-read', threadId }, ActionPlanContextSchema.nullable()),
+    getPlanThreads: (directory) =>
+      request({ kind: 'plan-threads', directory }, z.array(z.uuid()).max(32)),
+    peekQueued: (threadId) =>
+      request({ kind: 'queue-peek', threadId }, ActionReceiptSchema.nullable()),
     getPlanOperation: (id) =>
       request({ kind: 'plan-operation', id }, PlanWriteIntentSchema.nullable()),
     getPendingPlanOperationId: (directory) =>

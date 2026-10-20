@@ -1,0 +1,95 @@
+# File catalog CLI milestones
+
+Plan: `coding-agent-planning/1000000000_catalog/plan.md`.
+
+Repository inspection confirms the plan remains current: manifest validation and its documentation exist; `createCatalogTable` exists; catalog indexing and report modules and their verification scripts do not yet exist. Statuses describe implementation evidence, not test results from this breakdown. This was a planning-only inspection; the verification commands below were not run.
+
+All milestones retain the plan's boundaries: Node built-ins only, with no external services, dependencies, user-interface work, new configuration or compatibility behavior.
+
+## Overview
+
+| Milestone | Name | Status |
+| --- | --- | --- |
+| 1 | [Preserve completed manifest validation](#milestone-1-preserve-completed-manifest-validation) | done |
+| 2 | [Finish atomic SQLite indexing and bounded search](#milestone-2-finish-atomic-sqlite-indexing-and-bounded-search) | in progress |
+| 3 | [Add atomic checksummed JSON reports](#milestone-3-add-atomic-checksummed-json-reports) | pending |
+
+## Milestone 1: Preserve completed manifest validation
+
+**Status:** done
+
+**Objective:** Retain the completed manifest capability as the reviewed foundation for indexing.
+
+**Dependencies:** None.
+
+**Owned scope:** `source.mjs` — `loadManifest`; `verify-manifest.mjs`; the manifest contract and verification instructions in `README.md`. The separate `createCatalogTable` symbol belongs to Milestone 2.
+
+**Implementation work:** Already complete. Preserve UTF-8 JSON loading, rejection of anything except an object with a nonempty `files` array, rejection of non-string or blank entries, and sorted unique output. Preserve existing validation and error behavior. Keep the existing manifest documentation synchronized; no implementation changes or additional validation rules are planned.
+
+**Verification:** Run `node verify-manifest.mjs` during review. Check the existing assertions for valid, malformed, empty, invalid-entry and duplicate input against the documented contract.
+
+**Acceptance criteria:** The existing verification command passes; `loadManifest` retains all completed behavior; `README.md` accurately describes that behavior and its verification command. Repository evidence supports the completed implementation status; this breakdown does not claim a fresh test run.
+
+**Review checkpoint:** Review manifest validation and sorting/deduplication semantics before continuing. Confirm that later catalog work can consume `loadManifest` without changing its contract.
+
+## Milestone 2: Finish atomic SQLite indexing and bounded search
+
+**Status:** in progress
+
+**Objective:** Provide a complete SQLite catalog that indexes manifest paths with actual file sizes atomically, refreshes idempotently, and supports bounded keyset search.
+
+**Dependencies:** Milestone 1's manifest contract and review checkpoint. Execution requires a Node runtime supporting built-in SQLite; retain the built-ins-only boundary.
+
+**Owned scope:** New `catalog.mjs` and `verify-catalog.mjs`; reuse of `source.mjs` — `createCatalogTable` and its existing `catalog_entry` schema (`path` primary key, integer `size`); integration with `source.mjs` — `loadManifest`; indexing, refresh and search documentation in `README.md`. The existing table helper is the repository evidence for the in-progress status.
+
+**Implementation work:**
+
+- Reuse `createCatalogTable` rather than duplicating table creation. Consume validated manifest paths and obtain their actual file sizes.
+- Implement atomic catalog indexing so a failed refresh cannot leave a partially applied catalog.
+- Make repeated refreshes idempotent, without duplicate path entries, and reflect actual file sizes on successful refresh.
+- Search paths in sorted order using an exclusive after-path cursor. Validate cursor and limit inputs; use a default limit of 32 and a maximum of 128.
+- Complete focused verification and update `README.md` with the finished catalog behavior and verification command in the same milestone.
+
+**Verification:** Run `node verify-catalog.mjs` using a real temporary SQLite database and real file fixtures. Verify stored paths and sizes, refresh twice, check idempotence and successful size refresh, and exercise atomic failure behavior. Test sorted page boundaries, exclusive cursors, default and maximum page sizes, exhausted results, and rejection of invalid cursor or limit inputs. Clean owned test fixtures and close the database. Run `node verify-manifest.mjs` as the integration regression check.
+
+**Acceptance criteria:** Both verification commands pass. Catalog rows contain the manifest paths and actual sizes; successful refreshes are idempotent, and failed refreshes preserve the prior catalog. Search obeys sorted exclusive keyset semantics and the validated 32-default/128-maximum bounds, without gaps or duplicate entries across pages. The existing schema helper is reused, manifest behavior is unchanged, and catalog documentation is current.
+
+**Review checkpoint:** Inspect transaction boundaries and failure recovery, reuse of `createCatalogTable`, file-size collection, refresh behavior, cursor validation, ordering and page boundaries. Review the real-database evidence and README contract before authorizing reporting.
+
+## Milestone 3: Add atomic checksummed JSON reports
+
+**Status:** pending
+
+**Objective:** Export a deterministic JSON report containing sorted catalog entries and a SHA-256 checksum of the canonical entries JSON, while preserving an existing destination on failure.
+
+**Dependencies:** Milestone 2's completed catalog and review checkpoint; Milestone 1's preserved manifest behavior.
+
+**Owned scope:** New `report.mjs` and `verify-report.mjs`; integration with the completed `catalog.mjs` catalog contract; report structure, canonical entries JSON, checksum, atomic-write and failure behavior, and verification instructions in `README.md`. No migrations, configuration or compatibility layer are planned.
+
+**Implementation work:**
+
+- Export the complete catalog entries in sorted path order, retaining their recorded sizes.
+- Serialize the entries canonically and include a SHA-256 checksum computed from that canonical entries JSON. Keep the checksum input deterministic and document its relationship to the report's entries.
+- Write through an owned temporary sibling of the destination, then atomically rename it into place.
+- On failure, preserve any existing destination and clean only owned scratch files. Keep required cleanup and failure verification with this implementation.
+- Update `README.md` with the finished report contract, including the added checksum requirement and verification command.
+
+**Verification:** Run `node verify-report.mjs` against a real temporary catalog and report destination. Verify complete sorted entries, stable ordering across repeated exports, and the SHA-256 checksum by independently recomputing it from the canonical entries JSON. Exercise successful atomic replacement and failure behavior, asserting that existing destination bytes survive failures and owned temporary siblings are removed. Clean owned test resources. Run `node verify-catalog.mjs` and `node verify-manifest.mjs` for the integrated regression check.
+
+**Acceptance criteria:** All three verification commands pass. The JSON report contains every catalog entry in stable sorted order and a correct SHA-256 checksum of the canonical entries JSON. Successful writes replace the destination atomically; failed writes preserve an existing destination and leave no owned scratch files. The report integrates with the finished catalog, and `README.md` documents the full capability and verification command.
+
+**Review checkpoint:** Inspect the report's completeness and ordering, exact checksum input and independent verification, temporary-sibling ownership, rename behavior, destination preservation and cleanup paths. Review the integrated verification evidence and final documentation as the final capability checkpoint.
+
+## Approval required
+
+The complete sequence is: (1) review and preserve completed manifest validation, (2) finish and verify atomic SQLite indexing and bounded search, and (3) implement and verify atomic checksummed JSON reports. Each milestone includes its focused verification and directly affected README documentation. No plan or milestone-sequence approval is established in this conversation.
+
+The [jg-breakdown skill](https://github.com/jesusgraterol/jg-skills/blob/main/skills/jg-breakdown/SKILL.md) requires: “Each milestone needs its own explicit authorization, is the complete scope of that request, and ends at its review checkpoint.” This is why implementation requires subsequent authorization and stops at each checkpoint.
+
+- Invoking `jg-execute` authorizes the milestone it runs; `jg-execute auto` authorizes every remaining milestone, or only the milestone it names.
+- If a milestone depends on incomplete earlier work, or completing it would cross a milestone boundary or change the approved plan, stop and report before expanding scope.
+- To change the plan, invoke `jg-plan` with the amendments. To create or change milestones, invoke `jg-breakdown`.
+- Approval must follow presentation of this current sequence. This breakdown invocation, approval of a superseded sequence, questions, feedback and revision requests do not approve it or authorize implementation.
+- If the plan was not already approved, explicit approval after this presentation approves the presented plan and sequence unless that approval is limited. If the plan was already approved, that approval remains valid, but this sequence still needs explicit approval before milestone-scoped implementation.
+- Approval of the sequence alone does not authorize implementation. Sequence approval may be combined with authorization for one milestone; invoking `jg-execute` after presentation also counts as sequence approval.
+- Implementation proceeds one milestone at a time. Completing or approving one milestone does not authorize the next, except that `jg-execute auto` without a named milestone authorizes every remaining milestone. After completing the authorized scope and required verification, report the result and stop until another milestone is explicitly authorized.

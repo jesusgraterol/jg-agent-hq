@@ -110,7 +110,7 @@ export const parsePlanMilestones = (content: string): IParsedMilestone[] => {
         ? normalized.slice(start, approval.index)
         : tail;
     const status = /^\*\*Status:\*\* (pending|in progress|done)\n/m.exec(block);
-    if (!status || status.index !== heading[0].length + 1)
+    if (!status || !/^[ \t\n]*$/.test(block.slice(heading[0].length + 1, status.index)))
       throw new Exception('The HQ plan is invalid', undefined, { kind: 'invalid-request' });
     const markers = [...block.matchAll(/^[ \t]*\*\*Milestone ID:\*\*(.*)$/gm)].filter(
       (marker) => !fenced.has(start + marker.index),
@@ -151,9 +151,7 @@ export const parsePlanMilestones = (content: string): IParsedMilestone[] => {
       title,
       status: status[1] as IParsedMilestone['status'],
       contract,
-      contractDigest: id
-        ? hashPlanContent(JSON.stringify([id, title, sharedDigest, contract]))
-        : null,
+      contractDigest: id ? getMilestoneContractDigest({ id, title, sharedDigest, contract }) : null,
       sharedDigest,
       headingStart: start,
       statusEnd: start + status.index + status[0].length,
@@ -226,3 +224,14 @@ export const refreshPlanOverview = (content: string, milestones: IPlanMilestone[
     ),
   );
 };
+
+/** Hashes a finalized milestone's complete requirement identity. */
+export const getMilestoneContractDigest = (milestone: {
+  id: string;
+  title: string;
+  sharedDigest: string;
+  contract: string;
+}): string =>
+  hashPlanContent(
+    JSON.stringify([milestone.id, milestone.title, milestone.sharedDigest, milestone.contract]),
+  );

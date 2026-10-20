@@ -13,6 +13,7 @@ import {
 } from '../../contracts/index.js';
 import { getErrorKind } from '../../errors/index.js';
 import { suffixThreadName } from '../../sessions/names/index.js';
+import type { PlansModel } from '../plans/index.js';
 
 import {
   ACTION_COLUMNS,
@@ -47,11 +48,18 @@ const ActionMetadataSchema = ActionRowSchema.omit({ queued_text: true, queued_sk
 export class ControlModel {
   private readonly __database: DatabaseSync;
   private readonly __epoch: string;
+  private readonly __plans: PlansModel;
   private readonly __digestKey: KeyObject;
 
   /** Quarantines unsettled controls from another runtime before accepting new actions. */
-  public constructor(database: DatabaseSync, runtimeEpoch: string, digestKey: Uint8Array) {
+  public constructor(
+    database: DatabaseSync,
+    runtimeEpoch: string,
+    digestKey: Uint8Array,
+    plans: PlansModel,
+  ) {
     this.__database = database;
+    this.__plans = plans;
     this.__epoch = runtimeEpoch;
     this.__digestKey = createSecretKey(digestKey);
     const now = Date.now();
@@ -465,6 +473,14 @@ export class ControlModel {
             }
           }
         }
+        if (prepared.planContext) {
+          const selected = this.__action(action.id)!.thread_id;
+          if (!selected) this.__conflict();
+          this.__plans.bindThread(selected, prepared.planContext);
+          this.__database
+            .prepare('UPDATE action SET plan_context = ? WHERE id = ?')
+            .run(JSON.stringify(prepared.planContext), action.id);
+        }
         this.__database.exec('RELEASE admission');
       } catch (error) {
         this.__database.exec('ROLLBACK TO admission');
@@ -612,6 +628,16 @@ export class ControlModel {
       this.__event('action-updated', action.thread_id, action.id, action.native_turn_id);
       return this.getAction(action.id);
     });
+  }
+
+  /** Reads one selected undelivered queue entry without claiming or dispatching it. */
+  public peekQueued(threadId: string): IActionReceipt | null {
+    const row = this.__database
+      .prepare(
+        `SELECT ${ACTION_COLUMNS} FROM action WHERE thread_id = ? AND delivery = 'queued' ORDER BY created_at ASC, id ASC LIMIT 1`,
+      )
+      .get(threadId);
+    return row ? toActionReceipt(ActionRowSchema.parse(row)) : null;
   }
 
   /**

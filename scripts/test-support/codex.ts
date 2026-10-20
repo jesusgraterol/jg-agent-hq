@@ -66,7 +66,7 @@ else {
       if(control.releaseThreadId)complete(control.releaseThreadId);
       if(control.skillsFailure){respond(request.id,{data:'invalid'});return;}
       const skills = Array.from({length:control.skillCount??2},(_,index)=>{
-        const name=(control.skillRevision?'changed-':'')+(index===0?'explicit-skill':index===1?'implicit-skill':'skill-'+index);
+        const name=index===0&&control.planSkill?control.planSkill:(control.skillRevision?'changed-':'')+(index===0?'explicit-skill':index===1?'implicit-skill':'skill-'+index);
         return {name,description:control.skillDescriptionSize?'d'.repeat(control.skillDescriptionSize):'Native installed skill '+index,path:join(directory,'skills',name,'SKILL.md'),scope:'user',enabled:!(control.disabledSkill&&index===0),dependencies:{tools:[{type:'mcp',value:'example',description:'Native declared prerequisite'}]}};
       });
       respond(request.id,{data:[{cwd:control.wrongSkillRoot??params.cwds[0],skills,errors:control.skillErrors?[{}]:[]}]});return;
@@ -119,7 +119,7 @@ else {
       return;
     }
     if (method === 'thread/backgroundTerminals/clean') { respond(request.id,{});return; }
-    if (method === 'thread/backgroundTerminals/list') { respond(request.id,{data:[],nextCursor:null});return; }
+    if (method === 'thread/backgroundTerminals/list') { respond(request.id,{data:control.backgroundRemaining?[{id:'remaining-task'}]:[],nextCursor:null});return; }
     if (method === 'thread/unsubscribe') { managed.get(params.threadId).status={type:'notLoaded'};respond(request.id,{status:'unsubscribed'});return; }
     if (method === 'thread/list') {
       if (control.mode === 'exit-on-list') { process.stdout.end();return; }

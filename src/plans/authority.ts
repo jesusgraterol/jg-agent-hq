@@ -8,6 +8,7 @@ import type {
 } from '../contracts/index.js';
 
 import { isSamePlanRevision } from './utilities.js';
+import { createCompletionLookup } from './reconciliation.js';
 import type { IPlanArtifacts } from './types.js';
 
 const conflict = (): never => {
@@ -36,18 +37,35 @@ export const describePlan = (
     !!coordination.sequenceApproval &&
     !coordination.sequenceApproval.revokedBy &&
     isSamePlanRevision(coordination.sequenceApproval.revision, revision);
+  const verified = createCompletionLookup(coordination.completions, coordination.correspondences);
+  const workflow = coordination.revision;
   const state =
-    pendingActionId || artifacts.parsed.some((milestone) => milestone.status === 'done')
+    coordination.observedConflict ||
+    pendingActionId ||
+    workflow?.phase === 'blocked' ||
+    workflow?.phase === 'reconciling' ||
+    artifacts.parsed.some((milestone) => milestone.status === 'done' && !verified(milestone))
       ? 'blocked'
-      : !isPlanApproved
-        ? 'plan-approval-required'
-        : !isFinalized
-          ? 'breakdown-required'
-          : !isSequenceApproved
-            ? 'sequence-approval-required'
-            : artifacts.parsed.some((milestone) => milestone.status === 'in progress')
-              ? 'in-progress'
-              : 'ready';
+      : workflow?.phase === 'quiescing' ||
+          (workflow?.phase === 'editing' &&
+            ((workflow.invocation?.skill === 'jg-plan' &&
+              workflow.checkpoint?.revision.planDigest === revision.planDigest) ||
+              (workflow.invocation?.skill === 'jg-breakdown' && artifacts.milestones === null)))
+        ? 'revising'
+        : !isPlanApproved
+          ? 'plan-approval-required'
+          : !isFinalized
+            ? 'breakdown-required'
+            : !isSequenceApproved
+              ? 'sequence-approval-required'
+              : artifacts.parsed.length > 0 &&
+                  artifacts.parsed.every(
+                    (milestone) => milestone.status === 'done' && verified(milestone),
+                  )
+                ? 'completed'
+                : artifacts.parsed.some((milestone) => milestone.status === 'in progress')
+                  ? 'in-progress'
+                  : 'ready';
   return {
     directory: artifacts.directory,
     revision,
@@ -58,7 +76,36 @@ export const describePlan = (
     isPlanApproved,
     isSequenceApproved,
     milestoneCount: artifacts.parsed.length,
-    coordination,
+    coordination: {
+      schemaVersion: coordination.schemaVersion,
+      finalized: coordination.finalized,
+      planApproval: coordination.planApproval,
+      sequenceApproval: coordination.sequenceApproval,
+      execution: coordination.execution,
+      lastActionId: coordination.lastActionId,
+      observedConflict: coordination.observedConflict,
+      completionCount: coordination.completions.length,
+      revision: workflow
+        ? {
+            id: workflow.id,
+            action: workflow.action,
+            intent: workflow.intent,
+            phase: workflow.phase,
+            phaseActionId: workflow.phaseActionId,
+            ownerRuntimeEpoch: workflow.ownerRuntimeEpoch,
+            reason: workflow.reason,
+            threadIds: workflow.threadIds,
+            invocation: workflow.invocation,
+            createdAt: workflow.createdAt,
+            hasUncertainEffects: workflow.hasUncertainEffects,
+            hasCheckpoint: !!workflow.checkpoint,
+            hasProposal: !!workflow.proposal,
+            unmatchedCount: workflow.proposal?.confirmation
+              ? 0
+              : (workflow.proposal?.unmatchedSourceIds.length ?? 0),
+          }
+        : null,
+    },
   };
 };
 
@@ -76,6 +123,7 @@ const revokeExecution = (coordination: IPlanCoordination, action: IPlanOperatorA
 export const updatePlanAuthority = (
   artifacts: IPlanArtifacts,
   command: Extract<IPlanCommand, { kind: 'approve' | 'revoke' | 'authorize' }>,
+  runtimeEpoch: string,
 ): IPlanCoordination => {
   const coordination = structuredClone(artifacts.coordination);
   if (command.kind === 'approve') {
@@ -109,6 +157,12 @@ export const updatePlanAuthority = (
   } else {
     const status = describePlan(artifacts);
     if (
+      coordination.revision &&
+      coordination.revision.phase !== 'awaiting-approval' &&
+      coordination.revision.phase !== 'finished'
+    )
+      conflict();
+    if (
       status.state === 'blocked' ||
       !status.isSequenceApproved ||
       command.milestoneIds.some(
@@ -117,7 +171,10 @@ export const updatePlanAuthority = (
       )
     )
       conflict();
+    if (coordination.revision) coordination.revision.phase = 'finished';
+    coordination.observedConflict = null;
     coordination.execution = {
+      runtimeEpoch,
       action: command.action,
       revision: artifacts.revision,
       mode: command.mode,

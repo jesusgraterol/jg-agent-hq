@@ -5,9 +5,11 @@ import {
   PlanDigestSchema,
   PlanMilestoneSchema,
   PlanRevisionSchema,
+  PlanReconciliationEntrySchema,
   type IPlanMetadata,
   type IPlanMilestone,
   type IPlanRevision,
+  type IPlanRevisionWorkflow,
 } from '../contracts/index.js';
 
 // full bounded artifacts are used only for the selected plan, never a repository scan
@@ -19,6 +21,7 @@ export type IParsedMilestone = IPlanMilestone & {
 };
 export type IPlanArtifacts = {
   directory: string;
+  contract: { body: string; metadata: IPlanMetadata };
   plan: string;
   milestones: string | null;
   coordinationText: string | null;
@@ -35,11 +38,11 @@ export const PlanWriteIntentSchema = z.strictObject({
   digest: z.string().regex(/^[a-f0-9]{64}$/),
   directory: z.string(),
   before: z.strictObject({
-    plan: z.string(),
+    plan: z.string().nullable(),
     milestones: z.string().nullable(),
     coordination: z.string().nullable(),
   }),
-  coordination: z.string().max(1_048_576),
+  coordination: z.string().max(8_388_608),
   milestones: z.string().max(1_048_576).nullable(),
   state: z.enum(['prepared', 'completed']),
 });
@@ -64,3 +67,53 @@ export const PlanProjectionResultSchema = z.object({
   data: z.array(PlanMilestoneSchema).max(128),
   hasMore: z.boolean(),
 });
+
+// the private host owns its frontmatter policy; the core supplies exact current file contents
+export type IPlanContractParser = (input: {
+  directory: string;
+  content: string;
+}) =>
+  | { body: string; metadata: IPlanMetadata }
+  | Promise<{ body: string; metadata: IPlanMetadata }>;
+
+// a selected coordination file supplies replaceable, bounded seek projections
+export const PlanRevisionProjectionSchema = z.strictObject({
+  directory: z.string(),
+  sourceHash: PlanDigestSchema.nullable(),
+  records: z
+    .array(
+      z.strictObject({
+        collection: z.enum(['sources', 'drafts', 'evidence', 'correspondences']),
+        id: z.string().min(1).max(128),
+        entry: PlanReconciliationEntrySchema,
+      }),
+    )
+    .max(65_536),
+});
+export type IPlanRevisionProjection = z.infer<typeof PlanRevisionProjectionSchema>;
+export const PlanRevisionPageSchema = z.strictObject({
+  directory: z.string(),
+  collection: z.enum(['sources', 'drafts', 'evidence', 'correspondences']),
+  after: z.string().max(128),
+  limit: z.number().int().min(1).max(128),
+});
+export const PlanRevisionPageResultSchema = z.object({
+  data: z.array(PlanReconciliationEntrySchema).max(128),
+  lastId: z.string().nullable(),
+  hasMore: z.boolean(),
+});
+
+// continuations bind every inspected coordination revision and selected collection
+export const PlanRevisionPositionSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  inspection: PlanDigestSchema.nullable(),
+});
+
+// one owned stop phase, without an agent execution loop or client-supplied quiescence evidence
+export type IPlanStopJob = {
+  kind: 'revision' | 'observation' | 'invalid-artifact';
+  directory: string;
+  revisionId: string;
+  phaseActionId: string;
+  controls: IPlanRevisionWorkflow['controls'];
+};

@@ -20,7 +20,7 @@ const database = new DatabaseSync(options.databasePath, {
 database.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
 database.exec(await readFile(new URL('./schema.sql', import.meta.url), 'utf8'));
 const plans = new PlansModel(database);
-const controls = new ControlModel(database, options.runtimeEpoch, options.actionKey);
+const controls = new ControlModel(database, options.runtimeEpoch, options.actionKey, plans);
 const claudeHistory = new ClaudeHistoryModel(database);
 const remember = database.prepare(`INSERT INTO native_history_index
   (provider, native_id, workspace_root, name, created_at, updated_at, native_state, observed_at, runtime_epoch, continuation_cursor)
@@ -44,6 +44,21 @@ port.on('message', (message: unknown) => {
     }
     let result: unknown = null;
     switch (command.kind) {
+      case 'plan-revision-project':
+        plans.projectRevision(command.projection);
+        break;
+      case 'plan-revision-page':
+        result = plans.listRevision(command.page);
+        break;
+      case 'thread-plan-read':
+        result = plans.getThreadPlan(command.threadId);
+        break;
+      case 'plan-threads':
+        result = plans.getPlanThreads(command.directory);
+        break;
+      case 'queue-peek':
+        result = controls.peekQueued(command.threadId);
+        break;
       case 'plan-operation':
         result = plans.getIntent(command.id);
         break;

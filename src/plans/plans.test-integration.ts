@@ -9,6 +9,7 @@ import type {
   IPlanOperatorAction,
   IPlanTarget,
   IPlanStatus,
+  IPlanMetadata,
 } from 'jg-agent-hq/contracts';
 import { expect, test } from 'vitest';
 
@@ -225,47 +226,56 @@ test('approval rejects raw output, stale inspection, stale revision, forged prov
 });
 
 test('administrative frontmatter, status, Overview and unrelated session labels preserve approval; contract changes do not', async () => {
-  await withClaudeRuntime(async (fixture) => {
-    const plan = await setup(fixture);
-    const prefix = '---\npriority: P2\npriorityReason: Normal work.\n---\n';
-    const body = '# Plan\nBuild the workspace.\n';
-    await writeFile(join(plan.directory, 'plan.md'), prefix + body);
-    plan.target.context = {
-      bodyStart: prefix.length,
-      metadata: { scope: 'local', repositories: ['workspace'], errorReservations: [] },
-    };
-    await plan.ready();
-    const current = await plan.status();
-    await writeFile(join(plan.directory, 'plan.md'), prefix.replace('P2', 'P1') + body);
-    const content = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
-    await writeFile(
-      join(plan.directory, 'milestones.md'),
-      content
-        .replace('**Status:** pending', '**Status:** in progress')
-        .replace('| 1 | Feature 1 | pending |', '| 1 | Feature 1 | in progress |'),
-    );
-    await writeFile(join(plan.directory, 'sessions.md'), 'codex_better-name\n');
-    const changed = await plan.status();
-    expect(changed.revision).toStrictEqual(current.revision);
-    expect(changed.inspection.plan).not.toBe(current.inspection.plan);
-    expect(changed.isSequenceApproved).toBe(true);
-    await writeFile(
-      join(plan.directory, 'milestones.md'),
-      content.replace('**Dependencies:** None.', '**Dependencies:** Requires external approval.'),
-    );
-    const stale = await plan.status();
-    expect(stale.isPlanApproved).toBe(true);
-    expect(stale.isSequenceApproved).toBe(false);
-    plan.target.context.metadata.errorReservations.push({
-      repository: 'workspace',
-      namespace: 'api',
-      start: 200,
-      end: 204,
-      registryPath: 'errors/index.ts',
-      purpose: 'Feature failures',
-    });
-    expect((await plan.status()).isPlanApproved).toBe(false);
-  });
+  const metadata: IPlanMetadata = {
+    scope: 'local',
+    repositories: ['workspace'],
+    errorReservations: [],
+  };
+  await withClaudeRuntime(
+    async (fixture) => {
+      const plan = await setup(fixture);
+      const prefix = '---\npriority: P2\npriorityReason: Normal work.\n---\n';
+      const body = '# Plan\nBuild the workspace.\n';
+      await writeFile(join(plan.directory, 'plan.md'), prefix + body);
+      await plan.ready();
+      const current = await plan.status();
+      await writeFile(join(plan.directory, 'plan.md'), prefix.replace('P2', 'P1') + body);
+      const content = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
+      await writeFile(
+        join(plan.directory, 'milestones.md'),
+        content
+          .replace('**Status:** pending', '**Status:** in progress')
+          .replace('| 1 | Feature 1 | pending |', '| 1 | Feature 1 | in progress |'),
+      );
+      await writeFile(join(plan.directory, 'sessions.md'), 'codex_better-name\n');
+      const changed = await plan.status();
+      expect(changed.revision).toStrictEqual(current.revision);
+      expect(changed.inspection.plan).not.toBe(current.inspection.plan);
+      expect(changed.isSequenceApproved).toBe(true);
+      await writeFile(
+        join(plan.directory, 'milestones.md'),
+        content.replace('**Dependencies:** None.', '**Dependencies:** Requires external approval.'),
+      );
+      const stale = await plan.status();
+      expect(stale.isPlanApproved).toBe(true);
+      expect(stale.isSequenceApproved).toBe(false);
+      metadata.errorReservations.push({
+        repository: 'workspace',
+        namespace: 'api',
+        start: 200,
+        end: 204,
+        registryPath: 'errors/index.ts',
+        purpose: 'Feature failures',
+      });
+      expect((await plan.status()).isPlanApproved).toBe(false);
+    },
+    {
+      parsePlanContract: ({ content }) => ({
+        body: content.slice(content.indexOf('\n---\n') + 5),
+        metadata,
+      }),
+    },
+  );
 });
 
 test('revoked plan authority cannot be restored by replaying an earlier approval', async () => {

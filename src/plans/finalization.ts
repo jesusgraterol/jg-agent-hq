@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Exception } from 'error-message-utils';
 
-import type { IPlanTarget, IPlanRevision } from '../contracts/index.js';
+import type { IPlanRevision } from '../contracts/index.js';
 
 import { computePlanRevision, isSamePlanRevision, refreshPlanOverview } from './utilities.js';
 import type { IPlanArtifacts } from './types.js';
@@ -21,7 +21,6 @@ const conflict = (): never => {
  */
 export const finalizeInitialSequence = (
   artifacts: IPlanArtifacts,
-  target: IPlanTarget,
 ): { content: string; revision: IPlanRevision } => {
   if (
     artifacts.milestones === null ||
@@ -39,12 +38,7 @@ export const finalizeInitialSequence = (
         milestones.slice(milestone.statusEnd);
   milestones = refreshPlanOverview(milestones, artifacts.parsed);
   const revised = computePlanRevision({
-    body: artifacts.plan.slice(target.context?.bodyStart ?? 0),
-    metadata: target.context?.metadata ?? {
-      scope: 'local',
-      repositories: [],
-      errorReservations: [],
-    },
+    ...artifacts.contract,
     milestones,
   });
   return { content: milestones, revision: revised };

@@ -94,3 +94,41 @@ export type {
   IPlanStatus,
   IPlanResult,
 } from './plans/index.js';
+
+// revision checkpoints and retained verification
+export {
+  PlanCheckSchema,
+  PlanCheckoutSchema,
+  PlanWorktreeProofSchema,
+  PlanCompletionSchema,
+  PlanSnapshotMilestoneSchema,
+  PlanCorrespondenceSchema,
+  PlanDraftMilestoneSchema,
+  PlanProposalSchema,
+  PlanRevisionWorkflowSchema,
+  PlanCorrespondenceRecordSchema,
+  PlanCoordinationSummarySchema,
+} from './plans/index.js';
+export type {
+  IPlanCheckout,
+  IPlanWorktreeProof,
+  IPlanCompletion,
+  IPlanSnapshotMilestone,
+  IPlanCorrespondence,
+  IPlanDraftMilestone,
+  IPlanProposal,
+  IPlanRevisionWorkflow,
+  IPlanCorrespondenceRecord,
+} from './plans/index.js';
+
+// saved revision baseline
+export { PlanCheckpointSchema } from './plans/index.js';
+export type { IPlanCheckpoint } from './plans/index.js';
+
+// bounded revision reads
+export { PlanCorrespondenceSummarySchema, PlanReconciliationEntrySchema } from './plans/index.js';
+export type { IPlanReconciliationEntry } from './plans/index.js';
+
+// guided plan scope
+export { PlanActionScopeSchema, ActionPlanContextSchema } from './actions/index.js';
+export type { IPlanActionScope, IActionPlanContext } from './actions/index.js';
