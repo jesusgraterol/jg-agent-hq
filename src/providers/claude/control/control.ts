@@ -6,12 +6,13 @@ import { createClaudeRpc } from '../rpc.js';
 
 import type { IClaudeControlEvents, IClaudeSession } from './types.js';
 import { receiveClaudeMessage } from './stream.js';
+import { toClaudeSkills } from './skills.js';
 
 /**
  * Owns one persistent native CLI per explicitly controlled Claude session.
  * @returns Controls whose processes outlive client connections and stop at runtime shutdown.
  */
-export const createClaudeControl = () => {
+export const createClaudeControl = (additionalDirectories: string[] = []) => {
   const sessions = new Map<string, IClaudeSession>();
   let events: IClaudeControlEvents | undefined;
   let isClosing = false;
@@ -71,6 +72,7 @@ export const createClaudeControl = () => {
         {
           nativeId,
           workspaceRoot,
+          additionalDirectories,
           isResume,
           receive: (raw) => receiveClaudeMessage(session, raw, events),
           lateResponse(id, result, error) {
@@ -97,6 +99,16 @@ export const createClaudeControl = () => {
         await connection.close();
         unavailable();
       }
+      // unsupported optional metadata disables the catalog, without disabling native controls
+      session.skills = null;
+      try {
+        const skills = toClaudeSkills({ skills: connection.initialization.commands });
+        if (Buffer.byteLength(JSON.stringify(skills.skills)) <= 1_048_576)
+          session.skills = { ...skills, observedAt: connection.initializedAt };
+      } catch {
+        /* catalog availability is reported independently */
+      }
+      delete connection.initialization.commands;
     })();
     await session.opening;
     return { id: nativeId, cwd: workspaceRoot, status: { type: 'idle' as const } };
@@ -156,6 +168,17 @@ export const createClaudeControl = () => {
         session_id: nativeId,
       });
       return result;
+    },
+    /**
+     * Reads the native startup command list, which includes explicit-only skills.
+     * @returns The native inventory with unavailable fields left explicit.
+     * @throws
+     * - -1: The Claude integration failed
+     */
+    async readSkills(nativeId: string) {
+      const skills = get(nativeId).skills;
+      if (!skills) unavailable();
+      return skills;
     },
     /**
      * Names only the native session selected by the admitted action.

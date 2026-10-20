@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS action (
   failure TEXT CHECK (failure IS NULL OR failure IN ('state-conflict', 'access-denied', 'agent-unavailable', 'operation-failed')),
   related_action_id TEXT,
   queued_text TEXT,
+  queued_skill TEXT,
   queue_ready INTEGER NOT NULL DEFAULT 0 CHECK (queue_ready IN (0, 1)),
   requested_name TEXT,
   created_at INTEGER NOT NULL,
@@ -65,6 +66,7 @@ CREATE TABLE IF NOT EXISTS action (
   CONSTRAINT pk_a__id PRIMARY KEY (id),
   CONSTRAINT fk_a__thread_id FOREIGN KEY (thread_id) REFERENCES thread(id),
   CONSTRAINT fk_a__related_action_id FOREIGN KEY (related_action_id) REFERENCES action(id),
+  CONSTRAINT chk_a__queued_skill_kind CHECK (queued_skill IS NULL OR kind = 'queue'),
   CONSTRAINT chk_a__queued_text_kind CHECK (queued_text IS NULL OR kind = 'queue'),
   CONSTRAINT chk_a__queued_body_required CHECK (delivery != 'queued' OR (kind = 'queue' AND queued_text IS NOT NULL))
 ) STRICT;

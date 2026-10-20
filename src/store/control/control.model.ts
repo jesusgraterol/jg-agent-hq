@@ -5,12 +5,14 @@ import { z } from 'zod';
 
 import {
   LifecycleEventSchema,
+  NativeSkillInputSchema,
   type IActionReceipt,
   type IActionSummary,
   type IManagedThread,
   type ILifecycleEvent,
 } from '../../contracts/index.js';
 import { getErrorKind } from '../../errors/index.js';
+import { suffixThreadName } from '../../sessions/names/index.js';
 
 import {
   ACTION_COLUMNS,
@@ -39,7 +41,7 @@ import {
 const FailureSchema = z.object({
   kind: z.enum(['state-conflict', 'access-denied', 'agent-unavailable', 'operation-failed']),
 });
-const ActionMetadataSchema = ActionRowSchema.omit({ queued_text: true });
+const ActionMetadataSchema = ActionRowSchema.omit({ queued_text: true, queued_skill: true });
 
 /** Owns synchronous control-ledger transactions inside the dedicated SQLite worker. */
 export class ControlModel {
@@ -87,6 +89,24 @@ export class ControlModel {
   public getThread(id: string): IManagedThread | null {
     const thread = this.__thread(id);
     return thread ? toManagedThread(thread) : null;
+  }
+
+  /** Resolves one unique label without loading a collection. */
+  public getThreadByName(name: string): IManagedThread | null {
+    const row = this.__database
+      .prepare(`SELECT ${THREAD_COLUMNS} FROM thread WHERE name = ? COLLATE NOCASE`)
+      .get(name);
+    return row ? toManagedThread(ThreadRowSchema.parse(row)) : null;
+  }
+
+  /** Finds a free label against assigned names and pending native renames. */
+  public suggestName(name: string): string {
+    let candidate = name;
+    let ordinal = 2;
+    while (!this.__isNameAvailable(candidate, '', null)) {
+      candidate = suffixThreadName(name, ordinal++);
+    }
+    return candidate;
   }
 
   /** Resolves a registered native session without claiming it. */
@@ -244,7 +264,7 @@ export class ControlModel {
       try {
         if (command.kind === 'thread-create' || command.kind === 'thread-adopt') {
           this.__availableSlot();
-          this.__availableName(command.name, action.id, null);
+          const name = this.suggestName(command.name);
           if (!prepared.workspaceRoot) this.__conflict();
           const nativeId = command.kind === 'thread-adopt' ? prepared.nativeId : null;
           if (command.kind === 'thread-adopt' && (!nativeId || nativeId !== command.nativeId))
@@ -260,7 +280,7 @@ export class ControlModel {
               threadId,
               command.provider,
               nativeId ?? null,
-              command.name,
+              name,
               prepared.workspaceRoot,
               this.__epoch,
               action.id,
@@ -270,8 +290,10 @@ export class ControlModel {
               now,
             );
           this.__database
-            .prepare('UPDATE action SET thread_id = ?, native_request_id = ? WHERE id = ?')
-            .run(threadId, `${action.id}:${nativeId ? 'resume' : 'create'}`, action.id);
+            .prepare(
+              'UPDATE action SET thread_id = ?, native_request_id = ?, requested_name = ? WHERE id = ?',
+            )
+            .run(threadId, `${action.id}:${nativeId ? 'resume' : 'create'}`, name, action.id);
         } else {
           let threadId: string;
           let queued: IActionRow | null = null;
@@ -294,7 +316,7 @@ export class ControlModel {
           if (command.kind === 'queue-cancel') {
             this.__database
               .prepare(
-                "UPDATE action SET delivery = 'canceled', queued_text = NULL, queue_ready = 0, updated_at = ? WHERE id = ?",
+                "UPDATE action SET delivery = 'canceled', queued_text = NULL, queued_skill = NULL, queue_ready = 0, updated_at = ? WHERE id = ?",
               )
               .run(now, queued!.id);
             this.__database
@@ -382,8 +404,16 @@ export class ControlModel {
               case 'queue':
                 this.__requireTurn(thread, command.expectedTurnId);
                 this.__database
-                  .prepare("UPDATE action SET delivery = 'queued', queued_text = ? WHERE id = ?")
-                  .run(command.text, action.id);
+                  .prepare(
+                    "UPDATE action SET delivery = 'queued', queued_text = ?, queued_skill = ? WHERE id = ?",
+                  )
+                  .run(
+                    command.input.kind === 'text'
+                      ? command.input.text
+                      : (prepared.text ?? this.__conflict()),
+                    prepared.skill ? JSON.stringify(prepared.skill) : null,
+                    action.id,
+                  );
                 dispatchActionId = null;
                 break;
               case 'queue-send':
@@ -527,7 +557,7 @@ export class ControlModel {
           thread?.last_turn_id === nativeTurnId ? thread.last_turn_state : action.completion;
         this.__database
           .prepare(
-            "UPDATE action SET delivery = 'acknowledged', native_turn_id = ?, completion = ?, failure = NULL, queued_text = NULL, updated_at = ? WHERE id = ?",
+            "UPDATE action SET delivery = 'acknowledged', native_turn_id = ?, completion = ?, failure = NULL, queued_text = NULL, queued_skill = NULL, updated_at = ? WHERE id = ?",
           )
           .run(nativeTurnId, completion, now, action.id);
         if (ownsThread) {
@@ -619,6 +649,10 @@ export class ControlModel {
         receipt: this.getAction(queued.id)!,
         thread: this.getThread(threadId)!,
         text: queued.queued_text,
+        skill:
+          queued.queued_skill === null
+            ? null
+            : NativeSkillInputSchema.parse(JSON.parse(queued.queued_skill)),
       };
     });
   }
@@ -974,6 +1008,10 @@ export class ControlModel {
   }
 
   private __availableName(name: string, actionId: string, threadId: string | null): void {
+    if (!this.__isNameAvailable(name, actionId, threadId)) this.__conflict();
+  }
+
+  private __isNameAvailable(name: string, actionId: string, threadId: string | null): boolean {
     const assigned = this.__database
       .prepare(
         'SELECT id FROM thread WHERE name = ? COLLATE NOCASE AND (? IS NULL OR id != ?) LIMIT 1',
@@ -984,7 +1022,7 @@ export class ControlModel {
         "SELECT action.id FROM action INNER JOIN thread ON thread.pending_action_id = action.id WHERE action.requested_name = ? AND action.delivery IN ('submitted', 'uncertain') AND action.id != ? LIMIT 1",
       )
       .get(name, actionId);
-    if (assigned || reserved) this.__conflict();
+    return !assigned && !reserved;
   }
 
   private __requireOwned(thread: IThreadRow): void {

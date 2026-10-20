@@ -1,0 +1,200 @@
+import { createHash } from 'node:crypto';
+import { Exception } from 'error-message-utils';
+import { z } from 'zod';
+
+import {
+  SkillSchema,
+  type IMessageInput,
+  type INativeSkillInput,
+  type ISkill,
+  type ISkillPage,
+  type ISkillPreview,
+} from '../contracts/index.js';
+import type { ICodexProvider, IProviderSkills, createClaudeControl } from '../providers/index.js';
+import { resolveWorkspaceTarget } from '../runtime/state/index.js';
+import { decodeHistoryCursor, encodeHistoryCursor } from '../sessions/index.js';
+import type { IStore } from '../store/index.js';
+
+const PositionSchema = z.strictObject({
+  digest: z.string().regex(/^[a-f0-9]{64}$/),
+  id: z.string().regex(/^[a-f0-9]{64}$/),
+});
+const digest = (input: object): string =>
+  createHash('sha256').update(JSON.stringify(input)).digest('hex');
+
+/**
+ * Reads bounded native inventories without interpreting skill files or installing workflows.
+ * @returns Thread-scoped discovery, exact previews and explicit input preparation.
+ */
+export const createSkills = (
+  codex: ICodexProvider,
+  claude: ReturnType<typeof createClaudeControl>,
+  store: IStore,
+  roots: string[],
+) => {
+  const pending = new Map<
+    string,
+    Promise<{ provider: 'codex' | 'claude'; inventory: IProviderSkills }>
+  >();
+  /**
+   * Coalesces a native metadata read and enforces the catalog budget before paging.
+   * @returns Current metadata, or null when the native inventory cannot be used.
+   * @throws
+   * - -1: The HQ target is outside the allowed workspaces
+   * - -1: The HQ store failed
+   */
+  const scan = async (threadId: string) => {
+    const thread = await store.getThread(threadId);
+    if (!thread) return null;
+    await resolveWorkspaceTarget(thread.workspaceRoot, roots);
+    if (
+      thread.ownership !== 'managed' ||
+      !thread.runtimeEpoch ||
+      !thread.nativeId ||
+      thread.state === 'inactive'
+    )
+      return null;
+    let operation = pending.get(threadId);
+    if (!operation) {
+      if (pending.size >= 32) return null;
+      operation = (async () => ({
+        provider: thread.provider,
+        inventory:
+          thread.provider === 'codex'
+            ? await codex.readSkills(thread.workspaceRoot)
+            : await claude.readSkills(thread.nativeId!),
+      }))();
+      pending.set(threadId, operation);
+    }
+    try {
+      const { provider, inventory } = await operation;
+      const skills: ISkill[] = inventory.skills.map((skill) =>
+        SkillSchema.parse({ ...skill, id: digest([provider, skill.name, skill.path]) }),
+      );
+      skills.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+      if (
+        skills.some((skill, index) => index > 0 && skill.id === skills[index - 1]!.id) ||
+        Buffer.byteLength(JSON.stringify(skills)) > 1_048_576
+      )
+        return null;
+      return {
+        provider,
+        skills,
+        unavailableCount: inventory.unavailableCount,
+        observedAt: inventory.observedAt,
+      };
+    } catch {
+      return null;
+    } finally {
+      if (pending.get(threadId) === operation) pending.delete(threadId);
+    }
+  };
+  return {
+    /**
+     * Pages the native inventory with a content revision guard; an inventory change invalidates continuation.
+     * @returns One bounded page, or explicit unavailable state without a successful empty fallback.
+     * @throws
+     * - -1: The HQ target is outside the allowed workspaces
+     * - -1: The HQ cursor does not match this request
+     * - -1: The HQ store failed
+     */
+    async list(command: {
+      threadId: string;
+      limit: number;
+      cursor?: string;
+      search?: string;
+    }): Promise<ISkillPage> {
+      const { cursor, ...filters } = command;
+      const decoded = decodeHistoryCursor(cursor, filters);
+      let position: z.infer<typeof PositionSchema> | null = null;
+      if (decoded) {
+        try {
+          position = PositionSchema.parse(JSON.parse(decoded));
+        } catch (cause) {
+          throw new Exception(
+            'The HQ cursor does not match this request',
+            undefined,
+            { kind: 'invalid-request' },
+            { cause },
+          );
+        }
+      }
+      const result = await scan(command.threadId);
+      if (!result)
+        return {
+          state: 'unavailable',
+          observedAt: null,
+          data: [],
+          unavailableCount: 0,
+          nextCursor: null,
+        };
+      const revision = digest([result.skills, result.unavailableCount]);
+      if (position && position.digest !== revision)
+        throw new Exception('The HQ cursor does not match this request', undefined, {
+          kind: 'invalid-request',
+        });
+      const query = command.search?.toLowerCase();
+      const data = result.skills
+        .filter(
+          (skill) =>
+            (!position || skill.id > position.id) &&
+            (!query || `${skill.name}\n${skill.description}`.toLowerCase().includes(query)),
+        )
+        .slice(0, command.limit + 1);
+      const hasMore = data.length > command.limit;
+      if (hasMore) data.pop();
+      const last = data.at(-1);
+      return {
+        state: result.unavailableCount ? 'partial' : 'available',
+        observedAt: result.observedAt,
+        data,
+        unavailableCount: result.unavailableCount,
+        nextCursor: encodeHistoryCursor(
+          hasMore && last ? JSON.stringify({ digest: revision, id: last.id }) : null,
+          filters,
+        ),
+      };
+    },
+    /**
+     * Resolves an exact current selection and shows the native invocation without sending input.
+     * @returns Ready, missing, disabled or unavailable state; never an inferred workflow.
+     * @throws
+     * - -1: The HQ target is outside the allowed workspaces
+     * - -1: The HQ store failed
+     */
+    async preview(
+      threadId: string,
+      skillId: string,
+      skillArguments: string,
+    ): Promise<ISkillPreview> {
+      const result = await scan(threadId);
+      if (!result) return { state: 'unavailable', skill: null, text: null };
+      const skill = result.skills.find((skill) => skill.id === skillId);
+      if (!skill) return { state: 'missing', skill: null, text: null };
+      if (!skill.isEnabled) return { state: 'disabled', skill, text: null };
+      return {
+        state: 'ready',
+        skill,
+        text: `${result.provider === 'codex' ? '$' : '/'}${skill.name}${skillArguments ? ` ${skillArguments}` : ''}`,
+      };
+    },
+    /**
+     * Prepares one explicitly selected input while leaving skill contents and permissions native.
+     * @returns Exact text and optional native skill selection for the existing action dispatcher.
+     * @throws
+     * - -1: The HQ skill is unavailable
+     * - -1: The HQ target is outside the allowed workspaces
+     * - -1: The HQ store failed
+     */
+    async prepare(
+      threadId: string,
+      input: IMessageInput,
+    ): Promise<{ text: string; skill: INativeSkillInput | null }> {
+      if (input.kind === 'text') return { text: input.text, skill: null };
+      const preview = await this.preview(threadId, input.skillId, input.arguments);
+      if (preview.state !== 'ready' || !preview.skill || !preview.text)
+        throw new Exception('The HQ skill is unavailable', undefined, { kind: 'state-conflict' });
+      return { text: preview.text, skill: { name: preview.skill.name, path: preview.skill.path } };
+    },
+  };
+};

@@ -43,6 +43,7 @@ These contracts use the default code `-1`. An Exception's `data.kind` classifies
 | -1   | The HQ runtime is not running                   |
 | -1   | The HQ action conflicts with its recorded state |
 | -1   | The HQ action key is unavailable                |
+| -1   | The HQ skill is unavailable                     |
 
 State safety rejects non-private ownership, symlinks and non-regular files. Runtime ownership is never reclaimed automatically. Transport failure includes malformed, oversized or incomplete frames and bounded-request/lifecycle failures. Native history and subscription failures remain unavailable, never successful empty results. Claude control rejects missing or non-idle initialization, invalid native session identities and malformed lifecycle evidence. Failed delivery remains uncertain when no exact native rejection or acknowledgement establishes its outcome.
 

@@ -701,7 +701,11 @@ test(
         action: {
           id: actionId,
           runtimeEpoch: epoch,
-          command: { kind: 'message', threadId, text: 'Work interrupted by the host crash' },
+          command: {
+            kind: 'message',
+            threadId,
+            input: { kind: 'text', text: 'Work interrupted by the host crash' },
+          },
         },
       });
       const active = await until(
@@ -719,7 +723,7 @@ test(
             kind: 'queue',
             threadId,
             expectedTurnId: active.result!.activeTurnId!,
-            text: 'Only continue after explicit recovery',
+            input: { kind: 'text', text: 'Only continue after explicit recovery' },
           },
         },
       });

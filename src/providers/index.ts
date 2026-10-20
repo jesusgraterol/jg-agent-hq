@@ -1,5 +1,5 @@
 // transport
-export type { IProviderProcess, INativePrompt } from './types.js';
+export type { IProviderProcess, INativePrompt, IProviderSkills } from './types.js';
 export { createProviderProcess } from './process.js';
 
 // Codex

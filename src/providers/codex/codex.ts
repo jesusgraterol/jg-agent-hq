@@ -6,6 +6,7 @@ import type { IUsageSnapshot } from '../../contracts/index.js';
 import { createCodexRpc } from './rpc.js';
 import {
   NativeBucketSchema,
+  NativeSkillsSchema,
   NativeItemPageSchema,
   NativeThreadPageSchema,
   NativeThreadSchema,
@@ -25,7 +26,9 @@ import { parseNative } from './validations.js';
  * - -1: The Codex integration failed
  * - -1: The HQ transport failed
  */
-export const createCodexProvider = async (): Promise<ICodexProvider> => {
+export const createCodexProvider = async (
+  extraSkillRoots: string[] = [],
+): Promise<ICodexProvider> => {
   let latest: IUsageSnapshot = {
     provider: 'codex',
     state: 'unavailable',
@@ -64,39 +67,42 @@ export const createCodexProvider = async (): Promise<ICodexProvider> => {
       return latest;
     })());
   };
-  rpc = await createCodexRpc({
-    request: (id, method, params) => {
-      if (events) events.request(id, method, params);
-      else void rpc?.reject(id).catch(() => undefined);
-    },
-    lateResponse: (id, result, error) => events?.lateResponse(id, result, error),
-    unavailable: () => events?.unavailable(),
-    notify: (method, params) => {
-      events?.notify(method, params);
-      if (method !== 'account/rateLimits/updated' && method !== 'account/updated') return;
-      if (method === 'account/updated') {
-        accountGeneration += 1;
-        latest = {
-          provider: 'codex',
-          state: 'unavailable',
-          source: 'native',
-          observedAt: null,
-          ordinaryUsageAllowed: null,
-          windows: [],
-        };
-      }
-      if (
-        method === 'account/rateLimits/updated' &&
-        !z.object({ rateLimits: NativeBucketSchema }).safeParse(params).success
-      ) {
+  rpc = await createCodexRpc(
+    {
+      request: (id, method, params) => {
+        if (events) events.request(id, method, params);
+        else void rpc?.reject(id).catch(() => undefined);
+      },
+      lateResponse: (id, result, error) => events?.lateResponse(id, result, error),
+      unavailable: () => events?.unavailable(),
+      notify: (method, params) => {
+        events?.notify(method, params);
+        if (method !== 'account/rateLimits/updated' && method !== 'account/updated') return;
+        if (method === 'account/updated') {
+          accountGeneration += 1;
+          latest = {
+            provider: 'codex',
+            state: 'unavailable',
+            source: 'native',
+            observedAt: null,
+            ordinaryUsageAllowed: null,
+            windows: [],
+          };
+        }
+        if (
+          method === 'account/rateLimits/updated' &&
+          !z.object({ rateLimits: NativeBucketSchema }).safeParse(params).success
+        ) {
+          latest = { ...latest, state: latest.observedAt === null ? 'unavailable' : 'stale' };
+          return;
+        }
+        // sparse updates invalidate the account observation; one native refresh reconciles all buckets
         latest = { ...latest, state: latest.observedAt === null ? 'unavailable' : 'stale' };
-        return;
-      }
-      // sparse updates invalidate the account observation; one native refresh reconciles all buckets
-      latest = { ...latest, state: latest.observedAt === null ? 'unavailable' : 'stale' };
-      void readUsage();
+        void readUsage();
+      },
     },
-  });
+    extraSkillRoots,
+  );
   const connection = rpc;
   return {
     userAgent: connection.userAgent,
@@ -168,6 +174,37 @@ export const createCodexProvider = async (): Promise<ICodexProvider> => {
       return { data: page.data.map(toHistoryItem), nextCursor: page.nextCursor };
     },
     readUsage,
+    async readSkills(workspaceRoot) {
+      const result = parseNative(
+        NativeSkillsSchema,
+        await connection.request('skills/list', { cwds: [workspaceRoot], forceReload: true }),
+      );
+      const entry = result.data[0]!;
+      if (entry.cwd !== workspaceRoot)
+        throw new Exception('The Codex integration failed', undefined, {
+          kind: 'agent-unavailable',
+        });
+      return {
+        unavailableCount: entry.errors.length,
+        observedAt: Date.now(),
+        skills: entry.skills.map((skill) => ({
+          name: skill.name,
+          description: skill.description,
+          argumentHint: null,
+          kind: 'skill',
+          path: skill.path,
+          scope: skill.scope,
+          isEnabled: skill.enabled,
+          requiresExplicitInvocation: null,
+          prerequisites:
+            skill.dependencies?.tools.map((tool) => ({
+              type: tool.type,
+              name: tool.value,
+              description: tool.description ?? null,
+            })) ?? null,
+        })),
+      };
+    },
     setEvents: (handlers) => {
       events = handlers;
     },
@@ -198,12 +235,18 @@ export const createCodexProvider = async (): Promise<ICodexProvider> => {
         await connection.request('thread/name/set', { threadId: nativeId, name }, requestId),
       );
     },
-    async startTurn(requestId, nativeId, text) {
+    async startTurn(requestId, nativeId, text, skill) {
       return parseNative(
         z.object({ turn: NativeTurnSchema }),
         await connection.request(
           'turn/start',
-          { threadId: nativeId, input: [{ type: 'text', text }] },
+          {
+            threadId: nativeId,
+            input: [
+              { type: 'text', text },
+              ...(skill ? [{ type: 'skill', name: skill.name, path: skill.path }] : []),
+            ],
+          },
           requestId,
         ),
       ).turn;

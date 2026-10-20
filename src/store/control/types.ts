@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import {
   ActionEnvelopeSchema,
+  NativeSkillInputSchema,
   ActionReceiptSchema,
   ActionSummarySchema,
   ManagedThreadSchema,
@@ -43,6 +44,7 @@ export const ActionRowSchema = z.object({
   failure: ActionReceiptSchema.shape.failure,
   related_action_id: z.uuid().nullable(),
   queued_text: ActionReceiptSchema.shape.queuedText,
+  queued_skill: z.string().nullable(),
   requested_name: ManagedThreadSchema.shape.name.nullable(),
   queue_ready: z.number().int().min(0).max(1),
   created_at: z.number().int(),
@@ -132,6 +134,8 @@ export const AdmissionSchema = z.strictObject({
   prepared: z.strictObject({
     workspaceRoot: z.string().optional(),
     nativeId: NativeIdSchema.optional(),
+    text: z.string().min(1).max(65_536).optional(),
+    skill: NativeSkillInputSchema.nullable().optional(),
   }),
 });
 export type IAdmission = z.infer<typeof AdmissionSchema>;
@@ -146,6 +150,7 @@ export const DispatchSchema = z.object({
   receipt: ActionReceiptSchema,
   thread: ManagedThreadSchema,
   text: z.string().max(65_536),
+  skill: NativeSkillInputSchema.nullable(),
 });
 export type IDispatch = z.infer<typeof DispatchSchema>;
 export const ObservationResultSchema = z.object({

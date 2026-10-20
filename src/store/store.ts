@@ -193,6 +193,10 @@ export const createStore = async (
     },
     getAction: (id) => request({ kind: 'action-read', id }, ActionReceiptSchema.nullable()),
     getThread: (id) => request({ kind: 'thread-read', id }, ManagedThreadSchema.nullable()),
+    getThreadByName: (name) =>
+      request({ kind: 'thread-name-read', name }, ManagedThreadSchema.nullable()),
+    suggestThreadName: (name) =>
+      request({ kind: 'thread-name-suggest', name }, ManagedThreadSchema.shape.name),
     getThreadByNativeId: (provider, nativeId) =>
       request({ kind: 'native-thread-read', provider, nativeId }, ManagedThreadSchema.nullable()),
     getNativeThreads: (provider, nativeIds) =>

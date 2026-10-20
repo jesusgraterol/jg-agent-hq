@@ -51,6 +51,12 @@ port.on('message', (message: unknown) => {
       case 'thread-read':
         result = controls.getThread(command.id);
         break;
+      case 'thread-name-read':
+        result = controls.getThreadByName(command.name);
+        break;
+      case 'thread-name-suggest':
+        result = controls.suggestName(command.name);
+        break;
       case 'native-thread-read':
         result = controls.getThreadByNativeId(command.provider, command.nativeId);
         break;

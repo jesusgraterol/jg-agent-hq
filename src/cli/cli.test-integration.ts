@@ -91,6 +91,25 @@ test('stdin actions preserve split UTF-8 and return receipts without exposing me
       if (Date.now() >= deadline) throw new Error('thread creation deadline exceeded');
       await wait(10);
     }
+    const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
+    const named = await promisify(execFile)(
+      process.execPath,
+      [cli, 'managed-thread-name', '--state-root', runtime.stateRoot, '--name', 'STDIN-CHECK'],
+      { timeout: 5000 },
+    );
+    expect(JSON.parse(named.stdout)).toMatchObject({
+      kind: 'managed-thread-name',
+      result: { id: threadId, name: 'stdin-check' },
+    });
+    const suggested = await promisify(execFile)(
+      process.execPath,
+      [cli, 'suggest-thread-name', '--state-root', runtime.stateRoot, '--topic', 'Stdin check'],
+      { timeout: 5000 },
+    );
+    expect(JSON.parse(suggested.stdout)).toMatchObject({
+      kind: 'suggest-thread-name',
+      result: { name: 'stdin-check-2' },
+    });
     const text = 'Write café 😀';
     const actionId = randomUUID();
     const content = Buffer.from(
@@ -99,7 +118,7 @@ test('stdin actions preserve split UTF-8 and return receipts without exposing me
         action: {
           id: actionId,
           runtimeEpoch: status.result.runtimeEpoch,
-          command: { kind: 'message', threadId, text },
+          command: { kind: 'message', threadId, input: { kind: 'text', text: text } },
         },
       }),
     );

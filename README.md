@@ -34,6 +34,10 @@ Explicit actions create, name, adopt, resume and close threads; send idle messag
 
 Native execution settings, instructions, skills and tool permissions remain with each CLI. Claude uses an owned structured process per controlled session and reports immediate steering as unavailable. Plan approval grants no native tool permission. Close other CLI controllers before confirming adoption, resume or recovery. HQ coordinates sessions sharing one state directory; it cannot lock independently running native CLIs. Durable state includes `action.key`, which must stay private and accompany its SQLite database. Queued undelivered text is saved; ordinary message bodies and question answers are not.
 
+Use `suggest-thread-name --topic "Build usage" --state-root <directory>` for an editable label and `managed-thread-name --name build-usage --state-root <directory>` to resolve it. Creation adds a short ordinal suffix when a name is occupied. Actions and relationships retain immutable IDs.
+
+Use `skills --thread-id <id> --state-root <directory>` to browse the controlled session's native skill catalog. `skill-preview --thread-id <id> --skill-id <id> --arguments "auto exact-plan" --state-root <directory>` shows the exact invocation without sending it. Missing native metadata is explicitly unavailable. The CLI loads all skill content and retains its permissions and invocation rules.
+
 Use `jg-agent-hq request --state-root <directory>` with a closed HQ command on stdin for action and control reads. The [API reference](api/README.md) describes action envelopes, receipts and reconnect reads.
 
 ## Project blueprint
@@ -44,7 +48,8 @@ Use `jg-agent-hq request --state-root <directory>` with a closed HQ command on s
 - `src/ipc/` and `src/cli/`: private local commands and the installed executable.
 - `src/providers/codex/`: native history and account protocol.
 - `src/providers/claude/`: native structured control and usage, plus the version-checked, worker-owned local history reader.
-- `src/sessions/`: authorized, cursor-bound history reads.
+- `src/sessions/`: authorized, cursor-bound history reads and short label suggestions.
+- `src/skills/`: bounded native catalogs, invocation previews and explicit input preparation.
 - `src/actions/`: durable action dispatch, native input routing and bounded live presentation.
 - `src/store/`: SQLite discovery metadata and the action/control ledger in one worker.
 - `src/contracts/`: browser-safe command and response contracts.

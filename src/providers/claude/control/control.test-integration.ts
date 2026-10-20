@@ -86,7 +86,7 @@ const actions = async (fixture: IClaudeFixture) => {
     return response.result;
   };
   const message = async (threadId: string, text = 'Please inspect this example') => {
-    const action = envelope({ kind: 'message', threadId, text });
+    const action = envelope({ kind: 'message', threadId, input: { kind: 'text', text: text } });
     await submit(action);
     return action;
   };
@@ -170,7 +170,7 @@ test('Claude queues one follow-up at a verified result boundary and never sends 
       kind: 'queue',
       threadId: thread.id,
       expectedTurnId: accepted.nativeTurnId!,
-      text: 'Next request',
+      input: { kind: 'text', text: 'Next request' },
     });
     expect((await api.submit(followUp)).delivery).toBe('queued');
     await api.submit(followUp);
@@ -195,7 +195,7 @@ test('Claude interrupt acknowledgement does not complete the turn or dispatch qu
       kind: 'queue',
       threadId: thread.id,
       expectedTurnId: accepted.nativeTurnId!,
-      text: 'Follow up',
+      input: { kind: 'text', text: 'Follow up' },
     });
     await api.submit(queued);
     const stop = api.envelope({
@@ -785,7 +785,7 @@ test('Claude completion wins an interruption race and its queued follow-up remai
       kind: 'queue',
       threadId: thread.id,
       expectedTurnId: accepted.nativeTurnId!,
-      text: 'A paused follow-up',
+      input: { kind: 'text', text: 'A paused follow-up' },
     });
     await api.submit(queued);
     const stop = api.envelope({

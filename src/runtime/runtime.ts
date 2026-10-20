@@ -12,6 +12,8 @@ import {
   type ICodexProvider,
 } from '../providers/index.js';
 import { readNativeHistory } from '../sessions/index.js';
+import { suggestThreadName } from '../sessions/names/index.js';
+import { createSkills } from '../skills/index.js';
 import { createStore } from '../store/index.js';
 
 import {
@@ -54,6 +56,12 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       { cause: parsed.error },
     );
   const allowedRoots = await resolveAllowedRoots(parsed.data.allowedRoots);
+  const codexExtraSkillRoots = parsed.data.codexExtraSkillRoots?.length
+    ? await resolveAllowedRoots(parsed.data.codexExtraSkillRoots)
+    : [];
+  const claudeAdditionalDirectories = parsed.data.claudeAdditionalDirectories?.length
+    ? await resolveAllowedRoots(parsed.data.claudeAdditionalDirectories)
+    : [];
   const stateRoot = await prepareStateRoot(parsed.data.stateRoot);
   const ownership = await claimRuntimeOwner(stateRoot);
   let store: Awaited<ReturnType<typeof createStore>> | undefined;
@@ -64,7 +72,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     const databasePath = await prepareDatabase(stateRoot);
     actionKey = await prepareActionKey(stateRoot, databasePath);
     store = await createStore(databasePath, ownership.owner.nonce, actionKey);
-    provider = await createCodexProvider();
+    provider = await createCodexProvider(codexExtraSkillRoots);
   } catch (error) {
     const cleanup = await Promise.allSettled([provider?.close(), store?.close()]);
     const failed = cleanup.find((result) => result.status === 'rejected');
@@ -82,7 +90,8 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const native = provider;
   const projection = store;
   const claude = createClaudeProvider(projection);
-  const claudeControl = createClaudeControl();
+  const claudeControl = createClaudeControl(claudeAdditionalDirectories);
+  const skills = createSkills(native, claudeControl, projection, allowedRoots);
   const actions = createActions(
     native,
     claudeControl,
@@ -103,6 +112,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     allowedRoots,
     ownership.owner.nonce,
     actionKey,
+    skills,
   );
   let resolveClosed: () => void = () => undefined;
   let rejectClosed: (error: unknown) => void = () => undefined;
@@ -184,8 +194,21 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           kind: 'usage',
           result: await (command.provider === 'claude' ? claude.readUsage() : native.readUsage()),
         };
+      case 'skills':
+        return { kind: command.kind, result: await skills.list(command) };
+      case 'skill-preview':
+        return {
+          kind: command.kind,
+          result: await skills.preview(command.threadId, command.skillId, command.arguments),
+        };
       case 'action':
         return { kind: 'action', result: await actions.submit(command.action) };
+      case 'suggest-thread-name':
+        return {
+          kind: command.kind,
+          result: { name: await projection.suggestThreadName(suggestThreadName(command.topic)) },
+        };
+      case 'managed-thread-name':
       case 'receipt':
       case 'managed-threads':
       case 'managed-thread':

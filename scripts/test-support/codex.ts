@@ -61,6 +61,16 @@ else {
     }
     const { method,params = {} } = request;
     if (control.emit) for (const event of control.emit) notify(event.method,event.params);
+    if (method === 'skills/extraRoots/set') {respond(request.id,{});return;}
+    if (method === 'skills/list') {
+      if(control.releaseThreadId)complete(control.releaseThreadId);
+      if(control.skillsFailure){respond(request.id,{data:'invalid'});return;}
+      const skills = Array.from({length:control.skillCount??2},(_,index)=>{
+        const name=(control.skillRevision?'changed-':'')+(index===0?'explicit-skill':index===1?'implicit-skill':'skill-'+index);
+        return {name,description:control.skillDescriptionSize?'d'.repeat(control.skillDescriptionSize):'Native installed skill '+index,path:join(directory,'skills',name,'SKILL.md'),scope:'user',enabled:!(control.disabledSkill&&index===0),dependencies:{tools:[{type:'mcp',value:'example',description:'Native declared prerequisite'}]}};
+      });
+      respond(request.id,{data:[{cwd:control.wrongSkillRoot??params.cwds[0],skills,errors:control.skillErrors?[{}]:[]}]});return;
+    }
     if (method === 'thread/start') {
       const thread = { ...threads[0],id:'native-'+(++threadSequence),cwd:params.cwd,name:null,status:{type:'idle'},activeTurn:null };
       managed.set(thread.id,thread);

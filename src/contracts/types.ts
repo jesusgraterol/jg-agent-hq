@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, PUBLIC_ERROR_MESSAGES } from './constants.js';
+import { SkillIdSchema, SkillPageSchema, SkillPreviewSchema } from './skills/index.js';
+
 import { NativeIdSchema } from './identities/index.js';
 import {
   ActionEnvelopeSchema,
@@ -43,6 +45,18 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     ...PageFields,
   }),
   z.strictObject({ kind: z.literal('usage'), provider: TargetFields.provider }),
+  z.strictObject({
+    kind: z.literal('skills'),
+    threadId: z.uuid(),
+    search: z.string().max(1024).optional(),
+    ...PageFields,
+  }),
+  z.strictObject({
+    kind: z.literal('skill-preview'),
+    threadId: z.uuid(),
+    skillId: SkillIdSchema,
+    arguments: z.string().max(16_384),
+  }),
   z.strictObject({ kind: z.literal('action'), action: ActionEnvelopeSchema }),
   z.strictObject({ kind: z.literal('receipt'), actionId: z.uuid() }),
   z.strictObject({
@@ -51,6 +65,11 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     ...PageFields,
   }),
   z.strictObject({ kind: z.literal('managed-thread'), threadId: z.uuid() }),
+  z.strictObject({
+    kind: z.literal('managed-thread-name'),
+    name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/i),
+  }),
+  z.strictObject({ kind: z.literal('suggest-thread-name'), topic: z.string().min(1).max(1024) }),
   z.strictObject({ kind: z.literal('actions'), threadId: z.uuid(), ...PageFields }),
   z.strictObject({
     kind: z.literal('events'),
@@ -167,6 +186,8 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
     }),
   }),
   z.object({ kind: z.literal('usage'), result: UsageSnapshotSchema }),
+  z.object({ kind: z.literal('skills'), result: SkillPageSchema }),
+  z.object({ kind: z.literal('skill-preview'), result: SkillPreviewSchema }),
   z.object({ kind: z.literal('action'), result: ActionReceiptSchema }),
   z.object({ kind: z.literal('receipt'), result: ActionReceiptSchema.nullable() }),
   z.object({
@@ -177,6 +198,11 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
     }),
   }),
   z.object({ kind: z.literal('managed-thread'), result: ManagedThreadSchema.nullable() }),
+  z.object({ kind: z.literal('managed-thread-name'), result: ManagedThreadSchema.nullable() }),
+  z.object({
+    kind: z.literal('suggest-thread-name'),
+    result: z.object({ name: ManagedThreadSchema.shape.name }),
+  }),
   z.object({
     kind: z.literal('actions'),
     result: z.object({

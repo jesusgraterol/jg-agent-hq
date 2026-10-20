@@ -1,4 +1,9 @@
-import type { IActionCommand, IManagedThread, INativeApproval } from '../contracts/index.js';
+import type {
+  IActionCommand,
+  IManagedThread,
+  INativeApproval,
+  ISkill,
+} from '../contracts/index.js';
 
 // owned native process transport; adapters own all provider protocol semantics
 export type IProviderProcess = {
@@ -39,4 +44,11 @@ export type INativePrompt = {
    * - -1: The HQ transport failed
    */
   reject(): Promise<void>;
+};
+
+// normalized native inventory, bounded before client paging
+export type IProviderSkills = {
+  skills: Omit<ISkill, 'id'>[];
+  unavailableCount: number;
+  observedAt: number;
 };
