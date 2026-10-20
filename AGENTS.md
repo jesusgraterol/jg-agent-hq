@@ -1,0 +1,1 @@
+../../coding-instructions/src/AGENTS.md
