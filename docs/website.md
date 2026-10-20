@@ -32,6 +32,8 @@ Only the floor-Node job uploads `website/dist`, and only on `main`. Deployment w
 
 The repository's Pages source must be GitHub Actions, with custom domain `jg-agent-hq.jesusgraterol.dev` and working HTTPS DNS/certificate configuration. The `github-pages` environment should permit deployment from `main`. A successful workflow is followed by `verify:deployment`, which checks actual HTTPS content, direct Markdown media types/content, discovery, assets and an actual missing-page 404. A locally passing build does not establish a live deployment.
 
+For Cloudflare-proxied hosting, create a Configuration Rule matching `http.host eq "jg-agent-hq.jesusgraterol.dev"` with Email Obfuscation off. Otherwise Cloudflare interprets the package's `name@version` install argument as an email address and rewrites the verified HTML. Keep this rule restricted to the public hostname; domain configuration belongs to the operator.
+
 ## Manual npm release
 
 The initial public version is `0.1.0`. Inspect and test the exact tarball in an isolated consumer, retain its SHA-256 and publish that file from the operator's authenticated npm CLI. Do not rebuild or repack between verification and publication. Complete npm's required security/2FA flow directly; do not put credentials or verification codes in repository files or chat.
