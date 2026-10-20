@@ -1,0 +1,149 @@
+---
+import BrandLogo from 'jg-personal-astro-ui/brand-logo';
+import DocumentHead from 'jg-personal-astro-ui/document-head';
+import JgMark from 'jg-personal-astro-ui/jg-mark';
+import { buildStructuredData } from 'jg-personal-astro-ui/seo';
+import SiteFooter from 'jg-personal-astro-ui/site-footer';
+import SiteHeader from 'jg-personal-astro-ui/site-header';
+import SkipLink from 'jg-personal-astro-ui/skip-link';
+import TextLink from 'jg-personal-astro-ui/text-link';
+import ThemeControl from 'jg-personal-astro-ui/theme-control';
+import ThemeInitScript from 'jg-personal-astro-ui/theme-init-script';
+
+import { PAGE_RECORDS, SITE_CONFIG } from '../../site.config.ts';
+import '../../styles/global.css';
+
+interface Props {
+  page?: (typeof PAGE_RECORDS)[number];
+}
+const { page } = Astro.props;
+const canonicalUrl = page ? new URL(page.path, SITE_CONFIG.url).href : undefined;
+const structuredData =
+  page && canonicalUrl
+    ? buildStructuredData({
+        site: {
+          author: SITE_CONFIG.author,
+          language: 'en',
+          name: SITE_CONFIG.name,
+          url: SITE_CONFIG.url,
+        },
+        canonicalUrl,
+        description: page.description,
+        title: page.title,
+        type: page.id === 'home' ? 'website' : 'webpage',
+      })
+    : undefined;
+const footerColumns = [
+  { title: 'Explore', links: SITE_CONFIG.navigation },
+  {
+    title: 'Project',
+    links: [
+      { href: SITE_CONFIG.repositoryUrl, label: 'GitHub', external: true },
+      { href: SITE_CONFIG.npmUrl, label: 'npm', external: true },
+      { href: '/llms.txt', label: 'llms.txt' },
+    ],
+  },
+  {
+    title: 'Built together',
+    links: [
+      { href: SITE_CONFIG.skillsUrl, label: 'jg-skills', external: true },
+      { href: SITE_CONFIG.packagesUrl, label: 'jg-packages', external: true },
+    ],
+  },
+];
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <DocumentHead
+      title={page?.title ?? 'Page not found | jg-agent-hq'}
+      description={page?.description ??
+        'This page could not be found. Browse the jg-agent-hq documentation or return home.'}
+      siteName={SITE_CONFIG.name}
+      canonicalUrl={canonicalUrl}
+      noIndex={!page}
+      alternate={page
+        ? {
+            href: new URL(page.markdown, SITE_CONFIG.url).href,
+            type: 'text/markdown',
+            title: 'Markdown',
+          }
+        : undefined}
+      author={SITE_CONFIG.author.name}
+      icons={[
+        { href: '/favicon.ico', rel: 'icon', sizes: '16x16 32x32 48x48' },
+        { href: '/favicons/32x32.png', rel: 'icon', sizes: '32x32', type: 'image/png' },
+        { href: '/favicons/192x192.png', rel: 'apple-touch-icon' },
+      ]}
+      llmsTextUrl={new URL('/llms.txt', SITE_CONFIG.url).href}
+      openGraphImage={{
+        url: new URL('/og/jg-agent-hq.png', SITE_CONFIG.url).href,
+        type: 'image/png',
+        width: 1200,
+        height: 630,
+        alt: 'jg-agent-hq. Native agents. One workspace.',
+      }}
+      structuredData={structuredData}
+      themeColors={SITE_CONFIG.themeColors}
+    />
+    <ThemeInitScript
+      storageKey={SITE_CONFIG.themeKey}
+      themeColors={SITE_CONFIG.themeColors}
+    />
+  </head>
+  <body>
+    <SkipLink />
+    <SiteHeader
+      currentPath={Astro.url.pathname}
+      homeLabel="jg-agent-hq home"
+      items={SITE_CONFIG.navigation}
+    >
+      <BrandLogo
+        slot="brand"
+        name={SITE_CONFIG.name}
+        ><JgMark
+          slot="mark"
+          class="size-8 shrink-0"
+        /></BrandLogo
+      >
+      <ThemeControl
+        slot="actions"
+        storageKey={SITE_CONFIG.themeKey}
+      />
+      <ThemeControl
+        slot="mobile-actions"
+        storageKey={SITE_CONFIG.themeKey}
+      />
+    </SiteHeader>
+    <main
+      id="main-content"
+      tabindex="-1"
+    >
+      <slot />
+    </main>
+    <SiteFooter
+      columns={footerColumns}
+      notes={['MIT licensed. A local controller for native coding agents.']}
+    >
+      <BrandLogo
+        slot="brand"
+        name={SITE_CONFIG.name}
+        ><JgMark
+          slot="mark"
+          class="size-8 shrink-0"
+        /></BrandLogo
+      >
+      <p
+        slot="about"
+        class="text-sm leading-6 text-muted"
+      >
+        A TypeScript package and CLI. <TextLink
+          href={SITE_CONFIG.npmUrl}
+          external
+          >Version {SITE_CONFIG.version}</TextLink
+        >
+      </p>
+    </SiteFooter>
+  </body>
+</html>

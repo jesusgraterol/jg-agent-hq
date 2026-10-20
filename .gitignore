@@ -150,3 +150,7 @@ vite.config.ts.timestamp-*
 
 # Local runtime metadata
 .runtime/
+
+# Website verification output
+website/playwright-report/
+website/test-results/

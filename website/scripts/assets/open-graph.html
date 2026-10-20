@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      @font-face {
+        font-family: 'Ubuntu Sans';
+        src: url('{{sans}}') format('woff2');
+        font-weight: 100 900;
+      }
+      @font-face {
+        font-family: 'Ubuntu Mono';
+        src: url('{{mono}}') format('woff2');
+        font-weight: 100 900;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 1200px;
+        height: 630px;
+        overflow: hidden;
+      }
+      body {
+        background: #111827;
+        color: #f8fafc;
+        font-family: 'Ubuntu Sans';
+        padding: 64px 72px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        font-family: 'Ubuntu Mono';
+        font-size: 28px;
+      }
+      header svg {
+        width: 64px;
+        height: 64px;
+        flex: none;
+      }
+      h1 {
+        font-size: 94px;
+        font-weight: 650;
+        letter-spacing: -4px;
+        line-height: 1.02;
+        max-width: 900px;
+        margin: 0;
+      }
+      h1 span {
+        color: #6ee7b7;
+      }
+      footer {
+        font-family: 'Ubuntu Mono';
+        font-size: 22px;
+        color: #cbd5e1;
+      }
+    </style>
+  </head>
+  <body>
+    <header data-fit>{{mark}}<span>jg-agent-hq</span></header>
+    <h1 data-fit>Native agents.<br /><span>One workspace.</span></h1>
+    <footer data-fit>Claude Code + Codex · Local workspace primitives</footer>
+  </body>
+</html>

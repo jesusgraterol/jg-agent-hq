@@ -1,0 +1,4 @@
+@import 'tailwindcss';
+@import 'jg-personal-astro-ui/styles/contract.css';
+@import 'jg-personal-astro-ui/styles/theme.css';
+@import 'jg-personal-astro-ui/styles/prose.css';
