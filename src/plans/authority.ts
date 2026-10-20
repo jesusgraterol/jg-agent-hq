@@ -78,6 +78,7 @@ export const describePlan = (
     milestoneCount: artifacts.parsed.length,
     coordination: {
       schemaVersion: coordination.schemaVersion,
+      comparisonCount: coordination.comparisons.length,
       finalized: coordination.finalized,
       planApproval: coordination.planApproval,
       sequenceApproval: coordination.sequenceApproval,

@@ -76,6 +76,7 @@ export const parsePlanCoordination = (coordinationText: string | null): IPlanCoo
     return coordinationText === null
       ? {
           schemaVersion: 1 as const,
+          comparisons: [],
           finalized: null,
           planApproval: null,
           sequenceApproval: null,

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0
+
+- Preserve coordinator-owned, revision-bound plan comparison evidence through plan operations. Expose its bounded count in status without copying review bodies into responses.
+- Require the comparison collection in the coordination contract. The private coordinator owns semantic review, relevance selection and execution gates.
+
 ## 0.1.0
 
 - Add the shared lock API, owner-aware recovery and built-package verification.

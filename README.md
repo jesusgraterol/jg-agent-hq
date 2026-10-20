@@ -59,6 +59,8 @@ Use `jg-agent-hq request --state-root <directory>` with a closed HQ command on s
 
 Finalization assigns milestone UUIDs and returns the complete canonical sequence. Plan approval, sequence approval and scoped execution authorization are separate explicit operator actions. None sends native input or answers tool permissions. `coordination.json` holds current records beside the plan. SQLite retains write replay identities and a replaceable, paged milestone projection. Keep both when recovering interrupted writes. A pending write blocks further mutation until its original action is reconciled.
 
+Coordinators can retain revision-bound compatibility reviews in that same file. Core operations preserve the records without assessing them or granting authority. The integrating coordinator owns review freshness and conflict gates.
+
 Begin a revision before native planning. HQ stops bound implementation threads and their owned background work, captures partial-work evidence, and keeps execution paused while the CLI revises the plan and regenerates milestones. The finalizer carries exact matches automatically and asks for one confirmation covering every unmatched completed or partial milestone. Equivalent rewording preserves the original completion evidence. Changed requirements remain pending. Present and approve the canonical sequence, then explicitly authorize the new execution scope and mode. Neither approval nor restart resumes implementation. See the [revision recovery contract](api/README.md#revision-and-progress-recovery).
 
 ## Cross-provider feedback
