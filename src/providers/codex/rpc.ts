@@ -19,12 +19,15 @@ const EnvelopeSchema = z.object({
  * - -1: The Codex integration failed
  * - -1: The HQ transport failed
  */
-export const createCodexRpc = async (handlers: {
-  notify(method: string, params: unknown): void;
-  request(id: string | number, method: string, params: unknown): void;
-  lateResponse(id: string, result: unknown, error: unknown): void;
-  unavailable(): void;
-}) => {
+export const createCodexRpc = async (
+  handlers: {
+    notify(method: string, params: unknown): void;
+    request(id: string | number, method: string, params: unknown): void;
+    lateResponse(id: string, result: unknown, error: unknown): void;
+    unavailable(): void;
+  },
+  extraSkillRoots: string[] = [],
+) => {
   const manifest = z
     .object({ version: z.string() })
     .parse(JSON.parse(await readFile(new URL('../../../package.json', import.meta.url), 'utf8')));
@@ -145,6 +148,18 @@ export const createCodexRpc = async (handlers: {
         { cause: initialized.error },
       );
     await transport.write({ method: 'initialized', params: {} });
+    if (extraSkillRoots.length) {
+      const roots = z
+        .object({})
+        .safeParse(await request('skills/extraRoots/set', { extraRoots: extraSkillRoots }));
+      if (!roots.success)
+        throw new Exception(
+          'The Codex integration failed',
+          undefined,
+          { kind: 'agent-unavailable' },
+          { cause: roots.error },
+        );
+    }
     return {
       userAgent: initialized.data.userAgent,
       get isAvailable() {

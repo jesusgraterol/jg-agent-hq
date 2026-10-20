@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { MessageInputSchema, NativeSkillInputSchema } from '../skills/index.js';
+
 import { NativeIdSchema } from '../identities/index.js';
 
 // explicit local intent; native RPC methods and arbitrary configuration are never accepted
@@ -40,9 +42,13 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
     operatorConfirmation: z.string().trim().min(1).max(1024),
   }),
   z.strictObject({ kind: z.literal('thread-rename'), threadId: ThreadIdSchema, name: NameSchema }),
-  z.strictObject({ kind: z.literal('message'), threadId: ThreadIdSchema, text: TextSchema }),
+  z.strictObject({
+    kind: z.literal('message'),
+    threadId: ThreadIdSchema,
+    input: MessageInputSchema,
+  }),
   z.strictObject({ kind: z.literal('steer'), ...ActiveTargetFields, text: TextSchema }),
-  z.strictObject({ kind: z.literal('queue'), ...ActiveTargetFields, text: TextSchema }),
+  z.strictObject({ kind: z.literal('queue'), ...ActiveTargetFields, input: MessageInputSchema }),
   z.strictObject({ kind: z.literal('interrupt'), ...ActiveTargetFields }),
   z.strictObject({ kind: z.literal('queue-send'), queuedActionId: z.uuid() }),
   z.strictObject({ kind: z.literal('queue-cancel'), queuedActionId: z.uuid() }),
@@ -103,13 +109,17 @@ export const ActionReceiptSchema = z.object({
     .nullable(),
   relatedActionId: z.uuid().nullable(),
   queuedText: TextSchema.nullable(),
+  queuedSkill: NativeSkillInputSchema.nullable(),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
 });
 export type IActionReceipt = z.infer<typeof ActionReceiptSchema>;
 
 // collections omit pending message bodies; the selected receipt retains its recoverable text
-export const ActionSummarySchema = ActionReceiptSchema.omit({ queuedText: true });
+export const ActionSummarySchema = ActionReceiptSchema.omit({
+  queuedText: true,
+  queuedSkill: true,
+});
 export type IActionSummary = z.infer<typeof ActionSummarySchema>;
 
 // control is separate from the native thread's discovery title and historical visibility

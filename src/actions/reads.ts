@@ -15,6 +15,7 @@ type IControlRead = Extract<
       | 'receipt'
       | 'managed-threads'
       | 'managed-thread'
+      | 'managed-thread-name'
       | 'actions'
       | 'events'
       | 'approvals'
@@ -92,6 +93,11 @@ export const readControl = async (
       kind: 'managed-threads',
       result: { data: page.data, nextCursor: nextPageCursor(page, filters) },
     };
+  }
+  if (command.kind === 'managed-thread-name') {
+    const thread = await store.getThreadByName(command.name);
+    await authorize(thread);
+    return { kind: command.kind, result: thread };
   }
   if (command.kind === 'actions') {
     const { cursor, ...filters } = command;

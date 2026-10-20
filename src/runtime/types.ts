@@ -7,6 +7,8 @@ import type { IHqRequestInput, IHqResponse } from '../contracts/index.js';
 export const AgentHqOptionsSchema = z.strictObject({
   stateRoot: z.string().min(1).refine(isAbsolute),
   allowedRoots: z.array(z.string().min(1).refine(isAbsolute)).min(1).max(128),
+  codexExtraSkillRoots: z.array(z.string().min(1).refine(isAbsolute)).max(128).optional(),
+  claudeAdditionalDirectories: z.array(z.string().min(1).refine(isAbsolute)).max(128).optional(),
 });
 export type IAgentHqOptions = z.infer<typeof AgentHqOptionsSchema>;
 
@@ -22,6 +24,7 @@ export type IAgentHq = {
    * - -1: The HQ runtime is not running
    * - -1: The HQ target is outside the allowed workspaces
    * - -1: The HQ cursor does not match this request
+   * - -1: The HQ skill is unavailable
    * - -1: The HQ action conflicts with its recorded state
    * - -1: The Codex integration failed
    * - -1: The Claude integration failed

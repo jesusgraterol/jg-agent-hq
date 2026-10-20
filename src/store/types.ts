@@ -45,6 +45,8 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('close') }),
   z.strictObject({ kind: z.literal('action-read'), id: z.uuid() }),
   z.strictObject({ kind: z.literal('thread-read'), id: z.uuid() }),
+  z.strictObject({ kind: z.literal('thread-name-read'), name: z.string().min(1).max(32) }),
+  z.strictObject({ kind: z.literal('thread-name-suggest'), name: ManagedThreadSchema.shape.name }),
   z.strictObject({
     kind: z.literal('native-thread-read'),
     provider: ManagedThreadSchema.shape.provider,
@@ -126,6 +128,20 @@ export type IStore = {
    * - -1: The HQ store failed
    */
   getThread(id: string): Promise<IManagedThread | null>;
+  /**
+   * Resolves a case-insensitive label without granting native control.
+   * @returns The matching immutable control record, or null.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  getThreadByName(name: string): Promise<IManagedThread | null>;
+  /**
+   * Suggests an unreserved label; creation checks it again atomically.
+   * @returns A currently available label.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  suggestThreadName(name: string): Promise<string>;
   /**
    * Resolves the unique provider session without claiming control.
    * @returns The registered control record, or null for an external session.

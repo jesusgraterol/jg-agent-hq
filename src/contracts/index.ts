@@ -48,3 +48,20 @@ export type {
   INativeApproval,
   ILifecycleEvent,
 } from './actions/index.js';
+
+// native skills and explicit message input
+export {
+  SkillIdSchema,
+  NativeSkillInputSchema,
+  SkillSchema,
+  SkillPageSchema,
+  SkillPreviewSchema,
+  MessageInputSchema,
+} from './skills/index.js';
+export type {
+  INativeSkillInput,
+  ISkill,
+  ISkillPage,
+  ISkillPreview,
+  IMessageInput,
+} from './skills/index.js';

@@ -45,7 +45,7 @@ export const startClaudeControl = () => {
   if(message.type==='control_request'){
    const subtype=message.request.subtype;
    const response=body=>out({type:'control_response',response:{subtype:'success',request_id:message.request_id,response:body}});
-   if(subtype==='initialize'){response({claude_code_version:settings.version??'2.1.304',session_state:settings.omitIdle?undefined:settings.nativeState??'idle'});return;}
+   if(subtype==='initialize'){response({claude_code_version:settings.version??'2.1.304',session_state:settings.omitIdle?undefined:settings.nativeState??'idle',commands:settings.skillsFailure?undefined:Array.from({length:settings.skillCount??2},(_,index)=>({name:(settings.skillRevision?'changed-':'')+(index===0?(settings.symbolicCommand?'native/command':'explicit-skill'):index===1?'implicit-skill':'skill-'+index),description:settings.skillDescriptionSize?'d'.repeat(settings.skillDescriptionSize):'Native installed skill '+index,argumentHint:'[task]'}))});return;}
    if(subtype==='rename_session'){
     if(settings.rejectName){out({type:'control_response',response:{subtype:'error',request_id:message.request_id,error:'Synthetic name rejection'}});return;}
     if(message.request.session_id!==id){out({type:'control_response',response:{subtype:'error',request_id:message.request_id,error:'Wrong session'}});return;}

@@ -19,6 +19,13 @@ const main = async (): Promise<void> => {
       'workspace-root': { type: 'string', multiple: true },
       'native-id': { type: 'string' },
       'turn-id': { type: 'string' },
+      'thread-id': { type: 'string' },
+      'skill-id': { type: 'string' },
+      arguments: { type: 'string' },
+      'codex-extra-skill-root': { type: 'string', multiple: true },
+      'claude-additional-directory': { type: 'string', multiple: true },
+      name: { type: 'string' },
+      topic: { type: 'string' },
       cursor: { type: 'string' },
       limit: { type: 'string' },
       search: { type: 'string' },
@@ -29,7 +36,7 @@ const main = async (): Promise<void> => {
   const [kind] = positionals;
   if (values.help || !kind || kind === 'help') {
     process.stdout.write(
-      'jg-agent-hq serve|status|stop|threads|thread|turns|items|usage|request --state-root <path> [--provider codex|claude] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>]\nrequest reads one validated HQ command as JSON from stdin.\n',
+      'jg-agent-hq serve|status|stop|threads|thread|turns|items|usage|managed-thread-name|suggest-thread-name|skills|skill-preview|request --state-root <path> [--provider codex|claude] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--skill-id <id>] [--arguments <text>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nrequest reads one validated HQ command as JSON from stdin.\n',
     );
     return;
   }
@@ -80,13 +87,25 @@ const main = async (): Promise<void> => {
     if (
       values['native-id'] ||
       values['turn-id'] ||
+      values['thread-id'] ||
+      values['skill-id'] ||
+      values.arguments ||
+      values.name ||
+      values.topic ||
       values.cursor ||
       values.limit ||
       values.search ||
       values.provider
     )
       throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
-    const runtime = await createAgentHq({ stateRoot, allowedRoots: roots });
+    const runtime = await createAgentHq({
+      stateRoot,
+      allowedRoots: roots,
+      codexExtraSkillRoots: values['codex-extra-skill-root']?.map((path) => resolve(path)),
+      claudeAdditionalDirectories: values['claude-additional-directory']?.map((path) =>
+        resolve(path),
+      ),
+    });
     const onInterrupt = (): void => {
       process.exitCode = 130;
       void runtime.close().catch(() => undefined);
@@ -109,6 +128,8 @@ const main = async (): Promise<void> => {
     }
     return;
   }
+  if (values['codex-extra-skill-root'] || values['claude-additional-directory'])
+    throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
   if (roots.length > 1)
     throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
   const payload = Object.fromEntries(
@@ -116,11 +137,18 @@ const main = async (): Promise<void> => {
       ['kind', kind],
       [
         'provider',
-        kind === 'status' || kind === 'stop' ? values.provider : (values.provider ?? 'codex'),
+        ['threads', 'thread', 'turns', 'items', 'usage'].includes(kind)
+          ? (values.provider ?? 'codex')
+          : values.provider,
       ],
       ['workspaceRoot', roots[0]],
       ['nativeId', values['native-id']],
       ['turnId', values['turn-id']],
+      ['threadId', values['thread-id']],
+      ['skillId', values['skill-id']],
+      ['arguments', values.arguments ?? (kind === 'skill-preview' ? '' : undefined)],
+      ['name', values.name],
+      ['topic', values.topic],
       ['cursor', values.cursor],
       ['limit', values.limit === undefined ? undefined : Number(values.limit)],
       ['search', values.search],

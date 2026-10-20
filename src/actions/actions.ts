@@ -8,6 +8,7 @@ import type {
   IThreadSummary,
   IManagedThread,
   INativeApproval,
+  INativeSkillInput,
 } from '../contracts/index.js';
 import { getErrorKind } from '../errors/index.js';
 import {
@@ -24,6 +25,7 @@ import {
   type ICodexProvider,
 } from '../providers/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
+import type { createSkills } from '../skills/index.js';
 import type { IStore } from '../store/index.js';
 import type { INativeOutcome, INativeObservation } from '../store/control/index.js';
 
@@ -54,6 +56,7 @@ export const createActions = (
   roots: string[],
   epoch: string,
   actionKey: Uint8Array,
+  skills: ReturnType<typeof createSkills>,
 ) => {
   const prompts = new Map<string, { native: INativePrompt; presentation: INativeApproval }>();
   const controlled = new Map<string, { provider: IManagedThread['provider']; nativeId: string }>();
@@ -166,7 +169,12 @@ export const createActions = (
     runOwned(async () => {
       const next = await store.claimQueued(threadId);
       if (next)
-        await dispatch(next.receipt, next.thread, { kind: 'message', threadId, text: next.text });
+        await dispatch(
+          next.receipt,
+          next.thread,
+          { kind: 'message', threadId, input: { kind: 'text', text: next.text } },
+          { text: next.text, skill: next.skill },
+        );
     });
   };
 
@@ -214,6 +222,7 @@ export const createActions = (
     initial: IActionReceipt,
     originalThread: IManagedThread,
     command: IActionEnvelope['command'],
+    input?: { text: string; skill: INativeSkillInput | null },
   ): Promise<void> => {
     let receipt = initial;
     let thread = originalThread;
@@ -281,8 +290,11 @@ export const createActions = (
         await control.nameThread(requestId, nativeId, command.name);
         await apply({ kind: 'renamed', actionId: receipt.id, requestId });
       } else if (requestId.endsWith(':turn')) {
-        if (!nativeId || !('text' in command)) conflict();
-        const turn = await control.startTurn(requestId, nativeId, command.text);
+        if (!nativeId || !input) conflict();
+        const turn =
+          thread.provider === 'codex'
+            ? await native.startTurn(requestId, nativeId, input.text, input.skill)
+            : await claude.startTurn(requestId, nativeId, input.text);
         await apply({
           kind: 'turn-accepted',
           actionId: receipt.id,
@@ -663,6 +675,7 @@ export const createActions = (
    * @returns The durable admission receipt; native work runs independently.
    * @throws
    * - -1: The HQ action conflicts with its recorded state
+   * - -1: The HQ skill is unavailable
    * - -1: The HQ request is invalid
    * - -1: The HQ target is outside the allowed workspaces
    * - -1: The Codex integration failed
@@ -683,7 +696,13 @@ export const createActions = (
     if (closing || unavailable || tasks.size >= 64) agentUnavailable();
     const command = action.command;
     let provider: IManagedThread['provider'] = 'provider' in command ? command.provider : 'codex';
-    const prepared: { workspaceRoot?: string; nativeId?: string } = {};
+    const prepared: {
+      workspaceRoot?: string;
+      nativeId?: string;
+      text?: string;
+      skill?: INativeSkillInput | null;
+    } = {};
+    let input: { text: string; skill: INativeSkillInput | null } | undefined;
     if ('threadId' in command) {
       const target = await store.getThread(command.threadId);
       if (target) {
@@ -747,6 +766,11 @@ export const createActions = (
         conflict();
       prompt.native.validate(command.response);
     }
+    if (command.kind === 'message' || command.kind === 'queue') {
+      input = await skills.prepare(command.threadId, command.input);
+      prepared.text = input.text;
+      prepared.skill = input.skill;
+    }
     const admitted = await store.admit({ action, prepared });
     if (
       admitted.isNew &&
@@ -768,10 +792,11 @@ export const createActions = (
         dispatchedCommand = {
           kind: 'message',
           threadId: admitted.thread.id,
-          text: receipt.queuedText,
+          input: { kind: 'text', text: receipt.queuedText },
         };
+        input = { text: receipt.queuedText, skill: receipt.queuedSkill };
       }
-      runOwned(() => dispatch(receipt, admitted.thread!, dispatchedCommand));
+      runOwned(() => dispatch(receipt, admitted.thread!, dispatchedCommand, input));
     }
     return admitted.receipt;
   };
@@ -780,8 +805,10 @@ export const createActions = (
     live,
     /**
      * Returns after durable admission; the native operation outlives this client request.
+     * @returns The durable admission receipt after validation.
      * @throws
      * - -1: The HQ action conflicts with its recorded state
+     * - -1: The HQ skill is unavailable
      * - -1: The HQ request is invalid
      * - -1: The HQ target is outside the allowed workspaces
      * - -1: The Codex integration failed

@@ -1,4 +1,9 @@
-import type { IActionReceipt, IActionSummary, IManagedThread } from '../../contracts/index.js';
+import {
+  NativeSkillInputSchema,
+  type IActionReceipt,
+  type IActionSummary,
+  type IManagedThread,
+} from '../../contracts/index.js';
 
 import type { IActionRow, IThreadRow } from './types.js';
 
@@ -18,7 +23,9 @@ export const toManagedThread = (thread: IThreadRow): IManagedThread => ({
 });
 
 /** Converts bounded action metadata without loading its pending message body. */
-export const toActionSummary = (action: Omit<IActionRow, 'queued_text'>): IActionSummary => ({
+export const toActionSummary = (
+  action: Omit<IActionRow, 'queued_text' | 'queued_skill'>,
+): IActionSummary => ({
   id: action.id,
   digest: action.digest,
   runtimeEpoch: action.runtime_epoch,
@@ -38,4 +45,8 @@ export const toActionSummary = (action: Omit<IActionRow, 'queued_text'>): IActio
 export const toActionReceipt = (action: IActionRow): IActionReceipt => ({
   ...toActionSummary(action),
   queuedText: action.queued_text,
+  queuedSkill:
+    action.queued_skill === null
+      ? null
+      : NativeSkillInputSchema.parse(JSON.parse(action.queued_skill)),
 });

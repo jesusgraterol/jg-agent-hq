@@ -29,6 +29,7 @@ export const createClaudeRpc = async (
   control?: {
     nativeId: string;
     workspaceRoot: string;
+    additionalDirectories: string[];
     isResume: boolean;
     receive(message: unknown): void;
     lateResponse(id: string, result: unknown, error: unknown): void;
@@ -75,6 +76,7 @@ export const createClaudeRpc = async (
             '--include-partial-messages',
             control.isResume ? '--resume' : '--session-id',
             control.nativeId,
+            ...control.additionalDirectories.flatMap((directory) => ['--add-dir', directory]),
           ]
         : []),
     ],
@@ -207,6 +209,7 @@ export const createClaudeRpc = async (
     return {
       version: initialized.data.claude_code_version,
       initialization: initialized.data,
+      initializedAt: Date.now(),
       requestControl: request,
       write: transport.write,
       get isAvailable() {

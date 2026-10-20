@@ -1,6 +1,6 @@
 import type { IHistoryItem } from '../../../contracts/index.js';
 import type { INativeOutcome, INativeObservation } from '../../../store/control/index.js';
-import type { INativePrompt } from '../../types.js';
+import type { INativePrompt, IProviderSkills } from '../../types.js';
 
 // normalized Claude evidence is consumed by the existing action and live-window owners
 export type IClaudeControlEvents = {
@@ -31,6 +31,7 @@ export type IClaudeSession = {
   isClosing: boolean;
   connection?: Awaited<ReturnType<typeof import('../rpc.js').createClaudeRpc>>;
   opening: Promise<void>;
+  skills?: IProviderSkills | null;
   input?: IClaudeInput;
   apiMessageId?: string;
   previews: Map<number, { id: string; type: string }>;

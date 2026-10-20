@@ -117,7 +117,7 @@ const setup = async () => {
   }
 };
 
-test('atomic admission deduplicates UUIDs and rejects competing new turns and readable names', async () => {
+test('atomic admission deduplicates UUIDs, suffixes names and rejects competing new turns', async () => {
   const fixture = await setup();
   try {
     const { action, thread } = await fixture.create('fix-login');
@@ -142,13 +142,21 @@ test('atomic admission deduplicates UUIDs and rejects competing new turns and re
         name: thread.name,
       }),
     );
-    expect(competing).toMatchObject({ delivery: 'failed', failure: 'state-conflict' });
+    await fixture.until(
+      () => fixture.receipt(competing.id),
+      (receipt) => receipt.delivery === 'acknowledged',
+    );
+    expect((await fixture.thread(competing.threadId!)).name).toBe('fix-login-2');
     await fixture.control({ holdTurn: true });
-    const first = fixture.envelope({ kind: 'message', threadId: thread.id, text: 'First request' });
+    const first = fixture.envelope({
+      kind: 'message',
+      threadId: thread.id,
+      input: { kind: 'text', text: 'First request' },
+    });
     const second = fixture.envelope({
       kind: 'message',
       threadId: thread.id,
-      text: 'Competing request',
+      input: { kind: 'text', text: 'Competing request' },
     });
     const receipts = await Promise.all([fixture.submit(first), fixture.submit(second)]);
     expect(receipts.map((entry) => entry.delivery).sort()).toStrictEqual(['failed', 'submitted']);
@@ -159,7 +167,7 @@ test('atomic admission deduplicates UUIDs and rejects competing new turns and re
     );
     await fixture.submit(admitted.id === first.id ? first : second);
     const calls = await fixture.calls();
-    expect(calls.filter((call) => call.method === 'thread/start')).toHaveLength(1);
+    expect(calls.filter((call) => call.method === 'thread/start')).toHaveLength(2);
     expect(calls.filter((call) => call.method === 'turn/start')).toHaveLength(1);
     expect(calls.find((call) => call.method === 'thread/start')!.params).toStrictEqual({
       cwd: fixture.workspaceRoot,
@@ -175,7 +183,11 @@ test('steering stays bound to its active turn, while interrupt acknowledgement k
     const { thread } = await fixture.create('check-search');
     await fixture.control({ holdTurn: true });
     await fixture.submit(
-      fixture.envelope({ kind: 'message', threadId: thread.id, text: 'Investigate search' }),
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Investigate search' },
+      }),
     );
     const active = await fixture.until(
       () => fixture.thread(thread.id),
@@ -256,7 +268,11 @@ test('queued text cannot answer native questions; secret answers are absent from
       },
     });
     await fixture.submit(
-      fixture.envelope({ kind: 'message', threadId: thread.id, text: 'Review the form' }),
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Review the form' },
+      }),
     );
     const active = await fixture.until(
       () => fixture.thread(thread.id),
@@ -267,7 +283,7 @@ test('queued text cannot answer native questions; secret answers are absent from
         kind: 'queue',
         threadId: thread.id,
         expectedTurnId: active.activeTurnId!,
-        text: 'Next task after the question',
+        input: { kind: 'text', text: 'Next task after the question' },
       }),
     );
     expect(queued).toMatchObject({ delivery: 'queued', nativeTurnId: null, completion: null });
@@ -345,7 +361,7 @@ test.each(['command', 'file-change'] as const)(
         fixture.envelope({
           kind: 'message',
           threadId: thread.id,
-          text: 'Inspect the native approval',
+          input: { kind: 'text', text: 'Inspect the native approval' },
         }),
       );
       const active = await fixture.until(
@@ -404,7 +420,11 @@ test('a normal completion advances queued work once; interruption pauses the que
     const { thread } = await fixture.create('test-queue');
     await fixture.control({ holdTurn: true });
     await fixture.submit(
-      fixture.envelope({ kind: 'message', threadId: thread.id, text: 'First task' }),
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'First task' },
+      }),
     );
     const active = await fixture.until(
       () => fixture.thread(thread.id),
@@ -415,7 +435,7 @@ test('a normal completion advances queued work once; interruption pauses the que
         kind: 'queue',
         threadId: thread.id,
         expectedTurnId: active.activeTurnId!,
-        text: 'Second task',
+        input: { kind: 'text', text: 'Second task' },
       }),
     );
     await fixture.control({
@@ -450,7 +470,7 @@ test('a normal completion advances queued work once; interruption pauses the que
         kind: 'queue',
         threadId: thread.id,
         expectedTurnId: second.activeTurnId!,
-        text: 'Third task',
+        input: { kind: 'text', text: 'Third task' },
       }),
     );
     await fixture.submit(
@@ -483,7 +503,11 @@ test('live items remain available through native flush; lifecycle replay is boun
   try {
     const { thread } = await fixture.create('live-history');
     const action = await fixture.submit(
-      fixture.envelope({ kind: 'message', threadId: thread.id, text: 'Say hello' }),
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Say hello' },
+      }),
     );
     await fixture.until(
       () => fixture.thread(thread.id),
@@ -595,7 +619,11 @@ test('completion while steering cannot silently start a replacement turn or resu
     const { thread } = await fixture.create('steer-race');
     await fixture.control({ holdTurn: true });
     await fixture.submit(
-      fixture.envelope({ kind: 'message', threadId: thread.id, text: 'Check the implementation' }),
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Check the implementation' },
+      }),
     );
     const active = await fixture.until(
       () => fixture.thread(thread.id),
@@ -639,7 +667,11 @@ test('unknown permission fields fail closed; supported permission replies grant 
       },
     });
     await fixture.submit(
-      fixture.envelope({ kind: 'message', threadId: first.id, text: 'Check a permission request' }),
+      fixture.envelope({
+        kind: 'message',
+        threadId: first.id,
+        input: { kind: 'text', text: 'Check a permission request' },
+      }),
     );
     await fixture.until(
       async () => {
@@ -670,7 +702,7 @@ test('unknown permission fields fail closed; supported permission replies grant 
       fixture.envelope({
         kind: 'message',
         threadId: second.id,
-        text: 'Read the selected workspace',
+        input: { kind: 'text', text: 'Read the selected workspace' },
       }),
     );
     await fixture.until(
@@ -723,7 +755,7 @@ test('native output loss keeps delivery uncertain and restart never resends its 
     const action = fixture.envelope({
       kind: 'message',
       threadId: thread.id,
-      text: 'A message with an unknown outcome',
+      input: { kind: 'text', text: 'A message with an unknown outcome' },
     });
     await fixture.submit(action);
     await fixture.until(
@@ -773,7 +805,7 @@ test(
       const action = fixture.envelope({
         kind: 'message',
         threadId: thread.id,
-        text: 'Wait for the original acknowledgement',
+        input: { kind: 'text', text: 'Wait for the original acknowledgement' },
       });
       await fixture.submit(action);
       await fixture.until(
@@ -896,7 +928,11 @@ test('control seek pages preserve tied ordering, reject changed filters and omit
     ).rejects.toThrow('Request is invalid.');
     await fixture.control({ holdTurn: true });
     await fixture.submit(
-      fixture.envelope({ kind: 'message', threadId: first.id, text: 'First paged task' }),
+      fixture.envelope({
+        kind: 'message',
+        threadId: first.id,
+        input: { kind: 'text', text: 'First paged task' },
+      }),
     );
     const active = await fixture.until(
       () => fixture.thread(first.id),
@@ -907,7 +943,7 @@ test('control seek pages preserve tied ordering, reject changed filters and omit
         kind: 'queue',
         threadId: first.id,
         expectedTurnId: active.activeTurnId!,
-        text: 'A selected queue body',
+        input: { kind: 'text', text: 'A selected queue body' },
       }),
     );
     const actions = await fixture.request({ kind: 'actions', threadId: first.id, limit: 128 });
@@ -932,7 +968,11 @@ test('large live windows bound serialized output, expose gaps and truncate text 
     const { thread } = await fixture.create('bounded-live');
     await fixture.control({ holdTurn: true });
     await fixture.submit(
-      fixture.envelope({ kind: 'message', threadId: thread.id, text: 'Keep the live turn open' }),
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Keep the live turn open' },
+      }),
     );
     const active = await fixture.until(
       () => fixture.thread(thread.id),
@@ -1011,7 +1051,7 @@ test('shutdown waits for admission and cannot start inference after native clean
     const action = fixture.envelope({
       kind: 'message',
       threadId: thread.id,
-      text: 'Race shutdown',
+      input: { kind: 'text', text: 'Race shutdown' },
     });
     const pending = fixture.runtime.request({ kind: 'action', action });
     const stopped = fixture.runtime.close();
@@ -1042,7 +1082,11 @@ test('shutdown interrupts every active session before waiting for their individu
     for (const name of ['stop-one', 'stop-two', 'stop-three', 'stop-four']) {
       const { thread } = await fixture.create(name);
       await fixture.submit(
-        fixture.envelope({ kind: 'message', threadId: thread.id, text: 'Keep this turn active' }),
+        fixture.envelope({
+          kind: 'message',
+          threadId: thread.id,
+          input: { kind: 'text', text: 'Keep this turn active' },
+        }),
       );
       await fixture.until(
         () => fixture.thread(thread.id),
@@ -1075,7 +1119,11 @@ test.each([
     const { thread } = await fixture.create('event-overflow');
     await fixture.control({ holdTurn: true });
     await fixture.submit(
-      fixture.envelope({ kind: 'message', threadId: thread.id, text: 'Keep the turn open' }),
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Keep the turn open' },
+      }),
     );
     const active = await fixture.until(
       () => fixture.thread(thread.id),
@@ -1208,5 +1256,93 @@ test('a ledger read failure during shutdown still stops the owned native process
     } finally {
       vi.unstubAllEnvs();
     }
+  }
+});
+
+test('short names are suggested without reservation and resolved without replacing immutable IDs', async () => {
+  const fixture = await setup();
+  try {
+    const first = await fixture.create('build-usage');
+    expect(
+      await fixture.request({ kind: 'suggest-thread-name', topic: 'Build usage!' }),
+    ).toStrictEqual({ kind: 'suggest-thread-name', result: { name: 'build-usage-2' } });
+    const created = await Promise.all([
+      fixture.create('build-usage'),
+      fixture.create('build-usage'),
+    ]);
+    expect(created.map(({ thread }) => thread.name).sort()).toStrictEqual([
+      'build-usage-2',
+      'build-usage-3',
+    ]);
+    expect(new Set([first.thread.id, ...created.map(({ thread }) => thread.id)]).size).toBe(3);
+    expect(
+      await fixture.request({ kind: 'managed-thread-name', name: 'BUILD-USAGE' }),
+    ).toStrictEqual({ kind: 'managed-thread-name', result: await fixture.thread(first.thread.id) });
+    expect(
+      await fixture.request({ kind: 'managed-thread-name', name: 'missing-task' }),
+    ).toStrictEqual({ kind: 'managed-thread-name', result: null });
+    const long = await fixture.create('a'.repeat(32));
+    const collision = await fixture.create('a'.repeat(32));
+    expect(long.thread.name).toHaveLength(32);
+    expect(collision.thread.name).toBe('a'.repeat(30) + '-2');
+    const rename = await fixture.submit(
+      fixture.envelope({ kind: 'thread-rename', threadId: first.thread.id, name: 'review-usage' }),
+    );
+    await fixture.until(
+      () => fixture.receipt(rename.id),
+      (receipt) => receipt.delivery === 'acknowledged',
+    );
+    expect(
+      await fixture.request({ kind: 'managed-thread-name', name: 'build-usage' }),
+    ).toMatchObject({ result: null });
+    expect(
+      await fixture.request({ kind: 'managed-thread-name', name: 'REVIEW-USAGE' }),
+    ).toMatchObject({ result: { id: first.thread.id, nativeId: first.thread.nativeId } });
+    const names = (await fixture.calls())
+      .filter((call) => call.method === 'thread/name/set')
+      .map((call) => call.params.name);
+    expect(names).toContain('build-usage-2');
+    expect(names).toContain('review-usage');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('readable lookup still authorizes the registered workspace and never adopts a native session', async () => {
+  const fixture = await setup();
+  try {
+    const created = await fixture.create('private-task');
+    await fixture.runtime.close();
+    const other = join(fixture.root, 'other-workspace');
+    await mkdir(other);
+    const runtime = await createAgentHq({ stateRoot: fixture.stateRoot, allowedRoots: [other] });
+    try {
+      await expect(
+        runtime.request({ kind: 'managed-thread-name', name: created.thread.name }),
+      ).rejects.toThrow('The HQ target is outside the allowed workspaces');
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test.each([
+  [' Build usage ', 'build-usage'],
+  ['Review / API feedback!', 'review-api-feedback'],
+  ['---', 'session'],
+  ['a'.repeat(31) + ' topic', 'a'.repeat(31)],
+  ['a'.repeat(64), 'a'.repeat(32)],
+])('native-independent name suggestion(%s) -> %s', async (topic, name) => {
+  const fixture = await setup();
+  try {
+    expect(await fixture.request({ kind: 'suggest-thread-name', topic })).toStrictEqual({
+      kind: 'suggest-thread-name',
+      result: { name },
+    });
+    expect((await fixture.calls()).some((call) => call.method === 'thread/start')).toBe(false);
+  } finally {
+    await fixture.close();
   }
 });

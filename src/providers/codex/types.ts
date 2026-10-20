@@ -3,10 +3,12 @@ import { z } from 'zod';
 import {
   MAX_PAGE_SIZE,
   type IHistoryItem,
+  type INativeSkillInput,
   type IThreadSummary,
   type ITurnSummary,
   type IUsageSnapshot,
 } from '../../contracts/index.js';
+import type { IProviderSkills } from '../types.js';
 
 // additive native responses are narrowed to fields this adapter actually uses
 export const NativeThreadSchema = z.object({
@@ -91,6 +93,13 @@ export type ICodexProvider = {
     turnId?: string,
   ): Promise<INativePage<IHistoryItem>>;
   readUsage(): Promise<IUsageSnapshot>;
+  /**
+   * Reads the native workspace inventory without loading skill content or starting inference.
+   * @returns Bounded metadata and the count of native discovery failures.
+   * @throws
+   * - -1: The Codex integration failed
+   */
+  readSkills(workspaceRoot: string): Promise<IProviderSkills>;
   /** Installs runtime-owned callbacks independently of client connections. */
   setEvents(events: ICodexEvents): void;
   /**
@@ -120,7 +129,12 @@ export type ICodexProvider = {
    * @throws
    * - -1: The Codex integration failed
    */
-  startTurn(requestId: string, nativeId: string, text: string): Promise<INativeTurn>;
+  startTurn(
+    requestId: string,
+    nativeId: string,
+    text: string,
+    skill?: INativeSkillInput | null,
+  ): Promise<INativeTurn>;
   /**
    * Steers only the required active native turn and verifies its response identity.
    * @returns The acknowledged native turn identity.
@@ -172,3 +186,43 @@ export type ICodexProvider = {
   reject(id: string | number): Promise<void>;
   close(): Promise<void>;
 };
+
+// native discovery is unpaged; limit inventory size and retain only display/invocation metadata
+export const NativeSkillsSchema = z.object({
+  data: z
+    .array(
+      z.object({
+        cwd: z.string().min(1).max(4096),
+        skills: z
+          .array(
+            z.object({
+              name: z
+                .string()
+                .min(1)
+                .max(256)
+                .regex(/^[^\s\p{Cc}]+$/u),
+              description: z.string().max(8192),
+              path: z.string().min(1).max(4096),
+              scope: z.enum(['user', 'repo', 'system', 'admin']),
+              enabled: z.boolean(),
+              dependencies: z
+                .object({
+                  tools: z
+                    .array(
+                      z.object({
+                        type: z.string().max(128),
+                        value: z.string().max(4096),
+                        description: z.string().max(4096).optional(),
+                      }),
+                    )
+                    .max(128),
+                })
+                .optional(),
+            }),
+          )
+          .max(4096),
+        errors: z.array(z.unknown()).max(4096),
+      }),
+    )
+    .length(1),
+});

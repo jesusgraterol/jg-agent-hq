@@ -4,6 +4,7 @@ import { z } from 'zod';
 export const CLAUDE_HISTORY_VERSION = '2.1.304';
 export const ClaudeInitializeSchema = z.object({
   claude_code_version: z.string().min(1).max(128),
+  commands: z.unknown().optional(),
   session_state: z.enum(['idle', 'running', 'requires_action']).optional(),
 });
 export const ClaudeUsageSchema = z.object({
