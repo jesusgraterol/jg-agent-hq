@@ -46,6 +46,19 @@ export const readNativeHistory = async (
       thread.workspaceRoot = actualRoot;
     }
     const nextCursor = encodeHistoryCursor(page.nextCursor, filters);
+    const managed = new Map(
+      (await projection.getNativeThreads(page.data.map((thread) => thread.nativeId))).map(
+        (thread) => [thread.nativeId, thread],
+      ),
+    );
+    for (const thread of page.data) {
+      const control = managed.get(thread.nativeId);
+      if (control) {
+        thread.ownership = control.ownership;
+        thread.managedId = control.id;
+        thread.name = control.name;
+      }
+    }
     const result = HqResponseSchema.parse({
       kind: 'threads',
       result: { data: page.data, nextCursor, source: 'native' },
@@ -59,6 +72,12 @@ export const readNativeHistory = async (
       kind: 'access-denied',
     });
   thread.workspaceRoot = workspaceRoot;
+  const control = await projection.getThreadByNativeId(command.nativeId);
+  if (control) {
+    thread.ownership = control.ownership;
+    thread.managedId = control.id;
+    thread.name = control.name;
+  }
   await projection.remember([thread], null);
   if (command.kind === 'thread') return { kind: 'thread', result: thread };
   const { cursor, ...filters } = { ...command, workspaceRoot };

@@ -3,6 +3,7 @@ import { Exception, extractMessage } from 'error-message-utils';
 import { z } from 'zod';
 
 import { HqRequestSchema, type IHqRequestInput, type IHqResponse } from '../contracts/index.js';
+import { createActions, readControl } from '../actions/index.js';
 import { CONTROL_SOCKET, createIpcServer } from '../ipc/index.js';
 import { createCodexProvider, type ICodexProvider } from '../providers/index.js';
 import { readNativeHistory } from '../sessions/index.js';
@@ -11,6 +12,7 @@ import { createStore } from '../store/index.js';
 import {
   claimRuntimeOwner,
   prepareDatabase,
+  prepareActionKey,
   prepareStateRoot,
   resolveAllowedRoots,
 } from './state/index.js';
@@ -28,6 +30,7 @@ const UnconfirmedCleanupSchema = z.object({ cleanupUnconfirmed: z.literal(true) 
  * - -1: The HQ runtime directory must be private and owned by the current user
  * - -1: The HQ state directory is unsafe
  * - -1: The HQ state file is unsafe
+ * - -1: The HQ action key is unavailable
  * - -1: The HQ runtime owner is unverifiable
  * - -1: The HQ runtime is already owned
  * - -1: The HQ runtime is not running
@@ -50,8 +53,11 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   let store: Awaited<ReturnType<typeof createStore>> | undefined;
   let provider: ICodexProvider | undefined;
   let ipc: Awaited<ReturnType<typeof createIpcServer>> | undefined;
+  let actionKey: Uint8Array;
   try {
-    store = await createStore(await prepareDatabase(stateRoot), ownership.owner.nonce);
+    const databasePath = await prepareDatabase(stateRoot);
+    actionKey = await prepareActionKey(stateRoot, databasePath);
+    store = await createStore(databasePath, ownership.owner.nonce, actionKey);
     provider = await createCodexProvider();
   } catch (error) {
     const cleanup = await Promise.allSettled([provider?.close(), store?.close()]);
@@ -69,6 +75,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   }
   const native = provider;
   const projection = store;
+  const actions = createActions(native, projection, allowedRoots, ownership.owner.nonce, actionKey);
   let resolveClosed: () => void = () => undefined;
   let rejectClosed: (error: unknown) => void = () => undefined;
   const closed = new Promise<void>((resolve, reject) => {
@@ -81,11 +88,9 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const close = (): Promise<void> =>
     (closing ??= (async () => {
       try {
-        const results = await Promise.allSettled([
-          ipc?.close(),
-          native.close(),
-          projection.close(),
-        ]);
+        const results = await Promise.allSettled([ipc?.close(), actions.close()]);
+        const storeCleanup = await Promise.allSettled([projection.close()]);
+        results.push(...storeCleanup);
         const failure = results.find((result) => result.status === 'rejected');
         if (failure?.status === 'rejected')
           throw new Exception(
@@ -137,8 +142,22 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       }
       case 'usage':
         return { kind: 'usage', result: await native.readUsage() };
-      default:
-        return readNativeHistory(command, native, projection, allowedRoots);
+      case 'action':
+        return { kind: 'action', result: await actions.submit(command.action) };
+      case 'receipt':
+      case 'managed-threads':
+      case 'managed-thread':
+      case 'actions':
+      case 'events':
+      case 'approvals':
+      case 'live-items':
+        return readControl(command, projection, actions, allowedRoots);
+      default: {
+        const response = await readNativeHistory(command, native, projection, allowedRoots);
+        if (command.kind === 'items' && response.kind === 'items')
+          actions.live.reconcile(command.nativeId, response.result.data);
+        return response;
+      }
     }
   };
   try {

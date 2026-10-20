@@ -1,9 +1,17 @@
 import { z } from 'zod';
 
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, PUBLIC_ERROR_MESSAGES } from './constants.js';
+import { NativeIdSchema } from './identities/index.js';
+import {
+  ActionEnvelopeSchema,
+  ActionReceiptSchema,
+  ActionSummarySchema,
+  ManagedThreadSchema,
+  NativeApprovalSchema,
+  LifecycleEventSchema,
+} from './actions/index.js';
 
 // opaque native identifiers, bounded independently of provider-specific formats
-const NativeIdSchema = z.string().min(1).max(4096);
 const CursorSchema = z.string().min(1).max(16_384);
 const PageFields = {
   limit: z.number().int().min(1).max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
@@ -35,6 +43,23 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     ...PageFields,
   }),
   z.strictObject({ kind: z.literal('usage'), provider: z.literal('codex') }),
+  z.strictObject({ kind: z.literal('action'), action: ActionEnvelopeSchema }),
+  z.strictObject({ kind: z.literal('receipt'), actionId: z.uuid() }),
+  z.strictObject({
+    kind: z.literal('managed-threads'),
+    workspaceRoot: TargetFields.workspaceRoot,
+    ...PageFields,
+  }),
+  z.strictObject({ kind: z.literal('managed-thread'), threadId: z.uuid() }),
+  z.strictObject({ kind: z.literal('actions'), threadId: z.uuid(), ...PageFields }),
+  z.strictObject({
+    kind: z.literal('events'),
+    threadId: z.uuid(),
+    after: z.number().int().nonnegative().default(0),
+    limit: PageFields.limit,
+  }),
+  z.strictObject({ kind: z.literal('approvals'), threadId: z.uuid() }),
+  z.strictObject({ kind: z.literal('live-items'), threadId: z.uuid() }),
 ]);
 export type IHqRequest = z.infer<typeof HqRequestSchema>;
 export type IHqRequestInput = z.input<typeof HqRequestSchema>;
@@ -48,7 +73,8 @@ export const ThreadSummarySchema = z.object({
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
   nativeState: z.enum(['notLoaded', 'idle', 'systemError', 'active']),
-  ownership: z.literal('external'),
+  ownership: z.enum(['external', 'managed', 'uncertain']),
+  managedId: z.uuid().nullable(),
 });
 export type IThreadSummary = z.infer<typeof ThreadSummarySchema>;
 
@@ -70,6 +96,10 @@ export const HistoryItemSchema = z.object({
   isTruncated: z.boolean(),
 });
 export type IHistoryItem = z.infer<typeof HistoryItemSchema>;
+export const LiveItemsSchema = z.object({
+  data: z.array(HistoryItemSchema.extend({ state: z.enum(['active', 'awaiting-flush']) })).max(128),
+  hasGap: z.boolean(),
+});
 
 export const UsageWindowSchema = z.object({
   id: z.string(),
@@ -127,6 +157,32 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
     }),
   }),
   z.object({ kind: z.literal('usage'), result: UsageSnapshotSchema }),
+  z.object({ kind: z.literal('action'), result: ActionReceiptSchema }),
+  z.object({ kind: z.literal('receipt'), result: ActionReceiptSchema.nullable() }),
+  z.object({
+    kind: z.literal('managed-threads'),
+    result: z.object({
+      data: z.array(ManagedThreadSchema).max(MAX_PAGE_SIZE),
+      nextCursor: CursorSchema.nullable(),
+    }),
+  }),
+  z.object({ kind: z.literal('managed-thread'), result: ManagedThreadSchema.nullable() }),
+  z.object({
+    kind: z.literal('actions'),
+    result: z.object({
+      data: z.array(ActionSummarySchema).max(MAX_PAGE_SIZE),
+      nextCursor: CursorSchema.nullable(),
+    }),
+  }),
+  z.object({
+    kind: z.literal('events'),
+    result: z.object({
+      data: z.array(LifecycleEventSchema).max(MAX_PAGE_SIZE),
+      hasMore: z.boolean(),
+    }),
+  }),
+  z.object({ kind: z.literal('approvals'), result: z.array(NativeApprovalSchema).max(32) }),
+  z.object({ kind: z.literal('live-items'), result: LiveItemsSchema }),
 ]);
 export type IHqResponse = z.infer<typeof HqResponseSchema>;
 

@@ -7,6 +7,7 @@ export {
   ThreadSummarySchema,
   TurnSummarySchema,
   HistoryItemSchema,
+  LiveItemsSchema,
   UsageWindowSchema,
   UsageSnapshotSchema,
   RuntimeStatusSchema,
@@ -27,3 +28,23 @@ export type {
   IErrorKind,
   IIpcResponse,
 } from './types.js';
+
+// managed control and durable delivery
+export {
+  ActionCommandSchema,
+  ActionEnvelopeSchema,
+  ActionReceiptSchema,
+  ActionSummarySchema,
+  ManagedThreadSchema,
+  NativeApprovalSchema,
+  LifecycleEventSchema,
+} from './actions/index.js';
+export type {
+  IActionCommand,
+  IActionEnvelope,
+  IActionReceipt,
+  IActionSummary,
+  IManagedThread,
+  INativeApproval,
+  ILifecycleEvent,
+} from './actions/index.js';

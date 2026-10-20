@@ -5,7 +5,8 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { Exception, hasErrorCode } from 'error-message-utils';
 
 import { HqRequestSchema } from '../contracts/index.js';
-import { requestAgentHq, toPublicError } from '../ipc/index.js';
+import { toPublicError } from '../errors/index.js';
+import { requestAgentHq } from '../ipc/index.js';
 import { createAgentHq } from '../runtime/index.js';
 import { readRuntimeOwner } from '../runtime/state/index.js';
 
@@ -27,7 +28,7 @@ const main = async (): Promise<void> => {
   const [kind] = positionals;
   if (values.help || !kind || kind === 'help') {
     process.stdout.write(
-      'jg-agent-hq serve|status|stop|threads|thread|turns|items|usage --state-root <path> [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>]\n',
+      'jg-agent-hq serve|status|stop|threads|thread|turns|items|usage|request --state-root <path> [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>]\nrequest reads one validated HQ command as JSON from stdin.\n',
     );
     return;
   }
@@ -35,6 +36,45 @@ const main = async (): Promise<void> => {
     throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
   const stateRoot = resolve(values['state-root']);
   const roots = (values['workspace-root'] ?? []).map((root) => resolve(root));
+  if (kind === 'request') {
+    if (Object.keys(values).some((key) => key !== 'state-root'))
+      throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    for await (const chunk of process.stdin) {
+      if (!Buffer.isBuffer(chunk))
+        throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+      bytes += chunk.length;
+      if (bytes > 65_536)
+        throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+      chunks.push(chunk);
+    }
+    let input: unknown;
+    try {
+      input = JSON.parse(
+        new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, bytes)),
+      );
+    } catch (cause) {
+      throw new Exception(
+        'The HQ request is invalid',
+        undefined,
+        { kind: 'invalid-request' },
+        { cause },
+      );
+    }
+    const parsed = HqRequestSchema.safeParse(input);
+    if (!parsed.success)
+      throw new Exception(
+        'The HQ request is invalid',
+        undefined,
+        { kind: 'invalid-request' },
+        { cause: parsed.error },
+      );
+    process.stdout.write(
+      `${JSON.stringify({ schemaVersion: 1, ...(await requestAgentHq(stateRoot, parsed.data)) })}\n`,
+    );
+    return;
+  }
   if (kind === 'serve') {
     if (values['native-id'] || values['turn-id'] || values.cursor || values.limit || values.search)
       throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });

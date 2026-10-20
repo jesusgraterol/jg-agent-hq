@@ -11,6 +11,3 @@ export {
 // local command connections
 export { createIpcServer } from './server.js';
 export { requestAgentHq } from './client.js';
-
-// safe error responses
-export { toPublicError } from './utilities.js';

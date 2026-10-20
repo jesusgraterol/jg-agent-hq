@@ -3,6 +3,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { parentPort, workerData } from 'node:worker_threads';
 import { Exception, extractMessage } from 'error-message-utils';
 
+import { getErrorKind } from '../errors/index.js';
+
+import { ControlModel } from './control/index.js';
 import { StoreRequestSchema, StoreWorkerSchema } from './types.js';
 
 const options = StoreWorkerSchema.parse(workerData);
@@ -14,6 +17,7 @@ const database = new DatabaseSync(options.databasePath, {
 });
 database.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
 database.exec(await readFile(new URL('./schema.sql', import.meta.url), 'utf8'));
+const controls = new ControlModel(database, options.runtimeEpoch, options.actionKey);
 const remember = database.prepare(`INSERT INTO native_history_index
   (provider, native_id, workspace_root, name, created_at, updated_at, native_state, observed_at, runtime_epoch, continuation_cursor)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -29,33 +33,89 @@ port.on('message', (message: unknown) => {
   try {
     if (command.kind === 'close') {
       database.close();
-      port.postMessage({ kind: 'result', id, error: null });
+      port.postMessage({ kind: 'result', id, result: null, error: null });
       port.close();
       return;
     }
-    database.exec('BEGIN IMMEDIATE');
-    try {
-      for (const thread of command.threads)
-        remember.run(
-          thread.provider,
-          thread.nativeId,
-          thread.workspaceRoot,
-          thread.name,
-          thread.createdAt,
-          thread.updatedAt,
-          thread.nativeState,
-          command.observedAt,
-          options.runtimeEpoch,
-          command.nextCursor,
-        );
-      database.exec('COMMIT');
-    } catch (error) {
-      database.exec('ROLLBACK');
-      throw error;
+    let result: unknown = null;
+    switch (command.kind) {
+      case 'action-read':
+        result = controls.getAction(command.id);
+        break;
+      case 'thread-read':
+        result = controls.getThread(command.id);
+        break;
+      case 'native-thread-read':
+        result = controls.getThreadByNativeId(command.nativeId);
+        break;
+      case 'native-threads':
+        result = controls.getNativeThreads(command.nativeIds);
+        break;
+      case 'threads':
+        result = controls.listThreads(command.workspaceRoot, command.page);
+        break;
+      case 'actions':
+        result = controls.listActions(command.threadId, command.page);
+        break;
+      case 'events':
+        result = controls.listEvents(command.page);
+        break;
+      case 'admit':
+        result = controls.admit(command.input);
+        break;
+      case 'outcome':
+        result = controls.applyOutcome(command.input);
+        break;
+      case 'observe':
+        result = controls.observe(command.input);
+        break;
+      case 'claim-queue':
+        result = controls.claimQueued(command.threadId);
+        break;
+      case 'approval':
+        result = controls.openApproval(command.input);
+        break;
+      case 'release':
+        controls.releaseControls();
+        break;
+      case 'remember': {
+        database.exec('BEGIN IMMEDIATE');
+        try {
+          for (const thread of command.threads)
+            remember.run(
+              thread.provider,
+              thread.nativeId,
+              thread.workspaceRoot,
+              thread.name,
+              thread.createdAt,
+              thread.updatedAt,
+              thread.nativeState,
+              command.observedAt,
+              options.runtimeEpoch,
+              command.nextCursor,
+            );
+          database.exec('COMMIT');
+        } catch (error) {
+          database.exec('ROLLBACK');
+          throw error;
+        }
+        break;
+      }
     }
-    port.postMessage({ kind: 'result', id, error: null });
+    port.postMessage({ kind: 'result', id, result, error: null });
   } catch (error) {
-    port.postMessage({ kind: 'result', id, error: extractMessage(error) });
+    port.postMessage({
+      kind: 'result',
+      id,
+      result: null,
+      error: {
+        message:
+          error instanceof Exception
+            ? extractMessage(error)
+            : `The HQ store failed: ${extractMessage(error)}`,
+        kind: getErrorKind(error),
+      },
+    });
   }
 });
 port.postMessage({ kind: 'ready' });

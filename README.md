@@ -1,6 +1,6 @@
 # jg-agent-hq
 
-Workspace primitives for native coding agents. The public API provides owner-aware filesystem locks and a local controller for browsing Codex history and actual account usage.
+Workspace primitives for native coding agents. The public API provides owner-aware filesystem locks and a local controller for Codex threads, live input, native history and actual account usage.
 
 Requires Node.js 24.15.0 or later on Linux or macOS. The lock protocol uses POSIX ownership, private directories and process-liveness probes. Windows is outside the supported host contract.
 
@@ -28,6 +28,12 @@ The controller owns its SQLite worker and Codex app-server independently of clie
 
 The current Codex read contract was exercised against CLI 0.163.0 on Linux. Unsupported native responses fail explicitly. `jg-agent-hq/contracts` contains browser-safe schemas and types; importing it does not import the host runtime.
 
+Explicit actions create, name, adopt, resume and close threads; send idle messages; steer an exact running turn; queue the next message; interrupt; and answer native questions or permissions. Actions have stable UUIDs and durable receipts. Repeating the same request returns its receipt; changing that UUID's payload conflicts. A lost acknowledgement stays uncertain until the exact native response arrives or the operator makes an explicit recovery choice. HQ never resends uncertain input.
+
+Native execution settings remain with Codex. Plan approval grants no native tool permission. Close other CLI controllers before confirming adoption, resume or recovery. HQ coordinates sessions sharing one state directory; it cannot lock independently running native CLIs. Durable state includes `action.key`, which must stay private and accompany its SQLite database. Queued undelivered text is saved; ordinary message bodies and question answers are not.
+
+Use `jg-agent-hq request --state-root <directory>` with a closed HQ command on stdin for action and control reads. The [API reference](api/README.md) describes action envelopes, receipts and reconnect reads.
+
 ## Project blueprint
 
 - `src/index.ts`: the explicit public package boundary.
@@ -36,7 +42,8 @@ The current Codex read contract was exercised against CLI 0.163.0 on Linux. Unsu
 - `src/ipc/` and `src/cli/`: private local commands and the installed executable.
 - `src/providers/codex/`: native history and account protocol.
 - `src/sessions/`: authorized, cursor-bound history reads.
-- `src/store/`: SQLite discovery projection in a dedicated worker.
+- `src/actions/`: durable action dispatch, native input routing and bounded live presentation.
+- `src/store/`: SQLite discovery metadata and the action/control ledger in one worker.
 - `src/contracts/`: browser-safe command and response contracts.
 - `scripts/package/`: build-output cleanup and packed-consumer checks.
 - `scripts/test-support/`: disposable external CLI fixtures.

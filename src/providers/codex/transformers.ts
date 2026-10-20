@@ -29,6 +29,7 @@ export const toThreadSummary = (thread: INativeThread): IThreadSummary =>
     updatedAt: thread.updatedAt * 1000,
     nativeState: thread.status.type,
     ownership: 'external',
+    managedId: null,
   });
 
 /**

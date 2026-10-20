@@ -1,8 +1,22 @@
 import { Worker } from 'node:worker_threads';
 import { Exception, extractMessage } from 'error-message-utils';
+import { z } from 'zod';
 
-import type { IThreadSummary } from '../contracts/index.js';
+import {
+  ActionReceiptSchema,
+  ManagedThreadSchema,
+  type IThreadSummary,
+} from '../contracts/index.js';
 
+import {
+  AdmissionResultSchema,
+  ObservationResultSchema,
+  DispatchSchema,
+  ManagedThreadPageSchema,
+  ActionPageSchema,
+  LifecyclePageSchema,
+  ApprovalIdentitySchema,
+} from './control/index.js';
 import {
   StoreRequestSchema,
   StoreResponseSchema,
@@ -16,7 +30,11 @@ import {
  * @throws
  * - -1: The HQ store failed
  */
-export const createStore = async (databasePath: string, runtimeEpoch: string): Promise<IStore> => {
+export const createStore = async (
+  databasePath: string,
+  runtimeEpoch: string,
+  actionKey: Uint8Array,
+): Promise<IStore> => {
   const worker = new Worker(new URL('./store.worker.js', import.meta.url), {
     // the worker loads a file, even when its caller used Node's string-input mode
     execArgv: process.execArgv.filter(
@@ -25,7 +43,7 @@ export const createStore = async (databasePath: string, runtimeEpoch: string): P
         !argument.startsWith('--input-type=') &&
         arguments_[index - 1] !== '--input-type',
     ),
-    workerData: { databasePath, runtimeEpoch },
+    workerData: { databasePath, runtimeEpoch, actionKey },
   });
   let hasExited = false;
   const exited = new Promise<void>((resolve) =>
@@ -36,7 +54,11 @@ export const createStore = async (databasePath: string, runtimeEpoch: string): P
   );
   const pending = new Map<
     number,
-    { resolve: () => void; reject: (error: unknown) => void; timer: ReturnType<typeof setTimeout> }
+    {
+      resolve: (result: unknown) => void;
+      reject: (error: unknown) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
   >();
   let sequence = 0;
   let isAvailable = true;
@@ -79,11 +101,11 @@ export const createStore = async (databasePath: string, runtimeEpoch: string): P
     pending.delete(response.id);
     if (response.error)
       entry.reject(
-        new Exception(`The HQ store failed: ${response.error}`, undefined, {
-          kind: 'operation-failed',
+        new Exception(response.error.message, undefined, {
+          kind: response.error.kind,
         }),
       );
-    else entry.resolve();
+    else entry.resolve(response.result);
   });
   worker.once('error', fail);
   worker.once('exit', (code) =>
@@ -112,8 +134,9 @@ export const createStore = async (databasePath: string, runtimeEpoch: string): P
     clearTimeout(timer);
   }
 
-  const request = (command: IStoreCommand): Promise<void> => {
-    if (!isAvailable || pending.size >= 32)
+  const request = <T>(command: IStoreCommand, schema: z.ZodType<T>): Promise<T> => {
+    // IPC, native callbacks and queue dispatch share the one worker, with bounded headroom.
+    if (!isAvailable || pending.size >= 128)
       return Promise.reject(
         new Exception('The HQ store failed', undefined, { kind: 'operation-failed' }),
       );
@@ -137,7 +160,23 @@ export const createStore = async (databasePath: string, runtimeEpoch: string): P
           }),
         );
       }, 5000);
-      pending.set(id, { resolve, reject, timer });
+      pending.set(id, {
+        resolve: (result) => {
+          const checked = schema.safeParse(result);
+          if (checked.success) resolve(checked.data);
+          else
+            reject(
+              new Exception(
+                'The HQ store failed',
+                undefined,
+                { kind: 'operation-failed' },
+                { cause: checked.error },
+              ),
+            );
+        },
+        reject,
+        timer,
+      });
       worker.postMessage(parsed.data);
     });
   };
@@ -146,12 +185,33 @@ export const createStore = async (databasePath: string, runtimeEpoch: string): P
       return isAvailable;
     },
     /** Persists only discovery metadata, not transcript bodies. */
-    remember: (threads: IThreadSummary[], nextCursor: string | null) =>
-      request({ kind: 'remember', threads, nextCursor, observedAt: Date.now() }),
+    remember: async (threads: IThreadSummary[], nextCursor: string | null) => {
+      await request({ kind: 'remember', threads, nextCursor, observedAt: Date.now() }, z.null());
+    },
+    getAction: (id) => request({ kind: 'action-read', id }, ActionReceiptSchema.nullable()),
+    getThread: (id) => request({ kind: 'thread-read', id }, ManagedThreadSchema.nullable()),
+    getThreadByNativeId: (nativeId) =>
+      request({ kind: 'native-thread-read', nativeId }, ManagedThreadSchema.nullable()),
+    getNativeThreads: (nativeIds) =>
+      request({ kind: 'native-threads', nativeIds }, z.array(ManagedThreadSchema).max(128)),
+    listThreads: (workspaceRoot, page) =>
+      request({ kind: 'threads', workspaceRoot, page }, ManagedThreadPageSchema),
+    listActions: (threadId, page) => request({ kind: 'actions', threadId, page }, ActionPageSchema),
+    listEvents: (page) => request({ kind: 'events', page }, LifecyclePageSchema),
+    admit: (input) => request({ kind: 'admit', input }, AdmissionResultSchema),
+    applyOutcome: (input) => request({ kind: 'outcome', input }, ActionReceiptSchema.nullable()),
+    observe: (input) => request({ kind: 'observe', input }, ObservationResultSchema),
+    claimQueued: (threadId) =>
+      request({ kind: 'claim-queue', threadId }, DispatchSchema.nullable()),
+    openApproval: (input) =>
+      request({ kind: 'approval', input }, ApprovalIdentitySchema.nullable()),
+    releaseControls: async () => {
+      await request({ kind: 'release' }, z.null());
+    },
     close: (): Promise<void> =>
       (closing ??= (async () => {
         try {
-          await request({ kind: 'close' });
+          await request({ kind: 'close' }, z.null());
           await exited;
         } finally {
           if (!hasExited) await worker.terminate();

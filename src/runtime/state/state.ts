@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { lstat, open, realpath, rm } from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { Exception, extractMessage, hasErrorCode } from 'error-message-utils';
 
 import {
@@ -11,7 +11,74 @@ import {
   type IHqLockOwner,
 } from '../../locks/index.js';
 
-import { DATABASE_FILE, RUNTIME_OWNER_FILE } from './constants.js';
+import { ACTION_KEY_FILE, DATABASE_FILE, RUNTIME_OWNER_FILE } from './constants.js';
+
+/**
+ * Reads a private regular file with one extra byte for caller-owned size validation.
+ * @throws
+ * - -1: The HQ state file is unsafe
+ */
+const readPrivateBytes = async (path: string, maximumBytes: number): Promise<Buffer> => {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const details = await handle.stat();
+    if (!details.isFile() || details.nlink !== 1 || !isPrivateOwner(details))
+      throw new Exception('The HQ state file is unsafe', undefined, { kind: 'state-conflict' });
+    const buffer = Buffer.alloc(maximumBytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, null);
+      if (!bytesRead) break;
+      length += bytesRead;
+    }
+    return buffer.subarray(0, length);
+  } finally {
+    await handle.close();
+  }
+};
+
+/**
+ * Keeps secret response fingerprints resistant to dictionary attacks on an exported database.
+ * @returns The private per-store HMAC key; it must be retained with any SQLite backup.
+ * @throws
+ * - -1: The HQ state file is unsafe
+ * - -1: The HQ action key is unavailable
+ */
+export const prepareActionKey = async (
+  stateRoot: string,
+  databasePath: string,
+): Promise<Uint8Array> => {
+  const path = join(stateRoot, ACTION_KEY_FILE);
+  try {
+    const key = await readPrivateBytes(path, 32);
+    if (key.length !== 32)
+      throw new Exception('The HQ action key is unavailable', undefined, {
+        kind: 'state-conflict',
+      });
+    return key;
+  } catch (error) {
+    if (!hasErrorCode(error, 'ENOENT')) {
+      if (error instanceof Exception) throw error;
+      throw new Exception(
+        `The HQ action key is unavailable: ${extractMessage(error)}`,
+        undefined,
+        { kind: 'state-conflict' },
+        { cause: error },
+      );
+    }
+  }
+  if ((await lstat(databasePath)).size !== 0)
+    throw new Exception('The HQ action key is unavailable', undefined, { kind: 'state-conflict' });
+  const key = randomBytes(32);
+  const handle = await open(path, 'wx', 0o600);
+  try {
+    await handle.writeFile(key);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  return key;
+};
 
 /**
  * Canonicalizes a configured root after the shared private-directory checks.
@@ -94,30 +161,12 @@ export const readRuntimeOwner = async (
       throw new Exception('The HQ state directory is unsafe', undefined, {
         kind: 'state-conflict',
       });
-    const handle = await open(
-      join(stateRoot, RUNTIME_OWNER_FILE),
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    );
-    let content: string;
-    try {
-      const details = await handle.stat();
-      if (!details.isFile() || details.nlink !== 1 || !isPrivateOwner(details))
-        throw new Exception('The HQ state file is unsafe', undefined, { kind: 'state-conflict' });
-      const buffer = Buffer.alloc(16_385);
-      let length = 0;
-      while (length < buffer.length) {
-        const { bytesRead } = await handle.read(buffer, length, buffer.length - length, null);
-        if (!bytesRead) break;
-        length += bytesRead;
-      }
-      if (length > 16_384)
-        throw new Exception('The HQ runtime owner is unverifiable', undefined, {
-          kind: 'state-conflict',
-        });
-      content = new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, length));
-    } finally {
-      await handle.close();
-    }
+    const buffer = await readPrivateBytes(join(stateRoot, RUNTIME_OWNER_FILE), 16_384);
+    if (buffer.length > 16_384)
+      throw new Exception('The HQ runtime owner is unverifiable', undefined, {
+        kind: 'state-conflict',
+      });
+    const content = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
     const owner = HqLockOwnerSchema.safeParse(JSON.parse(content));
     if (!owner.success)
       throw new Exception(

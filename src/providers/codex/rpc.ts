@@ -14,18 +14,23 @@ const EnvelopeSchema = z.object({
 
 /**
  * Connects to the installed CLI's stdio app-server with bounded pending requests.
- * @returns An initialized read transport. The caller owns close even after errors.
+ * @returns An initialized transport with exact action IDs and late-response callbacks.
  * @throws
  * - -1: The Codex integration failed
  * - -1: The HQ transport failed
  */
-export const createCodexRpc = async (notify: (method: string, params: unknown) => void) => {
+export const createCodexRpc = async (handlers: {
+  notify(method: string, params: unknown): void;
+  request(id: string | number, method: string, params: unknown): void;
+  lateResponse(id: string, result: unknown, error: unknown): void;
+  unavailable(): void;
+}) => {
   const manifest = z
     .object({ version: z.string() })
     .parse(JSON.parse(await readFile(new URL('../../../package.json', import.meta.url), 'utf8')));
   let sequence = 0;
   const pending = new Map<
-    number,
+    string | number,
     {
       resolve: (result: unknown) => void;
       reject: (error: unknown) => void;
@@ -33,6 +38,7 @@ export const createCodexRpc = async (notify: (method: string, params: unknown) =
     }
   >();
   const stopped = (cause: unknown): void => {
+    handlers.unavailable();
     for (const entry of pending.values()) {
       clearTimeout(entry.timer);
       entry.reject(
@@ -61,19 +67,20 @@ export const createCodexRpc = async (notify: (method: string, params: unknown) =
       const envelope = parsed.data;
       if (envelope.method) {
         if (envelope.id !== undefined) {
-          // browsing never grants an unsolicited native control request
-          void transport
-            .write({ id: envelope.id, error: { code: -32601, message: 'Unsupported request' } })
-            .catch(stopped);
-        } else notify(envelope.method, envelope.params);
+          handlers.request(envelope.id, envelope.method, envelope.params);
+        } else handlers.notify(envelope.method, envelope.params);
         return;
       }
-      if (typeof envelope.id !== 'number')
+      if (envelope.id === undefined)
         throw new Exception('The Codex integration failed', undefined, {
           kind: 'agent-unavailable',
         });
       const entry = pending.get(envelope.id);
-      if (!entry) return;
+      if (!entry) {
+        if (typeof envelope.id === 'string')
+          handlers.lateResponse(envelope.id, envelope.result, envelope.error);
+        return;
+      }
       pending.delete(envelope.id);
       clearTimeout(entry.timer);
       if (envelope.error)
@@ -87,10 +94,16 @@ export const createCodexRpc = async (notify: (method: string, params: unknown) =
     },
     stopped,
   );
-  const request = async (method: string, params: unknown): Promise<unknown> => {
+  const request = async (
+    method: string,
+    params: unknown,
+    actionRequestId?: string,
+  ): Promise<unknown> => {
     if (!transport.isRunning || pending.size >= 32)
       throw new Exception('The Codex integration failed', undefined, { kind: 'agent-unavailable' });
-    const id = ++sequence;
+    const id = actionRequestId ?? ++sequence;
+    if (pending.has(id))
+      throw new Exception('The Codex integration failed', undefined, { kind: 'state-conflict' });
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
@@ -121,6 +134,7 @@ export const createCodexRpc = async (notify: (method: string, params: unknown) =
     const initialized = z.object({ userAgent: z.string() }).safeParse(
       await request('initialize', {
         clientInfo: { name: 'jg_agent_hq', title: 'JG Agent HQ', version: manifest.version },
+        capabilities: { experimentalApi: true },
       }),
     );
     if (!initialized.success)
@@ -137,6 +151,9 @@ export const createCodexRpc = async (notify: (method: string, params: unknown) =
         return transport.isRunning;
       },
       request,
+      reply: (id: string | number, result: unknown) => transport.write({ id, result }),
+      reject: (id: string | number) =>
+        transport.write({ id, error: { code: -32601, message: 'Unsupported request' } }),
       async close(): Promise<void> {
         stopped(new Exception('The Codex integration failed: connection closed'));
         await transport.close();
