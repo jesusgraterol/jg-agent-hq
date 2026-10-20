@@ -17,3 +17,7 @@ export {
 export { createAgentHq } from './runtime/index.js';
 export type { IAgentHq, IAgentHqOptions } from './runtime/index.js';
 export { requestAgentHq } from './ipc/index.js';
+
+// pure execution revision contracts
+export { computePlanRevision } from './plans/index.js';
+export type { IPlanContract } from './plans/index.js';

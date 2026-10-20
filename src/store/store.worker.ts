@@ -7,6 +7,7 @@ import { getErrorKind } from '../errors/index.js';
 import { ClaudeHistoryModel } from '../providers/claude/history/index.js';
 
 import { ControlModel } from './control/index.js';
+import { PlansModel } from './plans/index.js';
 import { StoreRequestSchema, StoreWorkerSchema } from './types.js';
 
 const options = StoreWorkerSchema.parse(workerData);
@@ -18,6 +19,7 @@ const database = new DatabaseSync(options.databasePath, {
 });
 database.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
 database.exec(await readFile(new URL('./schema.sql', import.meta.url), 'utf8'));
+const plans = new PlansModel(database);
 const controls = new ControlModel(database, options.runtimeEpoch, options.actionKey);
 const claudeHistory = new ClaudeHistoryModel(database);
 const remember = database.prepare(`INSERT INTO native_history_index
@@ -42,6 +44,24 @@ port.on('message', (message: unknown) => {
     }
     let result: unknown = null;
     switch (command.kind) {
+      case 'plan-operation':
+        result = plans.getIntent(command.id);
+        break;
+      case 'plan-pending':
+        result = plans.getPendingId(command.directory);
+        break;
+      case 'plan-prepare':
+        result = plans.prepare(command.intent);
+        break;
+      case 'plan-complete':
+        plans.complete(command.id);
+        break;
+      case 'plan-project':
+        plans.project(command.projection);
+        break;
+      case 'plan-milestones':
+        result = plans.list(command.page.directory, command.page.limit, command.page.after);
+        break;
       case 'claude-history':
         result = claudeHistory.read(command.request);
         break;

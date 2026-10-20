@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -184,4 +184,78 @@ test.each([
   } finally {
     await rm(root, { recursive: true });
   }
+});
+
+test('installed plan commands and stdin finalization work without a private plan registry', async () => {
+  await withClaudeRuntime(async ({ stateRoot, workspaceRoot }) => {
+    const directory = join(workspaceRoot, 'ordinary-plan');
+    await mkdir(directory);
+    await writeFile(join(directory, 'plan.md'), '# Plan\nBuild one feature.\n');
+    await writeFile(
+      join(directory, 'milestones.md'),
+      '# Milestones\n\n## Milestone 1: Feature\n**Status:** pending\n\n**Objective:** Build the feature.\n**Dependencies:** None.\n**Scope:** Feature.\n**Implementation:** Implement it.\n**Verification:** Real checks.\n**Acceptance:** Correct.\n**Review checkpoint:** Review it.\n',
+    );
+    const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
+    const run = promisify(execFile);
+    const before = JSON.parse(
+      (
+        await run(process.execPath, [
+          cli,
+          'plan-status',
+          '--state-root',
+          stateRoot,
+          '--directory',
+          directory,
+        ])
+      ).stdout,
+    );
+    expect(before.result.result.state).toBe('plan-approval-required');
+    const finalized = await runClient(stateRoot, [
+      Buffer.from(
+        JSON.stringify({
+          kind: 'plan',
+          command: {
+            kind: 'finalize',
+            target: { directory },
+            action: {
+              id: randomUUID(),
+              operatorId: 'local-owner',
+              source: { kind: 'user-message', reference: 'cli:explicit-finalize' },
+            },
+            expected: before.result.result.revision,
+          },
+        }),
+      ),
+    ]);
+    expect(finalized.code).toBe(0);
+    expect(JSON.parse(finalized.stdout).result.content).toContain('**Milestone ID:**');
+    const page = JSON.parse(
+      (
+        await run(process.execPath, [
+          cli,
+          'plan-milestones',
+          '--state-root',
+          stateRoot,
+          '--directory',
+          directory,
+          '--limit',
+          '1',
+        ])
+      ).stdout,
+    );
+    expect(page.result.result.data).toHaveLength(1);
+    expect(page.result.result.nextCursor).toBeNull();
+    await expect(
+      run(process.execPath, [
+        cli,
+        'plan-milestones',
+        '--state-root',
+        stateRoot,
+        '--directory',
+        directory,
+        '--limit',
+        '129',
+      ]),
+    ).rejects.toMatchObject({ stderr: expect.stringContaining('Request is invalid.') });
+  });
 });

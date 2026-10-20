@@ -16,6 +16,7 @@ const main = async (): Promise<void> => {
     allowPositionals: true,
     options: {
       'state-root': { type: 'string' },
+      directory: { type: 'string' },
       'workspace-root': { type: 'string', multiple: true },
       'native-id': { type: 'string' },
       'turn-id': { type: 'string' },
@@ -36,7 +37,7 @@ const main = async (): Promise<void> => {
   const [kind] = positionals;
   if (values.help || !kind || kind === 'help') {
     process.stdout.write(
-      'jg-agent-hq serve|status|stop|threads|thread|turns|items|usage|managed-thread-name|suggest-thread-name|skills|skill-preview|request --state-root <path> [--provider codex|claude] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--skill-id <id>] [--arguments <text>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nrequest reads one validated HQ command as JSON from stdin.\n',
+      'jg-agent-hq serve|status|stop|threads|thread|turns|items|usage|managed-thread-name|suggest-thread-name|skills|skill-preview|plan-status|plan-milestones|request --state-root <path> [--provider codex|claude] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--skill-id <id>] [--arguments <text>] [--directory <path>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nrequest reads one validated HQ command as JSON from stdin.\n',
     );
     return;
   }
@@ -85,6 +86,7 @@ const main = async (): Promise<void> => {
   }
   if (kind === 'serve') {
     if (
+      values.directory ||
       values['native-id'] ||
       values['turn-id'] ||
       values['thread-id'] ||
@@ -131,6 +133,38 @@ const main = async (): Promise<void> => {
   if (values['codex-extra-skill-root'] || values['claude-additional-directory'])
     throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
   if (roots.length > 1)
+    throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+  if (kind === 'plan-status' || kind === 'plan-milestones') {
+    const allowed = new Set([
+      'state-root',
+      'directory',
+      ...(kind === 'plan-milestones' ? ['limit', 'cursor'] : []),
+    ]);
+    if (!values.directory || Object.keys(values).some((key) => !allowed.has(key)))
+      throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+    const parsed = HqRequestSchema.safeParse({
+      kind: 'plan',
+      command: {
+        kind: kind === 'plan-status' ? 'status' : 'milestones',
+        target: { directory: resolve(values.directory) },
+        ...(kind === 'plan-milestones'
+          ? { limit: values.limit === undefined ? 32 : Number(values.limit), cursor: values.cursor }
+          : {}),
+      },
+    });
+    if (!parsed.success)
+      throw new Exception(
+        'The HQ request is invalid',
+        undefined,
+        { kind: 'invalid-request' },
+        { cause: parsed.error },
+      );
+    process.stdout.write(
+      `${JSON.stringify({ schemaVersion: 1, ...(await requestAgentHq(stateRoot, parsed.data)) })}\n`,
+    );
+    return;
+  }
+  if (values.directory)
     throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
   const payload = Object.fromEntries(
     [

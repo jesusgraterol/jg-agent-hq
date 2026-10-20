@@ -6,6 +6,7 @@ import {
   ManagedThreadSchema,
   ErrorKindSchema,
   type IThreadSummary,
+  type IPlanMilestone,
   type IActionReceipt,
   type IManagedThread,
   type IActionSummary,
@@ -14,6 +15,14 @@ import {
 } from '../contracts/index.js';
 import type { IHistoryRequest } from '../sessions/index.js';
 import type { IClaudeHistoryRead } from '../providers/claude/history/index.js';
+
+import {
+  PlanWriteIntentSchema,
+  PlanProjectionSchema,
+  PlanProjectionPageSchema,
+  type IPlanWriteIntent,
+  type IPlanProjection,
+} from '../plans/index.js';
 
 import {
   AdmissionSchema,
@@ -42,6 +51,12 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     nextCursor: z.string().max(16_384).nullable(),
     observedAt: z.number().int(),
   }),
+  z.strictObject({ kind: z.literal('plan-operation'), id: z.uuid() }),
+  z.strictObject({ kind: z.literal('plan-pending'), directory: z.string() }),
+  z.strictObject({ kind: z.literal('plan-prepare'), intent: PlanWriteIntentSchema }),
+  z.strictObject({ kind: z.literal('plan-complete'), id: z.uuid() }),
+  z.strictObject({ kind: z.literal('plan-project'), projection: PlanProjectionSchema }),
+  z.strictObject({ kind: z.literal('plan-milestones'), page: PlanProjectionPageSchema }),
   z.strictObject({ kind: z.literal('close') }),
   z.strictObject({ kind: z.literal('action-read'), id: z.uuid() }),
   z.strictObject({ kind: z.literal('thread-read'), id: z.uuid() }),
@@ -98,6 +113,48 @@ export const StoreWorkerSchema = z.strictObject({
 // the worker owns persistence; callers cannot submit arbitrary statements
 export type IStore = {
   readonly isAvailable: boolean;
+  /** Reads a selected replay identity or unfinished write intent.
+   * @returns The recorded intent, or null.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  getPlanOperation(id: string): Promise<IPlanWriteIntent | null>;
+  /** Checks for unresolved selected-plan writes.
+   * @returns The unfinished action identity, or null.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  getPendingPlanOperationId(directory: string): Promise<string | null>;
+  /** Admits a write identity before filesystem mutation.
+   * @returns The existing identical or newly admitted intent.
+   * @throws
+   * - -1: The HQ store failed
+   * - -1: The HQ action conflicts with its recorded state
+   */
+  preparePlanOperation(intent: IPlanWriteIntent): Promise<IPlanWriteIntent>;
+  /** Marks a confirmed file write complete without discarding its replay identity.
+   * @returns A promise resolved after persistence.
+   * @throws
+   * - -1: The HQ store failed
+   * - -1: The HQ action conflicts with its recorded state
+   */
+  completePlanOperation(id: string): Promise<void>;
+  /** Refreshes one bounded selected-plan projection.
+   * @returns A promise resolved after the projection transaction.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  projectPlan(projection: IPlanProjection): Promise<void>;
+  /** Reads an ordinal seek page, after filesystem revision validation.
+   * @returns A bounded projection page.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  listPlanMilestones(page: {
+    directory: string;
+    limit: number;
+    after: number;
+  }): Promise<{ data: IPlanMilestone[]; hasMore: boolean }>;
   /**
    * Runs the Claude-owned, version-checked incremental reader in the filesystem worker.
    * @returns One history page or a private indexing marker, without persisting conversation bodies.
