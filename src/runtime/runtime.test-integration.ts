@@ -1,0 +1,582 @@
+// @vitest-environment node
+import { execFile } from 'node:child_process';
+import { connect } from 'node:net';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { setTimeout as wait } from 'node:timers/promises';
+import { promisify } from 'node:util';
+import { hasErrorCode } from 'error-message-utils';
+import { createAgentHq, requestAgentHq, type IAgentHq } from 'jg-agent-hq';
+import { HqResponseSchema, type IHqRequestInput } from 'jg-agent-hq/contracts';
+import { expect, test, vi } from 'vitest';
+import { z } from 'zod';
+
+import { installCodexFixture } from '../../scripts/test-support/index.js';
+
+const execute = promisify(execFile);
+const PidsSchema = z.object({ parent: z.number(), child: z.number() });
+const CallsSchema = z.array(z.object({ method: z.string(), params: z.unknown().optional() }));
+
+const isAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (hasErrorCode(error, 'ESRCH')) return false;
+    throw error;
+  }
+};
+
+/** Each real runtime is closed before its private fixture and native descendants are removed. */
+const withRuntime = async (
+  run: (fixture: {
+    root: string;
+    stateRoot: string;
+    workspaceRoot: string;
+    runtime: IAgentHq;
+    control: (settings: Record<string, unknown>) => Promise<void>;
+    request: (command: IHqRequestInput) => ReturnType<typeof requestAgentHq>;
+  }) => Promise<void>,
+): Promise<void> => {
+  const root = await mkdtemp(join(tmpdir(), 'jg-hq-runtime-'));
+  const workspaceRoot = join(root, 'workspace');
+  const stateRoot = join(root, 'state');
+  let runtime: IAgentHq | undefined;
+  try {
+    await mkdir(workspaceRoot);
+    const bin = await installCodexFixture(root);
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
+    vi.stubEnv('JG_HQ_FIXTURE_DIRECTORY', root);
+    vi.stubEnv('JG_HQ_FIXTURE_WORKSPACE', workspaceRoot);
+    runtime = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
+    await run({
+      root,
+      stateRoot,
+      workspaceRoot,
+      runtime,
+      control: (settings) => writeFile(join(root, 'control.json'), JSON.stringify(settings)),
+      request: (command) => requestAgentHq(stateRoot, command),
+    });
+  } finally {
+    await runtime?.close();
+    vi.unstubAllEnvs();
+    try {
+      const pids = PidsSchema.parse(JSON.parse(await readFile(join(root, 'pids.json'), 'utf8')));
+      expect(isAlive(pids.parent)).toBe(false);
+      expect(isAlive(pids.child)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+};
+
+test('owner-only IPC survives abandoned clients; shutdown releases SQLite and the owned process group', async () => {
+  await withRuntime(async ({ stateRoot, workspaceRoot, runtime, request }) => {
+    const first = HqResponseSchema.parse(await request({ kind: 'status' }));
+    expect(first.kind).toBe('status');
+    if (first.kind !== 'status') throw new Error('wrong response');
+    expect(first.result.store).toBe('ready');
+    expect(first.result.codex.state).toBe('ready');
+    const abandoned = connect(join(stateRoot, 'hq.sock'));
+    await new Promise<void>((resolve, reject) => {
+      abandoned.once('connect', resolve);
+      abandoned.once('error', reject);
+    });
+    abandoned.write('{"incomplete":');
+    abandoned.destroy();
+    await expect(createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] })).rejects.toThrow(
+      'already owned',
+    );
+    const reply = await request({ kind: 'threads', provider: 'codex', workspaceRoot });
+    if (reply.kind !== 'threads') throw new Error('wrong response');
+    expect(reply.result.data).toHaveLength(32);
+    expect(reply.result.data[0]).toMatchObject({
+      nativeId: 'thread-1023',
+      ownership: 'external',
+      createdAt: 1_700_000_511_000,
+    });
+    for (const filename of await readdir(stateRoot)) {
+      expect((await stat(join(stateRoot, filename))).mode & 0o077).toBe(0);
+    }
+    await runtime.close();
+    await runtime.closed;
+    expect(await readdir(stateRoot)).toStrictEqual(['hq.sqlite']);
+    const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'), { readOnly: true });
+    try {
+      const rows = database
+        .prepare(
+          'SELECT native_id, runtime_epoch, continuation_cursor FROM native_history_index ORDER BY native_id',
+        )
+        .all();
+      expect(rows).toHaveLength(32);
+      expect(rows[0]).toMatchObject({
+        runtime_epoch: first.result.runtimeEpoch,
+        continuation_cursor: reply.result.nextCursor,
+      });
+      expect(
+        database
+          .prepare('PRAGMA table_info(native_history_index)')
+          .all()
+          .map((column) => column.name),
+      ).not.toContain('text');
+    } finally {
+      database.close();
+    }
+    const restarted = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
+    try {
+      const status = await restarted.request({ kind: 'status' });
+      if (status.kind !== 'status') throw new Error('wrong response');
+      expect(status.result.runtimeEpoch).not.toBe(first.result.runtimeEpoch);
+    } finally {
+      await restarted.close();
+    }
+  });
+});
+
+test('native seek pages cover 1024 sessions with stable ties and filter-bound continuation', async () => {
+  await withRuntime(async ({ workspaceRoot, request }) => {
+    const identities: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await request({
+        kind: 'threads',
+        provider: 'codex',
+        workspaceRoot,
+        limit: 128,
+        cursor,
+      });
+      if (page.kind !== 'threads') throw new Error('wrong response');
+      expect(page.result.data).toHaveLength(128);
+      identities.push(...page.result.data.map((thread) => thread.nativeId));
+      if (!cursor) {
+        await expect(
+          request({
+            kind: 'threads',
+            provider: 'codex',
+            workspaceRoot,
+            limit: 128,
+            search: 'Task',
+            cursor: page.result.nextCursor!,
+          }),
+        ).rejects.toThrow('Request is invalid.');
+      }
+      cursor = page.result.nextCursor ?? undefined;
+    } while (cursor);
+    expect(new Set(identities).size).toBe(1024);
+    expect(identities).toStrictEqual(
+      Array.from({ length: 1024 }, (_, index) => `thread-${String(1023 - index).padStart(4, '0')}`),
+    );
+    const empty = await request({
+      kind: 'threads',
+      provider: 'codex',
+      workspaceRoot,
+      search: 'No matching task',
+    });
+    expect(empty).toStrictEqual({
+      kind: 'threads',
+      result: { data: [], nextCursor: null, source: 'native' },
+    });
+    await expect(
+      request({ kind: 'threads', provider: 'codex', workspaceRoot, limit: 129 }),
+    ).rejects.toThrow('The HQ request is invalid');
+    await expect(
+      request({ kind: 'threads', provider: 'codex', workspaceRoot, cursor: 'invalid' }),
+    ).rejects.toThrow('Request is invalid.');
+  });
+});
+
+test('authorized native history is re-read after a delayed flush and large frames are bounded for display', async () => {
+  await withRuntime(async ({ root, workspaceRoot, control, request }) => {
+    const target = { provider: 'codex' as const, workspaceRoot, nativeId: 'thread-1023' };
+    const turns = await request({ kind: 'turns', ...target });
+    expect(turns).toMatchObject({
+      kind: 'turns',
+      result: { data: [{ nativeId: 'turn-a', state: 'completed' }] },
+    });
+    await control({ awaitingFlush: true });
+    expect(await request({ kind: 'items', ...target })).toMatchObject({
+      kind: 'items',
+      result: { data: [], history: 'persisted' },
+    });
+    await control({ largeItem: true });
+    const flushed = await request({ kind: 'items', ...target });
+    if (flushed.kind !== 'items') throw new Error('wrong response');
+    expect(flushed.result.data).toStrictEqual([
+      {
+        nativeId: 'item-a',
+        turnId: 'turn-a',
+        nativeType: 'agentMessage',
+        kind: 'agent-message',
+        text: 'a'.repeat(65_536),
+        isTruncated: true,
+      },
+    ]);
+    const calls = CallsSchema.parse(
+      (await readFile(join(root, 'calls.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line)),
+    );
+    expect(
+      calls.every((call) =>
+        [
+          'initialize',
+          'initialized',
+          'thread/read',
+          'thread/turns/list',
+          'thread/items/list',
+        ].includes(call.method),
+      ),
+    ).toBe(true);
+    expect(
+      calls
+        .filter((call) => call.method === 'thread/read')
+        .every((call) => (call.params as { includeTurns: boolean }).includeTurns === false),
+    ).toBe(true);
+  });
+});
+
+test('workspace authorization precedes native access and rejects symlink escapes and cross-workspace history', async () => {
+  await withRuntime(async ({ root, workspaceRoot, control, request }) => {
+    const outside = join(root, 'outside');
+    await mkdir(outside);
+    const escaped = join(workspaceRoot, 'escape');
+    await symlink(outside, escaped);
+    await expect(
+      request({ kind: 'threads', provider: 'codex', workspaceRoot: escaped }),
+    ).rejects.toThrow('Access is denied.');
+    await control({ wrongRoot: outside });
+    await expect(
+      request({ kind: 'items', provider: 'codex', workspaceRoot, nativeId: 'thread-1023' }),
+    ).rejects.toThrow('Access is denied.');
+    await expect(request({ kind: 'threads', provider: 'codex', workspaceRoot })).rejects.toThrow(
+      'Access is denied.',
+    );
+    const calls = await readFile(join(root, 'calls.jsonl'), 'utf8');
+    expect(calls).not.toContain('thread/items/list');
+    expect(calls).not.toContain('thread/resume');
+  });
+});
+
+test('quota uses actual windows; failed refresh retains stale measurements and missing windows stay unavailable', async () => {
+  await withRuntime(async ({ control, request }) => {
+    const usage = await request({ kind: 'usage', provider: 'codex' });
+    if (usage.kind !== 'usage') throw new Error('wrong response');
+    expect(usage.result.state).toBe('available');
+    expect(usage.result.windows[0]).toMatchObject({
+      id: 'codex:primary',
+      usedPercent: 25,
+      remainingPercent: 75,
+      durationMinutes: 300,
+    });
+    expect(usage.result.windows[0].resetsAt).toBeGreaterThan(Date.now());
+    await control({ quotaFailure: true });
+    const stale = await request({ kind: 'usage', provider: 'codex' });
+    expect(stale).toStrictEqual({ kind: 'usage', result: { ...usage.result, state: 'stale' } });
+    await control({ noWindows: true });
+    expect(await request({ kind: 'usage', provider: 'codex' })).toMatchObject({
+      kind: 'usage',
+      result: { state: 'unavailable', windows: [] },
+    });
+    await control({ usedPercent: 105 });
+    expect(await request({ kind: 'usage', provider: 'codex' })).toMatchObject({
+      kind: 'usage',
+      result: { windows: [{ usedPercent: 105, remainingPercent: 0 }] },
+    });
+    await control({ exhausted: true });
+    expect(await request({ kind: 'usage', provider: 'codex' })).toMatchObject({
+      kind: 'usage',
+      result: { state: 'exhausted', ordinaryUsageAllowed: false },
+    });
+    await control({ expired: true });
+    expect(await request({ kind: 'usage', provider: 'codex' })).toMatchObject({
+      kind: 'usage',
+      result: { state: 'stale' },
+    });
+  });
+});
+
+test('native quota events coalesce refreshes and an account change discards the prior account measurement', async () => {
+  await withRuntime(async ({ root, workspaceRoot, control, request }) => {
+    await request({ kind: 'usage', provider: 'codex' });
+    await control({ notifyUsage: true, usedPercent: 75 });
+    await request({ kind: 'threads', provider: 'codex', workspaceRoot, limit: 1 });
+    const deadline = Date.now() + 2000;
+    let count = 0;
+    do {
+      const calls = (await readFile(join(root, 'calls.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line));
+      count = CallsSchema.parse(calls).filter(
+        (call) => call.method === 'account/rateLimits/read',
+      ).length;
+      if (count >= 2) break;
+      await wait(10);
+    } while (Date.now() < deadline);
+    expect(count).toBe(2);
+    expect(await request({ kind: 'usage', provider: 'codex' })).toMatchObject({
+      kind: 'usage',
+      result: { windows: [{ usedPercent: 75 }] },
+    });
+    await control({ accountChanged: true, quotaFailure: true });
+    await request({ kind: 'threads', provider: 'codex', workspaceRoot, limit: 1 });
+    expect(await request({ kind: 'usage', provider: 'codex' })).toStrictEqual({
+      kind: 'usage',
+      result: {
+        provider: 'codex',
+        state: 'unavailable',
+        source: 'native',
+        observedAt: null,
+        ordinaryUsageAllowed: null,
+        windows: [],
+      },
+    });
+  });
+});
+
+test('malformed native items and cursors return a safe integration failure without poisoning the runtime', async () => {
+  await withRuntime(async ({ workspaceRoot, control, request, runtime }) => {
+    const target = { provider: 'codex' as const, workspaceRoot, nativeId: 'thread-1023' };
+    await control({
+      items: [
+        {
+          turnId: 'turn-a',
+          item: { id: 'item-a', type: 'userMessage', content: [{ type: 'text' }] },
+        },
+      ],
+    });
+    await expect(request({ kind: 'items', ...target })).rejects.toThrow(
+      'Coding agent is unavailable.',
+    );
+    await control({ invalidCursor: true });
+    await expect(request({ kind: 'threads', provider: 'codex', workspaceRoot })).rejects.toThrow(
+      'Coding agent is unavailable.',
+    );
+    await control({
+      items: [
+        {
+          turnId: 'turn-a',
+          item: {
+            id: 'item-a',
+            type: 'futureNativeType',
+            privatePayload: 'must not cross the adapter',
+          },
+        },
+      ],
+    });
+    expect(await runtime.request({ kind: 'items', ...target })).toMatchObject({
+      kind: 'items',
+      result: {
+        data: [
+          { kind: 'unsupported', nativeType: 'futureNativeType', text: '', isTruncated: false },
+        ],
+      },
+    });
+    expect(await request({ kind: 'status' })).toMatchObject({
+      kind: 'status',
+      result: { codex: { state: 'ready' } },
+    });
+  });
+});
+
+test('a quota response from before an account change cannot restore that account measurement', async () => {
+  await withRuntime(async ({ control, request }) => {
+    await control({ accountChangedDuringRead: true, usedPercent: 25 });
+    expect(await request({ kind: 'usage', provider: 'codex' })).toMatchObject({
+      kind: 'usage',
+      result: { state: 'unavailable', observedAt: null, windows: [] },
+    });
+    await control({ usedPercent: 75 });
+    expect(await request({ kind: 'usage', provider: 'codex' })).toMatchObject({
+      kind: 'usage',
+      result: { state: 'available', windows: [{ usedPercent: 75 }] },
+    });
+  });
+});
+
+test.each(['malformed', 'oversized', 'partial', 'empty'])(
+  'a %s native frame fails startup and cleans its worker, owner and children',
+  { timeout: 15_000 },
+  async (mode) => {
+    const root = await mkdtemp(join(tmpdir(), 'jg-hq-bad-frame-'));
+    const stateRoot = join(root, 'state');
+    try {
+      const bin = await installCodexFixture(root);
+      await writeFile(join(root, 'control.json'), JSON.stringify({ mode }));
+      vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
+      vi.stubEnv('JG_HQ_FIXTURE_DIRECTORY', root);
+      vi.stubEnv('JG_HQ_FIXTURE_WORKSPACE', root);
+      await expect(createAgentHq({ stateRoot, allowedRoots: [root] })).rejects.toThrow(
+        /The (HQ transport|Codex integration) failed/,
+      );
+      const pids = PidsSchema.parse(JSON.parse(await readFile(join(root, 'pids.json'), 'utf8')));
+      expect(isAlive(pids.parent)).toBe(false);
+      expect(isAlive(pids.child)).toBe(false);
+      expect(await readdir(stateRoot)).toStrictEqual(['hq.sqlite']);
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test('unverifiable owners and linked database files are never reclaimed or followed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'jg-hq-state-'));
+  const stateRoot = join(root, 'state');
+  try {
+    await mkdir(stateRoot, { mode: 0o700 });
+    await writeFile(join(stateRoot, 'hq-owner.json'), 'partial', { mode: 0o600 });
+    await expect(createAgentHq({ stateRoot, allowedRoots: [root] })).rejects.toThrow(
+      'unverifiable',
+    );
+    expect(await readFile(join(stateRoot, 'hq-owner.json'), 'utf8')).toBe('partial');
+    await rm(join(stateRoot, 'hq-owner.json'));
+    const external = join(root, 'external.sqlite');
+    await writeFile(external, 'untouched');
+    await symlink(external, join(stateRoot, 'hq.sqlite'));
+    await expect(createAgentHq({ stateRoot, allowedRoots: [root] })).rejects.toThrow(
+      'state file is unsafe',
+    );
+    expect(await readFile(external, 'utf8')).toBe('untouched');
+    expect(await readdir(stateRoot)).toStrictEqual(['hq.sqlite']);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a corrupt SQLite file fails worker startup without deleting stored content or retaining a live owner', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'jg-hq-database-'));
+  const stateRoot = join(root, 'state');
+  try {
+    await mkdir(stateRoot, { mode: 0o700 });
+    await writeFile(join(stateRoot, 'hq.sqlite'), 'corrupt SQLite content', { mode: 0o600 });
+    await expect(createAgentHq({ stateRoot, allowedRoots: [root] })).rejects.toThrow(
+      'The HQ store failed',
+    );
+    expect(await readdir(stateRoot)).toStrictEqual(['hq.sqlite']);
+    expect(await readFile(join(stateRoot, 'hq.sqlite'), 'utf8')).toBe('corrupt SQLite content');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('lost native output makes the provider unavailable while the independent host and store remain usable', async () => {
+  await withRuntime(async ({ workspaceRoot, control, request }) => {
+    await control({ mode: 'exit-on-list' });
+    await expect(request({ kind: 'threads', provider: 'codex', workspaceRoot })).rejects.toThrow(
+      'Coding agent is unavailable.',
+    );
+    expect(await request({ kind: 'status' })).toMatchObject({
+      kind: 'status',
+      result: { store: 'ready', codex: { state: 'unavailable' } },
+    });
+  });
+});
+
+test(
+  'unconfirmed native startup cleanup preserves runtime ownership evidence',
+  { timeout: 15_000 },
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'jg-hq-cleanup-'));
+    const stateRoot = join(root, 'state');
+    const realKill = process.kill.bind(process);
+    try {
+      const bin = await installCodexFixture(root);
+      await writeFile(join(root, 'control.json'), JSON.stringify({ mode: 'malformed' }));
+      vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
+      vi.stubEnv('JG_HQ_FIXTURE_DIRECTORY', root);
+      vi.stubEnv('JG_HQ_FIXTURE_WORKSPACE', root);
+      // only the OS termination-observation boundary is uncertain; actual signals still run
+      const probe = vi
+        .spyOn(process, 'kill')
+        .mockImplementation((pid, signal) =>
+          pid < 0 && signal === 0 ? true : realKill(pid, signal),
+        );
+      try {
+        await expect(createAgentHq({ stateRoot, allowedRoots: [root] })).rejects.toThrow(
+          'The Codex integration failed',
+        );
+        expect(JSON.parse(await readFile(join(stateRoot, 'hq-owner.json'), 'utf8'))).toMatchObject({
+          command: 'serve',
+          pid: process.pid,
+        });
+      } finally {
+        probe.mockRestore();
+      }
+      const pids = PidsSchema.parse(JSON.parse(await readFile(join(root, 'pids.json'), 'utf8')));
+      expect(isAlive(pids.parent)).toBe(false);
+      expect(isAlive(pids.child)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'the installed CLI serves, browses, and confirms an actual shutdown',
+  { timeout: 20_000 },
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'jg-hq-cli-'));
+    const stateRoot = join(root, 'state');
+    const cli = new URL('../../dist/cli/cli.js', import.meta.url).pathname;
+    let host: ReturnType<typeof execFile> | undefined;
+    let hostClosed: Promise<void> | undefined;
+    try {
+      const bin = await installCodexFixture(root);
+      const env = {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        JG_HQ_FIXTURE_DIRECTORY: root,
+        JG_HQ_FIXTURE_WORKSPACE: root,
+      };
+      host = execFile(
+        process.execPath,
+        [cli, 'serve', '--state-root', stateRoot, '--workspace-root', root],
+        { env },
+      );
+      hostClosed = new Promise<void>((resolve, reject) =>
+        host!.once('close', (code) =>
+          code === 0 ? resolve() : reject(new Error(`CLI exited ${code}`)),
+        ),
+      );
+      void hostClosed.catch(() => undefined);
+      let output = '';
+      await new Promise<void>((resolve, reject) => {
+        host!.once('error', reject);
+        host!.stdout!.on('data', (chunk: Buffer) => {
+          output += chunk;
+          if (output.includes('\n')) resolve();
+        });
+        host!.once('close', () => reject(new Error('CLI stopped before readiness')));
+      });
+      const listing = await execute(
+        process.execPath,
+        [cli, 'threads', '--state-root', stateRoot, '--workspace-root', root, '--limit', '2'],
+        { env },
+      );
+      expect(HqResponseSchema.parse(JSON.parse(listing.stdout))).toMatchObject({
+        kind: 'threads',
+        result: { data: [{ nativeId: 'thread-1023' }, { nativeId: 'thread-1022' }] },
+      });
+      const stopped = await execute(process.execPath, [cli, 'stop', '--state-root', stateRoot], {
+        env,
+      });
+      expect(JSON.parse(stopped.stdout)).toMatchObject({
+        kind: 'stop',
+        result: { state: 'stopped' },
+      });
+      await hostClosed;
+      expect(await readdir(stateRoot)).toStrictEqual(['hq.sqlite']);
+    } finally {
+      if (host?.exitCode === null) {
+        host.kill('SIGTERM');
+        await hostClosed?.catch(() => undefined);
+      }
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);

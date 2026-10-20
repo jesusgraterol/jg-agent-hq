@@ -14,6 +14,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./contracts": {
+      "types": "./dist/contracts/index.d.ts",
+      "default": "./dist/contracts/index.js"
     }
   },
   "sideEffects": false,
@@ -31,11 +35,11 @@
     "url": "git+https://github.com/jesusgraterol/jg-agent-hq.git"
   },
   "scripts": {
-    "build": "node scripts/package/clean.ts && tsc -p tsconfig.build.json",
+    "build": "node scripts/package/clean.ts && tsc -p tsconfig.build.json && node scripts/package/assets.ts",
     "test": "pnpm build && pnpm test:unit && pnpm test:integration",
     "test:unit": "vitest run --config vitest/test-unit.config.ts",
     "test:integration": "vitest run --config vitest/test-integration.config.ts",
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.contracts.json",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check:package": "pnpm test && pnpm typecheck && pnpm format:check"
@@ -49,5 +53,8 @@
     "prettier": "3.4.2",
     "typescript": "6.0.3",
     "vitest": "5.0.3"
+  },
+  "bin": {
+    "jg-agent-hq": "./dist/cli/cli.js"
   }
 }

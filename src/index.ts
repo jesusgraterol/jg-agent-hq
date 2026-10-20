@@ -12,3 +12,8 @@ export {
   releaseHqLock,
   readHqLockState,
 } from './locks/index.js';
+
+// native runtime and local client
+export { createAgentHq } from './runtime/index.js';
+export type { IAgentHq, IAgentHqOptions } from './runtime/index.js';
+export { requestAgentHq } from './ipc/index.js';

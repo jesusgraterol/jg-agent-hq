@@ -39,8 +39,8 @@ const requireSupportedHost = (): void => {
     throw new Exception('The HQ lock requires Linux or macOS');
 };
 
-// the state root is trusted; metadata must still exclude other OS users
-const isPrivateOwner = (details: Stats): boolean =>
+/** Checks POSIX ownership and permission bits for private runtime metadata. */
+export const isPrivateOwner = (details: Stats): boolean =>
   details.uid === process.getuid?.() && (details.mode & 0o077) === 0;
 
 const describeOwner = ({ pid, command, nonce, createdAt }: IHqLockOwner): string =>
@@ -68,9 +68,8 @@ export const getOwnerLiveness = (pid: number): IOwnerLiveness => {
  * - -1: The HQ runtime directory must be a real directory
  * - -1: The HQ runtime directory must be private and owned by the current user
  */
-const ensureRuntimeDirectory = async (root: string): Promise<string> => {
+export const ensurePrivateRuntimeDirectory = async (directory: string): Promise<string> => {
   requireSupportedHost();
-  const directory = join(root, RUNTIME_DIRECTORY);
   try {
     await mkdir(directory, { recursive: true, mode: 0o700 });
   } catch (error) {
@@ -197,7 +196,10 @@ export const acquireHqLock = async (
     throw new Exception('The HQ lock acquisition arguments are invalid', undefined, undefined, {
       cause: input.error,
     });
-  const path = join(await ensureRuntimeDirectory(root), HQ_LOCK_FILE);
+  const path = join(
+    await ensurePrivateRuntimeDirectory(join(root, RUNTIME_DIRECTORY)),
+    HQ_LOCK_FILE,
+  );
   const owner: IHqLockOwner = {
     pid: process.pid,
     nonce: randomUUID(),
