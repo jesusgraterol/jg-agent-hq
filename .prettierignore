@@ -1,0 +1,11 @@
+node_modules/
+dist/
+pnpm-lock.yaml
+_archive/
+_archives/
+_backup/
+_backups/
+**/_archive/**
+**/_archives/**
+**/_backup/**
+**/_backups/**
