@@ -70,3 +70,14 @@ The local client translates a remote failure into an Exception with the default 
 | `operation-failed`        | Operation could not be completed.         |
 
 Handoff lookup uses the unavailable contract for an unknown identity. Git attribution failures use the handoff operation contract with private diagnostic causes. Stale previews, changed source contracts, wrong native targets, mismatched replay identities and invalid or overwritten finding references use the existing action-state conflict contract. Delivery outcomes come from the action ledger and do not imply feedback acceptance.
+
+## Website tooling
+
+| Code | Stable message                               |
+| ---- | -------------------------------------------- |
+| -1   | The HQ website source is invalid             |
+| -1   | The HQ website build is invalid              |
+| -1   | The HQ website assets could not be generated |
+| -1   | The HQ website destination check failed      |
+
+These build-time failures retain operation diagnostics and their original causes locally.

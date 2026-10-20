@@ -1,0 +1,36 @@
+---
+import { GitCompareArrows, MessagesSquare, ListChecks } from '@lucide/astro';
+import Section from 'jg-personal-astro-ui/section';
+
+import { HOME_CONTENT } from '../../site.config.ts';
+
+const icons = [MessagesSquare, ListChecks, GitCompareArrows];
+---
+
+<Section
+  id="capabilities"
+  eyebrow="Workspace primitives"
+  title="Give coordination a home."
+  lede="The controller handles the connections between your agents and your application."
+  border
+>
+  <div class="mt-8 grid gap-8 divide-y divide-border sm:grid-cols-3 sm:gap-8 sm:divide-y-0">
+    {
+      HOME_CONTENT.capabilities.map((item, index) => {
+        const Icon = icons[index];
+        return (
+          <article class="min-w-0 pt-6 first:pt-0 sm:pt-0">
+            {Icon && (
+              <Icon
+                class="mb-5 size-6 text-accent"
+                aria-hidden="true"
+              />
+            )}
+            <h3 class="text-xl font-semibold tracking-tight">{item.title}</h3>
+            <p class="mt-3 text-sm leading-7 text-muted">{item.text}</p>
+          </article>
+        );
+      })
+    }
+  </div>
+</Section>

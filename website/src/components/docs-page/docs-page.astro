@@ -1,0 +1,38 @@
+---
+import { render, type CollectionEntry } from 'astro:content';
+import Container from 'jg-personal-astro-ui/container';
+import Prose from 'jg-personal-astro-ui/prose';
+import TextLink from 'jg-personal-astro-ui/text-link';
+
+import { PAGE_RECORDS, SITE_CONFIG } from '../../site.config.ts';
+
+interface Props {
+  document: CollectionEntry<'documents'>;
+  page: (typeof PAGE_RECORDS)[number];
+}
+const { document, page } = Astro.props;
+const { Content } = await render(document);
+---
+
+<Container
+  width="prose"
+  class="py-8 sm:py-12"
+>
+  <div
+    class="mb-8 flex flex-wrap items-center justify-between gap-3 border-b border-border pb-5 text-sm text-muted"
+  >
+    <p class="font-mono">jg-agent-hq / {page.id === 'api' ? 'api' : 'docs'}</p><div
+      class="flex flex-wrap gap-4"
+    >
+      <TextLink href={page.markdown}>Markdown</TextLink><TextLink
+        href={`${SITE_CONFIG.repositoryUrl}/blob/main/${document.data.source}`}
+        external
+        >Source</TextLink
+      >
+    </div>
+  </div>
+  <Prose
+    class="[&_h1]:text-4xl [&_h1]:leading-tight [&_h1]:font-semibold [&_h1]:tracking-tight [&_h1]:text-balance sm:[&_h1]:text-5xl"
+    ><Content /></Prose
+  >
+</Container>

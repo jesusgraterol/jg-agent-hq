@@ -1,0 +1,76 @@
+---
+import Button from 'jg-personal-astro-ui/button';
+import Container from 'jg-personal-astro-ui/container';
+import HeroBackdrop from 'jg-personal-astro-ui/hero-backdrop';
+import InstallCommand from 'jg-personal-astro-ui/install-command';
+import TerminalWindow from 'jg-personal-astro-ui/terminal-window';
+
+import { HOME_CONTENT, SITE_CONFIG } from '../../site.config.ts';
+---
+
+<section
+  class="relative isolate overflow-hidden border-b border-border py-12 sm:py-20 lg:py-28"
+  aria-labelledby="home-title"
+>
+  <HeroBackdrop />
+  <Container>
+    <div class="grid min-w-0 items-center gap-10 lg:grid-cols-2 lg:gap-16">
+      <div class="min-w-0">
+        <p class="eyebrow mb-6">{HOME_CONTENT.eyebrow}</p>
+        <h1
+          id="home-title"
+          class="display-title max-w-2xl text-balance"
+        >
+          {HOME_CONTENT.title}
+        </h1>
+        <p class="lede mt-6 max-w-xl">{HOME_CONTENT.description}</p>
+        <div class="mt-8 flex flex-wrap gap-3">
+          <Button
+            href="/docs/"
+            size="lg"
+            >Read the docs</Button
+          ><Button
+            href={SITE_CONFIG.repositoryUrl}
+            external
+            size="lg"
+            variant="outline"
+            >View source</Button
+          >
+        </div>
+        <p class="mt-5 font-mono text-xs text-muted">Open source · TypeScript · Local first</p>
+      </div>
+      <div class="min-w-0 space-y-4">
+        <TerminalWindow
+          title="One controller. Native sessions."
+          wrapTitle
+        >
+          <div class="space-y-5 wrap-anywhere whitespace-normal">
+            <p>
+              <span class="text-terminal-accent">$</span> npx jg-agent-hq serve <span
+                class="text-terminal-foreground/70">--state-root .runtime --workspace-root .</span
+              >
+            </p>
+            <div class="border-t border-terminal-foreground/20 pt-4">
+              <p class="text-terminal-foreground/60">Example workflow</p>
+              <div class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2">
+                <span class="text-terminal-accent">Codex</span><span>build-reports</span><span
+                  class="text-terminal-accent">Claude</span
+                ><span>review-reports</span>
+              </div>
+              <p class="mt-4 text-terminal-foreground/70">Preview. Send. Collect. Assess.</p>
+            </div>
+          </div>
+        </TerminalWindow>
+        <InstallCommand
+          id="install-command"
+          command={`npm install jg-agent-hq@${SITE_CONFIG.version}`}
+          context="install command"
+          title="Install the package"
+        />
+        <p class="text-xs leading-5 text-muted">
+          Node.js 24.15.0+ on Linux or macOS. Install and sign in to the native CLIs you use.
+        </p>
+      </div>
+    </div>
+  </Container>
+</section>

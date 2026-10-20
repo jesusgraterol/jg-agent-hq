@@ -1,0 +1,18 @@
+---
+import Button from 'jg-personal-astro-ui/button';
+import Container from 'jg-personal-astro-ui/container';
+import PageHeader from 'jg-personal-astro-ui/page-header';
+---
+
+<PageHeader
+  eyebrow="404"
+  title="Page not found"
+  lede="This address does not point to a page. The documentation is a good place to start."
+/>
+<Container class="flex flex-wrap gap-3 pb-16"
+  ><Button href="/docs/">Browse docs</Button><Button
+    href="/"
+    variant="outline"
+    >Return home</Button
+  ></Container
+>

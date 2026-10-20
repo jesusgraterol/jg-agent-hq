@@ -42,7 +42,8 @@
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.contracts.json",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check:package": "pnpm test && pnpm typecheck && pnpm format:check"
+    "check:package": "pnpm test && pnpm typecheck && pnpm format:check",
+    "check": "pnpm check:package && pnpm --dir website check"
   },
   "dependencies": {
     "error-message-utils": "^1.2.14",
