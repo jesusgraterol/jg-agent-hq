@@ -1,6 +1,7 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { Exception, extractMessage } from 'error-message-utils';
 import { z } from 'zod';
+import { setTimeout as wait } from 'node:timers/promises';
 
 import type {
   IActionEnvelope,
@@ -9,6 +10,7 @@ import type {
   IManagedThread,
   INativeApproval,
   INativeSkillInput,
+  IPlanRevisionWorkflow,
 } from '../contracts/index.js';
 import { getErrorKind } from '../errors/index.js';
 import {
@@ -27,6 +29,7 @@ import {
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 import type { createSkills } from '../skills/index.js';
 import type { IStore } from '../store/index.js';
+import type { createPlans } from '../plans/index.js';
 import type { INativeOutcome, INativeObservation } from '../store/control/index.js';
 
 import { LiveItems } from './live/index.js';
@@ -57,6 +60,7 @@ export const createActions = (
   epoch: string,
   actionKey: Uint8Array,
   skills: ReturnType<typeof createSkills>,
+  plans: ReturnType<typeof createPlans>,
 ) => {
   const prompts = new Map<string, { native: INativePrompt; presentation: INativeApproval }>();
   const controlled = new Map<string, { provider: IManagedThread['provider']; nativeId: string }>();
@@ -68,6 +72,7 @@ export const createActions = (
   };
   const live = new LiveItems();
   const tasks = new Set<Promise<void>>();
+  const taskOwners = new Map<Promise<void>, string>();
   const admissions = new Set<Promise<IActionReceipt>>();
   let lane = Promise.resolve();
   let eventCount = 0;
@@ -105,7 +110,7 @@ export const createActions = (
   };
 
   /** Keeps native work owned by the runtime when a requesting client disconnects. */
-  const runOwned = (operation: () => Promise<void>): void => {
+  const runOwned = (operation: () => Promise<void>, threadId?: string): void => {
     const task = (async () => {
       try {
         await operation();
@@ -114,7 +119,13 @@ export const createActions = (
       }
     })();
     tasks.add(task);
-    void task.finally(() => tasks.delete(task)).catch(failEvents);
+    if (threadId) taskOwners.set(task, threadId);
+    void task
+      .finally(() => {
+        tasks.delete(task);
+        taskOwners.delete(task);
+      })
+      .catch(failEvents);
   };
   /** Contains native protocol failures to the affected controller before releasing its transport. */
   const runNativeOwned = (
@@ -167,7 +178,7 @@ export const createActions = (
   const advanceQueue = (threadId: string): void => {
     if (closing || unavailable) return;
     runOwned(async () => {
-      const next = await store.claimQueued(threadId);
+      const next = await plans.claimQueued(threadId);
       if (next)
         await dispatch(
           next.receipt,
@@ -175,7 +186,7 @@ export const createActions = (
           { kind: 'message', threadId, input: { kind: 'text', text: next.text } },
           { text: next.text, skill: next.skill },
         );
-    });
+    }, threadId);
   };
 
   const apply = async (outcome: INativeOutcome): Promise<IActionReceipt | null> => {
@@ -771,7 +782,7 @@ export const createActions = (
       prepared.text = input.text;
       prepared.skill = input.skill;
     }
-    const admitted = await store.admit({ action, prepared });
+    const admitted = await plans.admitNative(action, prepared);
     if (
       admitted.isNew &&
       admitted.receipt.delivery === 'submitted' &&
@@ -796,9 +807,89 @@ export const createActions = (
         };
         input = { text: receipt.queuedText, skill: receipt.queuedSkill };
       }
-      runOwned(() => dispatch(receipt, admitted.thread!, dispatchedCommand, input));
+      runOwned(
+        () => dispatch(receipt, admitted.thread!, dispatchedCommand, input),
+        admitted.thread.id,
+      );
     }
     return admitted.receipt;
+  };
+
+  /** Waits for actual native lifecycle evidence, never an interrupt acknowledgement. */
+  const waitForThread = async (
+    id: string,
+    predicate: (thread: IManagedThread) => boolean,
+  ): Promise<IManagedThread> => {
+    const deadline = Date.now() + 30_000;
+    while (true) {
+      const thread = await store.getThread(id);
+      if (!thread) conflict();
+      if (predicate(thread!)) return thread!;
+      if (
+        thread!.ownership === 'uncertain' ||
+        thread!.state === 'unknown' ||
+        Date.now() >= deadline
+      )
+        conflict();
+      await wait(250);
+    }
+  };
+  /** Stops only one phase-bound controller and confirms its native background cleanup. */
+  const quiesceThread = async (
+    control: IPlanRevisionWorkflow['controls'][number],
+  ): Promise<void> => {
+    await Promise.allSettled([...admissions]);
+    await Promise.allSettled(
+      [...tasks].filter((task) => taskOwners.get(task) === control.threadId),
+    );
+    await lane;
+    let thread = await store.getThread(control.threadId);
+    if (!thread) conflict();
+    await validateRoot(thread!);
+    if (
+      thread!.ownership === 'managed' &&
+      thread!.state === 'inactive' &&
+      thread!.runtimeEpoch === null
+    )
+      return;
+    if (
+      thread!.ownership !== 'managed' ||
+      thread!.runtimeEpoch !== epoch ||
+      !thread!.nativeId ||
+      !controlled.has(key(thread!.provider, thread!.nativeId!))
+    )
+      conflict();
+    if (thread!.activeTurnId) {
+      const prior = await store.getAction(control.interruptActionId);
+      const expectedTurnId = prior?.nativeTurnId ?? thread!.activeTurnId!;
+      const receipt = await admitAndDispatch({
+        id: control.interruptActionId,
+        runtimeEpoch: epoch,
+        command: { kind: 'interrupt', threadId: control.threadId, expectedTurnId },
+      });
+      if (receipt.delivery === 'failed') conflict();
+      thread = await waitForThread(
+        control.threadId,
+        (current) =>
+          current.activeTurnId === null &&
+          !['starting', 'running', 'waiting-input', 'waiting-approval', 'stopping'].includes(
+            current.state,
+          ),
+      );
+    }
+    const receipt = await admitAndDispatch({
+      id: control.closeActionId,
+      runtimeEpoch: epoch,
+      command: { kind: 'thread-close', threadId: control.threadId },
+    });
+    if (receipt.delivery === 'failed') conflict();
+    await waitForThread(
+      control.threadId,
+      (current) =>
+        current.state === 'inactive' &&
+        current.runtimeEpoch === null &&
+        current.ownership === 'managed',
+    );
   };
 
   return {
@@ -830,6 +921,27 @@ export const createActions = (
       return [...prompts.values()]
         .filter((prompt) => prompt.presentation.threadId === threadId)
         .map((prompt) => structuredClone(prompt.presentation));
+    },
+    /**
+     * Quiesces the selected managed cohort without stopping unrelated controllers.
+     * @returns A promise resolved only after interruption, background cleanup and release evidence.
+     * @throws
+     * - -1: The HQ action conflicts with its recorded state
+     * - -1: The HQ target is outside the allowed workspaces
+     * - -1: The HQ store failed
+     * - -1: The Codex integration failed
+     * - -1: The Claude integration failed
+     */
+    async quiescePlan(controls: IPlanRevisionWorkflow['controls']): Promise<void> {
+      const failures: unknown[] = [];
+      for (let index = 0; index < controls.length; index += 4) {
+        const results = await Promise.allSettled(
+          controls.slice(index, index + 4).map(quiesceThread),
+        );
+        for (const result of results)
+          if (result.status === 'rejected') failures.push(result.reason);
+      }
+      if (failures.length) throw failures[0];
     },
     /**
      * Stops admission, interrupts active work, cleans native terminals and confirms shutdown.

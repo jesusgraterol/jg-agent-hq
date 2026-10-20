@@ -51,7 +51,7 @@ State safety rejects non-private ownership, symlinks and non-regular files. Runt
 
 A native or worker startup failure whose cleanup could not be confirmed carries internal `cleanupUnconfirmed: true`. The runtime retains its owner record in that case rather than allowing a new host to assume its resources have stopped.
 
-Plan validation rejects unsupported framing, duplicate or misplaced milestone IDs, invalid frontmatter boundaries, non-regular artifacts and oversized inputs. Plan operation failures retain safe operation diagnostics inside the trusted host. Stale revisions, presentation hashes, replay payload conflicts, revoked authority and unresolved writes use the existing action-state conflict contract. Neither validation nor write recovery can grant native permissions.
+Plan validation rejects unsupported framing, duplicate or misplaced milestone IDs, invalid frontmatter boundaries, non-regular artifacts and oversized inputs. Plan operation failures retain safe operation diagnostics inside the trusted host. Stale revisions, presentation hashes, replay payload conflicts, revoked authority and unresolved writes use the existing action-state conflict contract. Unresolved correspondence, unverified done evidence, live scope changes, stale runtime authority and unproven quiescence also use the action-state conflict contract. Failed native cleanup retains the checkpoint and closes the editing gate. Neither validation nor write recovery can grant native permissions.
 
 ## Public error messages
 

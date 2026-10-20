@@ -16,6 +16,7 @@ const main = async (): Promise<void> => {
     allowPositionals: true,
     options: {
       'state-root': { type: 'string' },
+      'coordination-root': { type: 'string' },
       directory: { type: 'string' },
       'workspace-root': { type: 'string', multiple: true },
       'native-id': { type: 'string' },
@@ -102,6 +103,9 @@ const main = async (): Promise<void> => {
       throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
     const runtime = await createAgentHq({
       stateRoot,
+      coordinationRoot: values['coordination-root']
+        ? resolve(values['coordination-root'])
+        : undefined,
       allowedRoots: roots,
       codexExtraSkillRoots: values['codex-extra-skill-root']?.map((path) => resolve(path)),
       claudeAdditionalDirectories: values['claude-additional-directory']?.map((path) =>
@@ -130,7 +134,11 @@ const main = async (): Promise<void> => {
     }
     return;
   }
-  if (values['codex-extra-skill-root'] || values['claude-additional-directory'])
+  if (
+    values['codex-extra-skill-root'] ||
+    values['claude-additional-directory'] ||
+    values['coordination-root']
+  )
     throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
   if (roots.length > 1)
     throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });

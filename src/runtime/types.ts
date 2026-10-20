@@ -2,10 +2,15 @@ import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 
 import type { IHqRequestInput, IHqResponse } from '../contracts/index.js';
+import type { IPlanContractParser } from '../plans/index.js';
 
 // construction receives trusted operator configuration, never a browser-selected root
 export const AgentHqOptionsSchema = z.strictObject({
   stateRoot: z.string().min(1).refine(isAbsolute),
+  coordinationRoot: z.string().min(1).refine(isAbsolute).optional(),
+  parsePlanContract: z
+    .custom<IPlanContractParser>((input) => typeof input === 'function')
+    .optional(),
   allowedRoots: z.array(z.string().min(1).refine(isAbsolute)).min(1).max(128),
   codexExtraSkillRoots: z.array(z.string().min(1).refine(isAbsolute)).max(128).optional(),
   claudeAdditionalDirectories: z.array(z.string().min(1).refine(isAbsolute)).max(128).optional(),

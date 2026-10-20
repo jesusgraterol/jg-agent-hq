@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS action (
   related_action_id TEXT,
   queued_text TEXT,
   queued_skill TEXT,
+  plan_context TEXT,
   queue_ready INTEGER NOT NULL DEFAULT 0 CHECK (queue_ready IN (0, 1)),
   requested_name TEXT,
   created_at INTEGER NOT NULL,
@@ -140,3 +141,31 @@ CREATE TABLE IF NOT EXISTS plan_projection (
   source_hash TEXT,
   CONSTRAINT pk_pp__directory PRIMARY KEY (directory)
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS plan_revision_projection (
+ directory TEXT NOT NULL,
+ source_hash TEXT,
+ CONSTRAINT pk_prp__directory PRIMARY KEY (directory)
+) STRICT;
+CREATE TABLE IF NOT EXISTS plan_record (
+ directory TEXT NOT NULL,
+ collection TEXT NOT NULL,
+ record_id TEXT NOT NULL,
+ entry TEXT NOT NULL,
+ CONSTRAINT pk_pr__directory_collection_record_id PRIMARY KEY (directory, collection, record_id)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS thread_plan (
+ thread_id TEXT NOT NULL,
+ directory TEXT NOT NULL,
+ context TEXT NOT NULL,
+ authorization_id TEXT,
+ milestone_id TEXT,
+ CONSTRAINT chk_tp__execution_scope_complete CHECK ((authorization_id IS NULL) = (milestone_id IS NULL)),
+ CONSTRAINT pk_tp__thread_id PRIMARY KEY (thread_id),
+ CONSTRAINT fk_tp__thread_id FOREIGN KEY (thread_id) REFERENCES thread(id)
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_tp__directory_thread_id ON thread_plan (directory, thread_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uidx_tp__authorization_id_milestone_id_execution
+ON thread_plan (authorization_id, milestone_id) WHERE authorization_id IS NOT NULL;

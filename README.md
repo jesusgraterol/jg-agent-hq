@@ -46,6 +46,8 @@ Use `jg-agent-hq request --state-root <directory>` with a closed HQ command on s
 
 Finalization assigns milestone UUIDs and returns the complete canonical sequence. Plan approval, sequence approval and scoped execution authorization are separate explicit operator actions. None sends native input or answers tool permissions. `coordination.json` holds current records beside the plan. SQLite retains write replay identities and a replaceable, paged milestone projection. Keep both when recovering interrupted writes. A pending write blocks further mutation until its original action is reconciled.
 
+Begin a revision before native planning. HQ stops bound implementation threads and their owned background work, captures partial-work evidence, and keeps execution paused while the CLI revises the plan and regenerates milestones. The finalizer carries exact matches automatically and asks for one confirmation covering every unmatched completed or partial milestone. Equivalent rewording preserves the original completion evidence. Changed requirements remain pending. Present and approve the canonical sequence, then explicitly authorize the new execution scope and mode. Neither approval nor restart resumes implementation. See the [revision recovery contract](api/README.md#revision-and-progress-recovery).
+
 ## Project blueprint
 
 - `src/index.ts`: the explicit public package boundary.
@@ -55,7 +57,7 @@ Finalization assigns milestone UUIDs and returns the complete canonical sequence
 - `src/providers/codex/`: native history and account protocol.
 - `src/providers/claude/`: native structured control and usage, plus the version-checked, worker-owned local history reader.
 - `src/sessions/`: authorized, cursor-bound history reads and short label suggestions.
-- `src/plans/`: execution digests, initial milestone finalization and explicit plan authority.
+- `src/plans/`: execution digests, milestone finalization, revision checkpoints, retained verification and explicit plan authority.
 - `src/skills/`: bounded native catalogs, invocation previews and explicit input preparation.
 - `src/actions/`: durable action dispatch, native input routing and bounded live presentation.
 - `src/store/`: SQLite discovery metadata and the action/control ledger in one worker.

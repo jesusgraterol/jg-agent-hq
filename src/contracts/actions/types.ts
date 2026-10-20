@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { MessageInputSchema, NativeSkillInputSchema } from '../skills/index.js';
 
 import { NativeIdSchema } from '../identities/index.js';
+import { PlanRevisionSchema } from '../plans/index.js';
 
 // explicit local intent; native RPC methods and arbitrary configuration are never accepted
 const ThreadIdSchema = z.uuid();
@@ -84,12 +85,32 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
 ]);
 export type IActionCommand = z.infer<typeof ActionCommandSchema>;
 
+// plan scope cannot answer native permission requests or carry filesystem configuration
+export const PlanActionScopeSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('execution'),
+    authorizationId: z.uuid(),
+    milestoneId: z.uuid(),
+    mode: z.enum(['supervised', 'auto']),
+    revision: PlanRevisionSchema,
+  }),
+  z.strictObject({ kind: z.literal('planning'), revisionId: z.uuid(), invocationId: z.uuid() }),
+]);
+export type IPlanActionScope = z.infer<typeof PlanActionScopeSchema>;
+export const ActionPlanContextSchema = z.strictObject({
+  directory: z.string().min(1).max(4096),
+  scope: PlanActionScopeSchema.nullable(),
+  observedRevision: PlanRevisionSchema,
+});
+export type IActionPlanContext = z.infer<typeof ActionPlanContextSchema>;
+
 // identity survives lost client responses; a repeated UUID must carry the same validated request
 export const ActionEnvelopeSchema = z
   .strictObject({
     id: z.uuid(),
     runtimeEpoch: z.uuid(),
     command: ActionCommandSchema,
+    plan: PlanActionScopeSchema.optional(),
   })
   .refine((action) => new TextEncoder().encode(JSON.stringify(action)).length <= 32_768);
 export type IActionEnvelope = z.infer<typeof ActionEnvelopeSchema>;
@@ -108,6 +129,7 @@ export const ActionReceiptSchema = z.object({
     .enum(['state-conflict', 'access-denied', 'agent-unavailable', 'operation-failed'])
     .nullable(),
   relatedActionId: z.uuid().nullable(),
+  planContext: ActionPlanContextSchema.nullable(),
   queuedText: TextSchema.nullable(),
   queuedSkill: NativeSkillInputSchema.nullable(),
   createdAt: z.number().int(),

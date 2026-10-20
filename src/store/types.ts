@@ -7,11 +7,13 @@ import {
   ErrorKindSchema,
   type IThreadSummary,
   type IPlanMilestone,
+  type IPlanReconciliationEntry,
   type IActionReceipt,
   type IManagedThread,
   type IActionSummary,
   type ILifecycleEvent,
   HqRequestSchema,
+  type IActionPlanContext,
 } from '../contracts/index.js';
 import type { IHistoryRequest } from '../sessions/index.js';
 import type { IClaudeHistoryRead } from '../providers/claude/history/index.js';
@@ -20,6 +22,9 @@ import {
   PlanWriteIntentSchema,
   PlanProjectionSchema,
   PlanProjectionPageSchema,
+  PlanRevisionProjectionSchema,
+  PlanRevisionPageSchema,
+  type IPlanRevisionProjection,
   type IPlanWriteIntent,
   type IPlanProjection,
 } from '../plans/index.js';
@@ -51,6 +56,14 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     nextCursor: z.string().max(16_384).nullable(),
     observedAt: z.number().int(),
   }),
+  z.strictObject({
+    kind: z.literal('plan-revision-project'),
+    projection: PlanRevisionProjectionSchema,
+  }),
+  z.strictObject({ kind: z.literal('plan-revision-page'), page: PlanRevisionPageSchema }),
+  z.strictObject({ kind: z.literal('thread-plan-read'), threadId: z.uuid() }),
+  z.strictObject({ kind: z.literal('plan-threads'), directory: z.string() }),
+  z.strictObject({ kind: z.literal('queue-peek'), threadId: z.uuid() }),
   z.strictObject({ kind: z.literal('plan-operation'), id: z.uuid() }),
   z.strictObject({ kind: z.literal('plan-pending'), directory: z.string() }),
   z.strictObject({ kind: z.literal('plan-prepare'), intent: PlanWriteIntentSchema }),
@@ -113,6 +126,42 @@ export const StoreWorkerSchema = z.strictObject({
 // the worker owns persistence; callers cannot submit arbitrary statements
 export type IStore = {
   readonly isAvailable: boolean;
+  /** Refreshes one selected coordination-file projection.
+   * @returns A promise resolved after projection commit.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  projectPlanRevision(projection: IPlanRevisionProjection): Promise<void>;
+  /** Reads a bounded revision/evidence seek page.
+   * @returns A page within the response byte budget.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  listPlanRevision(page: {
+    directory: string;
+    collection: 'sources' | 'drafts' | 'evidence' | 'correspondences';
+    after: string;
+    limit: number;
+  }): Promise<{ data: IPlanReconciliationEntry[]; lastId: string | null; hasMore: boolean }>;
+  /** Reads a thread's exact current plan binding.
+   * @returns Its guided context, or null.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  getThreadPlan(threadId: string): Promise<IActionPlanContext | null>;
+  /** Resolves the current bounded cohort for revision shutdown.
+   * @returns Managed or uncertain thread IDs.
+   * @throws
+   * - -1: The HQ store failed
+   * - -1: The HQ action conflicts with its recorded state
+   */
+  getPlanThreads(directory: string): Promise<string[]>;
+  /** Reads the earliest retained queue entry without dispatch.
+   * @returns The selected receipt, or null.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  peekQueued(threadId: string): Promise<IActionReceipt | null>;
   /** Reads a selected replay identity or unfinished write intent.
    * @returns The recorded intent, or null.
    * @throws
