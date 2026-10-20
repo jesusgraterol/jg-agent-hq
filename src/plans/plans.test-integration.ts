@@ -1,10 +1,12 @@
 // @vitest-environment node
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, symlink, readdir, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, symlink, readdir, rm, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createAgentHq, acquireHqLock, type IAgentHq } from 'jg-agent-hq';
 import type {
+  IPlanComparison,
+  IPlanCoordination,
   IPlanCommandInput,
   IPlanOperatorAction,
   IPlanTarget,
@@ -126,6 +128,75 @@ test('generic plan finalization presents stable IDs without granting approval, e
     );
   });
 });
+
+test.each(['compatible', 'contradiction'] as const)(
+  'coordinator %s evidence survives authority writes and restart without changing execution identity',
+  async (verdict) => {
+    await withClaudeRuntime(async (fixture) => {
+      const plan = await setup(fixture);
+      await plan.finalize();
+      const before = await plan.status();
+      const comparison: IPlanComparison = {
+        sourceRevision: before.revision,
+        targetDirectory: join(fixture.workspaceRoot, 'other-plan'),
+        targetRevision: { planDigest: hash('other plan'), breakdownDigest: null },
+        verdict,
+        reason: 'The coordinator reviewed shared ownership and requirements.',
+        reviewer: {
+          provider: 'codex',
+          cliVersion: '0.163.0',
+          model: null,
+          reference: 'native-review:comparison-1',
+        },
+        reviewedAt: Date.now(),
+      };
+      const path = join(plan.directory, 'coordination.json');
+      const release = await acquireHqLock(fixture.stateRoot, 'coordinator comparison');
+      try {
+        const coordination: IPlanCoordination = JSON.parse(await readFile(path, 'utf8'));
+        coordination.comparisons = [comparison];
+        const temporary = join(plan.directory, '.comparison.json.tmp');
+        await writeFile(temporary, `${JSON.stringify(coordination)}\n`);
+        await rename(temporary, path);
+      } finally {
+        await release();
+      }
+      const reviewed = await plan.status();
+      expect(reviewed.revision).toStrictEqual(before.revision);
+      expect(reviewed.inspection.coordination).not.toBe(before.inspection.coordination);
+      expect(reviewed.coordination.comparisonCount).toBe(1);
+      expect(reviewed.coordination).not.toHaveProperty('comparisons');
+      expect(reviewed.isPlanApproved).toBe(false);
+      expect(reviewed.isSequenceApproved).toBe(false);
+      expect(reviewed.coordination.execution).toBeNull();
+
+      await plan.approve('plan');
+      await plan.approve('sequence');
+      await plan.send({
+        kind: 'revoke',
+        target: plan.target,
+        action: action(),
+        expected: before.revision,
+        scope: 'all',
+      });
+      await fixture.runtime.close();
+      const restarted = await createAgentHq({
+        stateRoot: fixture.stateRoot,
+        allowedRoots: [fixture.workspaceRoot],
+      });
+      try {
+        const current = await plan.status(restarted);
+        expect(current.revision).toStrictEqual(before.revision);
+        expect(current.coordination.comparisonCount).toBe(1);
+        expect(current.isPlanApproved).toBe(false);
+        expect(current.isSequenceApproved).toBe(false);
+        expect(JSON.parse(await readFile(path, 'utf8')).comparisons).toStrictEqual([comparison]);
+      } finally {
+        await restarted.close();
+      }
+    });
+  },
+);
 
 test('explicit authorization binds current revisions, selected IDs and exact execution mode', async () => {
   await withClaudeRuntime(async (fixture) => {

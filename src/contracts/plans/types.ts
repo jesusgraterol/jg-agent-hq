@@ -300,8 +300,26 @@ export const PlanFinalizationSchema = z.strictObject({
   fileHash: PlanDigestSchema,
   createdAt: z.number().int(),
 });
+// coordinators own semantic review; the core preserves its exact revision-bound evidence
+export const PlanComparisonSchema = z.strictObject({
+  sourceRevision: PlanRevisionSchema,
+  targetDirectory: z.string().min(1).max(4096),
+  targetRevision: PlanRevisionSchema,
+  verdict: z.enum(['compatible', 'contradiction']),
+  reason: z.string().min(1).max(4096),
+  reviewer: z.strictObject({
+    provider: z.enum(['claude', 'codex']),
+    cliVersion: z.string().min(1).max(128),
+    model: z.string().min(1).max(256).nullable(),
+    reference: z.string().min(1).max(4096),
+  }),
+  reviewedAt: z.number().int().nonnegative(),
+});
+export type IPlanComparison = z.infer<typeof PlanComparisonSchema>;
+
 export const PlanCoordinationSchema = z.strictObject({
   schemaVersion: z.literal(1),
+  comparisons: z.array(PlanComparisonSchema).max(1024),
   finalized: PlanFinalizationSchema.nullable(),
   planApproval: PlanApprovalSchema.nullable(),
   sequenceApproval: PlanApprovalSchema.nullable(),
@@ -326,11 +344,13 @@ export type IPlanCoordination = z.infer<typeof PlanCoordinationSchema>;
 
 // collection bodies remain in the file owner and paged SQLite projections
 export const PlanCoordinationSummarySchema = PlanCoordinationSchema.omit({
+  comparisons: true,
   completions: true,
   correspondences: true,
   revision: true,
   baseline: true,
 }).extend({
+  comparisonCount: z.number().int().nonnegative(),
   completionCount: z.number().int().nonnegative(),
   revision: PlanRevisionWorkflowSchema.omit({
     checkpoint: true,
