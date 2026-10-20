@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hasErrorCode } from 'error-message-utils';
@@ -34,6 +34,7 @@ export const withClaudeRuntime = async (
   const configRoot = join(root, 'claude');
   const projectRoot = join(configRoot, 'projects', workspaceRoot.replace(/[^a-zA-Z0-9]/g, '-'));
   let runtime: IAgentHq | undefined;
+  let canRemoveFixture = false;
   try {
     await mkdir(workspaceRoot);
     await mkdir(projectRoot, { recursive: true });
@@ -58,6 +59,24 @@ export const withClaudeRuntime = async (
   } finally {
     try {
       await runtime?.close();
+      try {
+        await lstat(join(stateRoot, 'hq-owner.json'));
+        throw new Error(`Fixture ownership requires inspection at ${stateRoot}`);
+      } catch (cause) {
+        if (!hasErrorCode(cause, 'ENOENT')) throw cause;
+      }
+      let children: string[] = [];
+      try {
+        children = (await readFile(join(root, 'claude-pids.jsonl'), 'utf8'))
+          .trim()
+          .split('\n')
+          .filter(Boolean);
+      } catch (cause) {
+        if (!hasErrorCode(cause, 'ENOENT')) throw cause;
+      }
+      for (const line of children)
+        for (const pid of Object.values(z.record(z.string(), z.number()).parse(JSON.parse(line))))
+          expect(() => process.kill(pid, 0)).toThrow();
       for (const filename of ['pids.json', 'claude-pid.json']) {
         let pids: number[];
         try {
@@ -73,9 +92,10 @@ export const withClaudeRuntime = async (
           expect(() => process.kill(pid, 0)).toThrow();
         }
       }
+      canRemoveFixture = true;
     } finally {
       vi.unstubAllEnvs();
-      await rm(root, { recursive: true, force: true });
+      if (canRemoveFixture) await rm(root, { recursive: true, force: true });
     }
   }
 };

@@ -8,6 +8,7 @@ import { CONTROL_SOCKET, createIpcServer } from '../ipc/index.js';
 import {
   createCodexProvider,
   createClaudeProvider,
+  createClaudeControl,
   type ICodexProvider,
 } from '../providers/index.js';
 import { readNativeHistory } from '../sessions/index.js';
@@ -81,7 +82,28 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const native = provider;
   const projection = store;
   const claude = createClaudeProvider(projection);
-  const actions = createActions(native, projection, allowedRoots, ownership.owner.nonce, actionKey);
+  const claudeControl = createClaudeControl();
+  const actions = createActions(
+    native,
+    claudeControl,
+    async (nativeId, workspaceRoot) => {
+      const response = await claude.readHistory({
+        kind: 'thread',
+        provider: 'claude',
+        nativeId,
+        workspaceRoot,
+      });
+      if (response.kind !== 'thread')
+        throw new Exception('The Claude integration failed', undefined, {
+          kind: 'agent-unavailable',
+        });
+      return response.result;
+    },
+    projection,
+    allowedRoots,
+    ownership.owner.nonce,
+    actionKey,
+  );
   let resolveClosed: () => void = () => undefined;
   let rejectClosed: (error: unknown) => void = () => undefined;
   const closed = new Promise<void>((resolve, reject) => {
@@ -137,8 +159,18 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
             codex: {
               state: native.isAvailable ? 'ready' : 'unavailable',
               userAgent: native.userAgent,
+              steering: 'available',
             },
-            claude: { state: claude.state, version: claude.version },
+            claude: {
+              state:
+                claudeControl.state === 'ready'
+                  ? 'ready'
+                  : claude.state === 'idle'
+                    ? claudeControl.state
+                    : claude.state,
+              version: claude.version ?? claudeControl.version,
+              steering: 'unavailable',
+            },
           },
         };
       case 'stop': {
@@ -165,11 +197,45 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       default: {
         if (command.provider === 'claude') {
           const workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, allowedRoots);
-          return claude.readHistory({ ...command, workspaceRoot });
+          const response = await claude.readHistory({ ...command, workspaceRoot });
+          if (response.kind === 'threads') {
+            const managed = new Map(
+              (
+                await projection.getNativeThreads(
+                  'claude',
+                  response.result.data.map((thread) => thread.nativeId),
+                )
+              ).map((thread) => [thread.nativeId, thread]),
+            );
+            for (const thread of response.result.data) {
+              const control = managed.get(thread.nativeId);
+              if (control) {
+                thread.managedId = control.id;
+                thread.ownership = control.ownership;
+                thread.name = control.name;
+              }
+            }
+          } else if (response.kind === 'thread') {
+            const control = await projection.getThreadByNativeId(
+              'claude',
+              response.result.nativeId,
+            );
+            if (control) {
+              response.result.managedId = control.id;
+              response.result.ownership = control.ownership;
+              response.result.name = control.name;
+            }
+          }
+          if (command.kind === 'items' && response.kind === 'items')
+            actions.live.reconcile(
+              JSON.stringify(['claude', command.nativeId]),
+              response.result.data,
+            );
+          return response;
         }
         const response = await readNativeHistory(command, native, projection, allowedRoots);
         if (command.kind === 'items' && response.kind === 'items')
-          actions.live.reconcile(command.nativeId, response.result.data);
+          actions.live.reconcile(JSON.stringify(['codex', command.nativeId]), response.result.data);
         return response;
       }
     }

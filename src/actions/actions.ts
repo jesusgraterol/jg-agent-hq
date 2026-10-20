@@ -5,6 +5,7 @@ import { z } from 'zod';
 import type {
   IActionEnvelope,
   IActionReceipt,
+  IThreadSummary,
   IManagedThread,
   INativeApproval,
 } from '../contracts/index.js';
@@ -18,7 +19,8 @@ import {
   parseCodexPrompt,
   buildCodexReply,
   toApprovalPresentation,
-  type ICodexPrompt,
+  createClaudeControl,
+  type INativePrompt,
   type ICodexProvider,
 } from '../providers/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
@@ -32,7 +34,10 @@ const TargetSchema = z.object({
   turnId: z.string().min(1).max(4096),
 });
 const DeltaSchema = TargetSchema.extend({ itemId: z.string().min(1).max(4096), delta: z.string() });
-const NativeErrorSchema = z.object({ nativeCode: z.number() });
+const NativeRejectionSchema = z.union([
+  z.object({ nativeCode: z.number() }),
+  z.object({ nativeRejection: z.literal(true) }),
+]);
 const PhaseIdSchema = z
   .string()
   .regex(/^[a-f0-9-]{36}:(create|resume|name|turn|steer|interrupt|clean|close)$/);
@@ -43,16 +48,21 @@ const PhaseIdSchema = z
  */
 export const createActions = (
   native: ICodexProvider,
+  claude: ReturnType<typeof createClaudeControl>,
+  readClaudeThread: (nativeId: string, workspaceRoot: string) => Promise<IThreadSummary>,
   store: IStore,
   roots: string[],
   epoch: string,
   actionKey: Uint8Array,
 ) => {
-  const prompts = new Map<
-    string,
-    { id: string | number; native: ICodexPrompt; presentation: INativeApproval }
-  >();
-  const controlled = new Set<string>();
+  const prompts = new Map<string, { native: INativePrompt; presentation: INativeApproval }>();
+  const controlled = new Map<string, { provider: IManagedThread['provider']; nativeId: string }>();
+  const key = (provider: IManagedThread['provider'], nativeId: string) =>
+    JSON.stringify([provider, nativeId]);
+  const own = (provider: IManagedThread['provider'], nativeId: string): void => {
+    controlled.set(key(provider, nativeId), { provider, nativeId });
+    live.open(key(provider, nativeId));
+  };
   const live = new LiveItems();
   const tasks = new Set<Promise<void>>();
   const admissions = new Set<Promise<IActionReceipt>>();
@@ -80,12 +90,13 @@ export const createActions = (
     const previous = lane;
     lane = (async () => {
       await previous.catch(() => undefined);
-      await store.observe({ kind: 'native-unavailable' });
+      await store.observe({ kind: 'native-unavailable', provider: 'codex' });
+      await store.observe({ kind: 'native-unavailable', provider: 'claude' });
     })();
     void lane.catch((error: unknown) => {
       eventFailure = error;
     });
-    void native.close().catch((error: unknown) => {
+    void Promise.all([native.close(), claude.close()]).catch((error: unknown) => {
       eventFailure = error;
     });
   };
@@ -101,6 +112,26 @@ export const createActions = (
     })();
     tasks.add(task);
     void task.finally(() => tasks.delete(task)).catch(failEvents);
+  };
+  /** Contains native protocol failures to the affected controller before releasing its transport. */
+  const runNativeOwned = (
+    provider: IManagedThread['provider'],
+    nativeId: string | undefined,
+    operation: () => Promise<void>,
+  ): void => {
+    runOwned(async () => {
+      try {
+        await operation();
+      } catch {
+        await store.observe({
+          kind: 'native-unavailable',
+          provider,
+          ...(provider === 'claude' && nativeId ? { nativeThreadId: nativeId } : {}),
+        });
+        if (provider === 'codex') await native.close();
+        else if (nativeId) await claude.stopSession(`${randomUUID()}:reject`, nativeId);
+      }
+    });
   };
   /** Orders lifecycle persistence without buffering an unbounded stream. */
   const enqueue = (operation: () => Promise<void>): void => {
@@ -144,7 +175,7 @@ export const createActions = (
     if (!receipt?.threadId) return receipt;
     const thread = await store.getThread(receipt.threadId);
     if (thread?.nativeId && outcome.kind === 'closed') {
-      controlled.delete(thread.nativeId);
+      controlled.delete(key(thread.provider, thread.nativeId));
     }
     if (thread?.state === 'completed') advanceQueue(thread.id);
     return receipt;
@@ -157,11 +188,17 @@ export const createActions = (
       const admissionName = receipt.kind === 'thread-rename' ? null : thread.name;
       // rename's new name is retained only by its admitted in-memory command; late name acks need no resend
       if (!admissionName) return;
-      await native.nameThread(requestId, thread.nativeId, admissionName);
+      await (thread.provider === 'codex' ? native : claude).nameThread(
+        requestId,
+        thread.nativeId,
+        admissionName,
+      );
       await apply({ kind: 'renamed', actionId: receipt.id, requestId });
     } else if (requestId.endsWith(':close')) {
-      await native.verifyTerminalsClosed(thread.nativeId);
-      await native.unsubscribe(requestId, thread.nativeId);
+      if (thread.provider === 'codex') {
+        await native.verifyTerminalsClosed(thread.nativeId);
+        await native.unsubscribe(requestId, thread.nativeId);
+      } else await claude.releaseSession(requestId, thread.nativeId);
       await apply({ kind: 'closed', actionId: receipt.id, requestId });
     }
   };
@@ -180,6 +217,7 @@ export const createActions = (
   ): Promise<void> => {
     let receipt = initial;
     let thread = originalThread;
+    const control = thread.provider === 'codex' ? native : claude;
     let hasDispatched = false;
     try {
       if (closing) {
@@ -207,15 +245,12 @@ export const createActions = (
       const prompt = command.kind === 'native-reply' ? prompts.get(command.approvalId) : undefined;
       if (command.kind === 'native-reply' && !prompt) conflict();
       const reply =
-        command.kind === 'native-reply'
-          ? buildCodexReply(prompt!.native, command.response)
-          : undefined;
+        command.kind === 'native-reply' ? prompt!.native.validate(command.response) : undefined;
       hasDispatched = true;
       if (requestId.endsWith(':create')) {
-        const created = await native.startThread(requestId, thread.workspaceRoot);
+        const created = await control.startThread(requestId, thread.workspaceRoot);
         // bind the exact response before attempting the second, independently receipted native phase
-        controlled.add(created.id);
-        live.open(created.id);
+        own(thread.provider, created.id);
         if ((await resolveWorkspaceTarget(created.cwd, roots)) !== thread.workspaceRoot)
           agentUnavailable();
         receipt = (await apply({
@@ -228,9 +263,11 @@ export const createActions = (
         await continuePhases(receipt, thread);
       } else if (requestId.endsWith(':resume')) {
         if (!nativeId) conflict();
-        controlled.add(nativeId);
-        live.open(nativeId);
-        const resumed = await native.resumeThread(requestId, nativeId);
+        own(thread.provider, nativeId);
+        const resumed =
+          thread.provider === 'codex'
+            ? await native.resumeThread(requestId, nativeId)
+            : await claude.resumeThread(requestId, nativeId, thread.workspaceRoot, thread.name);
         if ((await resolveWorkspaceTarget(resumed.cwd, roots)) !== thread.workspaceRoot)
           agentUnavailable();
         await apply({
@@ -241,11 +278,11 @@ export const createActions = (
         });
       } else if (requestId.endsWith(':name')) {
         if (!nativeId || command.kind !== 'thread-rename') conflict();
-        await native.nameThread(requestId, nativeId, command.name);
+        await control.nameThread(requestId, nativeId, command.name);
         await apply({ kind: 'renamed', actionId: receipt.id, requestId });
       } else if (requestId.endsWith(':turn')) {
         if (!nativeId || !('text' in command)) conflict();
-        const turn = await native.startTurn(requestId, nativeId, command.text);
+        const turn = await control.startTurn(requestId, nativeId, command.text);
         await apply({
           kind: 'turn-accepted',
           actionId: receipt.id,
@@ -263,21 +300,22 @@ export const createActions = (
         await apply({ kind: 'steer-accepted', actionId: receipt.id, requestId, nativeTurnId });
       } else if (requestId.endsWith(':interrupt')) {
         if (!nativeId || command.kind !== 'interrupt') conflict();
-        await native.interrupt(requestId, nativeId, command.expectedTurnId);
+        await control.interrupt(requestId, nativeId, command.expectedTurnId);
         await apply({ kind: 'interrupt-accepted', actionId: receipt.id, requestId });
       } else if (requestId.endsWith(':clean')) {
         if (!nativeId) conflict();
-        await native.cleanTerminals(requestId, nativeId);
+        if (thread.provider === 'codex') await native.cleanTerminals(requestId, nativeId);
+        else await claude.stopSession(requestId, nativeId);
         receipt = (await apply({ kind: 'cleaned', actionId: receipt.id, requestId }))!;
         await continuePhases(receipt, thread);
       } else if (command.kind === 'native-reply') {
-        await native.reply(prompt!.id, reply);
+        await prompt!.native.reply(reply);
         await apply({ kind: 'reply-written', actionId: receipt.id, requestId });
       }
     } catch (error) {
       // Only a matching native error response proves rejection. Transport loss and malformed results remain uncertain.
       const explicit =
-        error instanceof Exception && NativeErrorSchema.safeParse(error.data).success;
+        error instanceof Exception && NativeRejectionSchema.safeParse(error.data).success;
       const kind = getErrorKind(error);
       const failure =
         kind === 'state-conflict' || kind === 'access-denied' || kind === 'agent-unavailable'
@@ -301,11 +339,20 @@ export const createActions = (
     if (observation.kind === 'turn-completed') {
       for (const [id, prompt] of prompts)
         if (
-          prompt.native.params.threadId === observation.nativeThreadId &&
-          prompt.native.params.turnId === observation.nativeTurnId
+          prompt.native.provider === observation.provider &&
+          prompt.native.nativeThreadId === observation.nativeThreadId &&
+          prompt.native.nativeTurnId === observation.nativeTurnId
         )
           prompts.delete(id);
     }
+    if (observation.kind === 'request-resolved' || observation.kind === 'request-canceled')
+      for (const [id, prompt] of prompts)
+        if (
+          prompt.native.provider === observation.provider &&
+          prompt.native.requestId === observation.requestId &&
+          prompt.native.nativeThreadId === observation.nativeThreadId
+        )
+          prompts.delete(id);
     if (result.canDispatchQueued && result.thread) advanceQueue(result.thread.id);
   };
 
@@ -316,17 +363,23 @@ export const createActions = (
           z.object({ threadId: z.string().min(1).max(4096), turn: NativeTurnSchema }),
           params,
         );
-        if (!controlled.has(threadId)) return;
+        if (!controlled.has(key('codex', threadId))) return;
         if (method === 'turn/started')
           enqueue(() =>
-            observe({ kind: 'turn-started', nativeThreadId: threadId, nativeTurnId: turn.id }),
+            observe({
+              kind: 'turn-started',
+              provider: 'codex',
+              nativeThreadId: threadId,
+              nativeTurnId: turn.id,
+            }),
           );
         else if (turn.status !== 'inProgress') {
           const state = turn.status;
-          live.completeTurn(threadId, turn.id);
+          live.completeTurn(key('codex', threadId), turn.id);
           enqueue(() =>
             observe({
               kind: 'turn-completed',
+              provider: 'codex',
               nativeThreadId: threadId,
               nativeTurnId: turn.id,
               state,
@@ -338,11 +391,16 @@ export const createActions = (
           TargetSchema.extend({ item: NativeItemSchema.shape.item }),
           params,
         );
-        if (!controlled.has(threadId)) return;
-        live.put(threadId, toHistoryItem({ turnId, item }), method === 'item/completed');
+        if (!controlled.has(key('codex', threadId))) return;
+        live.put(
+          key('codex', threadId),
+          toHistoryItem({ turnId, item }),
+          method === 'item/completed',
+        );
         enqueue(() =>
           observe({
             kind: method === 'item/started' ? 'item-started' : 'item-completed',
+            provider: 'codex',
             nativeThreadId: threadId,
             nativeTurnId: turnId,
             nativeItemId: item.id,
@@ -353,8 +411,8 @@ export const createActions = (
         method === 'item/commandExecution/outputDelta'
       ) {
         const result = parseNative(DeltaSchema, params);
-        if (controlled.has(result.threadId))
-          live.append(result.threadId, result.turnId, result.itemId, result.delta);
+        if (controlled.has(key('codex', result.threadId)))
+          live.append(key('codex', result.threadId), result.turnId, result.itemId, result.delta);
       } else if (method === 'serverRequest/resolved') {
         const { threadId, requestId } = parseNative(
           z.object({
@@ -363,28 +421,39 @@ export const createActions = (
           }),
           params,
         );
-        if (!controlled.has(threadId)) return;
+        if (!controlled.has(key('codex', threadId))) return;
         enqueue(async () => {
           await observe({
             kind: 'request-resolved',
+            provider: 'codex',
             nativeThreadId: threadId,
             requestId: JSON.stringify(requestId),
           });
           for (const [id, prompt] of prompts)
-            if (prompt.id === requestId && prompt.native.params.threadId === threadId)
+            if (
+              prompt.native.requestId === JSON.stringify(requestId) &&
+              prompt.native.provider === 'codex' &&
+              prompt.native.nativeThreadId === threadId
+            )
               prompts.delete(id);
         });
       }
     },
     request(id, method, params) {
       const prompt = parseCodexPrompt(method, params);
-      if (!prompt || !controlled.has(prompt.params.threadId) || prompts.size >= 32 || closing) {
-        runOwned(() => native.reject(id));
+      if (
+        !prompt ||
+        !controlled.has(key('codex', prompt.params.threadId)) ||
+        prompts.size >= 32 ||
+        closing
+      ) {
+        runNativeOwned('codex', undefined, () => native.reject(id));
         return;
       }
       enqueue(async () => {
         const recorded = await store.openApproval({
           id: randomUUID(),
+          provider: 'codex',
           nativeThreadId: prompt.params.threadId,
           nativeTurnId: prompt.params.turnId,
           requestId: JSON.stringify(id),
@@ -400,8 +469,17 @@ export const createActions = (
         }
         if (prompts.has(recorded.id)) return;
         prompts.set(recorded.id, {
-          id,
-          native: prompt,
+          native: {
+            provider: 'codex',
+            nativeThreadId: prompt.params.threadId,
+            nativeTurnId: prompt.params.turnId,
+            requestId: JSON.stringify(id),
+            fingerprint: JSON.stringify([method, params]),
+            presentation: toApprovalPresentation(prompt),
+            validate: (response) => buildCodexReply(prompt, response),
+            reply: (result) => native.reply(id, result),
+            reject: () => native.reject(id),
+          },
           presentation: {
             id: recorded.id,
             threadId: recorded.thread.id,
@@ -416,7 +494,7 @@ export const createActions = (
     },
     lateResponse(requestId, result, error) {
       if (!PhaseIdSchema.safeParse(requestId).success || closing) return;
-      runOwned(async () => {
+      runNativeOwned('codex', undefined, async () => {
         const actionId = requestId.slice(0, 36);
         const receipt = await store.getAction(actionId);
         if (
@@ -428,7 +506,7 @@ export const createActions = (
         )
           return;
         const thread = await store.getThread(receipt.threadId);
-        if (!thread) return;
+        if (!thread || thread.provider !== 'codex') return;
         let outcome: INativeOutcome;
         if (error !== undefined)
           outcome = { kind: 'failed', actionId, requestId, failure: 'agent-unavailable' };
@@ -436,8 +514,7 @@ export const createActions = (
           const created = z.object({ thread: NativeThreadSchema }).parse(result).thread;
           if ((await resolveWorkspaceTarget(created.cwd, roots)) !== thread.workspaceRoot)
             agentUnavailable();
-          controlled.add(created.id);
-          live.open(created.id);
+          own('codex', created.id);
           outcome = { kind: 'created', actionId, requestId, nativeId: created.id };
         } else if (requestId.endsWith(':resume')) {
           const resumed = z.object({ thread: NativeThreadSchema }).parse(result).thread;
@@ -484,7 +561,100 @@ export const createActions = (
     },
     unavailable() {
       if (closing || unavailable) return;
-      failEvents();
+      enqueue(async () => {
+        await store.observe({ kind: 'native-unavailable', provider: 'codex' });
+        for (const [id, prompt] of prompts)
+          if (prompt.native.provider === 'codex') prompts.delete(id);
+      });
+    },
+  });
+
+  claude.setEvents({
+    observe(observation) {
+      if (
+        !('nativeThreadId' in observation) ||
+        !observation.nativeThreadId ||
+        !controlled.has(key('claude', observation.nativeThreadId))
+      )
+        return;
+      if (observation.kind === 'turn-completed')
+        live.completeTurn(key('claude', observation.nativeThreadId), observation.nativeTurnId);
+      enqueue(() => observe(observation));
+    },
+    item(nativeId, item, isComplete, replacedIds) {
+      if (!controlled.has(key('claude', nativeId))) return;
+      for (const replacedId of replacedIds ?? [])
+        live.replace(key('claude', nativeId), item.turnId, replacedId);
+      live.put(key('claude', nativeId), item, isComplete);
+      enqueue(() =>
+        observe({
+          kind: isComplete ? 'item-completed' : 'item-started',
+          provider: 'claude',
+          nativeThreadId: nativeId,
+          nativeTurnId: item.turnId,
+          nativeItemId: item.nativeId,
+        }),
+      );
+    },
+    gap(nativeId) {
+      live.markGap(key('claude', nativeId));
+    },
+    delta(nativeId, turnId, itemId, text) {
+      if (controlled.has(key('claude', nativeId)))
+        live.append(key('claude', nativeId), turnId, itemId, text);
+    },
+    prompt(prompt) {
+      if (!controlled.has(key('claude', prompt.nativeThreadId)) || prompts.size >= 32 || closing) {
+        runNativeOwned('claude', prompt.nativeThreadId, prompt.reject);
+        return;
+      }
+      enqueue(async () => {
+        const recorded = await store.openApproval({
+          id: randomUUID(),
+          provider: 'claude',
+          nativeThreadId: prompt.nativeThreadId,
+          nativeTurnId: prompt.nativeTurnId,
+          requestId: prompt.requestId,
+          kind: prompt.presentation.kind,
+          isBlocking: prompt.presentation.isBlocking,
+          digest: createHmac('sha256', actionKey).update(prompt.fingerprint).digest('hex'),
+        });
+        if (!recorded) {
+          await prompt.reject();
+          return;
+        }
+        if (prompts.has(recorded.id)) return;
+        prompts.set(recorded.id, {
+          native: prompt,
+          presentation: {
+            id: recorded.id,
+            threadId: recorded.thread.id,
+            nativeTurnId: prompt.nativeTurnId,
+            runtimeEpoch: epoch,
+            state: 'pending',
+            replyActionId: null,
+            ...prompt.presentation,
+          },
+        });
+      });
+    },
+    outcome(outcome) {
+      enqueue(async () => {
+        await apply(outcome);
+      });
+    },
+    unavailable(nativeId) {
+      if (closing) return;
+      enqueue(async () => {
+        await store.observe({
+          kind: 'native-unavailable',
+          provider: 'claude',
+          nativeThreadId: nativeId,
+        });
+        for (const [id, prompt] of prompts)
+          if (prompt.native.provider === 'claude' && prompt.native.nativeThreadId === nativeId)
+            prompts.delete(id);
+      });
     },
   });
 
@@ -496,6 +666,8 @@ export const createActions = (
    * - -1: The HQ request is invalid
    * - -1: The HQ target is outside the allowed workspaces
    * - -1: The Codex integration failed
+   * - -1: The Claude integration failed
+   * - -1: The Claude history is unavailable
    * - -1: The HQ store failed
    */
   const admitAndDispatch = async (action: IActionEnvelope): Promise<IActionReceipt> => {
@@ -508,23 +680,37 @@ export const createActions = (
       }
       return (await store.admit({ action, prepared: {} })).receipt;
     }
-    if (closing || unavailable || !native.isAvailable || tasks.size >= 64) agentUnavailable();
+    if (closing || unavailable || tasks.size >= 64) agentUnavailable();
     const command = action.command;
+    let provider: IManagedThread['provider'] = 'provider' in command ? command.provider : 'codex';
     const prepared: { workspaceRoot?: string; nativeId?: string } = {};
     if ('threadId' in command) {
       const target = await store.getThread(command.threadId);
-      if (target) await validateRoot(target);
+      if (target) {
+        await validateRoot(target);
+        provider = target.provider;
+      }
     } else if ('queuedActionId' in command) {
       const queued = await store.getAction(command.queuedActionId);
       const target = queued?.threadId ? await store.getThread(queued.threadId) : null;
-      if (target) await validateRoot(target);
+      if (target) {
+        await validateRoot(target);
+        provider = target.provider;
+      }
     }
+    if (!(provider === 'codex' ? native : claude).isAvailable) agentUnavailable();
+    if (command.kind === 'steer' && provider === 'claude') conflict();
     if (command.kind === 'thread-create' || command.kind === 'thread-adopt')
       prepared.workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, roots);
     if (command.kind === 'thread-adopt') {
-      const target = await native.readThread(command.nativeId);
+      const target =
+        provider === 'codex'
+          ? await native.readThread(command.nativeId)
+          : await readClaudeThread(command.nativeId, prepared.workspaceRoot!);
       if (
-        target.nativeState !== 'notLoaded' ||
+        (provider === 'codex'
+          ? target.nativeState !== 'notLoaded'
+          : target.historyState !== 'available') ||
         (await resolveWorkspaceTarget(target.workspaceRoot, roots)) !== prepared.workspaceRoot
       )
         conflict();
@@ -538,9 +724,14 @@ export const createActions = (
           ? command.recovery.nativeId
           : thread.nativeId;
       if (nativeId) {
-        const target = await native.readThread(nativeId);
+        const target =
+          provider === 'codex'
+            ? await native.readThread(nativeId)
+            : await readClaudeThread(nativeId, thread.workspaceRoot);
         if (
-          target.nativeState !== 'notLoaded' ||
+          (provider === 'codex'
+            ? target.nativeState !== 'notLoaded'
+            : target.historyState !== 'available') ||
           (await resolveWorkspaceTarget(target.workspaceRoot, roots)) !== thread.workspaceRoot
         )
           conflict();
@@ -554,7 +745,7 @@ export const createActions = (
         prompt.presentation.nativeTurnId !== command.expectedTurnId
       )
         conflict();
-      buildCodexReply(prompt.native, command.response);
+      prompt.native.validate(command.response);
     }
     const admitted = await store.admit({ action, prepared });
     if (
@@ -594,6 +785,8 @@ export const createActions = (
      * - -1: The HQ request is invalid
      * - -1: The HQ target is outside the allowed workspaces
      * - -1: The Codex integration failed
+     * - -1: The Claude integration failed
+     * - -1: The Claude history is unavailable
      * - -1: The HQ store failed
      */
     async submit(action: IActionEnvelope): Promise<IActionReceipt> {
@@ -616,6 +809,7 @@ export const createActions = (
      * @returns A promise resolved after native exit and release of durable control ownership.
      * @throws
      * - -1: The Codex integration failed
+     * - -1: The Claude integration failed
      * - -1: The HQ transport failed
      * - -1: The HQ store failed
      */
@@ -626,11 +820,12 @@ export const createActions = (
         await Promise.allSettled([...admissions]);
         // Active turn IDs come from ordered native evidence, never from an interrupt acknowledgement.
         await Promise.all(
-          [...controlled].map(async (nativeId) => {
-            const thread = await store.getThreadByNativeId(nativeId);
-            if (native.isAvailable && thread?.activeTurnId) {
+          [...controlled.values()].map(async ({ provider, nativeId }) => {
+            const control = provider === 'codex' ? native : claude;
+            const thread = await store.getThreadByNativeId(provider, nativeId);
+            if (control.isAvailable && thread?.activeTurnId) {
               try {
-                await native.interrupt(`${randomUUID()}:shutdown`, nativeId, thread.activeTurnId);
+                await control.interrupt(`${randomUUID()}:shutdown`, nativeId, thread.activeTurnId);
               } catch {
                 /* native process termination below remains mandatory */
               }
@@ -640,22 +835,24 @@ export const createActions = (
         await Promise.allSettled([...tasks]);
         await lane.catch(() => undefined);
         if (native.isAvailable)
-          for (const nativeId of controlled) {
+          for (const { provider, nativeId } of controlled.values()) {
+            if (provider !== 'codex') continue;
             await native.cleanTerminals(`${randomUUID()}:shutdown-clean`, nativeId);
             await native.verifyTerminalsClosed(nativeId);
           }
       } catch (error) {
         cleanupFailure = error;
       } finally {
-        const nativeExit = await Promise.allSettled([native.close()]);
+        const nativeExit = await Promise.allSettled([native.close(), claude.close()]);
         await Promise.allSettled([...tasks]);
         await lane.catch(() => undefined);
-        if (nativeExit[0]!.status === 'rejected')
+        const failedExit = nativeExit.find((result) => result.status === 'rejected');
+        if (failedExit?.status === 'rejected')
           throw new Exception(
-            `The HQ transport failed: ${extractMessage(nativeExit[0]!.reason)}`,
+            `The HQ transport failed: ${extractMessage(failedExit.reason)}`,
             undefined,
             { kind: 'operation-failed' },
-            { cause: cleanupFailure ?? nativeExit[0]!.reason },
+            { cause: cleanupFailure ?? failedExit.reason },
           );
       }
       if (cleanupFailure) throw cleanupFailure;

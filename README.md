@@ -1,6 +1,6 @@
 # jg-agent-hq
 
-Workspace primitives for native coding agents. The public API provides owner-aware filesystem locks, Codex thread control and live input, Claude and Codex history, and actual account usage.
+Workspace primitives for native coding agents. The public API provides owner-aware filesystem locks, Claude and Codex thread control, live input and history, and actual account usage.
 
 Requires Node.js 24.15.0 or later on Linux or macOS. The lock protocol uses POSIX ownership, private directories and process-liveness probes. Windows is outside the supported host contract.
 
@@ -32,7 +32,7 @@ Use `--provider claude` for Claude history and usage; the default is `codex`. Cl
 
 Explicit actions create, name, adopt, resume and close threads; send idle messages; steer an exact running turn; queue the next message; interrupt; and answer native questions or permissions. Actions have stable UUIDs and durable receipts. Repeating the same request returns its receipt; changing that UUID's payload conflicts. A lost acknowledgement stays uncertain until the exact native response arrives or the operator makes an explicit recovery choice. HQ never resends uncertain input.
 
-Native execution settings remain with Codex. Plan approval grants no native tool permission. Close other CLI controllers before confirming adoption, resume or recovery. HQ coordinates sessions sharing one state directory; it cannot lock independently running native CLIs. Durable state includes `action.key`, which must stay private and accompany its SQLite database. Queued undelivered text is saved; ordinary message bodies and question answers are not.
+Native execution settings, instructions, skills and tool permissions remain with each CLI. Claude uses an owned structured process per controlled session and reports immediate steering as unavailable. Plan approval grants no native tool permission. Close other CLI controllers before confirming adoption, resume or recovery. HQ coordinates sessions sharing one state directory; it cannot lock independently running native CLIs. Durable state includes `action.key`, which must stay private and accompany its SQLite database. Queued undelivered text is saved; ordinary message bodies and question answers are not.
 
 Use `jg-agent-hq request --state-root <directory>` with a closed HQ command on stdin for action and control reads. The [API reference](api/README.md) describes action envelopes, receipts and reconnect reads.
 
@@ -43,7 +43,7 @@ Use `jg-agent-hq request --state-root <directory>` with a closed HQ command on s
 - `src/runtime/`: trusted configuration and lifetime ownership.
 - `src/ipc/` and `src/cli/`: private local commands and the installed executable.
 - `src/providers/codex/`: native history and account protocol.
-- `src/providers/claude/`: native structured usage and the version-checked, worker-owned local history reader.
+- `src/providers/claude/`: native structured control and usage, plus the version-checked, worker-owned local history reader.
 - `src/sessions/`: authorized, cursor-bound history reads.
 - `src/actions/`: durable action dispatch, native input routing and bounded live presentation.
 - `src/store/`: SQLite discovery metadata and the action/control ledger in one worker.

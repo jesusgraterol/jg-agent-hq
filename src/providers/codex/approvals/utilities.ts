@@ -82,6 +82,7 @@ export const toApprovalPresentation = (
           question: question.question,
           isSecret: question.isSecret,
           isOther: question.isOther,
+          allowsMultiple: false,
           options: question.options ?? null,
         }))
       : [],

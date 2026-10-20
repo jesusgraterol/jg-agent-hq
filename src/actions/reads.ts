@@ -125,6 +125,8 @@ export const readControl = async (
     return { kind: 'approvals', result: actions.approvals(thread.id) };
   return {
     kind: 'live-items',
-    result: thread.nativeId ? actions.live.read(thread.nativeId) : { data: [], hasGap: false },
+    result: thread.nativeId
+      ? actions.live.read(JSON.stringify([thread.provider, thread.nativeId]))
+      : { data: [], hasGap: false },
   };
 };

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   MAX_PAGE_SIZE,
   ThreadSummarySchema,
+  ManagedThreadSchema,
   ErrorKindSchema,
   type IThreadSummary,
   type IActionReceipt,
@@ -44,9 +45,14 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('close') }),
   z.strictObject({ kind: z.literal('action-read'), id: z.uuid() }),
   z.strictObject({ kind: z.literal('thread-read'), id: z.uuid() }),
-  z.strictObject({ kind: z.literal('native-thread-read'), nativeId: z.string().min(1).max(4096) }),
+  z.strictObject({
+    kind: z.literal('native-thread-read'),
+    provider: ManagedThreadSchema.shape.provider,
+    nativeId: z.string().min(1).max(4096),
+  }),
   z.strictObject({
     kind: z.literal('native-threads'),
+    provider: ManagedThreadSchema.shape.provider,
     nativeIds: z.array(z.string().min(1).max(4096)).max(128),
   }),
   z.strictObject({
@@ -126,14 +132,20 @@ export type IStore = {
    * @throws
    * - -1: The HQ store failed
    */
-  getThreadByNativeId(nativeId: string): Promise<IManagedThread | null>;
+  getThreadByNativeId(
+    provider: IManagedThread['provider'],
+    nativeId: string,
+  ): Promise<IManagedThread | null>;
   /**
    * Resolves one bounded native discovery page in a single worker operation.
    * @returns The matching control records for the supplied native page.
    * @throws
    * - -1: The HQ store failed
    */
-  getNativeThreads(nativeIds: string[]): Promise<IManagedThread[]>;
+  getNativeThreads(
+    provider: IManagedThread['provider'],
+    nativeIds: string[],
+  ): Promise<IManagedThread[]>;
   /**
    * Reads one workspace-scoped creation/UUID seek page.
    * @returns One descending page and whether another seek page exists.

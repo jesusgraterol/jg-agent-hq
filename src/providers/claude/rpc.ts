@@ -26,8 +26,16 @@ const EnvelopeSchema = z.object({
  */
 export const createClaudeRpc = async (
   invalidate: (reason: 'account' | 'limits' | 'unavailable') => void,
+  control?: {
+    nativeId: string;
+    workspaceRoot: string;
+    isResume: boolean;
+    receive(message: unknown): void;
+    lateResponse(id: string, result: unknown, error: unknown): void;
+  },
 ) => {
   let sequence = 0;
+  const late = new Set<string>();
   const pending = new Map<
     string,
     {
@@ -53,7 +61,23 @@ export const createClaudeRpc = async (
   };
   const transport = createProviderProcess(
     'claude',
-    ['--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'],
+    [
+      '--print',
+      '--input-format',
+      'stream-json',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      ...(control
+        ? [
+            '--permission-prompt-tool=stdio',
+            '--replay-user-messages',
+            '--include-partial-messages',
+            control.isResume ? '--resume' : '--session-id',
+            control.nativeId,
+          ]
+        : []),
+    ],
     (message) => {
       const parsed = EnvelopeSchema.safeParse(message);
       if (!parsed.success)
@@ -71,7 +95,17 @@ export const createClaudeRpc = async (
             kind: 'agent-unavailable',
           });
         const entry = pending.get(response.request_id);
-        if (!entry) return;
+        if (!entry) {
+          if (late.delete(response.request_id))
+            control?.lateResponse(
+              response.request_id,
+              response.response,
+              response.subtype === 'error'
+                ? (response.error ?? 'Native request rejected')
+                : undefined,
+            );
+          return;
+        }
         clearTimeout(entry.timer);
         pending.delete(response.request_id);
         if (response.subtype === 'error')
@@ -79,10 +113,12 @@ export const createClaudeRpc = async (
             new Exception(
               `The Claude integration failed: ${response.error ?? 'native control request rejected'}`,
               undefined,
-              { kind: 'agent-unavailable' },
+              { kind: 'agent-unavailable', nativeRejection: true },
             ),
           );
         else entry.resolve(response.response);
+      } else if (control) {
+        control.receive(message);
       } else if (envelope.type === 'control_request' && envelope.request_id) {
         // this read-only lane never grants native tool permissions
         void transport
@@ -99,16 +135,37 @@ export const createClaudeRpc = async (
       else if (envelope.type === 'rate_limit_event') invalidate('limits');
     },
     fail,
+    control?.workspaceRoot,
   );
-  const request = (subtype: 'initialize' | 'get_usage'): Promise<unknown> => {
+  /**
+   * Matches one native control acknowledgement and retains bounded late-response identity.
+   * @returns The native success payload, which may be absent for acknowledgement-only controls.
+   * @throws
+   * - -1: The Claude integration failed
+   */
+  const request = (
+    requestBody: { subtype: string; [key: string]: unknown },
+    requestId?: string,
+  ): Promise<unknown> => {
     if (!transport.isRunning || pending.size >= 32)
       return Promise.reject(
         new Exception('The Claude integration failed', undefined, { kind: 'agent-unavailable' }),
       );
-    const id = `hq-read-${++sequence}`;
+    const id = requestId ?? `hq-read-${++sequence}`;
+    if (pending.has(id) || late.has(id))
+      return Promise.reject(
+        new Exception('The Claude integration failed', undefined, { kind: 'agent-unavailable' }),
+      );
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
+        if (control) {
+          late.add(id);
+          if (late.size > 64) {
+            fail(new Exception('The Claude integration failed'));
+            void transport.close().catch(fail);
+          }
+        }
         reject(
           new Exception('The Claude integration failed: request deadline exceeded', undefined, {
             kind: 'agent-unavailable',
@@ -120,7 +177,7 @@ export const createClaudeRpc = async (
         .write({
           type: 'control_request',
           request_id: id,
-          request: subtype === 'get_usage' ? { subtype, skip_behaviors: true } : { subtype },
+          request: requestBody,
         })
         .catch((cause: unknown) => {
           const entry = pending.get(id);
@@ -139,7 +196,7 @@ export const createClaudeRpc = async (
     });
   };
   try {
-    const initialized = ClaudeInitializeSchema.safeParse(await request('initialize'));
+    const initialized = ClaudeInitializeSchema.safeParse(await request({ subtype: 'initialize' }));
     if (!initialized.success)
       throw new Exception(
         'The Claude integration failed',
@@ -149,6 +206,9 @@ export const createClaudeRpc = async (
       );
     return {
       version: initialized.data.claude_code_version,
+      initialization: initialized.data,
+      requestControl: request,
+      write: transport.write,
       get isAvailable() {
         return transport.isRunning;
       },
@@ -158,7 +218,7 @@ export const createClaudeRpc = async (
        * @throws
        * - -1: The Claude integration failed
        */
-      requestUsage: () => request('get_usage'),
+      requestUsage: () => request({ subtype: 'get_usage', skip_behaviors: true }),
       /**
        * Cancels pending reads and confirms native process-group exit.
        * @returns Confirmed native shutdown.

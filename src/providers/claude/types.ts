@@ -2,7 +2,10 @@ import { z } from 'zod';
 
 // the local reader is qualified against this exact CLI transcript capability
 export const CLAUDE_HISTORY_VERSION = '2.1.304';
-export const ClaudeInitializeSchema = z.object({ claude_code_version: z.string().min(1).max(128) });
+export const ClaudeInitializeSchema = z.object({
+  claude_code_version: z.string().min(1).max(128),
+  session_state: z.enum(['idle', 'running', 'requires_action']).optional(),
+});
 export const ClaudeUsageSchema = z.object({
   subscription_type: z.string().nullable(),
   rate_limits_available: z.boolean(),

@@ -193,10 +193,13 @@ export const createStore = async (
     },
     getAction: (id) => request({ kind: 'action-read', id }, ActionReceiptSchema.nullable()),
     getThread: (id) => request({ kind: 'thread-read', id }, ManagedThreadSchema.nullable()),
-    getThreadByNativeId: (nativeId) =>
-      request({ kind: 'native-thread-read', nativeId }, ManagedThreadSchema.nullable()),
-    getNativeThreads: (nativeIds) =>
-      request({ kind: 'native-threads', nativeIds }, z.array(ManagedThreadSchema).max(128)),
+    getThreadByNativeId: (provider, nativeId) =>
+      request({ kind: 'native-thread-read', provider, nativeId }, ManagedThreadSchema.nullable()),
+    getNativeThreads: (provider, nativeIds) =>
+      request(
+        { kind: 'native-threads', provider, nativeIds },
+        z.array(ManagedThreadSchema).max(128),
+      ),
     listThreads: (workspaceRoot, page) =>
       request({ kind: 'threads', workspaceRoot, page }, ManagedThreadPageSchema),
     listActions: (threadId, page) => request({ kind: 'actions', threadId, page }, ActionPageSchema),

@@ -83,7 +83,12 @@ export const NativeOutcomeSchema = z.discriminatedUnion('kind', [
 ]);
 export type INativeOutcome = z.infer<typeof NativeOutcomeSchema>;
 
-const NativeTurnFields = { nativeThreadId: NativeIdSchema, nativeTurnId: NativeIdSchema };
+const ProviderSchema = ManagedThreadSchema.shape.provider;
+const NativeTurnFields = {
+  provider: ProviderSchema,
+  nativeThreadId: NativeIdSchema,
+  nativeTurnId: NativeIdSchema,
+};
 export const NativeObservationSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('turn-started'), ...NativeTurnFields }),
   z.strictObject({
@@ -103,15 +108,21 @@ export const NativeObservationSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({
     kind: z.literal('name-updated'),
+    provider: ProviderSchema,
     nativeThreadId: NativeIdSchema,
     name: z.string().nullable(),
   }),
   z.strictObject({
-    kind: z.literal('request-resolved'),
+    kind: z.enum(['request-resolved', 'request-canceled']),
+    provider: ProviderSchema,
     nativeThreadId: NativeIdSchema,
     requestId: z.string().min(1).max(8192),
   }),
-  z.strictObject({ kind: z.literal('native-unavailable') }),
+  z.strictObject({
+    kind: z.literal('native-unavailable'),
+    provider: ProviderSchema,
+    nativeThreadId: NativeIdSchema.optional(),
+  }),
 ]);
 export type INativeObservation = z.infer<typeof NativeObservationSchema>;
 
@@ -157,6 +168,7 @@ export const EventPageSchema = z.strictObject({
 export type IEventPage = z.infer<typeof EventPageSchema>;
 
 export const ApprovalRecordSchema = z.strictObject({
+  provider: ProviderSchema,
   id: z.uuid(),
   nativeThreadId: NativeIdSchema,
   nativeTurnId: NativeIdSchema,

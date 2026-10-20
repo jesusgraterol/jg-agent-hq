@@ -52,10 +52,10 @@ port.on('message', (message: unknown) => {
         result = controls.getThread(command.id);
         break;
       case 'native-thread-read':
-        result = controls.getThreadByNativeId(command.nativeId);
+        result = controls.getThreadByNativeId(command.provider, command.nativeId);
         break;
       case 'native-threads':
-        result = controls.getNativeThreads(command.nativeIds);
+        result = controls.getNativeThreads(command.provider, command.nativeIds);
         break;
       case 'threads':
         result = controls.listThreads(command.workspaceRoot, command.page);
