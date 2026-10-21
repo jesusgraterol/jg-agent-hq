@@ -15,7 +15,7 @@ import {
   type IHistoryRequest,
 } from '../../../sessions/index.js';
 
-import { CLAUDE_HISTORY_VERSION } from '../types.js';
+import { ClaudeHistoryVersionSchema } from '../types.js';
 
 import {
   EntryRowSchema,
@@ -259,7 +259,7 @@ export class ClaudeHistoryModel {
         );
         if (
           record.uuid !== entry.uuid ||
-          record.version !== CLAUDE_HISTORY_VERSION ||
+          !ClaudeHistoryVersionSchema.safeParse(record.version).success ||
           record.cwd !== root
         )
           this.__unavailable();
@@ -533,7 +533,10 @@ export class ClaudeHistoryModel {
       row.name = record.customTitle;
       return;
     }
-    if (record.version !== undefined && record.version !== CLAUDE_HISTORY_VERSION)
+    if (
+      record.version !== undefined &&
+      !ClaudeHistoryVersionSchema.safeParse(record.version).success
+    )
       this.__unavailable();
     if (record.isSidechain || !record.uuid) return;
     if (
@@ -542,7 +545,7 @@ export class ClaudeHistoryModel {
     )
       this.__unavailable();
     if (
-      record.version !== CLAUDE_HISTORY_VERSION ||
+      !ClaudeHistoryVersionSchema.safeParse(record.version).success ||
       record.sessionId !== nativeId ||
       record.cwd !== root ||
       record.timestamp === undefined ||

@@ -318,42 +318,102 @@ test.each(['truncate', 'replace'])(
   },
 );
 
-test('unknown file/CLI versions are explicitly unavailable while supported discoveries remain browsable', async () => {
+test.each([
+  ['2.1.304', ['2.1.304', '2.1.304']],
+  ['2.1.306', ['2.1.306', '2.1.306']],
+  ['2.1.306', ['2.1.304', '2.1.306']],
+])('qualified CLI %s reads and pages transcript versions %o', async (cliVersion, versions) => {
   await withClaudeRuntime(async ({ workspaceRoot, transcript, request, control }) => {
-    const supportedId = randomUUID();
-    const unsupportedId = randomUUID();
+    await control({ version: cliVersion });
+    const nativeId = randomUUID();
+    const question = {
+      ...claudeRecord(workspaceRoot, nativeId, { text: 'qualified question' }),
+      version: versions[0],
+    };
+    const answer = {
+      ...claudeRecord(workspaceRoot, nativeId, {
+        type: 'assistant',
+        parentUuid: question.uuid,
+        text: 'qualified answer',
+      }),
+      version: versions[1],
+    };
     await writeFile(
-      transcript(supportedId),
-      JSON.stringify(claudeRecord(workspaceRoot, supportedId)) + '\n',
-    );
-    await writeFile(
-      transcript(unsupportedId),
-      JSON.stringify({ ...claudeRecord(workspaceRoot, unsupportedId), version: '9.0.0' }) + '\n',
+      transcript(nativeId),
+      [question, answer].map((record) => JSON.stringify(record)).join('\n') + '\n',
     );
     const threads = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
     expect(
       threads.kind === 'threads' &&
-        threads.result.data.find((thread) => thread.nativeId === unsupportedId)?.historyState,
-    ).toBe('unavailable');
-    await expect(
-      request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId: unsupportedId }),
-    ).rejects.toThrow('Coding agent is unavailable');
-    const valid = await request({
+        threads.result.data.map((thread) => [thread.nativeId, thread.historyState]),
+    ).toStrictEqual([[nativeId, 'available']]);
+    const first = await request({
       kind: 'items',
       provider: 'claude',
       workspaceRoot,
-      nativeId: supportedId,
+      nativeId,
+      limit: 1,
     });
-    expect(valid.kind === 'items' && valid.result.data.length).toBe(1);
-    await control({ version: '9.0.0' });
-  });
-  await withClaudeRuntime(async ({ workspaceRoot, request, control }) => {
-    await control({ version: '9.0.0' });
-    await expect(request({ kind: 'threads', provider: 'claude', workspaceRoot })).rejects.toThrow(
-      'Coding agent is unavailable',
-    );
+    if (first.kind !== 'items') throw new Error('wrong response');
+    expect(first.result.data.map((item) => [item.nativeId, item.text])).toStrictEqual([
+      [question.uuid, 'qualified question'],
+    ]);
+    expect(first.result.nextCursor).not.toBeNull();
+    const last = await request({
+      kind: 'items',
+      provider: 'claude',
+      workspaceRoot,
+      nativeId,
+      limit: 1,
+      cursor: first.result.nextCursor!,
+    });
+    if (last.kind !== 'items') throw new Error('wrong response');
+    expect(last.result.data.map((item) => [item.nativeId, item.text])).toStrictEqual([
+      [answer.uuid, 'qualified answer'],
+    ]);
+    expect(last.result.nextCursor).toBeNull();
   });
 });
+
+test.each(['2.1.305', '9.0.0'])(
+  'unqualified file/CLI version %s is unavailable while qualified discoveries remain browsable',
+  async (version) => {
+    await withClaudeRuntime(async ({ workspaceRoot, transcript, request, control }) => {
+      const supportedId = randomUUID();
+      const unsupportedId = randomUUID();
+      await writeFile(
+        transcript(supportedId),
+        JSON.stringify(claudeRecord(workspaceRoot, supportedId)) + '\n',
+      );
+      await writeFile(
+        transcript(unsupportedId),
+        JSON.stringify({ ...claudeRecord(workspaceRoot, unsupportedId), version }) + '\n',
+      );
+      const threads = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+      expect(
+        threads.kind === 'threads' &&
+          threads.result.data.find((thread) => thread.nativeId === unsupportedId)?.historyState,
+      ).toBe('unavailable');
+      await expect(
+        request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId: unsupportedId }),
+      ).rejects.toThrow('Coding agent is unavailable');
+      const valid = await request({
+        kind: 'items',
+        provider: 'claude',
+        workspaceRoot,
+        nativeId: supportedId,
+      });
+      expect(valid.kind === 'items' && valid.result.data.length).toBe(1);
+      await control({ version });
+    });
+    await withClaudeRuntime(async ({ workspaceRoot, request, control }) => {
+      await control({ version });
+      await expect(request({ kind: 'threads', provider: 'claude', workspaceRoot })).rejects.toThrow(
+        'Coding agent is unavailable',
+      );
+    });
+  },
+);
 
 test('a malformed conversation record makes the file unavailable instead of silently hiding a native message', async () => {
   await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
