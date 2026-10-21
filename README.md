@@ -21,7 +21,7 @@ This public package provides a local controller and browser-safe contracts. Appl
 
 Use pnpm 12.4.0. Run `pnpm install`, then `pnpm check:package` to build, exercise the built API and packed consumer, typecheck and check formatting. `pnpm test:unit` and `pnpm test:integration` select their own categories after a build. The private website workspace has separate checks; install Chromium with `pnpm --dir website exec playwright install chromium`, then run `pnpm --dir website check`. `pnpm check` runs both boundaries.
 
-Work on `development`; reviewed changes reach `main` through a pull request. npm releases are manual and use the exact tested tarball.
+Work on `development`; reviewed changes reach `main` through a pull request. After both Node checks pass on `main`, `check.yml` publishes the exact consumer-tested tarball through npm's configured trusted publisher, then deploys the website. No local npm login or token is needed. An identical published version is skipped; changed contents require a new version.
 
 ## Lock ownership
 
@@ -87,6 +87,7 @@ Collect one completed reviewer message by its exact native turn/item reference. 
 - `src/store/`: SQLite discovery metadata and the action/control ledger in one worker.
 - `src/contracts/`: browser-safe command and response contracts.
 - `scripts/package/`: build-output cleanup and packed-consumer checks.
+- `scripts/release/`: registry version/integrity checks and trusted publication of the tested archive.
 - `scripts/test-support/`: disposable external CLI fixtures.
 - `vitest/`: separate unit and integration selection.
 - `api/README.md`: canonical public API reference.

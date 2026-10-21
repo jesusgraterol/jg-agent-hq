@@ -81,3 +81,11 @@ Handoff lookup uses the unavailable contract for an unknown identity. Git attrib
 | -1   | The HQ website destination check failed      |
 
 These build-time failures retain operation diagnostics and their original causes locally.
+
+## Release tooling
+
+| Code | Stable message                      |
+| ---- | ----------------------------------- |
+| -1   | The HQ package release check failed |
+
+Release checks reject invalid registry metadata, oversized responses, changed contents under an existing version and versions that do not exceed the latest release. Diagnostic suffixes explain the required correction. Failed registry reads never authorize a publish.
