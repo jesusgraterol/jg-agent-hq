@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1
+
+- Qualify Claude Code 2.1.306 history alongside 2.1.304, including transcripts spanning both versions. Continue to reject unqualified CLI and transcript versions.
+
 ## 0.5.0
 
 - Add safe publication observations for the host's System view, with separate pending, blocked, failed and uncertain states, timestamps and exact commit identity.
