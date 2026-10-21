@@ -136,6 +136,9 @@ export const createPlanAdmission = (
           (command.kind === 'message' || command.kind === 'queue') &&
           command.input.kind === 'skill' &&
           prepared.skill?.name === 'jg-feedback';
+        // current-turn permission replies and labels do not start another implementation unit
+        const isSeparateNativeControl =
+          command.kind === 'native-reply' || command.kind === 'thread-rename';
         if (action.plan) {
           if (
             !['message', 'queue', 'steer', 'thread-resume', 'thread-recover'].includes(
@@ -199,7 +202,11 @@ export const createPlanAdmission = (
           } else await boundArtifacts(context);
           prepared.planContext = context;
         } else if (binding && !safe) {
-          if (binding.scope && !isFeedbackAssessment) {
+          if (
+            binding.scope &&
+            !isFeedbackAssessment &&
+            !(binding.scope.kind === 'execution' && isSeparateNativeControl)
+          ) {
             prepared.planContext = (await scopeContext(binding.scope)).context;
           } else {
             const artifacts = await boundArtifacts(binding);

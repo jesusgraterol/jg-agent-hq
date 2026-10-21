@@ -333,6 +333,21 @@ test.each([
           ],
         });
       }
+      if (!isQueued) {
+        await api.control({
+          completeOnReply: true,
+          prompt: {
+            method: 'item/commandExecution/requestApproval',
+            params: {
+              startedAtMs: Date.now(),
+              command: 'echo example',
+              cwd: fixture.workspaceRoot,
+              availableDecisions: ['accept', 'decline'],
+            },
+          },
+        });
+        await api.claudeControl({ prompt: 'permission' });
+      }
       await expect(api.send('feedback')).resolves.toMatchObject({
         source: { threadId: api.source.threadId },
       });
@@ -363,8 +378,31 @@ test.each([
           })
           .toBe(true);
         await api.submit({ kind: 'queue-send', queuedActionId: receipt.id });
+      } else {
+        const approvals = await until(
+          () => fixture.request({ kind: 'approvals', threadId: api.source.threadId! }),
+          (result) => result.kind === 'approvals' && result.result.length === 1,
+        );
+        if (approvals.kind !== 'approvals') throw new Error('Expected native approval');
+        const approval = approvals.result[0];
+        expect(approval.state).toBe('pending');
+        await expect(
+          api.submit({
+            kind: 'native-reply',
+            threadId: api.source.threadId!,
+            expectedTurnId: approval.nativeTurnId,
+            approvalId: approval.id,
+            response: { kind: 'decision', decision: 'accept' },
+          }),
+        ).resolves.toMatchObject({ delivery: 'submitted' });
       }
       await until(api.show, (result) => result.feedback.completion === 'completed');
+      const renamed = await api.submit({
+        kind: 'thread-rename',
+        threadId: api.source.threadId!,
+        name: 'assessed-task',
+      });
+      expect((await api.settled(renamed.id)).delivery).toBe('acknowledged');
       const after = await status();
       expect(after.coordination.execution!.action.id).toBe(authorization.id);
       expect(after.coordination.execution!.revokedBy !== null).toBe(ending === 'revoked');
