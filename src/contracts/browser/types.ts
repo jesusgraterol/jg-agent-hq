@@ -40,7 +40,11 @@ export const BrowserCommandSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({
     kind: z.literal('publication-retry'),
-    expectedCommit: z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/),
+    publicationId: z.uuid(),
+    expectedCommit: z
+      .string()
+      .regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/)
+      .nullable(),
   }),
 ]);
 export const BrowserActionSchema = z
@@ -112,9 +116,48 @@ export const BrowserRepositoryPageSchema = z.object({
   data: z.array(BrowserRepositorySchema).max(128),
   nextCursor: z.string().nullable(),
 });
+// publication state is independent of native execution, account quota and repository resources
+export const PublicationStatusSchema = z.object({
+  id: z.uuid().nullable(),
+  state: z.enum(['idle', 'pending', 'publishing', 'published', 'blocked', 'failed', 'uncertain']),
+  reason: z
+    .enum([
+      'clean',
+      'enrolled',
+      'editing',
+      'changed',
+      'git',
+      'signing',
+      'verification',
+      'transport',
+      'rejected',
+      'remote-changed',
+      'unpublished',
+      'staged',
+      'configuration',
+      'owner',
+      'cleanup',
+    ])
+    .nullable(),
+  dueAt: z.number().int().nonnegative(),
+  attemptedAt: z.number().int().nonnegative().nullable(),
+  succeededAt: z.number().int().nonnegative().nullable(),
+  commit: z
+    .string()
+    .regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/)
+    .nullable(),
+  publishedCommit: z
+    .string()
+    .regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/)
+    .nullable(),
+  queuedFiles: z.number().int().min(0).max(1024),
+  selectedFiles: z.number().int().min(0).max(1024),
+});
+export type IPublicationStatus = z.infer<typeof PublicationStatusSchema>;
+
 export const BrowserSystemSchema = z.object({
   runtime: RuntimeStatusSchema,
-  publication: z.object({ state: z.literal('unavailable') }),
+  publication: PublicationStatusSchema,
   resources: z.object({ state: z.literal('unavailable') }),
   service: z.object({ state: z.literal('unavailable') }),
 });

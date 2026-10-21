@@ -16,4 +16,6 @@ export {
   BrowserRepositoryPageSchema,
   BrowserSystemSchema,
   BrowserThreadDetailSchema,
+  PublicationStatusSchema,
 } from './types.js';
+export type { IPublicationStatus } from './types.js';

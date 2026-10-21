@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0
+
+- Add safe publication observations for the host's System view, with separate pending, blocked, failed and uncertain states, timestamps and exact commit identity.
+- Bind publication retries to a receipt UUID and nullable expected commit, including failures that happened before a commit existed. The host continues to own scheduling, Git operations and storage.
+
 ## 0.4.0
 
 - Add closed browser host commands and bounded session/repository/plan read contracts, without exposing private handlers through standalone IPC.

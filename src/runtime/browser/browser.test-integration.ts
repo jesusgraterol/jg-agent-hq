@@ -72,7 +72,11 @@ test('concurrent identical requests invoke the host once; payload and operator c
       runtime.performBrowserAction(
         {
           ...input,
-          command: { kind: 'publication-retry', expectedCommit: 'a'.repeat(40) },
+          command: {
+            kind: 'publication-retry',
+            publicationId: randomUUID(),
+            expectedCommit: 'a'.repeat(40),
+          },
         },
         'operator',
         execute,
