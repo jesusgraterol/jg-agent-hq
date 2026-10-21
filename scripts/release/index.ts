@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 
 import { needsPublication, waitForPublication } from './release.ts';
 import { ReleaseManifestSchema } from './types.ts';
@@ -13,11 +13,16 @@ const manifest = ReleaseManifestSchema.parse(
   JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8')),
 );
 const directory = process.env.JG_HQ_RELEASE_DIRECTORY;
-if (!directory) throw new Exception('The HQ package release check failed');
+if (!directory)
+  throw new Exception('The HQ package release check failed', {
+    code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED',
+  });
 const archive = resolve(directory, `jg-agent-hq-${manifest.version}.tgz`);
 const archiveStat = await stat(archive);
 if (!archiveStat.isFile() || archiveStat.size > 16777216)
-  throw new Exception('The HQ package release check failed');
+  throw new Exception('The HQ package release check failed', {
+    code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED',
+  });
 const integrity = `sha512-${createHash('sha512')
   .update(await readFile(archive))
   .digest('base64')}`;
@@ -27,6 +32,7 @@ if (
 )
   throw new Exception(
     'The HQ package release check failed: the downloaded archive checksum does not match the tested archive',
+    { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
   );
 if (await needsPublication(manifest.version, integrity)) {
   // submit exactly once; an interrupted or failed acknowledgement stops the job for inspection

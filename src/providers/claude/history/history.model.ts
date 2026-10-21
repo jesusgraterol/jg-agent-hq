@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, fstatSync, opendirSync, readSync, type Dir } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
-import { Exception, extractMessage, hasErrorCode } from 'error-message-utils';
+import { Exception, extractMessage, hasErrorCode, isException } from 'jg-exception';
 import { z } from 'zod';
 
 import {
@@ -91,8 +91,8 @@ export class ClaudeHistoryModel {
    * Incrementally refreshes the exact workspace and returns one seek page.
    * @returns A validated result or a private marker requesting another bounded indexing batch.
    * @throws
-   * - -1: The Claude history is unavailable
-   * - -1: The HQ cursor does not match this request
+   * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+   * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
    */
   public read(command: IHqRequest): IClaudeHistoryRead {
     if (
@@ -102,19 +102,21 @@ export class ClaudeHistoryModel {
         command.kind !== 'items') ||
       command.provider !== 'claude'
     )
-      throw new Exception('The Claude history is unavailable', undefined, {
-        kind: 'agent-unavailable',
+      throw new Exception('The Claude history is unavailable', {
+        code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
+        data: {
+          kind: 'agent-unavailable',
+        },
       });
     try {
       return this.__read(command);
     } catch (cause) {
-      if (cause instanceof Exception) throw cause;
-      throw new Exception(
-        `The Claude history is unavailable: ${extractMessage(cause)}`,
-        undefined,
-        { kind: 'agent-unavailable' },
-        { cause },
-      );
+      if (isException(cause)) throw cause;
+      throw new Exception(`The Claude history is unavailable: ${extractMessage(cause)}`, {
+        code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
+        data: { kind: 'agent-unavailable' },
+        cause,
+      });
     }
   }
 
@@ -194,8 +196,11 @@ export class ClaudeHistoryModel {
     if (command.kind === 'thread') return { kind: 'thread', result: this.__summary(row) };
     const seek = continuation ? this.__parseCursor(EntrySeekSchema, continuation) : undefined;
     if (seek && seek.revision !== row.revision)
-      throw new Exception('The HQ cursor does not match this request', undefined, {
-        kind: 'invalid-request',
+      throw new Exception('The HQ cursor does not match this request', {
+        code: 'JG_AGENT_HQ_CURSOR_INVALID',
+        data: {
+          kind: 'invalid-request',
+        },
       });
     const offset = seek?.offset ?? -1;
     if (command.kind === 'turns') {
@@ -315,12 +320,11 @@ export class ClaudeHistoryModel {
     try {
       return schema.parse(JSON.parse(text));
     } catch (cause) {
-      throw new Exception(
-        'The HQ cursor does not match this request',
-        undefined,
-        { kind: 'invalid-request' },
-        { cause },
-      );
+      throw new Exception('The HQ cursor does not match this request', {
+        code: 'JG_AGENT_HQ_CURSOR_INVALID',
+        data: { kind: 'invalid-request' },
+        cause,
+      });
     }
   }
 
@@ -508,7 +512,7 @@ export class ClaudeHistoryModel {
             'UPDATE claude_file SET supported = -1, workspace_state = ? WHERE workspace_root = ? AND native_id = ?',
           )
           .run(row.workspace_state, root, nativeId);
-        if (cause instanceof Exception) throw cause;
+        if (isException(cause)) throw cause;
         this.__unavailable();
       }
       if (position < stat.size) return false;
@@ -650,8 +654,11 @@ export class ClaudeHistoryModel {
   }
 
   private __unavailable(): never {
-    throw new Exception('The Claude history is unavailable', undefined, {
-      kind: 'agent-unavailable',
+    throw new Exception('The Claude history is unavailable', {
+      code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
+      data: {
+        kind: 'agent-unavailable',
+      },
     });
   }
 }

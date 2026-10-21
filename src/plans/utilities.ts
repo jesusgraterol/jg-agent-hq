@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import { PlanMetadataSchema, type IPlanRevision, type IPlanMilestone } from '../contracts/index.js';
@@ -82,7 +82,7 @@ const transformOverviewTable = (content: string, transform: (table: string) => s
 /**
  * Parses only the milestone framing. All requirement prose stays in the hashed contract.
  * @throws
- * - -1: The HQ plan is invalid
+ * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
  */
 export const parsePlanMilestones = (content: string): IParsedMilestone[] => {
   const normalized = content.replace(/\r\n?/g, '\n');
@@ -91,7 +91,10 @@ export const parsePlanMilestones = (content: string): IParsedMilestone[] => {
     (heading) => !fenced.has(heading.index),
   );
   if (!headings.length || headings.length > 1024)
-    throw new Exception('The HQ plan is invalid', undefined, { kind: 'invalid-request' });
+    throw new Exception('The HQ plan is invalid', {
+      code: 'JG_AGENT_HQ_PLAN_INVALID',
+      data: { kind: 'invalid-request' },
+    });
   const prelude = transformOverviewTable(normalized.slice(0, headings[0]!.index), () => '');
   const approval = [...normalized.matchAll(/^## Approval required[ \t]*$/gm)].find(
     (heading) => heading.index > headings.at(-1)!.index && !fenced.has(heading.index),
@@ -111,7 +114,10 @@ export const parsePlanMilestones = (content: string): IParsedMilestone[] => {
         : tail;
     const status = /^\*\*Status:\*\* (pending|in progress|done)\n/m.exec(block);
     if (!status || !/^[ \t\n]*$/.test(block.slice(heading[0].length + 1, status.index)))
-      throw new Exception('The HQ plan is invalid', undefined, { kind: 'invalid-request' });
+      throw new Exception('The HQ plan is invalid', {
+        code: 'JG_AGENT_HQ_PLAN_INVALID',
+        data: { kind: 'invalid-request' },
+      });
     const markers = [...block.matchAll(/^[ \t]*\*\*Milestone ID:\*\*(.*)$/gm)].filter(
       (marker) => !fenced.has(start + marker.index),
     );
@@ -125,21 +131,36 @@ export const parsePlanMilestones = (content: string): IParsedMilestone[] => {
         marker.index !== status.index + status[0].length ||
         !parsed.success
       )
-        throw new Exception('The HQ plan is invalid', undefined, { kind: 'invalid-request' });
+        throw new Exception('The HQ plan is invalid', {
+          code: 'JG_AGENT_HQ_PLAN_INVALID',
+          data: { kind: 'invalid-request' },
+        });
       id = parsed.data.toLowerCase();
       if (ids.has(id))
-        throw new Exception('The HQ plan is invalid', undefined, { kind: 'invalid-request' });
+        throw new Exception('The HQ plan is invalid', {
+          code: 'JG_AGENT_HQ_PLAN_INVALID',
+          data: { kind: 'invalid-request' },
+        });
       ids.add(id);
     }
     const ordinal = Number(heading[1]);
     if (!Number.isSafeInteger(ordinal) || ordinal <= 0 || ordinals.has(ordinal))
-      throw new Exception('The HQ plan is invalid', undefined, { kind: 'invalid-request' });
+      throw new Exception('The HQ plan is invalid', {
+        code: 'JG_AGENT_HQ_PLAN_INVALID',
+        data: { kind: 'invalid-request' },
+      });
     if (index > 0 && ordinal <= Number(headings[index - 1]![1]))
-      throw new Exception('The HQ plan is invalid', undefined, { kind: 'invalid-request' });
+      throw new Exception('The HQ plan is invalid', {
+        code: 'JG_AGENT_HQ_PLAN_INVALID',
+        data: { kind: 'invalid-request' },
+      });
     ordinals.add(ordinal);
     const title = heading[2]!;
     if (title.length > 4096)
-      throw new Exception('The HQ plan is invalid', undefined, { kind: 'invalid-request' });
+      throw new Exception('The HQ plan is invalid', {
+        code: 'JG_AGENT_HQ_PLAN_INVALID',
+        data: { kind: 'invalid-request' },
+      });
     // derived status and identity lines are excluded; every other byte is contractual
     const identityEnd = id
       ? markers[0]!.index + markers[0]![0].length
@@ -162,7 +183,7 @@ export const parsePlanMilestones = (content: string): IParsedMilestone[] => {
 /**
  * Computes execution identity without administrative frontmatter, status lines or receipt files.
  * @throws
- * - -1: The HQ plan is invalid
+ * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
  */
 export const computePlanRevision = (input: IPlanContract): IPlanRevision => {
   const parsed = PlanMetadataSchema.safeParse(input.metadata);
@@ -170,12 +191,11 @@ export const computePlanRevision = (input: IPlanContract): IPlanRevision => {
     !parsed.success ||
     new Set(input.metadata.repositories).size !== input.metadata.repositories.length
   )
-    throw new Exception(
-      'The HQ plan is invalid',
-      undefined,
-      { kind: 'invalid-request' },
-      { cause: parsed.error },
-    );
+    throw new Exception('The HQ plan is invalid', {
+      code: 'JG_AGENT_HQ_PLAN_INVALID',
+      data: { kind: 'invalid-request' },
+      cause: parsed.error,
+    });
   const metadata = {
     scope: parsed.data.scope,
     repositories: [...parsed.data.repositories].sort(),

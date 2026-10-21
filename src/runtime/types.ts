@@ -29,9 +29,9 @@ export type IAgentHq = {
    * Dispatcher failures propagate after the receipt becomes uncertain.
    * @returns Its receipt; replays do not execute the dispatcher.
    * @throws
-   * - -1: The HQ request is invalid
-   * - -1: The HQ action conflicts with its recorded state
-   * - -1: The HQ store failed
+   * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   performBrowserAction(
     input: IBrowserAction,
@@ -42,8 +42,8 @@ export type IAgentHq = {
    * Reconciles a selected receipt for its authenticated operator without repeating effects.
    * @returns The receipt, or null for another operator or unknown ID.
    * @throws
-   * - -1: The HQ request is invalid
-   * - -1: The HQ store failed
+   * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   readBrowserAction(id: string, operatorId: string): Promise<IBrowserReceipt | null>;
   stateRoot: string;
@@ -52,44 +52,44 @@ export type IAgentHq = {
    * Performs a validated local command; native failures may retain diagnostic context.
    * @returns A normalized response. Stop acknowledges admission, not completed shutdown.
    * @throws
-   * - -1: The HQ request is invalid
-   * - -1: The HQ runtime is not running
-   * - -1: The HQ target is outside the allowed workspaces
-   * - -1: The HQ cursor does not match this request
-   * - -1: The HQ handoff is unavailable
-   * - -1: The HQ handoff operation failed
-   * - -1: The HQ skill is unavailable
-   * - -1: The HQ action conflicts with its recorded state
-   * - -1: The Codex integration failed
-   * - -1: The Claude integration failed
-   * - -1: The Claude history is unavailable
-   * - -1: The HQ store failed
-   * - -1: The HQ plan is invalid
-   * - -1: The HQ plan operation failed
-   * - -1: The HQ lock acquisition arguments are invalid
-   * - -1: The HQ lock requires Linux or macOS
-   * - -1: The HQ runtime directory must be a real directory
-   * - -1: The HQ runtime directory must be private and owned by the current user
-   * - -1: The HQ lock must be a regular file
-   * - -1: The HQ lock must be private and owned by the current user
-   * - -1: The HQ lock owner exceeds the supported size
-   * - -1: The HQ lock owner could not be read. Inspect .runtime/hq.lock
-   * - -1: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
-   * - -1: The HQ lock has an inactive owner
-   * - -1: The HQ lock owner could not be verified
-   * - -1: Timed out waiting for the HQ lock
-   * - -1: HQ lock ownership changed before release
+   * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+   * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
+   * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+   * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+   * - JG_AGENT_HQ_HANDOFF_UNAVAILABLE: The HQ handoff is unavailable
+   * - JG_AGENT_HQ_HANDOFF_FAILED: The HQ handoff operation failed
+   * - JG_AGENT_HQ_SKILL_UNAVAILABLE: The HQ skill is unavailable
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+   * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
+   * - JG_AGENT_HQ_PLAN_FAILED: The HQ plan operation failed
+   * - JG_AGENT_HQ_LOCK_INVALID_ARGUMENTS: The HQ lock acquisition arguments are invalid
+   * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
+   * - JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID: The HQ runtime directory must be a real directory
+   * - JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS: The HQ runtime directory must be private and owned by the current user
+   * - JG_AGENT_HQ_LOCK_FILE_INVALID: The HQ lock must be a regular file
+   * - JG_AGENT_HQ_LOCK_FILE_PERMISSIONS: The HQ lock must be private and owned by the current user
+   * - JG_AGENT_HQ_LOCK_OWNER_OVERSIZED: The HQ lock owner exceeds the supported size
+   * - JG_AGENT_HQ_LOCK_OWNER_UNREADABLE: The HQ lock owner could not be read. Inspect .runtime/hq.lock
+   * - JG_AGENT_HQ_LOCK_OWNER_INCOMPLETE: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
+   * - JG_AGENT_HQ_LOCK_OWNER_INACTIVE: The HQ lock has an inactive owner
+   * - JG_AGENT_HQ_LOCK_OWNER_UNVERIFIABLE: The HQ lock owner could not be verified
+   * - JG_AGENT_HQ_LOCK_TIMEOUT: Timed out waiting for the HQ lock
+   * - JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED: HQ lock ownership changed before release
    */
   request(command: IHqRequestInput): Promise<IHqResponse>;
   /**
    * Closes owned resources before removing the exact lifetime record.
    * @returns A promise resolved after confirmed resource shutdown and owner release.
    * @throws
-   * - -1: The HQ transport failed
-   * - -1: The HQ state directory is unsafe
-   * - -1: The HQ state file is unsafe
-   * - -1: The HQ runtime owner is unverifiable
-   * - -1: The HQ runtime is not running
+   * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+   * - JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE: The HQ state directory is unsafe
+   * - JG_AGENT_HQ_STATE_FILE_UNSAFE: The HQ state file is unsafe
+   * - JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE: The HQ runtime owner is unverifiable
+   * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
    */
   close(): Promise<void>;
 };

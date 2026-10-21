@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 
 import {
   PlanSnapshotMilestoneSchema,
@@ -15,8 +15,11 @@ import { isSamePlanRevision, parsePlanMilestones } from './utilities.js';
 import type { IPlanArtifacts, IPlanRevisionProjection } from './types.js';
 
 const conflict = (): never => {
-  throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-    kind: 'state-conflict',
+  throw new Exception('The HQ action conflicts with its recorded state', {
+    code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+    data: {
+      kind: 'state-conflict',
+    },
   });
 };
 
@@ -24,8 +27,8 @@ const conflict = (): never => {
  * Saves contract identity before any planning skill can remove the milestone file.
  * @returns A durable snapshot; native quiescence and worktree evidence are recorded separately.
  * @throws
- * - -1: The HQ action conflicts with its recorded state
- * - -1: The HQ plan is invalid
+ * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+ * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
  */
 export const capturePlanCheckpoint = (
   artifacts: IPlanArtifacts,
@@ -56,8 +59,8 @@ export const capturePlanCheckpoint = (
  * Closes execution authority before asynchronous interruption and background cleanup.
  * @returns Current coordination with one persisted revision owner and checkpoint.
  * @throws
- * - -1: The HQ action conflicts with its recorded state
- * - -1: The HQ plan is invalid
+ * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+ * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
  */
 export const beginPlanRevision = (
   artifacts: IPlanArtifacts,
@@ -110,7 +113,7 @@ export const beginPlanRevision = (
  * Records proven native shutdown and exact partial work before opening the editing lease.
  * @returns The checkpointed editing state; it never approves contracts or resumes implementation.
  * @throws
- * - -1: The HQ action conflicts with its recorded state
+ * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
  */
 export const finishPlanCheckpoint = (
   artifacts: IPlanArtifacts,
@@ -155,7 +158,7 @@ export const finishPlanCheckpoint = (
  * Retains the exact verified contract and actual operator-supplied check references.
  * @returns A new completion record; no marker or imported agent claim creates one.
  * @throws
- * - -1: The HQ action conflicts with its recorded state
+ * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
  */
 export const recordPlanCompletion = (
   artifacts: IPlanArtifacts,
@@ -216,7 +219,7 @@ export const recordPlanCompletion = (
  * Retains the latest canonical identities for reconciliation of directly edited/deleted files.
  * @returns A new baseline without changing original completion receipts.
  * @throws
- * - -1: The HQ plan is invalid
+ * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
  */
 export const refreshPlanBaseline = (
   artifacts: IPlanArtifacts,

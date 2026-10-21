@@ -1,4 +1,4 @@
-import { buildLlmsText } from 'jg-personal-astro-ui/llms-text';
+import { buildLlmsText } from 'jg-site';
 
 import { PAGE_RECORDS, SITE_CONFIG } from '../site.config.ts';
 

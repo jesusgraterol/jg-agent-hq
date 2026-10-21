@@ -3,6 +3,7 @@ import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { expectToRejectCode } from 'jg-exception/testing';
 import { expect, test } from 'vitest';
 
 import { verifyBuild } from './index.ts';
@@ -28,7 +29,11 @@ test.each([
     const body = await readFile(file, 'utf8');
     expect(body).toContain(before);
     await writeFile(file, body.replaceAll(before, after));
-    await expect(verifyBuild(root)).rejects.toThrow('The HQ website build is invalid');
+    await expectToRejectCode(
+      verifyBuild(root),
+      'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+      'The HQ website build is invalid',
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -39,15 +44,27 @@ test('rejects leaked tests and wrong image dimensions', async () => {
   try {
     await cp(DIST, root, { recursive: true });
     await writeFile(join(root, 'leak.test-unit.ts'), 'test');
-    await expect(verifyBuild(root)).rejects.toThrow('The HQ website build is invalid');
+    await expectToRejectCode(
+      verifyBuild(root),
+      'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+      'The HQ website build is invalid',
+    );
     await rm(join(root, 'leak.test-unit.ts'));
     await writeFile(join(root, 'asset.js'), 'const source = "/home/local/private";');
-    await expect(verifyBuild(root)).rejects.toThrow('The HQ website build is invalid');
+    await expectToRejectCode(
+      verifyBuild(root),
+      'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+      'The HQ website build is invalid',
+    );
     await rm(join(root, 'asset.js'));
     const png = await readFile(join(root, 'og/jg-agent-hq.png'));
     png.writeUInt32BE(800, 16);
     await writeFile(join(root, 'og/jg-agent-hq.png'), png);
-    await expect(verifyBuild(root)).rejects.toThrow('The HQ website build is invalid');
+    await expectToRejectCode(
+      verifyBuild(root),
+      'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+      'The HQ website build is invalid',
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

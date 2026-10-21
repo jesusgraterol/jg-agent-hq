@@ -1,4 +1,4 @@
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 
 import type { IActionEnvelope, IActionPlanContext } from '../contracts/index.js';
 import { getErrorKind } from '../errors/index.js';
@@ -11,8 +11,11 @@ import { isSamePlanRevision } from './utilities.js';
 import type { IPlanArtifacts } from './types.js';
 
 const conflict = (): never => {
-  throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-    kind: 'state-conflict',
+  throw new Exception('The HQ action conflicts with its recorded state', {
+    code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+    data: {
+      kind: 'state-conflict',
+    },
   });
 };
 
@@ -88,24 +91,24 @@ export const createPlanAdmission = (
      * Validates guided scope and admits under the same short lock as revision gate closure.
      * @returns The existing action owner's receipt and dispatch identity.
      * @throws
-     * - -1: The HQ target is outside the allowed workspaces
-     * - -1: The HQ action conflicts with its recorded state
-     * - -1: The HQ plan is invalid
-     * - -1: The HQ plan operation failed
-     * - -1: The HQ store failed
-     * - -1: The HQ lock acquisition arguments are invalid
-     * - -1: The HQ lock requires Linux or macOS
-     * - -1: The HQ runtime directory must be a real directory
-     * - -1: The HQ runtime directory must be private and owned by the current user
-     * - -1: The HQ lock must be a regular file
-     * - -1: The HQ lock must be private and owned by the current user
-     * - -1: The HQ lock owner exceeds the supported size
-     * - -1: The HQ lock owner could not be read. Inspect .runtime/hq.lock
-     * - -1: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
-     * - -1: The HQ lock has an inactive owner
-     * - -1: The HQ lock owner could not be verified
-     * - -1: Timed out waiting for the HQ lock
-     * - -1: HQ lock ownership changed before release
+     * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+     * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
+     * - JG_AGENT_HQ_PLAN_FAILED: The HQ plan operation failed
+     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+     * - JG_AGENT_HQ_LOCK_INVALID_ARGUMENTS: The HQ lock acquisition arguments are invalid
+     * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
+     * - JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID: The HQ runtime directory must be a real directory
+     * - JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS: The HQ runtime directory must be private and owned by the current user
+     * - JG_AGENT_HQ_LOCK_FILE_INVALID: The HQ lock must be a regular file
+     * - JG_AGENT_HQ_LOCK_FILE_PERMISSIONS: The HQ lock must be private and owned by the current user
+     * - JG_AGENT_HQ_LOCK_OWNER_OVERSIZED: The HQ lock owner exceeds the supported size
+     * - JG_AGENT_HQ_LOCK_OWNER_UNREADABLE: The HQ lock owner could not be read. Inspect .runtime/hq.lock
+     * - JG_AGENT_HQ_LOCK_OWNER_INCOMPLETE: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
+     * - JG_AGENT_HQ_LOCK_OWNER_INACTIVE: The HQ lock has an inactive owner
+     * - JG_AGENT_HQ_LOCK_OWNER_UNVERIFIABLE: The HQ lock owner could not be verified
+     * - JG_AGENT_HQ_LOCK_TIMEOUT: Timed out waiting for the HQ lock
+     * - JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED: HQ lock ownership changed before release
      */
     async admitNative(action: IActionEnvelope, prepared: IAdmission['prepared']) {
       return withHqLock(coordinationRoot, 'plan-native-admission', async () => {
@@ -224,24 +227,24 @@ export const createPlanAdmission = (
      * Claims queued input only after current scope and the editing gate are checked.
      * @returns One existing dispatch or null while the plan is paused.
      * @throws
-     * - -1: The HQ target is outside the allowed workspaces
-     * - -1: The HQ action conflicts with its recorded state
-     * - -1: The HQ plan is invalid
-     * - -1: The HQ plan operation failed
-     * - -1: The HQ store failed
-     * - -1: The HQ lock acquisition arguments are invalid
-     * - -1: The HQ lock requires Linux or macOS
-     * - -1: The HQ runtime directory must be a real directory
-     * - -1: The HQ runtime directory must be private and owned by the current user
-     * - -1: The HQ lock must be a regular file
-     * - -1: The HQ lock must be private and owned by the current user
-     * - -1: The HQ lock owner exceeds the supported size
-     * - -1: The HQ lock owner could not be read. Inspect .runtime/hq.lock
-     * - -1: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
-     * - -1: The HQ lock has an inactive owner
-     * - -1: The HQ lock owner could not be verified
-     * - -1: Timed out waiting for the HQ lock
-     * - -1: HQ lock ownership changed before release
+     * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+     * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
+     * - JG_AGENT_HQ_PLAN_FAILED: The HQ plan operation failed
+     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+     * - JG_AGENT_HQ_LOCK_INVALID_ARGUMENTS: The HQ lock acquisition arguments are invalid
+     * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
+     * - JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID: The HQ runtime directory must be a real directory
+     * - JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS: The HQ runtime directory must be private and owned by the current user
+     * - JG_AGENT_HQ_LOCK_FILE_INVALID: The HQ lock must be a regular file
+     * - JG_AGENT_HQ_LOCK_FILE_PERMISSIONS: The HQ lock must be private and owned by the current user
+     * - JG_AGENT_HQ_LOCK_OWNER_OVERSIZED: The HQ lock owner exceeds the supported size
+     * - JG_AGENT_HQ_LOCK_OWNER_UNREADABLE: The HQ lock owner could not be read. Inspect .runtime/hq.lock
+     * - JG_AGENT_HQ_LOCK_OWNER_INCOMPLETE: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
+     * - JG_AGENT_HQ_LOCK_OWNER_INACTIVE: The HQ lock has an inactive owner
+     * - JG_AGENT_HQ_LOCK_OWNER_UNVERIFIABLE: The HQ lock owner could not be verified
+     * - JG_AGENT_HQ_LOCK_TIMEOUT: Timed out waiting for the HQ lock
+     * - JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED: HQ lock ownership changed before release
      */
     async claimQueued(threadId: string) {
       return withHqLock(coordinationRoot, 'plan-queue-admission', async () => {

@@ -1,7 +1,7 @@
 import { constants, lstatSync, openSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { Exception, hasErrorCode } from 'error-message-utils';
+import { Exception, hasErrorCode } from 'jg-exception';
 import { z } from 'zod';
 
 import type { IHistoryItem } from '../../../contracts/index.js';
@@ -14,32 +14,44 @@ const EXCLUDED = new Set(['_archive', '_archives', '_backup', '_backups']);
  * Resolves only the verified native project layout, without following directory links.
  * @returns The exact native project directory; no recursive discovery is used.
  * @throws
- * - -1: The Claude history is unavailable
+ * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
  */
 export const projectDirectory = (workspaceRoot: string): string => {
   const root = resolve(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'));
   if ([...root.split(sep), ...workspaceRoot.split(sep)].some((part) => EXCLUDED.has(part)))
-    throw new Exception('The Claude history is unavailable', undefined, {
-      kind: 'agent-unavailable',
+    throw new Exception('The Claude history is unavailable', {
+      code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
+      data: {
+        kind: 'agent-unavailable',
+      },
     });
   // longer native project keys use another format; this reader does not guess that format
   const key = workspaceRoot.replace(/[^a-zA-Z0-9]/g, '-');
   if (key.length > 200)
-    throw new Exception('The Claude history is unavailable', undefined, {
-      kind: 'agent-unavailable',
+    throw new Exception('The Claude history is unavailable', {
+      code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
+      data: {
+        kind: 'agent-unavailable',
+      },
     });
   const directory = join(root, 'projects', key);
   for (const path of [root, join(root, 'projects'), directory]) {
     const entry = lstatSync(path);
     if (!entry.isDirectory() || entry.isSymbolicLink() || realpathSync(path) !== path)
-      throw new Exception('The Claude history is unavailable', undefined, {
-        kind: 'agent-unavailable',
+      throw new Exception('The Claude history is unavailable', {
+        code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
+        data: {
+          kind: 'agent-unavailable',
+        },
       });
   }
   const child = relative(root, directory);
   if (isAbsolute(child) || child === '..' || child.startsWith(`..${sep}`))
-    throw new Exception('The Claude history is unavailable', undefined, {
-      kind: 'agent-unavailable',
+    throw new Exception('The Claude history is unavailable', {
+      code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
+      data: {
+        kind: 'agent-unavailable',
+      },
     });
   return directory;
 };
@@ -79,12 +91,15 @@ export const isClaudeWorkspaceCwd = (cwd: string | undefined, workspaceRoot: str
  * Opens only one direct native UUID transcript, refusing links and traversal.
  * @returns The descriptor, which its caller must close.
  * @throws
- * - -1: The Claude history is unavailable
+ * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
  */
 export const openTranscript = (directory: string, nativeId: string): number => {
   if (!z.uuid().safeParse(nativeId).success)
-    throw new Exception('The Claude history is unavailable', undefined, {
-      kind: 'agent-unavailable',
+    throw new Exception('The Claude history is unavailable', {
+      code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
+      data: {
+        kind: 'agent-unavailable',
+      },
     });
   return openSync(join(directory, `${nativeId}.jsonl`), constants.O_RDONLY | constants.O_NOFOLLOW);
 };
@@ -98,12 +113,15 @@ const BlockSchema = z.object({
 /**
  * Renders selected native content as bounded plain text, never as HTML.
  * @throws
- * - -1: The Claude history is unavailable
+ * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
  */
 export const toClaudeItem = (record: IRecord, turnId: string): IHistoryItem => {
   if (!record.uuid)
-    throw new Exception('The Claude history is unavailable', undefined, {
-      kind: 'agent-unavailable',
+    throw new Exception('The Claude history is unavailable', {
+      code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
+      data: {
+        kind: 'agent-unavailable',
+      },
     });
   const content = record.message?.content;
   let text = '[Unsupported native content]';

@@ -18,7 +18,8 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as wait } from 'node:timers/promises';
 import { promisify } from 'node:util';
-import { hasErrorCode } from 'error-message-utils';
+import { expectToRejectCode } from 'jg-exception/testing';
+import { hasErrorCode } from 'jg-exception';
 import { createAgentHq, requestAgentHq, type IAgentHq } from 'jg-agent-hq';
 import { HqResponseSchema, type IHqRequestInput } from 'jg-agent-hq/contracts';
 import { expect, test, vi } from 'vitest';
@@ -162,7 +163,7 @@ test('native seek pages cover 1024 sessions with stable ties and filter-bound co
       expect(page.result.data).toHaveLength(128);
       identities.push(...page.result.data.map((thread) => thread.nativeId));
       if (!cursor) {
-        await expect(
+        await expectToRejectCode(
           request({
             kind: 'threads',
             provider: 'codex',
@@ -171,7 +172,9 @@ test('native seek pages cover 1024 sessions with stable ties and filter-bound co
             search: 'Task',
             cursor: page.result.nextCursor!,
           }),
-        ).rejects.toThrow('Request is invalid.');
+          'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
+          'Request is invalid.',
+        );
       }
       cursor = page.result.nextCursor ?? undefined;
     } while (cursor);
@@ -189,12 +192,16 @@ test('native seek pages cover 1024 sessions with stable ties and filter-bound co
       kind: 'threads',
       result: { data: [], nextCursor: null, source: 'native' },
     });
-    await expect(
+    await expectToRejectCode(
       request({ kind: 'threads', provider: 'codex', workspaceRoot, limit: 129 }),
-    ).rejects.toThrow('The HQ request is invalid');
-    await expect(
+      'JG_AGENT_HQ_REQUEST_INVALID',
+      'The HQ request is invalid',
+    );
+    await expectToRejectCode(
       request({ kind: 'threads', provider: 'codex', workspaceRoot, cursor: 'invalid' }),
-    ).rejects.toThrow('Request is invalid.');
+      'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
+      'Request is invalid.',
+    );
   });
 });
 
@@ -255,14 +262,20 @@ test('workspace authorization precedes native access and rejects symlink escapes
     await mkdir(outside);
     const escaped = join(workspaceRoot, 'escape');
     await symlink(outside, escaped);
-    await expect(
+    await expectToRejectCode(
       request({ kind: 'threads', provider: 'codex', workspaceRoot: escaped }),
-    ).rejects.toThrow('Access is denied.');
+      'JG_AGENT_HQ_CLIENT_ACCESS_DENIED',
+      'Access is denied.',
+    );
     await control({ wrongRoot: outside });
-    await expect(
+    await expectToRejectCode(
       request({ kind: 'items', provider: 'codex', workspaceRoot, nativeId: 'thread-1023' }),
-    ).rejects.toThrow('Access is denied.');
-    await expect(request({ kind: 'threads', provider: 'codex', workspaceRoot })).rejects.toThrow(
+      'JG_AGENT_HQ_CLIENT_ACCESS_DENIED',
+      'Access is denied.',
+    );
+    await expectToRejectCode(
+      request({ kind: 'threads', provider: 'codex', workspaceRoot }),
+      'JG_AGENT_HQ_CLIENT_ACCESS_DENIED',
       'Access is denied.',
     );
     const calls = await readFile(join(root, 'calls.jsonl'), 'utf8');
@@ -359,11 +372,15 @@ test('malformed native items and cursors return a safe integration failure witho
         },
       ],
     });
-    await expect(request({ kind: 'items', ...target })).rejects.toThrow(
+    await expectToRejectCode(
+      request({ kind: 'items', ...target }),
+      'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
       'Coding agent is unavailable.',
     );
     await control({ invalidCursor: true });
-    await expect(request({ kind: 'threads', provider: 'codex', workspaceRoot })).rejects.toThrow(
+    await expectToRejectCode(
+      request({ kind: 'threads', provider: 'codex', workspaceRoot }),
+      'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
       'Coding agent is unavailable.',
     );
     await control({
@@ -465,7 +482,9 @@ test('a corrupt SQLite file fails worker startup without deleting stored content
     await mkdir(stateRoot, { mode: 0o700 });
     await writeFile(join(stateRoot, 'action.key'), Buffer.alloc(32, 1), { mode: 0o600 });
     await writeFile(join(stateRoot, 'hq.sqlite'), 'corrupt SQLite content', { mode: 0o600 });
-    await expect(createAgentHq({ stateRoot, allowedRoots: [root] })).rejects.toThrow(
+    await expectToRejectCode(
+      createAgentHq({ stateRoot, allowedRoots: [root] }),
+      'JG_AGENT_HQ_STORE_FAILED',
       'The HQ store failed',
     );
     expect(await readdir(stateRoot)).toStrictEqual(['action.key', 'hq.sqlite']);
@@ -493,7 +512,9 @@ test.each(['missing', 'truncated', 'oversized', 'linked'])(
           Buffer.alloc(mode === 'truncated' ? 16 : 64, 1),
           { mode: 0o600 },
         );
-      await expect(createAgentHq({ stateRoot, allowedRoots: [root] })).rejects.toThrow(
+      await expectToRejectCode(
+        createAgentHq({ stateRoot, allowedRoots: [root] }),
+        'JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE',
         'The HQ action key is unavailable',
       );
       expect(await readFile(join(stateRoot, 'hq.sqlite'), 'utf8')).toBe('preserved database bytes');
@@ -508,7 +529,9 @@ test.each(['missing', 'truncated', 'oversized', 'linked'])(
 test('lost native output makes the provider unavailable while the independent host and store remain usable', async () => {
   await withRuntime(async ({ workspaceRoot, control, request }) => {
     await control({ mode: 'exit-on-list' });
-    await expect(request({ kind: 'threads', provider: 'codex', workspaceRoot })).rejects.toThrow(
+    await expectToRejectCode(
+      request({ kind: 'threads', provider: 'codex', workspaceRoot }),
+      'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
       'Coding agent is unavailable.',
     );
     expect(await request({ kind: 'status' })).toMatchObject({
@@ -538,7 +561,9 @@ test(
           pid < 0 && signal === 0 ? true : realKill(pid, signal),
         );
       try {
-        await expect(createAgentHq({ stateRoot, allowedRoots: [root] })).rejects.toThrow(
+        await expectToRejectCode(
+          createAgentHq({ stateRoot, allowedRoots: [root] }),
+          'JG_AGENT_HQ_CODEX_FAILED',
           'The Codex integration failed',
         );
         expect(JSON.parse(await readFile(join(stateRoot, 'hq-owner.json'), 'utf8'))).toMatchObject({

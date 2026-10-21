@@ -2,6 +2,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { expectToRejectCode } from 'jg-exception/testing';
 import { expect, test } from 'vitest';
 
 import { generateAssets } from './assets.ts';
@@ -11,7 +12,9 @@ test('reproduces committed assets through Chromium and closes after a write fail
   try {
     const blocked = join(root, 'blocked');
     await writeFile(blocked, 'occupied');
-    await expect(generateAssets(blocked)).rejects.toThrow(
+    await expectToRejectCode(
+      generateAssets(blocked),
+      'JG_AGENT_HQ_WEBSITE_ASSETS_FAILED',
       'The HQ website assets could not be generated',
     );
     const output = join(root, 'public');

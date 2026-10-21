@@ -2,7 +2,7 @@ import { readFile, readdir, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
-import { Exception, extractMessage } from 'error-message-utils';
+import { Exception, extractMessage } from 'jg-exception';
 
 import { DOCUMENT_RECORDS, readDocument } from '../content/index.ts';
 import { HOME_CONTENT, PAGE_RECORDS, SITE_CONFIG, homeMarkdown } from '../site.config.ts';
@@ -15,7 +15,7 @@ const EXCLUDED = new Set(['_archive', '_archives', '_backup', '_backups']);
  * Verifies static pages through Chromium's DOM without executing scripts or loading resources.
  * @returns The checked page and file counts after Chromium closes.
  * @throws
- * - -1: The HQ website build is invalid
+ * - JG_AGENT_HQ_WEBSITE_BUILD_INVALID: The HQ website build is invalid
  */
 export const verifyBuild = async (directory: string): Promise<IBuildVerification> => {
   const browser = await chromium.launch();
@@ -26,11 +26,16 @@ export const verifyBuild = async (directory: string): Promise<IBuildVerification
     const visit = async (folder: string): Promise<void> => {
       for (const entry of await readdir(resolve(root, folder), { withFileTypes: true })) {
         if (EXCLUDED.has(entry.name) || entry.isSymbolicLink())
-          throw new Exception('The HQ website build is invalid');
+          throw new Exception('The HQ website build is invalid', {
+            code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+          });
         const path = folder ? `${folder}/${entry.name}` : entry.name;
         if (entry.isDirectory()) await visit(path);
         else if (entry.isFile()) files.add(path);
-        else throw new Exception('The HQ website build is invalid');
+        else
+          throw new Exception('The HQ website build is invalid', {
+            code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+          });
       }
     };
     await visit('');
@@ -40,7 +45,9 @@ export const verifyBuild = async (directory: string): Promise<IBuildVerification
           path,
         )
       )
-        throw new Exception(`The HQ website build is invalid: ${path}`);
+        throw new Exception(`The HQ website build is invalid: ${path}`, {
+          code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+        });
     const required = [
       '404.html',
       'robots.txt',
@@ -53,7 +60,10 @@ export const verifyBuild = async (directory: string): Promise<IBuildVerification
       'og/jg-agent-hq.png',
     ];
     for (const path of required)
-      if (!files.has(path)) throw new Exception(`The HQ website build is invalid: missing ${path}`);
+      if (!files.has(path))
+        throw new Exception(`The HQ website build is invalid: missing ${path}`, {
+          code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+        });
     for (const [path, width, height] of [
       ['og/jg-agent-hq.png', 1200, 630],
       ['favicons/32x32.png', 32, 32],
@@ -65,14 +75,18 @@ export const verifyBuild = async (directory: string): Promise<IBuildVerification
         png.readUInt32BE(16) !== width ||
         png.readUInt32BE(20) !== height
       )
-        throw new Exception('The HQ website build is invalid');
+        throw new Exception('The HQ website build is invalid', {
+          code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+        });
     }
     for (const path of files) {
       if (!/\.(?:html|md|js|css|json|txt|xml)$/u.test(path)) continue;
       operation = `output ${path}`;
       const text = await readFile(resolve(root, path), 'utf8');
       if (/(?:\/home\/|\/Users\/|[A-Z]:\\|sourceMappingURL=|__INSTALL_)/u.test(text))
-        throw new Exception('The HQ website build is invalid');
+        throw new Exception('The HQ website build is invalid', {
+          code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+        });
     }
     const context = await browser.newContext({ javaScriptEnabled: false });
     await context.route('**/*', (route) => route.abort());
@@ -100,7 +114,9 @@ export const verifyBuild = async (directory: string): Promise<IBuildVerification
           html,
         )
       )
-        throw new Exception('The HQ website build is invalid');
+        throw new Exception('The HQ website build is invalid', {
+          code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+        });
       await page.setContent(html);
       const data = await page.evaluate(() => ({
         title: document.title,
@@ -136,7 +152,9 @@ export const verifyBuild = async (directory: string): Promise<IBuildVerification
         !data.headings[0] ||
         new Set(data.ids).size !== data.ids.length
       )
-        throw new Exception('The HQ website build is invalid');
+        throw new Exception('The HQ website build is invalid', {
+          code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+        });
       titles.add(data.title);
       anchors.set(record.path, new Set(data.ids));
       references.push(...data.references.map((href) => ({ href, from: record.path })));
@@ -146,7 +164,9 @@ export const verifyBuild = async (directory: string): Promise<IBuildVerification
           data.canonical.length !== 0 ||
           data.structuredData.length !== 0
         )
-          throw new Exception('The HQ website build is invalid');
+          throw new Exception('The HQ website build is invalid', {
+            code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+          });
       } else {
         const canonical = new URL(record.path, SITE_CONFIG.url).href;
         if (
@@ -160,11 +180,15 @@ export const verifyBuild = async (directory: string): Promise<IBuildVerification
           !data.robots?.startsWith('index') ||
           data.structuredData.length !== 1
         )
-          throw new Exception('The HQ website build is invalid');
+          throw new Exception('The HQ website build is invalid', {
+            code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+          });
         for (const json of data.structuredData) {
           const parsed: unknown = JSON.parse(json);
           if (!parsed || typeof parsed !== 'object' || !json.includes(canonical))
-            throw new Exception('The HQ website build is invalid');
+            throw new Exception('The HQ website build is invalid', {
+              code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+            });
         }
         const markdown = await readFile(resolve(root, record.markdown.slice(1)), 'utf8');
         const source = DOCUMENT_RECORDS.find((item) => item.id === record.id);
@@ -177,17 +201,23 @@ export const verifyBuild = async (directory: string): Promise<IBuildVerification
             (data.headings[0] !== HOME_CONTENT.title ||
               !data.text.includes(`npm install jg-agent-hq@${SITE_CONFIG.version}`)))
         )
-          throw new Exception('The HQ website build is invalid');
+          throw new Exception('The HQ website build is invalid', {
+            code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+          });
         for (const heading of markdown.matchAll(/^#{1,6} (.+)$/gmu))
           if (!data.text.includes(heading[1]!.replace(/`/gu, '')))
-            throw new Exception('The HQ website build is invalid');
+            throw new Exception('The HQ website build is invalid', {
+              code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+            });
       }
     }
     for (const { href, from } of references) {
       operation = `link ${href} from ${from}`;
       const url = new URL(href, new URL(from, SITE_CONFIG.url));
       if (!['https:', 'http:'].includes(url.protocol))
-        throw new Exception('The HQ website build is invalid');
+        throw new Exception('The HQ website build is invalid', {
+          code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+        });
       if (url.origin !== SITE_CONFIG.url) continue;
       const relativePath = decodeURIComponent(url.pathname).slice(1);
       const local = resolve(
@@ -203,9 +233,13 @@ export const verifyBuild = async (directory: string): Promise<IBuildVerification
         child.startsWith(`..${sep}`) ||
         !files.has(child.split(sep).join('/'))
       )
-        throw new Exception(`The HQ website build is invalid: unresolved ${href}`);
+        throw new Exception(`The HQ website build is invalid: unresolved ${href}`, {
+          code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+        });
       if (url.hash && !anchors.get(url.pathname)?.has(decodeURIComponent(url.hash.slice(1))))
-        throw new Exception(`The HQ website build is invalid: missing anchor ${href}`);
+        throw new Exception(`The HQ website build is invalid: missing anchor ${href}`, {
+          code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+        });
     }
     operation = 'public discovery';
     const sitemap = await readFile(resolve(root, 'sitemap-0.xml'), 'utf8');
@@ -216,7 +250,9 @@ export const verifyBuild = async (directory: string): Promise<IBuildVerification
         (record) => !sitemapUrls.includes(new URL(record.path, SITE_CONFIG.url).href),
       )
     )
-      throw new Exception('The HQ website build is invalid');
+      throw new Exception('The HQ website build is invalid', {
+        code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+      });
     const index = await readFile(resolve(root, 'sitemap-index.xml'), 'utf8');
     const robots = await readFile(resolve(root, 'robots.txt'), 'utf8');
     const llms = await readFile(resolve(root, 'llms.txt'), 'utf8');
@@ -226,15 +262,15 @@ export const verifyBuild = async (directory: string): Promise<IBuildVerification
       llms.includes('/404') ||
       PAGE_RECORDS.some((record) => !llms.includes(new URL(record.path, SITE_CONFIG.url).href))
     )
-      throw new Exception('The HQ website build is invalid');
+      throw new Exception('The HQ website build is invalid', {
+        code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+      });
     return { pages: PAGE_RECORDS.length + 1, files: files.size };
   } catch (cause) {
-    throw new Exception(
-      `The HQ website build is invalid: ${operation}: ${extractMessage(cause)}`,
-      undefined,
-      undefined,
-      { cause },
-    );
+    throw new Exception(`The HQ website build is invalid: ${operation}: ${extractMessage(cause)}`, {
+      code: 'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+      cause,
+    });
   } finally {
     await browser.close();
   }

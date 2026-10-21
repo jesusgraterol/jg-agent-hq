@@ -1,4 +1,4 @@
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import { RecordSchema, toClaudeItem } from '../history/index.js';
@@ -45,7 +45,10 @@ const BlockDeltaSchema = z.object({
 });
 
 const unavailable: () => never = () => {
-  throw new Exception('The Claude integration failed', undefined, { kind: 'agent-unavailable' });
+  throw new Exception('The Claude integration failed', {
+    code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+    data: { kind: 'agent-unavailable' },
+  });
 };
 
 /** Acknowledges the single current input before forwarding its ordered turn evidence. */
@@ -72,7 +75,7 @@ const acknowledge = (session: IClaudeSession, events: IClaudeControlEvents | und
 /**
  * Normalizes native stream evidence without retaining another conversation buffer.
  * @throws
- * - -1: The Claude integration failed
+ * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
  */
 export const receiveClaudeMessage = (
   session: IClaudeSession,

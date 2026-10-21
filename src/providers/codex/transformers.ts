@@ -17,7 +17,7 @@ import { parseNative } from './validations.js';
 /**
  * Converts native seconds to the public millisecond-based metadata contract.
  * @throws
- * - -1: The Codex integration failed
+ * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
  */
 export const toThreadSummary = (thread: INativeThread): IThreadSummary =>
   parseNative(ThreadSummarySchema, {
@@ -36,7 +36,7 @@ export const toThreadSummary = (thread: INativeThread): IThreadSummary =>
 /**
  * Returns turn metadata without hydrating its potentially growing item collection.
  * @throws
- * - -1: The Codex integration failed
+ * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
  */
 export const toTurnSummary = (turn: INativeTurn): ITurnSummary =>
   parseNative(TurnSummarySchema, {
@@ -68,7 +68,7 @@ const ChangesSchema = z.object({
 /**
  * Produces explicit history presentation fields and marks truncated/unsupported content.
  * @throws
- * - -1: The Codex integration failed
+ * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
  */
 export const toHistoryItem = ({ turnId, item }: INativeItem): IHistoryItem => {
   let kind: IHistoryItem['kind'] = 'unsupported';
@@ -113,7 +113,7 @@ export const toHistoryItem = ({ turnId, item }: INativeItem): IHistoryItem => {
 /**
  * Preserves actual bucket/window identities and reset boundaries without inventing missing data.
  * @throws
- * - -1: The Codex integration failed
+ * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
  */
 export const toUsageSnapshot = (usage: INativeUsage, observedAt: number): IUsageSnapshot => {
   const buckets = usage.rateLimitsByLimitId ?? {};

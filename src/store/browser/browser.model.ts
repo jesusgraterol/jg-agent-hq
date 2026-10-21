@@ -1,6 +1,6 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import {
@@ -41,7 +41,7 @@ export class BrowserModel {
   /**
    * Persists one intent before invoking any host effect; replay never runs it a second time.
    * @throws
-   * - -1: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */
   public admit(
     action: IBrowserAction,
@@ -90,8 +90,11 @@ export class BrowserModel {
   }
 
   private __conflict(): never {
-    throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-      kind: 'state-conflict',
+    throw new Exception('The HQ action conflicts with its recorded state', {
+      code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+      data: {
+        kind: 'state-conflict',
+      },
     });
   }
 }

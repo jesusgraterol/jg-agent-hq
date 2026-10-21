@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from 'node:crypto';
-import { Exception, extractMessage } from 'error-message-utils';
+import { Exception, extractMessage, isException } from 'jg-exception';
 import { z } from 'zod';
 import { setTimeout as wait } from 'node:timers/promises';
 
@@ -81,12 +81,18 @@ export const createActions = (
   let eventFailure: unknown;
 
   const conflict: () => never = () => {
-    throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-      kind: 'state-conflict',
+    throw new Exception('The HQ action conflicts with its recorded state', {
+      code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+      data: {
+        kind: 'state-conflict',
+      },
     });
   };
   const agentUnavailable: () => never = () => {
-    throw new Exception('The Codex integration failed', undefined, { kind: 'agent-unavailable' });
+    throw new Exception('The Codex integration failed', {
+      code: 'JG_AGENT_HQ_CODEX_FAILED',
+      data: { kind: 'agent-unavailable' },
+    });
   };
 
   /** Quarantines controls after a lifecycle gap and stops the native transport. */
@@ -152,7 +158,10 @@ export const createActions = (
     if (unavailable) return;
     if (eventCount >= 128) {
       failEvents(
-        new Exception('The Codex integration failed', undefined, { kind: 'agent-unavailable' }),
+        new Exception('The Codex integration failed', {
+          code: 'JG_AGENT_HQ_CODEX_FAILED',
+          data: { kind: 'agent-unavailable' },
+        }),
       );
       return;
     }
@@ -226,8 +235,8 @@ export const createActions = (
    * Dispatches one admitted intent once and records delivery without replaying it.
    * @returns A promise resolved after delivery evidence or uncertainty is persisted.
    * @throws
-   * - -1: The HQ action conflicts with its recorded state
-   * - -1: The HQ store failed
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   const dispatch = async (
     initial: IActionReceipt,
@@ -337,8 +346,7 @@ export const createActions = (
       }
     } catch (error) {
       // Only a matching native error response proves rejection. Transport loss and malformed results remain uncertain.
-      const explicit =
-        error instanceof Exception && NativeRejectionSchema.safeParse(error.data).success;
+      const explicit = isException(error) && NativeRejectionSchema.safeParse(error.data).success;
       const kind = getErrorKind(error);
       const failure =
         kind === 'state-conflict' || kind === 'access-denied' || kind === 'agent-unavailable'
@@ -685,14 +693,14 @@ export const createActions = (
    * Validates the current target and separates new dispatch from idempotent receipt reads.
    * @returns The durable admission receipt; native work runs independently.
    * @throws
-   * - -1: The HQ action conflicts with its recorded state
-   * - -1: The HQ skill is unavailable
-   * - -1: The HQ request is invalid
-   * - -1: The HQ target is outside the allowed workspaces
-   * - -1: The Codex integration failed
-   * - -1: The Claude integration failed
-   * - -1: The Claude history is unavailable
-   * - -1: The HQ store failed
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_SKILL_UNAVAILABLE: The HQ skill is unavailable
+   * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+   * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+   * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   const admitAndDispatch = async (action: IActionEnvelope): Promise<IActionReceipt> => {
     // The worker verifies the complete digest before returning any existing receipt.
@@ -905,14 +913,14 @@ export const createActions = (
      * Returns after durable admission; the native operation outlives this client request.
      * @returns The durable admission receipt after validation.
      * @throws
-     * - -1: The HQ action conflicts with its recorded state
-     * - -1: The HQ skill is unavailable
-     * - -1: The HQ request is invalid
-     * - -1: The HQ target is outside the allowed workspaces
-     * - -1: The Codex integration failed
-     * - -1: The Claude integration failed
-     * - -1: The Claude history is unavailable
-     * - -1: The HQ store failed
+     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+     * - JG_AGENT_HQ_SKILL_UNAVAILABLE: The HQ skill is unavailable
+     * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+     * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+     * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
     async submit(action: IActionEnvelope): Promise<IActionReceipt> {
       const admission = admitAndDispatch(action);
@@ -933,11 +941,11 @@ export const createActions = (
      * Quiesces the selected managed cohort without stopping unrelated controllers.
      * @returns A promise resolved only after interruption, background cleanup and release evidence.
      * @throws
-     * - -1: The HQ action conflicts with its recorded state
-     * - -1: The HQ target is outside the allowed workspaces
-     * - -1: The HQ store failed
-     * - -1: The Codex integration failed
-     * - -1: The Claude integration failed
+     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+     * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+     * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
      */
     async quiescePlan(controls: IPlanRevisionWorkflow['controls']): Promise<void> {
       const failures: unknown[] = [];
@@ -954,10 +962,10 @@ export const createActions = (
      * Stops admission, interrupts active work, cleans native terminals and confirms shutdown.
      * @returns A promise resolved after native exit and release of durable control ownership.
      * @throws
-     * - -1: The Codex integration failed
-     * - -1: The Claude integration failed
-     * - -1: The HQ transport failed
-     * - -1: The HQ store failed
+     * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
     async close(): Promise<void> {
       closing = true;
@@ -994,12 +1002,11 @@ export const createActions = (
         await lane.catch(() => undefined);
         const failedExit = nativeExit.find((result) => result.status === 'rejected');
         if (failedExit?.status === 'rejected')
-          throw new Exception(
-            `The HQ transport failed: ${extractMessage(failedExit.reason)}`,
-            undefined,
-            { kind: 'operation-failed' },
-            { cause: cleanupFailure ?? failedExit.reason },
-          );
+          throw new Exception(`The HQ transport failed: ${extractMessage(failedExit.reason)}`, {
+            code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
+            data: { kind: 'operation-failed' },
+            cause: cleanupFailure ?? failedExit.reason,
+          });
       }
       if (cleanupFailure) throw cleanupFailure;
       if (eventFailure) throw eventFailure;

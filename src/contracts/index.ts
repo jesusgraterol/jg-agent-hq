@@ -1,5 +1,10 @@
 // constants
-export { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, PUBLIC_ERROR_MESSAGES } from './constants.js';
+export {
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+  PUBLIC_ERROR_CODES,
+  PUBLIC_ERROR_MESSAGES,
+} from './constants.js';
 
 // wire contracts
 export {

@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from 'node:crypto';
+import { expectToThrowCode } from 'jg-exception/testing';
 import { computePlanRevision, type IPlanContract } from 'jg-agent-hq';
 import { expect, test } from 'vitest';
 
@@ -101,7 +102,11 @@ test.each([
   sequence().replace('## Milestone 2:', '## Milestone 1:'),
   sequence().replace('**Status:** pending\n', ''),
 ])('malformed or ambiguous milestone framing is rejected', (milestones) => {
-  expect(() => computePlanRevision({ ...input(), milestones })).toThrow('The HQ plan is invalid');
+  expectToThrowCode(
+    () => computePlanRevision({ ...input(), milestones }),
+    'JG_AGENT_HQ_PLAN_INVALID',
+    'The HQ plan is invalid',
+  );
 });
 
 test('raw breakdowns and plans without breakdowns have no execution-ready sequence digest', () => {
@@ -166,12 +171,15 @@ test('real Overview status remains derived when a fenced example precedes it', (
 test.each(['**Milestone ID:**' + idA, '  **Milestone ID:** ' + idA])(
   'malformed identity framing is rejected',
   (marker) => {
-    expect(() =>
-      computePlanRevision({
-        ...input(),
-        milestones: sequence().replace('**Milestone ID:** ' + idA, marker),
-      }),
-    ).toThrow('The HQ plan is invalid');
+    expectToThrowCode(
+      () =>
+        computePlanRevision({
+          ...input(),
+          milestones: sequence().replace('**Milestone ID:** ' + idA, marker),
+        }),
+      'JG_AGENT_HQ_PLAN_INVALID',
+      'The HQ plan is invalid',
+    );
   },
 );
 

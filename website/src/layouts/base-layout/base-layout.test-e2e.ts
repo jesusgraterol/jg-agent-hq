@@ -1,7 +1,8 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
+import { expectNoHorizontalOverflow, waitForPageAssets } from 'jg-playwright';
 
-import { HOME_CONTENT, PAGE_RECORDS, SITE_CONFIG } from '../../site.config.ts';
+import { HOME_CONTENT, PAGE_RECORDS, SITE_CONFIG, USAGE_EXAMPLE } from '../../site.config.ts';
 
 for (const width of [320, 768, 1440]) {
   for (const colorScheme of ['light', 'dark'] as const) {
@@ -17,6 +18,7 @@ for (const width of [320, 768, 1440]) {
       });
       for (const record of PAGE_RECORDS) {
         await page.goto(record.path);
+        await waitForPageAssets(page);
         await expect(page).toHaveTitle(record.title);
         await expect(page.getByRole('main').getByRole('heading', { level: 1 })).toHaveCount(1);
         if (record.id !== 'home') {
@@ -27,11 +29,9 @@ for (const width of [320, 768, 1440]) {
           expect(sizes.title).toBeGreaterThan(sizes.section);
         }
         await expect(page.locator('html')).toHaveAttribute('data-resolved-theme', colorScheme);
-        expect(
-          await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
-        ).toBe(true);
+        await expectNoHorizontalOverflow(page);
         const accessibility = await new AxeBuilder({ page })
-          .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+          .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
           .analyze();
         expect(accessibility.violations).toStrictEqual([]);
         if (record.id === 'home')
@@ -118,6 +118,25 @@ test('blocked clipboard keeps usable failure guidance', async ({ page }) => {
   await expect(
     page.getByText(`npm install jg-agent-hq@${SITE_CONFIG.version}`, { exact: true }),
   ).toBeVisible();
+});
+
+test('documentation section navigation follows its rendered heading', async ({ page }) => {
+  await page.goto('/docs/api/');
+  const section = page
+    .getByRole('navigation', { name: 'On this page' })
+    .getByRole('link', { name: 'Lock lifecycle', exact: true });
+  await section.focus();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/#lock-lifecycle$/u);
+  await expect(page.getByRole('heading', { name: 'Lock lifecycle', exact: true })).toBeInViewport();
+});
+
+test('the API example copies the visible client code', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Copy code', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Copied code', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(USAGE_EXAMPLE);
 });
 
 test('missing page has useful navigation and no indexing contract', async ({ page }) => {

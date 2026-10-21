@@ -97,7 +97,7 @@ export type ICodexProvider = {
    * Reads the native workspace inventory without loading skill content or starting inference.
    * @returns Bounded metadata and the count of native discovery failures.
    * @throws
-   * - -1: The Codex integration failed
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
    */
   readSkills(workspaceRoot: string): Promise<IProviderSkills>;
   /** Installs runtime-owned callbacks independently of client connections. */
@@ -106,28 +106,28 @@ export type ICodexProvider = {
    * Creates an empty native thread using the configured execution settings.
    * @returns The created native thread metadata.
    * @throws
-   * - -1: The Codex integration failed
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
    */
   startThread(requestId: string, workspaceRoot: string): Promise<INativeThread>;
   /**
    * Loads one explicitly adopted thread without hydrating its complete history.
    * @returns The resumed native thread metadata.
    * @throws
-   * - -1: The Codex integration failed
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
    */
   resumeThread(requestId: string, nativeId: string): Promise<INativeThread>;
   /**
    * Sets the native readable name with the admitted request identity.
    * @returns A promise resolved after native name acknowledgement.
    * @throws
-   * - -1: The Codex integration failed
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
    */
   nameThread(requestId: string, nativeId: string, name: string): Promise<void>;
   /**
    * Starts idle input without overriding model, sandbox or approval policy.
    * @returns The accepted native turn metadata.
    * @throws
-   * - -1: The Codex integration failed
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
    */
   startTurn(
     requestId: string,
@@ -139,49 +139,49 @@ export type ICodexProvider = {
    * Steers only the required active native turn and verifies its response identity.
    * @returns The acknowledged native turn identity.
    * @throws
-   * - -1: The Codex integration failed
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
    */
   steer(requestId: string, nativeId: string, expectedTurnId: string, text: string): Promise<string>;
   /**
    * Requests interruption; its acknowledgement does not prove completion.
    * @returns A promise resolved after native interruption-request acknowledgement.
    * @throws
-   * - -1: The Codex integration failed
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
    */
   interrupt(requestId: string, nativeId: string, nativeTurnId: string): Promise<void>;
   /**
    * Requests cleanup of the controlled thread’s native background terminals.
    * @returns A promise resolved after native cleanup-request acknowledgement.
    * @throws
-   * - -1: The Codex integration failed
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
    */
   cleanTerminals(requestId: string, nativeId: string): Promise<void>;
   /**
    * Verifies an empty native terminal page before releasing control.
    * @returns A promise resolved only when the native terminal page is empty.
    * @throws
-   * - -1: The Codex integration failed
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
    */
   verifyTerminalsClosed(nativeId: string): Promise<void>;
   /**
    * Unsubscribes one cleaned native thread and validates the resulting state.
    * @returns A promise resolved after Codex confirms it no longer subscribes to this thread.
    * @throws
-   * - -1: The Codex integration failed
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
    */
   unsubscribe(requestId: string, nativeId: string): Promise<void>;
   /**
    * Writes an exact native request response; resolution arrives separately.
    * @returns A promise resolved after the native transport accepts the response.
    * @throws
-   * - -1: The HQ transport failed
+   * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
    */
   reply(id: string | number, result: unknown): Promise<void>;
   /**
    * Rejects an unsupported native request without granting permissions.
    * @returns A promise resolved after the native transport accepts the rejection.
    * @throws
-   * - -1: The HQ transport failed
+   * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
    */
   reject(id: string | number): Promise<void>;
   close(): Promise<void>;

@@ -1,4 +1,4 @@
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import type { IHqRequest, IHqResponse, IManagedThread } from '../contracts/index.js';
@@ -28,7 +28,7 @@ const PositionSchema = z.strictObject({ createdAt: z.number().int(), id: z.uuid(
 /**
  * Validates the application-owned seek position after the shared query-binding check.
  * @throws
- * - -1: The HQ cursor does not match this request
+ * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
  */
 const readPosition = (
   cursor: string | undefined,
@@ -39,12 +39,11 @@ const readPosition = (
   try {
     return PositionSchema.parse(JSON.parse(decoded));
   } catch (cause) {
-    throw new Exception(
-      'The HQ cursor does not match this request',
-      undefined,
-      { kind: 'invalid-request' },
-      { cause },
-    );
+    throw new Exception('The HQ cursor does not match this request', {
+      code: 'JG_AGENT_HQ_CURSOR_INVALID',
+      data: { kind: 'invalid-request' },
+      cause,
+    });
   }
 };
 
@@ -64,10 +63,10 @@ const nextPageCursor = (
  * Authorizes bounded control reads and binds seek positions to their exact query.
  * @returns The selected record or bounded page.
  * @throws
- * - -1: The HQ action conflicts with its recorded state
- * - -1: The HQ cursor does not match this request
- * - -1: The HQ target is outside the allowed workspaces
- * - -1: The HQ store failed
+ * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+ * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+ * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+ * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
  */
 export const readControl = async (
   command: IControlRead,
@@ -118,8 +117,11 @@ export const readControl = async (
     return { kind: 'thread-plan', result: thread ? await store.getThreadPlan(thread.id) : null };
   if (command.kind === 'managed-thread') return { kind: command.kind, result: thread };
   if (!thread)
-    throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-      kind: 'state-conflict',
+    throw new Exception('The HQ action conflicts with its recorded state', {
+      code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+      data: {
+        kind: 'state-conflict',
+      },
     });
   if (command.kind === 'events')
     return {

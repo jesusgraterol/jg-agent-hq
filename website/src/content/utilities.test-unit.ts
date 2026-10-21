@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { expectToRejectCode, expectToThrowCode } from 'jg-exception/testing';
 import { createSatteriMarkdownProcessor } from '@astrojs/markdown-satteri';
 import { describe, expect, test } from 'vitest';
 
@@ -30,7 +31,9 @@ describe('canonical source policy', () => {
     '..\\README.md',
     '%2f%2fexample.com',
   ])('rejects unsafe URL %s', (href) => {
-    expect(() => resolveDocumentLink(href, 'README.md')).toThrow(
+    expectToThrowCode(
+      () => resolveDocumentLink(href, 'README.md'),
+      'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
       'The HQ website source is invalid',
     );
   });
@@ -44,7 +47,11 @@ describe('canonical source policy', () => {
     const processor = await createSatteriMarkdownProcessor({
       mdastPlugins: [canonicalMarkdownPlugin],
     });
-    await expect(processor.render(source)).rejects.toThrow('The HQ website source is invalid');
+    await expectToRejectCode(
+      processor.render(source),
+      'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
+      'The HQ website source is invalid',
+    );
   });
 
   test('rewrites reference definitions but retains literal code examples', async () => {

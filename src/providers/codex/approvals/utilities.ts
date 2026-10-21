@@ -1,4 +1,4 @@
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 
 import type { IActionCommand, INativeApproval } from '../../../contracts/index.js';
 
@@ -91,11 +91,14 @@ export const toApprovalPresentation = (
 /**
  * Restricts replies to the exact displayed request, including native decision choices.
  * @throws
- * - -1: The HQ request is invalid
+ * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
  */
 export const buildCodexReply = (prompt: ICodexPrompt, response: IReply): unknown => {
   const invalid = (): never => {
-    throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+    throw new Exception('The HQ request is invalid', {
+      code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      data: { kind: 'invalid-request' },
+    });
   };
   if (prompt.kind === 'question') {
     if (response.kind !== 'answers') return invalid();

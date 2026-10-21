@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Exception, extractMessage } from 'error-message-utils';
+import { Exception, extractMessage } from 'jg-exception';
 import { z } from 'zod';
 
 const ContinuationSchema = z.strictObject({
@@ -16,7 +16,7 @@ const hashFilters = (filters: object): string =>
  * Checks query binding before a native continuation is used. Authorization is checked separately.
  * @returns The provider-owned cursor, without interpreting its format.
  * @throws
- * - -1: The HQ cursor does not match this request
+ * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
  */
 export const decodeHistoryCursor = (
   cursor: string | undefined,
@@ -25,23 +25,28 @@ export const decodeHistoryCursor = (
   if (!cursor) return undefined;
   try {
     if (!/^[A-Za-z0-9_-]+$/.test(cursor))
-      throw new Exception('The HQ cursor does not match this request');
+      throw new Exception('The HQ cursor does not match this request', {
+        code: 'JG_AGENT_HQ_CURSOR_INVALID',
+      });
     const bytes = Buffer.from(cursor, 'base64url');
     if (bytes.toString('base64url') !== cursor)
-      throw new Exception('The HQ cursor does not match this request');
+      throw new Exception('The HQ cursor does not match this request', {
+        code: 'JG_AGENT_HQ_CURSOR_INVALID',
+      });
     const parsed = ContinuationSchema.parse(
       JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
     );
     if (parsed.filterHash !== hashFilters(filters))
-      throw new Exception('The HQ cursor does not match this request');
+      throw new Exception('The HQ cursor does not match this request', {
+        code: 'JG_AGENT_HQ_CURSOR_INVALID',
+      });
     return parsed.nativeCursor;
   } catch (cause) {
-    throw new Exception(
-      `The HQ cursor does not match this request: ${extractMessage(cause)}`,
-      undefined,
-      { kind: 'invalid-request' },
-      { cause },
-    );
+    throw new Exception(`The HQ cursor does not match this request: ${extractMessage(cause)}`, {
+      code: 'JG_AGENT_HQ_CURSOR_INVALID',
+      data: { kind: 'invalid-request' },
+      cause,
+    });
   }
 };
 

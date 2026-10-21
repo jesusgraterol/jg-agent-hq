@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import {
@@ -55,8 +55,8 @@ export const createSkills = (
    * Coalesces a native metadata read and enforces the catalog budget before paging.
    * @returns Current metadata, or null when the native inventory cannot be used.
    * @throws
-   * - -1: The HQ target is outside the allowed workspaces
-   * - -1: The HQ store failed
+   * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   const scan = async (threadId: string) => {
     const thread = await store.getThread(threadId);
@@ -108,8 +108,8 @@ export const createSkills = (
     /** Resolves one unambiguous native name from a single bounded inventory read.
      * @returns An exact preview, or an explicit missing/disabled/unavailable state.
      * @throws
-     * - -1: The HQ target is outside the allowed workspaces
-     * - -1: The HQ store failed
+     * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
     async previewName(
       threadId: string,
@@ -127,9 +127,9 @@ export const createSkills = (
      * Pages the native inventory with a content revision guard; an inventory change invalidates continuation.
      * @returns One bounded page, or explicit unavailable state without a successful empty fallback.
      * @throws
-     * - -1: The HQ target is outside the allowed workspaces
-     * - -1: The HQ cursor does not match this request
-     * - -1: The HQ store failed
+     * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+     * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
     async list(command: {
       threadId: string;
@@ -144,12 +144,11 @@ export const createSkills = (
         try {
           position = PositionSchema.parse(JSON.parse(decoded));
         } catch (cause) {
-          throw new Exception(
-            'The HQ cursor does not match this request',
-            undefined,
-            { kind: 'invalid-request' },
-            { cause },
-          );
+          throw new Exception('The HQ cursor does not match this request', {
+            code: 'JG_AGENT_HQ_CURSOR_INVALID',
+            data: { kind: 'invalid-request' },
+            cause,
+          });
         }
       }
       const result = await scan(command.threadId);
@@ -163,8 +162,11 @@ export const createSkills = (
         };
       const revision = digest([result.skills, result.unavailableCount]);
       if (position && position.digest !== revision)
-        throw new Exception('The HQ cursor does not match this request', undefined, {
-          kind: 'invalid-request',
+        throw new Exception('The HQ cursor does not match this request', {
+          code: 'JG_AGENT_HQ_CURSOR_INVALID',
+          data: {
+            kind: 'invalid-request',
+          },
         });
       const query = command.search?.toLowerCase();
       const data = result.skills
@@ -192,8 +194,8 @@ export const createSkills = (
      * Resolves an exact current selection and shows the native invocation without sending input.
      * @returns Ready, missing, disabled or unavailable state; never an inferred workflow.
      * @throws
-     * - -1: The HQ target is outside the allowed workspaces
-     * - -1: The HQ store failed
+     * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
     async preview(
       threadId: string,
@@ -209,9 +211,9 @@ export const createSkills = (
      * Prepares one explicitly selected input while leaving skill contents and permissions native.
      * @returns Exact text and optional native skill selection for the existing action dispatcher.
      * @throws
-     * - -1: The HQ skill is unavailable
-     * - -1: The HQ target is outside the allowed workspaces
-     * - -1: The HQ store failed
+     * - JG_AGENT_HQ_SKILL_UNAVAILABLE: The HQ skill is unavailable
+     * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
     async prepare(
       threadId: string,
@@ -220,7 +222,10 @@ export const createSkills = (
       if (input.kind === 'text') return { text: input.text, skill: null };
       const preview = await this.preview(threadId, input.skillId, input.arguments);
       if (preview.state !== 'ready' || !preview.skill || !preview.text)
-        throw new Exception('The HQ skill is unavailable', undefined, { kind: 'state-conflict' });
+        throw new Exception('The HQ skill is unavailable', {
+          code: 'JG_AGENT_HQ_SKILL_UNAVAILABLE',
+          data: { kind: 'state-conflict' },
+        });
       return { text: preview.text, skill: { name: preview.skill.name, path: preview.skill.path } };
     },
   };

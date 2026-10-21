@@ -1,4 +1,4 @@
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import manifest from '../../package.json' with { type: 'json' };
@@ -7,7 +7,10 @@ const version = z
   .string()
   .regex(/^\d+\.\d+\.\d+$/u)
   .safeParse(manifest.version);
-if (!version.success) throw new Exception('The HQ website source is invalid');
+if (!version.success)
+  throw new Exception('The HQ website source is invalid', {
+    code: 'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
+  });
 
 // the bounded public surface; the package manifest owns the displayed version
 export const SITE_CONFIG = {
@@ -33,9 +36,9 @@ export const PAGE_RECORDS = [
     id: 'home',
     path: '/',
     markdown: '/index.md',
-    title: 'jg-agent-hq | Native coding-agent workspace primitives',
+    title: 'jg-agent-hq | One runtime for Claude Code and Codex',
     description:
-      'Coordinate Claude Code and Codex sessions, live input, plans and cross-provider feedback through one local controller.',
+      'Build on Claude Code and Codex with local session control, native skills, plan progress, cross-agent feedback and subscription usage.',
   },
   {
     id: 'getting-started',
@@ -55,45 +58,81 @@ export const PAGE_RECORDS = [
   },
 ] as const;
 
+// the headline's two visual lines also form the plain-text page title
+const HOME_TITLE = ['Claude Code and Codex,', 'working together.'] as const;
+
 // the homepage's visible narrative and its Markdown counterpart use the same copy
 export const HOME_CONTENT = {
-  eyebrow: 'Native agents. One workspace.',
-  title: 'Keep your agents in sync.',
+  eyebrow: 'Open-source runtime for native coding agents',
+  title: HOME_TITLE.join(' '),
+  headline: HOME_TITLE,
   description:
-    'Build on Claude Code and Codex with a local controller for sessions, plans and feedback. Your CLIs keep their tools, permissions and conversation histories.',
+    'Bring sessions, skills, plans and feedback into one local workspace. Build the interface you want around the coding agents you already use.',
+  collaboration:
+    'HQ connects the sessions and carries selected feedback between them. Each agent keeps its own tools, permissions and conversation.',
   capabilities: [
     {
-      title: 'Sessions with context',
-      text: 'Create short-named threads, browse native history and send input through explicit, durable actions.',
+      title: 'Sessions you can follow',
+      text: 'Create short, readable thread names and browse native conversation history from either provider.',
     },
     {
-      title: 'Plans that remember',
-      text: 'Keep approvals and completed work tied to the right revision, even when milestones change.',
+      title: 'Plans that can change',
+      text: 'Revise the plan, regenerate milestones and reconcile finished work before continuing on the new revision.',
     },
     {
-      title: 'Feedback across agents',
-      text: 'Open a reviewer with the other provider, select its findings and send them back for assessment.',
+      title: 'A second perspective',
+      text: 'Ask the other provider to challenge a plan or review a session. Preview its findings and return the ones you select.',
+    },
+    {
+      title: 'Skills from your CLI',
+      text: 'Browse the native catalog and preview the exact skill invocation. Your CLI loads the skill and applies its rules.',
+    },
+    {
+      title: 'Actual account usage',
+      text: 'Read the subscription windows and reset times each provider exposes, with explicit stale and unavailable states.',
+    },
+    {
+      title: 'Input with a clear outcome',
+      text: 'Send messages, queue follow-ups, interrupt work and answer native prompts. Track delivery separately from completion.',
     },
   ],
   workflow: [
     {
       label: '01',
-      title: 'Choose a session',
-      text: 'Start or adopt a native thread. HQ tracks its identity while the CLI owns execution.',
+      title: 'Start on your machine',
+      text: 'Install the package and run the local controller in a trusted workspace. Sign in with your existing native CLIs.',
     },
     {
       label: '02',
-      title: 'Preview the next action',
-      text: 'Browse the native skill catalog and inspect the exact invocation before sending it.',
+      title: 'Connect your interface',
+      text: 'Use the Node API or local IPC. Browser-safe contracts give your application the same validated commands and observations.',
     },
     {
       label: '03',
-      title: 'Keep authority explicit',
-      text: 'Plan approval, execution scope and native tool permission remain separate decisions.',
+      title: 'Build your workflow',
+      text: 'Connect sessions, plan revisions and cross-agent reviews. Keep approval and native tool permissions explicit.',
     },
   ],
+  nativeBehavior:
+    'Live input follows each provider’s capabilities. Codex supports steering during a turn; Claude supports queued follow-ups and interruption.',
+  integration:
+    'jg-agent-hq is a TypeScript package and local CLI. Your application supplies the interface, authentication and hosting.',
 } as const;
+
+// an existing local controller owns the native connections; this client only reads an observation
+export const USAGE_EXAMPLE = `import { resolve } from 'node:path';
+import { requestAgentHq } from 'jg-agent-hq';
+
+const observation = await requestAgentHq(
+  resolve('.runtime'),
+  { kind: 'usage', provider: 'codex' },
+);
+
+if (observation.kind === 'usage' &&
+    observation.result.state === 'available') {
+  console.log(observation.result.windows);
+}`;
 
 /** Returns the homepage counterpart from the same copy and install version as the HTML. */
 export const homeMarkdown = (): string =>
-  `# ${HOME_CONTENT.title}\n\n${HOME_CONTENT.description}\n\n## Install\n\n\`npm install jg-agent-hq@${SITE_CONFIG.version}\`\n\nRequires Node.js 24.15.0 or later on Linux or macOS, plus the native CLIs you use.\n\n${HOME_CONTENT.capabilities.map((item) => `## ${item.title}\n\n${item.text}`).join('\n\n')}\n\n## A deliberate workflow\n\n${HOME_CONTENT.workflow.map((item) => `### ${item.title}\n\n${item.text}`).join('\n\n')}\n\nAccount usage comes from native observations, with explicit stale and unavailable states. Immediate steering is provider-dependent; Claude currently supports queued input rather than immediate steering.\n\nThis is a standalone TypeScript package and CLI. Applications supply their own UI, authentication and deployment.\n\n[Getting started](${SITE_CONFIG.url}/docs/)\n\n[API reference](${SITE_CONFIG.url}/docs/api/)\n\n[Source](${SITE_CONFIG.repositoryUrl})\n`;
+  `# ${HOME_CONTENT.title}\n\n${HOME_CONTENT.description}\n\n${HOME_CONTENT.collaboration}\n\n## Install\n\n\`npm install jg-agent-hq@${SITE_CONFIG.version}\`\n\nRequires Node.js 24.15.0 or later on Linux or macOS, plus the native CLIs you use.\n\n${HOME_CONTENT.capabilities.map((item) => `## ${item.title}\n\n${item.text}`).join('\n\n')}\n\n## Start small\n\n${HOME_CONTENT.workflow.map((item) => `### ${item.title}\n\n${item.text}`).join('\n\n')}\n\n\`\`\`ts\n${USAGE_EXAMPLE}\n\`\`\`\n\n${HOME_CONTENT.nativeBehavior}\n\n${HOME_CONTENT.integration}\n\n[Getting started](${SITE_CONFIG.url}/docs/)\n\n[API reference](${SITE_CONFIG.url}/docs/api/)\n\n[Source](${SITE_CONFIG.repositoryUrl})\n`;

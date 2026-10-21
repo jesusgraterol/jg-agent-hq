@@ -31,6 +31,8 @@ Short metadata operations use `withHqLock`. Long-lived runtime ownership must us
 
 See the [API reference](api/README.md) and [error contracts](errors/README.md).
 
+Intentional failures use `Exception` from `jg-exception`, with the named string codes in the error reference. Local clients use `PUBLIC_ERROR_CODES` and `PUBLIC_ERROR_MESSAGES` from `jg-agent-hq/contracts` for errors translated at the IPC boundary. Safe classifications remain separate from private diagnostic causes.
+
 ## Local controller
 
 Install Codex and sign in through its native CLI, then start `jg-agent-hq serve --state-root .runtime --workspace-root /path/to/workspace`. Run `jg-agent-hq status --state-root .runtime` in a client. `threads`, `thread`, `turns`, `items` and `usage` read native information; `stop` waits for confirmed runtime shutdown.

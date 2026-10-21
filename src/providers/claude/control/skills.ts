@@ -1,4 +1,4 @@
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import type { IProviderSkills } from '../../types.js';
@@ -24,23 +24,25 @@ const CommandsSchema = z.object({
  * Preserves native command precedence and marks metadata absent from Claude's interface unavailable.
  * @returns The currently invocable names, without reading skill bodies or guessing sources.
  * @throws
- * - -1: The Claude integration failed
+ * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
  */
 export const toClaudeSkills = (response: unknown): Omit<IProviderSkills, 'observedAt'> => {
   const parsed = CommandsSchema.safeParse(response);
   if (!parsed.success)
-    throw new Exception(
-      'The Claude integration failed',
-      undefined,
-      { kind: 'agent-unavailable' },
-      { cause: parsed.error },
-    );
+    throw new Exception('The Claude integration failed', {
+      code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+      data: { kind: 'agent-unavailable' },
+      cause: parsed.error,
+    });
   const commands = new Map<string, z.infer<typeof CommandsSchema>['skills'][number]>();
   for (const command of parsed.data.skills) {
     const existing = commands.get(command.name);
     if (existing && Boolean(existing.builtin) === Boolean(command.builtin))
-      throw new Exception('The Claude integration failed', undefined, {
-        kind: 'agent-unavailable',
+      throw new Exception('The Claude integration failed', {
+        code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+        data: {
+          kind: 'agent-unavailable',
+        },
       });
     if (!existing || command.builtin) commands.set(command.name, command);
   }

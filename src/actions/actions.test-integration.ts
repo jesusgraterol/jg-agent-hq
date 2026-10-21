@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as wait } from 'node:timers/promises';
-import { hasErrorCode } from 'error-message-utils';
+import { expectToRejectCode } from 'jg-exception/testing';
+import { hasErrorCode } from 'jg-exception';
 import { createAgentHq, requestAgentHq, type IAgentHq } from 'jg-agent-hq';
 import type {
   IActionCommand,
@@ -122,7 +123,7 @@ test('atomic admission deduplicates UUIDs, suffixes names and rejects competing 
   try {
     const { action, thread } = await fixture.create('fix-login');
     expect((await fixture.submit(action)).delivery).toBe('acknowledged');
-    await expect(
+    await expectToRejectCode(
       fixture.submit({
         ...action,
         command: {
@@ -133,7 +134,26 @@ test('atomic admission deduplicates UUIDs, suffixes names and rejects competing 
           name: 'different-name',
         },
       }),
-    ).rejects.toThrow('State changed. Refresh before continuing.');
+      'JG_AGENT_HQ_CLIENT_STATE_CONFLICT',
+      'State changed. Refresh before continuing.',
+    );
+    await expectToRejectCode(
+      fixture.runtime.request({
+        kind: 'action',
+        action: {
+          ...action,
+          command: {
+            ...action.command,
+            kind: 'thread-create',
+            provider: 'codex',
+            workspaceRoot: fixture.workspaceRoot,
+            name: 'different-name',
+          },
+        },
+      }),
+      'JG_AGENT_HQ_ACTION_CONFLICT',
+      'The HQ action conflicts with its recorded state',
+    );
     const competing = await fixture.submit(
       fixture.envelope({
         kind: 'thread-create',
@@ -378,7 +398,7 @@ test.each(['command', 'file-change'] as const)(
           : ['accept', 'acceptForSession', 'decline', 'cancel'],
       );
       if (kind === 'command')
-        await expect(
+        await expectToRejectCode(
           fixture.submit(
             fixture.envelope({
               kind: 'native-reply',
@@ -388,7 +408,9 @@ test.each(['command', 'file-change'] as const)(
               response: { kind: 'decision', decision: 'accept' },
             }),
           ),
-        ).rejects.toThrow('Request is invalid.');
+          'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
+          'Request is invalid.',
+        );
       const decision = kind === 'command' ? 'decline' : 'accept';
       const reply = await fixture.submit(
         fixture.envelope({
@@ -713,7 +735,7 @@ test('unknown permission fields fail closed; supported permission replies grant 
     if (result.kind !== 'approvals') throw new Error('wrong response');
     const approval = result.result[0]!;
     expect(JSON.parse(approval.detail).permissions).toStrictEqual(permissions);
-    await expect(
+    await expectToRejectCode(
       fixture.submit(
         fixture.envelope({
           kind: 'native-reply',
@@ -723,7 +745,9 @@ test('unknown permission fields fail closed; supported permission replies grant 
           response: { kind: 'answers', answers: { choice: ['example'] } },
         }),
       ),
-    ).rejects.toThrow('Request is invalid.');
+      'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
+      'Request is invalid.',
+    );
     const reply = await fixture.submit(
       fixture.envelope({
         kind: 'native-reply',
@@ -910,7 +934,9 @@ test('explicit resume cannot acquire an active native thread or an already contr
       threadId: thread.id,
       operatorConfirmation: 'No other CLI controller owns this task-owned session',
     };
-    await expect(fixture.submit(fixture.envelope(command))).rejects.toThrow(
+    await expectToRejectCode(
+      fixture.submit(fixture.envelope(command)),
+      'JG_AGENT_HQ_CLIENT_STATE_CONFLICT',
       'State changed. Refresh before continuing.',
     );
     const close = await fixture.submit(
@@ -920,7 +946,9 @@ test('explicit resume cannot acquire an active native thread or an already contr
       () => fixture.receipt(close.id),
       (entry) => entry.delivery === 'acknowledged',
     );
-    await expect(fixture.submit(fixture.envelope(command))).rejects.toThrow(
+    await expectToRejectCode(
+      fixture.submit(fixture.envelope(command)),
+      'JG_AGENT_HQ_CLIENT_STATE_CONFLICT',
       'State changed. Refresh before continuing.',
     );
     expect((await fixture.calls()).filter((call) => call.method === 'thread/resume')).toHaveLength(
@@ -953,14 +981,16 @@ test('control seek pages preserve tied ordering, reject changed filters and omit
     expect(next.result.data).toHaveLength(1);
     expect(next.result.data[0]!.id).not.toBe(initial.result.data[0]!.id);
     expect(next.result.nextCursor).toBeNull();
-    await expect(
+    await expectToRejectCode(
       fixture.request({
         kind: 'managed-threads',
         workspaceRoot: fixture.workspaceRoot,
         limit: 2,
         cursor: initial.result.nextCursor!,
       }),
-    ).rejects.toThrow('Request is invalid.');
+      'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
+      'Request is invalid.',
+    );
     await fixture.control({ holdTurn: true });
     await fixture.submit(
       fixture.envelope({
@@ -1217,7 +1247,7 @@ test.each([
       () => fixture.thread(thread.id),
       (entry) => entry.state === 'unknown' && entry.ownership === 'uncertain',
     );
-    await expect(
+    await expectToRejectCode(
       fixture.submit(
         fixture.envelope({
           kind: 'steer',
@@ -1226,9 +1256,15 @@ test.each([
           text: 'Cannot continue after a gap',
         }),
       ),
-    ).rejects.toThrow('Coding agent is unavailable.');
+      'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
+      'Coding agent is unavailable.',
+    );
     if (scenario === 'overflow') {
-      await expect(fixture.runtime.close()).rejects.toThrow('The Codex integration failed');
+      await expectToRejectCode(
+        fixture.runtime.close(),
+        'JG_AGENT_HQ_TRANSPORT_FAILED',
+        'The Codex integration failed',
+      );
       expect(await readFile(join(fixture.stateRoot, 'hq-owner.json'), 'utf8')).toContain('serve');
     } else {
       await fixture.runtime.close();
@@ -1270,7 +1306,11 @@ test('a ledger read failure during shutdown still stops the owned native process
     } finally {
       database.close();
     }
-    await expect(fixture.runtime.close()).rejects.toThrow('The HQ store failed');
+    await expectToRejectCode(
+      fixture.runtime.close(),
+      'JG_AGENT_HQ_TRANSPORT_FAILED',
+      'The HQ store failed',
+    );
     expect(await readFile(join(fixture.stateRoot, 'hq-owner.json'), 'utf8')).toContain('serve');
   } finally {
     await fixture.runtime.close().catch(() => undefined);
@@ -1352,9 +1392,11 @@ test('readable lookup still authorizes the registered workspace and never adopts
     await mkdir(other);
     const runtime = await createAgentHq({ stateRoot: fixture.stateRoot, allowedRoots: [other] });
     try {
-      await expect(
+      await expectToRejectCode(
         runtime.request({ kind: 'managed-thread-name', name: created.thread.name }),
-      ).rejects.toThrow('The HQ target is outside the allowed workspaces');
+        'JG_AGENT_HQ_TARGET_FORBIDDEN',
+        'The HQ target is outside the allowed workspaces',
+      );
     } finally {
       await runtime.close();
     }

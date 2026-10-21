@@ -1,13 +1,16 @@
 ---
 import { getEntry } from 'astro:content';
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 
 import DocsPage from '../../components/docs-page/docs-page.astro';
 import BaseLayout from '../../layouts/base-layout/base-layout.astro';
 import { PAGE_RECORDS } from '../../site.config.ts';
 
 const document = await getEntry('documents', 'getting-started');
-if (!document) throw new Exception('The HQ website source is invalid');
+if (!document)
+  throw new Exception('The HQ website source is invalid', {
+    code: 'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
+  });
 ---
 
 <BaseLayout page={PAGE_RECORDS[1]}

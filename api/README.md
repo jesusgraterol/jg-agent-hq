@@ -2,6 +2,8 @@
 
 Import the named exports from `jg-agent-hq`. Internal module paths are private.
 
+Intentional Node API failures use `Exception` from `jg-exception`. The [error reference](../errors/README.md) defines their named string codes and stable messages. `PUBLIC_ERROR_CODES` and `PUBLIC_ERROR_MESSAGES` are available from `jg-agent-hq/contracts` for the seven safe client classifications. SQLite-worker responses retain the originating application code; arbitrary worker failures become `JG_AGENT_HQ_STORE_FAILED`. Browser and IPC error bodies expose only their established safe classification and message.
+
 ## Lock lifecycle
 
 - `acquireHqLock(root, command, options?)` acquires `.runtime/hq.lock` and returns an asynchronous release function. The caller owns the trusted state root and supplies a non-empty, single-line operation label. Surrounding whitespace is trimmed. The returned release function is idempotent and refuses a replaced owner.

@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
-import { Exception, extractMessage } from 'error-message-utils';
+import { Exception, extractMessage } from 'jg-exception';
 
 const WEBSITE_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -10,7 +10,7 @@ const WEBSITE_ROOT = fileURLToPath(new URL('../../', import.meta.url));
  * Renders the social image and family favicons using pinned Chromium and bundled fonts.
  * @returns Completion after every image is written and Chromium closes.
  * @throws
- * - -1: The HQ website assets could not be generated
+ * - JG_AGENT_HQ_WEBSITE_ASSETS_FAILED: The HQ website assets could not be generated
  */
 export const generateAssets = async (outputRoot: string): Promise<void> => {
   const browser = await chromium.launch();
@@ -64,7 +64,10 @@ export const generateAssets = async (outputRoot: string): Promise<void> => {
           );
         }),
     );
-    if (!fits) throw new Exception('The HQ website assets could not be generated');
+    if (!fits)
+      throw new Exception('The HQ website assets could not be generated', {
+        code: 'JG_AGENT_HQ_WEBSITE_ASSETS_FAILED',
+      });
     await mkdir(resolve(outputRoot, 'og'), { recursive: true });
     await mkdir(resolve(outputRoot, 'favicons'), { recursive: true });
     await page.screenshot({ path: resolve(outputRoot, 'og/jg-agent-hq.png') });
@@ -96,12 +99,10 @@ export const generateAssets = async (outputRoot: string): Promise<void> => {
     }
     await writeFile(resolve(outputRoot, 'favicon.ico'), Buffer.concat([header, ...icoImages]));
   } catch (cause) {
-    throw new Exception(
-      `The HQ website assets could not be generated: ${extractMessage(cause)}`,
-      undefined,
-      undefined,
-      { cause },
-    );
+    throw new Exception(`The HQ website assets could not be generated: ${extractMessage(cause)}`, {
+      code: 'JG_AGENT_HQ_WEBSITE_ASSETS_FAILED',
+      cause,
+    });
   } finally {
     await browser.close();
   }
