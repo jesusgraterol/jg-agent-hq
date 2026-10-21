@@ -50,7 +50,7 @@ export const createCompletionLookup = (
       .filter(
         (receipt) =>
           !invalidated.has(receipt.id) &&
-          receipt.reopenActionId === (reopened.get(receipt.milestoneId)?.id ?? null),
+          receipt.reopenActionId === (reopened.get(receipt.milestoneId ?? '')?.id ?? null),
       )
       .map((receipt) => JSON.stringify([receipt.milestoneId, receipt.contractDigest])),
   );
@@ -97,7 +97,7 @@ export const proposeReconciliation = (
   action: IPlanOperatorAction,
 ): IPlanProposal => {
   const checkpoint = artifacts.coordination.revision?.checkpoint;
-  if (!checkpoint || artifacts.milestones === null) conflict();
+  if (!checkpoint) conflict();
   const sources = checkpoint!.entries;
   const oldByContract = new Map<string, IPlanSnapshotMilestone[]>();
   const newCounts = new Map<string, number>();
@@ -139,7 +139,7 @@ export const proposeReconciliation = (
   return {
     id: action.id,
     revision: artifacts.revision,
-    inspectionHash: artifacts.hashes.milestones!,
+    inspectionHash: artifacts.hashes.milestones,
     drafts,
     unmatchedSourceIds: sources
       .filter((source) => !matched.has(source.id))
@@ -240,7 +240,10 @@ export const confirmReconciliation = (
     const invalidatedReceiptIds =
       decision.relation === 'reopened'
         ? artifacts.coordination.completions
-            .filter((receipt) => decision.sourceIds.includes(receipt.milestoneId))
+            .filter(
+              (receipt) =>
+                receipt.milestoneId !== null && decision.sourceIds.includes(receipt.milestoneId),
+            )
             .map((receipt) => receipt.id)
         : [];
     records.push({

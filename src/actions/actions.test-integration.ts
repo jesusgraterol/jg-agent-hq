@@ -16,7 +16,7 @@ import type {
 import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
-import { installCodexFixture } from '../../scripts/test-support/index.js';
+import { installCodexFixture, writeFixtureControl } from '../../scripts/test-support/index.js';
 
 const setup = async () => {
   const root = await mkdtemp(join(tmpdir(), 'jg-hq-actions-'));
@@ -91,7 +91,7 @@ const setup = async () => {
       until,
       create,
       control: (settings: Record<string, unknown>) =>
-        writeFile(join(root, 'control.json'), JSON.stringify(settings)),
+        writeFixtureControl(root, 'control.json', settings),
       calls: async () =>
         (await readFile(join(root, 'calls.jsonl'), 'utf8'))
           .trim()

@@ -28,9 +28,7 @@ export const describePlan = (
     !coordination.planApproval.revokedBy &&
     coordination.planApproval.revision.planDigest === revision.planDigest;
   const isFinalized =
-    !!coordination.finalized &&
-    revision.breakdownDigest !== null &&
-    isSamePlanRevision(coordination.finalized.revision, revision);
+    !!coordination.finalized && isSamePlanRevision(coordination.finalized.revision, revision);
   const isSequenceApproved =
     isPlanApproved &&
     isFinalized &&
@@ -39,6 +37,18 @@ export const describePlan = (
     isSamePlanRevision(coordination.sequenceApproval.revision, revision);
   const verified = createCompletionLookup(coordination.completions, coordination.correspondences);
   const workflow = coordination.revision;
+  const invalidated = new Set(
+    coordination.correspondences.flatMap((record) => record.invalidatedReceiptIds),
+  );
+  const isWholePlanComplete =
+    artifacts.milestones === null &&
+    coordination.completions.some(
+      (receipt) =>
+        receipt.milestoneId === null &&
+        receipt.contractDigest === revision.planDigest &&
+        receipt.revision.breakdownDigest === null &&
+        !invalidated.has(receipt.id),
+    );
   const state =
     coordination.observedConflict ||
     pendingActionId ||
@@ -56,12 +66,13 @@ export const describePlan = (
           ? 'plan-approval-required'
           : !isFinalized
             ? 'breakdown-required'
-            : !isSequenceApproved
+            : artifacts.milestones !== null && !isSequenceApproved
               ? 'sequence-approval-required'
-              : artifacts.parsed.length > 0 &&
-                  artifacts.parsed.every(
-                    (milestone) => milestone.status === 'done' && verified(milestone),
-                  )
+              : isWholePlanComplete ||
+                  (artifacts.parsed.length > 0 &&
+                    artifacts.parsed.every(
+                      (milestone) => milestone.status === 'done' && verified(milestone),
+                    ))
                 ? 'completed'
                 : artifacts.parsed.some((milestone) => milestone.status === 'in progress')
                   ? 'in-progress'
@@ -110,6 +121,34 @@ export const describePlan = (
   };
 };
 
+/**
+ * Checks the current approved unfinished unit, with null identifying an undivided plan.
+ * Runtime epoch, action identity and mode remain the caller's separate admission checks.
+ * @returns Whether the exact unit is selected by current execution authority.
+ */
+export const canExecutePlanUnit = (
+  artifacts: IPlanArtifacts,
+  milestoneId: string | null,
+): boolean => {
+  const status = describePlan(artifacts);
+  const execution = artifacts.coordination.execution;
+  if (
+    !execution ||
+    !status.isPlanApproved ||
+    !status.isFinalized ||
+    ['blocked', 'completed', 'revising'].includes(status.state)
+  )
+    return false;
+  return artifacts.milestones === null
+    ? milestoneId === null && execution.milestoneIds.length === 0
+    : status.isSequenceApproved &&
+        milestoneId !== null &&
+        execution.milestoneIds.includes(milestoneId) &&
+        artifacts.parsed.some(
+          (milestone) => milestone.id === milestoneId && milestone.status !== 'done',
+        );
+};
+
 /** Revocation records operator provenance without granting any replacement authority. */
 const revokeExecution = (coordination: IPlanCoordination, action: IPlanOperatorAction): void => {
   if (coordination.execution) coordination.execution.revokedBy = action;
@@ -129,7 +168,11 @@ export const updatePlanAuthority = (
   const coordination = structuredClone(artifacts.coordination);
   if (command.kind === 'approve') {
     const status = describePlan(artifacts);
-    if (command.scope === 'sequence' && (!status.isFinalized || !status.isPlanApproved)) conflict();
+    if (
+      command.scope === 'sequence' &&
+      (artifacts.milestones === null || !status.isFinalized || !status.isPlanApproved)
+    )
+      conflict();
     const presentation =
       command.scope === 'plan' ? artifacts.hashes.plan : artifacts.hashes.milestones;
     if (presentation !== command.presentationHash) conflict();
@@ -165,7 +208,12 @@ export const updatePlanAuthority = (
       conflict();
     if (
       status.state === 'blocked' ||
-      !status.isSequenceApproved ||
+      status.state === 'completed' ||
+      !status.isPlanApproved ||
+      !status.isFinalized ||
+      (artifacts.milestones === null
+        ? command.milestoneIds.length !== 0
+        : !status.isSequenceApproved || command.milestoneIds.length === 0) ||
       command.milestoneIds.some(
         (id) =>
           !artifacts.parsed.some((milestone) => milestone.id === id && milestone.status !== 'done'),

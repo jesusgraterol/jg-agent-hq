@@ -21,7 +21,7 @@ This public package provides a local controller and browser-safe contracts. Appl
 
 Use pnpm 12.4.0. Run `pnpm install`, then `pnpm check:package` to build, exercise the built API and packed consumer, typecheck and check formatting. `pnpm test:unit` and `pnpm test:integration` select their own categories after a build. The private website workspace has separate checks; install Chromium with `pnpm --dir website exec playwright install chromium`, then run `pnpm --dir website check`. `pnpm check` runs both boundaries.
 
-Work on `development`; reviewed changes reach `main` through a pull request. npm releases are manual and use the exact tested tarball.
+Work on `development`; reviewed changes reach `main` through a pull request. After both Node checks pass on `main`, `check.yml` publishes the exact consumer-tested tarball through npm's configured trusted publisher, then deploys the website. No local npm login or token is needed. An identical published version is skipped; changed contents require a new version.
 
 ## Lock ownership
 
@@ -57,11 +57,11 @@ Use `jg-agent-hq request --state-root <directory>` with a closed HQ command on s
 
 `plan-status --directory <path>` and `plan-milestones --directory <path>` inspect a selected ordinary planning directory. No project registry is required. Mutations use the existing `request` JSON command with `kind: 'plan'`; see the [plan command reference](api/README.md#plan-coordination).
 
-Finalization assigns milestone UUIDs and returns the complete canonical sequence. Plan approval, sequence approval and scoped execution authorization are separate explicit operator actions. None sends native input or answers tool permissions. `coordination.json` holds current records beside the plan. SQLite retains write replay identities and a replaceable, paged milestone projection. Keep both when recovering interrupted writes. A pending write blocks further mutation until its original action is reconciled.
+Finalization assigns milestone UUIDs and returns the complete canonical sequence when a breakdown exists. A plan without a breakdown remains one unit: finalization returns null content, plan approval suffices, and whole-plan execution uses an empty milestone selection with a null milestone ID. No milestone file is created merely to make a small plan executable. Plan approval, sequence approval and scoped execution authorization are separate explicit operator actions. None sends native input or answers tool permissions. `coordination.json` holds current records beside the plan. SQLite retains write replay identities and a replaceable, paged milestone projection. Keep both when recovering interrupted writes. A pending write blocks further mutation until its original action is reconciled.
 
 Coordinators can retain revision-bound compatibility reviews in that same file. Core operations preserve the records without assessing them or granting authority. The integrating coordinator owns review freshness and conflict gates.
 
-Begin a revision before native planning. HQ stops bound implementation threads and their owned background work, captures partial-work evidence, and keeps execution paused while the CLI revises the plan and regenerates milestones. The finalizer carries exact matches automatically and asks for one confirmation covering every unmatched completed or partial milestone. Equivalent rewording preserves the original completion evidence. Changed requirements remain pending. Present and approve the canonical sequence, then explicitly authorize the new execution scope and mode. Neither approval nor restart resumes implementation. See the [revision recovery contract](api/README.md#revision-and-progress-recovery).
+Begin a revision before native planning. HQ stops bound implementation threads and their owned background work, captures partial-work evidence, and keeps execution paused while the CLI revises the plan and regenerates milestones. The finalizer carries exact matches automatically and asks for one confirmation covering every unmatched completed or partial milestone. Equivalent rewording preserves the original completion evidence. Changed requirements remain pending. Present and approve the canonical sequence, then explicitly authorize the new execution scope and mode. Neither approval nor restart resumes implementation. Whole-plan checkpoints and completion evidence also work without a milestone file. Removing a sequence requires explicit confirmation covering its retained milestone evidence before whole-plan execution can begin. See the [revision recovery contract](api/README.md#revision-and-progress-recovery).
 
 ## Cross-provider feedback
 
@@ -87,6 +87,7 @@ Collect one completed reviewer message by its exact native turn/item reference. 
 - `src/store/`: SQLite discovery metadata and the action/control ledger in one worker.
 - `src/contracts/`: browser-safe command and response contracts.
 - `scripts/package/`: build-output cleanup and packed-consumer checks.
+- `scripts/release/`: registry version/integrity checks and trusted publication of the tested archive.
 - `scripts/test-support/`: disposable external CLI fixtures.
 - `vitest/`: separate unit and integration selection.
 - `api/README.md`: canonical public API reference.

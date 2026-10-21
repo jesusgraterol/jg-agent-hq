@@ -77,12 +77,12 @@ export type IPlanWorktreeProof = z.infer<typeof PlanWorktreeProofSchema>;
 export const PlanCompletionSchema = z.strictObject({
   id: z.uuid(),
   action: PlanOperatorActionSchema,
-  milestoneId: z.uuid(),
+  milestoneId: z.uuid().nullable(),
   revision: PlanRevisionSchema,
   contractDigest: PlanDigestSchema,
   title: z.string().min(1).max(4096),
   contract: z.string().max(1_048_576),
-  sharedDigest: PlanDigestSchema,
+  sharedDigest: PlanDigestSchema.nullable(),
   checkouts: z.array(PlanWorktreeProofSchema).max(128),
   checks: z.array(PlanCheckSchema).min(1).max(32),
   completedAt: z.number().int(),
@@ -99,7 +99,7 @@ export type IPlanSnapshotMilestone = z.infer<typeof PlanSnapshotMilestoneSchema>
 export const PlanCheckpointSchema = z.strictObject({
   revision: PlanRevisionSchema,
   plan: z.string().max(1_048_576),
-  milestones: z.string().max(1_048_576),
+  milestones: z.string().max(1_048_576).nullable(),
   entries: z.array(PlanSnapshotMilestoneSchema).max(1024),
   checkouts: z.array(PlanWorktreeProofSchema).max(128),
   threadIds: z.array(z.uuid()).max(32),
@@ -130,7 +130,7 @@ export type IPlanDraftMilestone = z.infer<typeof PlanDraftMilestoneSchema>;
 export const PlanProposalSchema = z.strictObject({
   id: z.uuid(),
   revision: PlanRevisionSchema,
-  inspectionHash: PlanDigestSchema,
+  inspectionHash: PlanDigestSchema.nullable(),
   drafts: z.array(PlanDraftMilestoneSchema).max(1024),
   unmatchedSourceIds: z.array(z.uuid()).max(1024),
   confirmation: z
@@ -220,7 +220,7 @@ export const PlanCommandSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('complete'),
     ...MutationFields,
-    milestoneId: z.uuid(),
+    milestoneId: z.uuid().nullable(),
     checks: z.array(PlanCheckSchema).min(1).max(32),
     checkouts: z.array(PlanCheckoutSchema).max(128),
   }),
@@ -261,7 +261,6 @@ export const PlanCommandSchema = z.discriminatedUnion('kind', [
     mode: z.enum(['supervised', 'auto']),
     milestoneIds: z
       .array(z.uuid())
-      .min(1)
       .max(1024)
       .refine((ids) => new Set(ids).size === ids.length),
   }),
@@ -270,7 +269,7 @@ export const PlanCommandSchema = z.discriminatedUnion('kind', [
     target: PlanTargetSchema,
     expected: PlanRevisionSchema,
     authorizationId: z.uuid(),
-    milestoneId: z.uuid(),
+    milestoneId: z.uuid().nullable(),
     mode: z.enum(['supervised', 'auto']),
   }),
 ]);
@@ -289,7 +288,7 @@ export const PlanExecutionSchema = z.strictObject({
   action: PlanOperatorActionSchema,
   revision: PlanRevisionSchema,
   mode: z.enum(['supervised', 'auto']),
-  milestoneIds: z.array(z.uuid()).min(1).max(1024),
+  milestoneIds: z.array(z.uuid()).max(1024),
   createdAt: z.number().int(),
   revokedBy: PlanOperatorActionSchema.nullable(),
 });
@@ -297,7 +296,7 @@ export const PlanExecutionSchema = z.strictObject({
 export const PlanFinalizationSchema = z.strictObject({
   action: PlanOperatorActionSchema,
   revision: PlanRevisionSchema,
-  fileHash: PlanDigestSchema,
+  fileHash: PlanDigestSchema.nullable(),
   createdAt: z.number().int(),
 });
 // coordinators own semantic review; the core preserves its exact revision-bound evidence
@@ -421,7 +420,7 @@ export const PlanResultSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('finalized'),
     result: PlanStatusSchema,
-    content: z.string().max(1_048_576),
+    content: z.string().max(1_048_576).nullable(),
   }),
   z.object({
     kind: z.literal('milestones'),

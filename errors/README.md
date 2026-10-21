@@ -53,7 +53,7 @@ State safety rejects non-private ownership, symlinks and non-regular files. Runt
 
 A native or worker startup failure whose cleanup could not be confirmed carries internal `cleanupUnconfirmed: true`. The runtime retains its owner record in that case rather than allowing a new host to assume its resources have stopped.
 
-Plan validation rejects unsupported framing, duplicate or misplaced milestone IDs, invalid frontmatter boundaries, non-regular artifacts and oversized inputs. Plan operation failures retain safe operation diagnostics inside the trusted host. Stale revisions, presentation hashes, replay payload conflicts, revoked authority and unresolved writes use the existing action-state conflict contract. Unresolved correspondence, unverified done evidence, live scope changes, stale runtime authority and unproven quiescence also use the action-state conflict contract. Failed native cleanup retains the checkpoint and closes the editing gate. Neither validation nor write recovery can grant native permissions.
+Plan validation rejects unsupported framing, duplicate or misplaced milestone IDs, invalid frontmatter boundaries, non-regular artifacts and oversized inputs. Plan operation failures retain safe operation diagnostics inside the trusted host. Stale revisions, presentation hashes, replay payload conflicts, revoked authority and unresolved writes use the existing action-state conflict contract. Unresolved correspondence, unverified done evidence, live scope changes, stale runtime authority and unproven quiescence also use the action-state conflict contract. Failed native cleanup retains the checkpoint and closes the editing gate. Neither validation nor write recovery can grant native permissions. Whole-plan selection conflicts with a real breakdown, duplicate live implementation ownership, completed contracts and revoked implementation follow-up authority use the same action-state conflict contract. A valid sequence approval request for a plan without a sequence also conflicts.
 
 ## Public error messages
 
@@ -81,3 +81,11 @@ Handoff lookup uses the unavailable contract for an unknown identity. Git attrib
 | -1   | The HQ website destination check failed      |
 
 These build-time failures retain operation diagnostics and their original causes locally.
+
+## Release tooling
+
+| Code | Stable message                      |
+| ---- | ----------------------------------- |
+| -1   | The HQ package release check failed |
+
+Release checks reject invalid registry metadata, oversized responses, changed contents under an existing version and versions that do not exceed the latest release. Diagnostic suffixes explain the required correction. Failed registry reads never authorize a publish.

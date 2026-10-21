@@ -694,7 +694,7 @@ test(
         () => requestAgentHq(stateRoot, { kind: 'managed-thread', threadId }),
         (response) => response.kind === 'managed-thread' && response.result?.state === 'idle',
       );
-      await writeFile(join(root, 'control.json'), JSON.stringify({ holdTurn: true }));
+      await writeFixtureControl(root, 'control.json', { holdTurn: true });
       const actionId = randomUUID();
       await requestAgentHq(stateRoot, {
         kind: 'action',

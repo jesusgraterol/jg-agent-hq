@@ -6,7 +6,7 @@ import { withHqLock } from '../locks/index.js';
 import type { IStore } from '../store/index.js';
 import type { IAdmission } from '../store/control/index.js';
 
-import { describePlan } from './authority.js';
+import { canExecutePlanUnit, describePlan } from './authority.js';
 import { isSamePlanRevision } from './utilities.js';
 import type { IPlanArtifacts } from './types.js';
 
@@ -45,10 +45,9 @@ export const createPlanAdmission = (
         execution.revokedBy ||
         execution.action.id !== scope.authorizationId ||
         execution.mode !== scope.mode ||
-        !execution.milestoneIds.includes(scope.milestoneId) ||
+        !canExecutePlanUnit(artifacts, scope.milestoneId) ||
         !isSamePlanRevision(execution.revision, scope.revision) ||
         !isSamePlanRevision(scope.revision, artifacts.revision) ||
-        !status.isSequenceApproved ||
         status.state === 'blocked' ||
         (artifacts.coordination.revision && artifacts.coordination.revision.phase !== 'finished') ||
         artifacts.coordination.observedConflict
@@ -131,6 +130,15 @@ export const createPlanAdmission = (
             if (!isSamePlanRevision(expected.observedRevision, current.revision)) conflict();
           }
         }
+        // explicit assessment keeps its revision guard without inheriting implementation authority
+        const isFeedbackAssessment =
+          !!action.expectedPlan &&
+          (command.kind === 'message' || command.kind === 'queue') &&
+          command.input.kind === 'skill' &&
+          prepared.skill?.name === 'jg-feedback';
+        // current-turn permission replies and labels do not start another implementation unit
+        const isSeparateNativeControl =
+          command.kind === 'native-reply' || command.kind === 'thread-rename';
         if (action.plan) {
           if (
             !['message', 'queue', 'steer', 'thread-resume', 'thread-recover'].includes(
@@ -182,19 +190,7 @@ export const createPlanAdmission = (
               conflict();
           }
           prepared.planContext = selected.context;
-        } else if (binding && !safe) {
-          if (command.kind === 'native-reply' && binding.scope?.kind === 'planning') {
-            prepared.planContext = (await scopeContext(binding.scope)).context;
-          } else {
-            const artifacts = await boundArtifacts(binding);
-            prepared.planContext = {
-              directory: binding.directory,
-              scope: null,
-              observedRevision: artifacts.revision,
-            };
-          }
-        }
-        if (command.kind === 'queue-send' && queued?.planContext) {
+        } else if (command.kind === 'queue-send' && queued?.planContext) {
           const context = queued.planContext;
           if (context.scope) {
             const current = await scopeContext(context.scope);
@@ -205,6 +201,21 @@ export const createPlanAdmission = (
               conflict();
           } else await boundArtifacts(context);
           prepared.planContext = context;
+        } else if (binding && !safe) {
+          if (
+            binding.scope &&
+            !isFeedbackAssessment &&
+            !(binding.scope.kind === 'execution' && isSeparateNativeControl)
+          ) {
+            prepared.planContext = (await scopeContext(binding.scope)).context;
+          } else {
+            const artifacts = await boundArtifacts(binding);
+            prepared.planContext = {
+              directory: binding.directory,
+              scope: null,
+              observedRevision: artifacts.revision,
+            };
+          }
         }
         return store.admit({ action, prepared });
       });

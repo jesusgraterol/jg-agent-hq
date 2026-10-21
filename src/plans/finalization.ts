@@ -21,14 +21,14 @@ const conflict = (): never => {
  */
 export const finalizeInitialSequence = (
   artifacts: IPlanArtifacts,
-): { content: string; revision: IPlanRevision } => {
+): { content: string | null; revision: IPlanRevision } => {
   if (
-    artifacts.milestones === null ||
-    (artifacts.coordination.finalized &&
-      !isSamePlanRevision(artifacts.coordination.finalized.revision, artifacts.revision))
+    artifacts.coordination.finalized &&
+    !isSamePlanRevision(artifacts.coordination.finalized.revision, artifacts.revision)
   )
     conflict();
-  let milestones = artifacts.milestones!.replace(/\r\n?/g, '\n');
+  if (artifacts.milestones === null) return { content: null, revision: artifacts.revision };
+  let milestones = artifacts.milestones.replace(/\r\n?/g, '\n');
   // insertion offsets are applied backwards so original positions stay valid
   for (const milestone of [...artifacts.parsed].reverse())
     if (!milestone.id)

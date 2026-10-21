@@ -40,11 +40,10 @@ export const capturePlanCheckpoint = (
       isQuiescent: false,
       capturedAt: Date.now(),
     };
-  if (artifacts.milestones === null || !artifacts.revision.breakdownDigest) conflict();
   return {
     revision: artifacts.revision,
     plan: artifacts.plan,
-    milestones: artifacts.milestones!,
+    milestones: artifacts.milestones,
     entries: artifacts.parsed.map((entry) => PlanSnapshotMilestoneSchema.parse(entry)),
     threadIds,
     checkouts: [],
@@ -160,9 +159,30 @@ export const finishPlanCheckpoint = (
  */
 export const recordPlanCompletion = (
   artifacts: IPlanArtifacts,
-  input: { action: IPlanOperatorAction; milestoneId: string; checks: IPlanCompletion['checks'] },
+  input: {
+    action: IPlanOperatorAction;
+    milestoneId: string | null;
+    checks: IPlanCompletion['checks'];
+  },
   checkouts: IPlanWorktreeProof[],
 ): IPlanCompletion => {
+  if (input.milestoneId === null) {
+    if (artifacts.milestones !== null) conflict();
+    return {
+      id: input.action.id,
+      action: input.action,
+      milestoneId: null,
+      revision: artifacts.revision,
+      contractDigest: artifacts.revision.planDigest,
+      title: 'Whole plan',
+      contract: artifacts.contract.body,
+      sharedDigest: null,
+      checkouts,
+      checks: input.checks,
+      completedAt: Date.now(),
+      reopenActionId: null,
+    };
+  }
   const milestone =
     artifacts.parsed.find((entry) => entry.id === input.milestoneId) ??
     artifacts.coordination.revision?.checkpoint?.entries.find(
@@ -200,7 +220,7 @@ export const recordPlanCompletion = (
  */
 export const refreshPlanBaseline = (
   artifacts: IPlanArtifacts,
-  content: string,
+  content: string | null,
   revision: IPlanCheckpoint['revision'],
 ): IPlanCheckpoint => {
   const previous = artifacts.coordination.revision?.checkpoint ?? artifacts.coordination.baseline;
@@ -208,7 +228,10 @@ export const refreshPlanBaseline = (
     revision,
     plan: artifacts.plan,
     milestones: content,
-    entries: parsePlanMilestones(content).map((entry) => PlanSnapshotMilestoneSchema.parse(entry)),
+    entries:
+      content === null
+        ? []
+        : parsePlanMilestones(content).map((entry) => PlanSnapshotMilestoneSchema.parse(entry)),
     checkouts: previous?.checkouts ?? [],
     threadIds: previous?.threadIds ?? [],
     isQuiescent: previous?.isQuiescent ?? true,

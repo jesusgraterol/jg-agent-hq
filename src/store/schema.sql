@@ -161,14 +161,17 @@ CREATE TABLE IF NOT EXISTS thread_plan (
  context TEXT NOT NULL,
  authorization_id TEXT,
  milestone_id TEXT,
- CONSTRAINT chk_tp__execution_scope_complete CHECK ((authorization_id IS NULL) = (milestone_id IS NULL)),
+ CONSTRAINT chk_tp__execution_scope_complete CHECK (authorization_id IS NOT NULL OR milestone_id IS NULL),
  CONSTRAINT pk_tp__thread_id PRIMARY KEY (thread_id),
  CONSTRAINT fk_tp__thread_id FOREIGN KEY (thread_id) REFERENCES thread(id)
 ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_tp__directory_thread_id ON thread_plan (directory, thread_id);
 
 CREATE UNIQUE INDEX IF NOT EXISTS uidx_tp__authorization_id_milestone_id_execution
-ON thread_plan (authorization_id, milestone_id) WHERE authorization_id IS NOT NULL;
+ON thread_plan (authorization_id, milestone_id) WHERE authorization_id IS NOT NULL AND milestone_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uidx_tp__authorization_id_plan_execution
+ON thread_plan (authorization_id) WHERE authorization_id IS NOT NULL AND milestone_id IS NULL;
 
 CREATE TABLE IF NOT EXISTS handoff (
  id TEXT NOT NULL,

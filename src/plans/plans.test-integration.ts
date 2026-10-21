@@ -129,6 +129,79 @@ test('generic plan finalization presents stable IDs without granting approval, e
   });
 });
 
+test.each(['supervised', 'auto'] as const)(
+  'an undivided plan has explicit %s authority without a fabricated milestone sequence',
+  async (mode) => {
+    await withClaudeRuntime(async (fixture) => {
+      const plan = await setup(fixture);
+      await rm(join(plan.directory, 'milestones.md'));
+      const { response, command } = await plan.finalize();
+      expect(response.content).toBeNull();
+      expect(response.result.isFinalized).toBe(true);
+      expect(response.result.isPlanApproved).toBe(false);
+      expect(response.result.milestoneCount).toBe(0);
+      expect(await plan.send(command)).toStrictEqual(response);
+      await plan.approve('plan');
+      const current = await plan.status();
+      expect(current.state).toBe('ready');
+      expect(current.isSequenceApproved).toBe(false);
+      expect((await plan.page()).data).toStrictEqual([]);
+      await expect(
+        plan.send({
+          kind: 'approve',
+          target: plan.target,
+          action: action(),
+          expected: current.revision,
+          scope: 'sequence',
+          presentationHash: current.inspection.plan,
+        }),
+      ).rejects.toThrow('conflicts');
+      const authorize = {
+        kind: 'authorize' as const,
+        target: plan.target,
+        action: action(),
+        expected: current.revision,
+        mode,
+        milestoneIds: [],
+      };
+      await expect(
+        plan.send({ ...authorize, action: action(), milestoneIds: [randomUUID()] }),
+      ).rejects.toThrow('conflicts');
+      await plan.send(authorize);
+      const check = {
+        kind: 'check-execution' as const,
+        target: plan.target,
+        expected: current.revision,
+        authorizationId: authorize.action.id,
+        milestoneId: null,
+        mode,
+      };
+      expect((await plan.send(check)).kind).toBe('execution-check');
+      await expect(plan.send({ ...check, milestoneId: randomUUID() })).rejects.toThrow('conflicts');
+      await expect(
+        plan.send({ ...check, mode: mode === 'auto' ? 'supervised' : 'auto' }),
+      ).rejects.toThrow('conflicts');
+      await plan.send({
+        kind: 'revoke',
+        target: plan.target,
+        action: action(),
+        expected: current.revision,
+        scope: 'execution',
+      });
+      await expect(plan.send(check)).rejects.toThrow('conflicts');
+      await plan.send(authorize);
+      await expect(plan.send(check)).rejects.toThrow('conflicts');
+      expect((await readdir(plan.directory)).sort()).toStrictEqual([
+        'coordination.json',
+        'plan.md',
+      ]);
+      expect(await readFile(join(fixture.root, 'calls.jsonl'), 'utf8')).not.toMatch(
+        /turn\/start|thread\/start|thread\/resume/,
+      );
+    });
+  },
+);
+
 test.each(['compatible', 'contradiction'] as const)(
   'coordinator %s evidence survives authority writes and restart without changing execution identity',
   async (verdict) => {

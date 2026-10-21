@@ -12,7 +12,7 @@ import { withHqLock } from '../locks/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 import type { IStore } from '../store/index.js';
 
-import { describePlan, updatePlanAuthority } from './authority.js';
+import { canExecutePlanUnit, describePlan, updatePlanAuthority } from './authority.js';
 import { createPlanAdmission } from './admission.js';
 import { readPlanPage } from './projections.js';
 import { finalizeInitialSequence } from './finalization.js';
@@ -396,18 +396,14 @@ export const createPlans = (
             if (
               pendingActionId ||
               status.state === 'blocked' ||
-              !status.isSequenceApproved ||
               !execution ||
               execution.runtimeEpoch !== runtimeEpoch ||
               execution.revokedBy ||
               execution.action.id !== command.authorizationId ||
               execution.mode !== command.mode ||
-              !execution.milestoneIds.includes(command.milestoneId) ||
+              !canExecutePlanUnit(artifacts, command.milestoneId) ||
               !isSamePlanRevision(command.expected, artifacts.revision) ||
-              !isSamePlanRevision(execution.revision, artifacts.revision) ||
-              !artifacts.parsed.some(
-                (milestone) => milestone.id === command.milestoneId && milestone.status !== 'done',
-              )
+              !isSamePlanRevision(execution.revision, artifacts.revision)
             )
               conflict();
             return {
@@ -431,9 +427,7 @@ export const createPlans = (
               artifacts,
               await store.getPendingPlanOperationId(artifacts.directory),
             );
-            return command.kind === 'finalize' &&
-              current.isFinalized &&
-              artifacts.milestones !== null
+            return command.kind === 'finalize' && current.isFinalized
               ? { kind: 'finalized', result: current, content: artifacts.milestones }
               : { kind: 'status', result: current };
           }
@@ -516,12 +510,13 @@ export const createPlans = (
             }
           } else if (command.kind === 'finalize') {
             const workflow = coordination.revision;
-            let finalized: { content: string; revision: typeof artifacts.revision } | null = null;
+            let finalized: { content: string | null; revision: typeof artifacts.revision } | null =
+              null;
             if (workflow && workflow.phase !== 'finished') {
               if (!['editing', 'reconciling', 'awaiting-approval'].includes(workflow.phase))
                 conflict();
               if ((await store.getPlanThreads(artifacts.directory)).length) conflict();
-              if (!workflow.checkpoint?.isQuiescent || artifacts.milestones === null) conflict();
+              if (!workflow.checkpoint?.isQuiescent) conflict();
               const proposal =
                 workflow.proposal ?? proposeReconciliation(artifacts, command.action);
               if (
@@ -550,7 +545,10 @@ export const createPlans = (
                     decisions: command.confirmation!.decisions,
                   };
                 } else if (command.confirmation) conflict();
-                const content = renderReconciledSequence(artifacts.milestones!, drafts);
+                const content =
+                  artifacts.milestones === null
+                    ? null
+                    : renderReconciledSequence(artifacts.milestones, drafts);
                 const revision = computePlanRevision({
                   ...artifacts.contract,
                   milestones: content,
@@ -570,7 +568,7 @@ export const createPlans = (
               coordination.finalized = {
                 action: command.action,
                 revision: finalized.revision,
-                fileHash: hashPlanContent(milestones),
+                fileHash: milestones === null ? null : hashPlanContent(milestones),
                 createdAt: Date.now(),
               };
               coordination.baseline = refreshPlanBaseline(
@@ -605,7 +603,7 @@ export const createPlans = (
             ? {
                 kind: 'finalized',
                 result: describeCurrent(artifacts),
-                content: artifacts.milestones!,
+                content: artifacts.milestones,
               }
             : { kind: 'status', result: describeCurrent(artifacts) };
         },

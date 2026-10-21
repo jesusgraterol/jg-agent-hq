@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import ts from 'typescript';
@@ -11,7 +11,11 @@ import { installCodexFixture } from '../test-support/index.js';
 
 const ROOT = resolve(import.meta.dirname, '../..');
 const PackedResult = z.array(
-  z.object({ filename: z.string(), files: z.array(z.object({ path: z.string() })) }),
+  z.object({
+    filename: z.string(),
+    integrity: z.string().regex(/^sha512-[A-Za-z0-9+/]+={0,2}$/),
+    files: z.array(z.object({ path: z.string() })),
+  }),
 );
 
 // packing and a cold npm install each have their own 60-second process deadline
@@ -166,6 +170,16 @@ test(
       );
       const declarations = await readFile(join(ROOT, 'dist/index.d.ts'), 'utf8');
       expect(declarations).not.toContain(".ts'");
+      // CI retains the exact consumer-tested archive for the separate trusted publisher.
+      const releaseDirectory = process.env.JG_HQ_RELEASE_DIRECTORY;
+      if (releaseDirectory) {
+        await mkdir(releaseDirectory, { recursive: true });
+        await copyFile(join(scratch, packed.filename), join(releaseDirectory, packed.filename));
+        await writeFile(
+          join(releaseDirectory, `${packed.filename}.sha512`),
+          `${packed.integrity}\n`,
+        );
+      }
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }
