@@ -180,4 +180,6 @@ export {
   BrowserRepositoryPageSchema,
   BrowserSystemSchema,
   BrowserThreadDetailSchema,
+  PublicationStatusSchema,
 } from './browser/index.js';
+export type { IPublicationStatus } from './browser/index.js';
