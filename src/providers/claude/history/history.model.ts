@@ -15,7 +15,7 @@ import {
   type IHistoryRequest,
 } from '../../../sessions/index.js';
 
-import { ClaudeHistoryVersionSchema } from '../types.js';
+import { ClaudeHistoryRecordVersionSchema } from '../types.js';
 
 import {
   EntryRowSchema,
@@ -26,8 +26,15 @@ import {
   type IFileRow,
   type IClaudeHistoryRead,
 } from './types.js';
-import { openTranscript, projectDirectory, toClaudeItem } from './utilities.js';
+import {
+  isClaudeWorkspaceCwd,
+  openTranscript,
+  projectDirectory,
+  toClaudeItem,
+} from './utilities.js';
 
+// identifies the path and record interpretation used by persisted projection entries
+const HISTORY_PROJECTION_VERSION = 1;
 const MAX_RECORD_BYTES = 1_048_576;
 const MAX_REFRESH_BYTES = 4_194_304;
 const CHAIN = `WITH RECURSIVE current_chain AS (
@@ -259,8 +266,8 @@ export class ClaudeHistoryModel {
         );
         if (
           record.uuid !== entry.uuid ||
-          !ClaudeHistoryVersionSchema.safeParse(record.version).success ||
-          record.cwd !== root
+          !ClaudeHistoryRecordVersionSchema.safeParse(record.version).success ||
+          !isClaudeWorkspaceCwd(record.cwd, root)
         )
           this.__unavailable();
         const item = toClaudeItem(record, entry.turn_id);
@@ -332,7 +339,7 @@ export class ClaudeHistoryModel {
     if (!stat.isFile()) this.__unavailable();
     const bytes = Buffer.alloc(Math.min(stat.size, 256));
     readSync(fd, bytes, 0, bytes.length, 0);
-    return `${stat.dev}:${stat.ino}:${stat.birthtimeMs}:${createHash('sha256').update(bytes).digest('hex')}`;
+    return `${HISTORY_PROJECTION_VERSION}:${ClaudeHistoryRecordVersionSchema.options.join(',')}:${stat.dev}:${stat.ino}:${stat.birthtimeMs}:${createHash('sha256').update(bytes).digest('hex')}`;
   }
 
   private __refresh(directory: string, root: string): boolean {
@@ -522,7 +529,7 @@ export class ClaudeHistoryModel {
       JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
     );
     if (record.cwd !== undefined) {
-      if (record.cwd !== root || record.sessionId !== nativeId) {
+      if (!isClaudeWorkspaceCwd(record.cwd, root) || record.sessionId !== nativeId) {
         row.workspace_state = 'foreign';
         this.__unavailable();
       }
@@ -535,7 +542,7 @@ export class ClaudeHistoryModel {
     }
     if (
       record.version !== undefined &&
-      !ClaudeHistoryVersionSchema.safeParse(record.version).success
+      !ClaudeHistoryRecordVersionSchema.safeParse(record.version).success
     )
       this.__unavailable();
     if (record.isSidechain || !record.uuid) return;
@@ -545,9 +552,9 @@ export class ClaudeHistoryModel {
     )
       this.__unavailable();
     if (
-      !ClaudeHistoryVersionSchema.safeParse(record.version).success ||
+      !ClaudeHistoryRecordVersionSchema.safeParse(record.version).success ||
       record.sessionId !== nativeId ||
-      record.cwd !== root ||
+      !isClaudeWorkspaceCwd(record.cwd, root) ||
       record.timestamp === undefined ||
       !Number.isFinite(Date.parse(record.timestamp))
     )

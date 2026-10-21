@@ -7,7 +7,7 @@ import type { IStore } from '../../store/index.js';
 import type { IHistoryRequest } from '../../sessions/index.js';
 
 import { createClaudeRpc } from './rpc.js';
-import { ClaudeHistoryVersionSchema, ClaudeUsageSchema } from './types.js';
+import { ClaudeHistoryCliVersionSchema, ClaudeUsageSchema } from './types.js';
 import { toClaudeUsageSnapshot } from './transformers.js';
 
 /**
@@ -67,7 +67,7 @@ export const createClaudeProvider = (store: IStore) => {
     async readHistory(command: IHistoryRequest): Promise<IHqResponse> {
       const deadline = Date.now() + 30_000;
       const native = await open();
-      if (!ClaudeHistoryVersionSchema.safeParse(native.version).success)
+      if (!ClaudeHistoryCliVersionSchema.safeParse(native.version).success)
         throw new Exception('The Claude history is unavailable', undefined, {
           kind: 'agent-unavailable',
         });

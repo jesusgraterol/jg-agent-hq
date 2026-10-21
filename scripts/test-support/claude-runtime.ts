@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { hasErrorCode } from 'error-message-utils';
 import { createAgentHq, requestAgentHq, type IAgentHq, type IAgentHqOptions } from 'jg-agent-hq';
 import type { IHqRequestInput } from 'jg-agent-hq/contracts';
-import { expect, vi } from 'vitest';
+import { expect, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 
 import { installClaudeFixture } from './claude.js';
@@ -37,6 +37,51 @@ export const withClaudeRuntime = async (
   const projectRoot = join(configRoot, 'projects', workspaceRoot.replace(/[^a-zA-Z0-9]/g, '-'));
   let runtime: IAgentHq | undefined;
   let canRemoveFixture = false;
+  let teardown: Promise<void> | undefined;
+  const cleanup = (): Promise<void> =>
+    (teardown ??= (async () => {
+      try {
+        await runtime?.close();
+        try {
+          await lstat(join(stateRoot, 'hq-owner.json'));
+          throw new Error(`Fixture ownership requires inspection at ${stateRoot}`);
+        } catch (cause) {
+          if (!hasErrorCode(cause, 'ENOENT')) throw cause;
+        }
+        let children: string[] = [];
+        try {
+          children = (await readFile(join(root, 'claude-pids.jsonl'), 'utf8'))
+            .trim()
+            .split('\n')
+            .filter(Boolean);
+        } catch (cause) {
+          if (!hasErrorCode(cause, 'ENOENT')) throw cause;
+        }
+        for (const line of children)
+          for (const pid of Object.values(z.record(z.string(), z.number()).parse(JSON.parse(line))))
+            expect(() => process.kill(pid, 0)).toThrow();
+        for (const filename of ['pids.json', 'claude-pid.json']) {
+          let pids: number[];
+          try {
+            const record = z
+              .record(z.string(), z.number())
+              .parse(JSON.parse(await readFile(join(root, filename), 'utf8')));
+            pids = Object.values(record);
+          } catch (cause) {
+            if (hasErrorCode(cause, 'ENOENT')) continue;
+            throw cause;
+          }
+          for (const pid of pids) {
+            expect(() => process.kill(pid, 0)).toThrow();
+          }
+        }
+        canRemoveFixture = true;
+      } finally {
+        vi.unstubAllEnvs();
+        if (canRemoveFixture) await rm(root, { recursive: true, force: true });
+      }
+    })());
+  onTestFinished(cleanup);
   try {
     await mkdir(workspaceRoot);
     await mkdir(projectRoot, { recursive: true });
@@ -59,46 +104,7 @@ export const withClaudeRuntime = async (
       transcript: (nativeId) => join(projectRoot, `${nativeId}.jsonl`),
     });
   } finally {
-    try {
-      await runtime?.close();
-      try {
-        await lstat(join(stateRoot, 'hq-owner.json'));
-        throw new Error(`Fixture ownership requires inspection at ${stateRoot}`);
-      } catch (cause) {
-        if (!hasErrorCode(cause, 'ENOENT')) throw cause;
-      }
-      let children: string[] = [];
-      try {
-        children = (await readFile(join(root, 'claude-pids.jsonl'), 'utf8'))
-          .trim()
-          .split('\n')
-          .filter(Boolean);
-      } catch (cause) {
-        if (!hasErrorCode(cause, 'ENOENT')) throw cause;
-      }
-      for (const line of children)
-        for (const pid of Object.values(z.record(z.string(), z.number()).parse(JSON.parse(line))))
-          expect(() => process.kill(pid, 0)).toThrow();
-      for (const filename of ['pids.json', 'claude-pid.json']) {
-        let pids: number[];
-        try {
-          const record = z
-            .record(z.string(), z.number())
-            .parse(JSON.parse(await readFile(join(root, filename), 'utf8')));
-          pids = Object.values(record);
-        } catch (cause) {
-          if (hasErrorCode(cause, 'ENOENT')) continue;
-          throw cause;
-        }
-        for (const pid of pids) {
-          expect(() => process.kill(pid, 0)).toThrow();
-        }
-      }
-      canRemoveFixture = true;
-    } finally {
-      vi.unstubAllEnvs();
-      if (canRemoveFixture) await rm(root, { recursive: true, force: true });
-    }
+    await cleanup();
   }
 };
 
