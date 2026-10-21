@@ -6,6 +6,7 @@ import { Exception, extractMessage } from 'error-message-utils';
 import { getErrorKind } from '../errors/index.js';
 import { ClaudeHistoryModel } from '../providers/claude/history/index.js';
 
+import { BrowserModel } from './browser/index.js';
 import { HandoffsModel } from './handoffs/index.js';
 import { ControlModel } from './control/index.js';
 import { PlansModel } from './plans/index.js';
@@ -20,6 +21,7 @@ const database = new DatabaseSync(options.databasePath, {
 });
 database.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
 database.exec(await readFile(new URL('./schema.sql', import.meta.url), 'utf8'));
+const browser = new BrowserModel(database, options.runtimeEpoch, options.actionKey);
 const plans = new PlansModel(database);
 const handoffs = new HandoffsModel(database);
 const controls = new ControlModel(database, options.runtimeEpoch, options.actionKey, plans);
@@ -46,6 +48,15 @@ port.on('message', (message: unknown) => {
     }
     let result: unknown = null;
     switch (command.kind) {
+      case 'browser-read':
+        result = browser.get(command.id, command.operatorId);
+        break;
+      case 'browser-admit':
+        result = browser.admit(command.action, command.operatorId);
+        break;
+      case 'browser-settle':
+        result = browser.settle(command.id, command.operatorId, command.state);
+        break;
       case 'handoff-read':
         result = handoffs.get(command.id);
         break;

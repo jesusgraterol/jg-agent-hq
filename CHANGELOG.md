@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+- Add closed browser host commands and bounded session/repository/plan read contracts, without exposing private handlers through standalone IPC.
+- Persist operator-bound host action receipts before effects, reject changed replays, retain uncertainty across restart and join exact server-owned native child receipts.
+- Add conditional live-window reads so unchanged SSE polling does not repeatedly copy or serialize conversation bodies.
+
 ## 0.3.0
 
 - Publish the consumer-tested package through the configured GitHub Actions trusted publisher before deploying the website. Verify release ordering and archive integrity, and safely skip identical published versions.

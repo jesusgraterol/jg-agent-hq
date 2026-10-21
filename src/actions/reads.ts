@@ -12,6 +12,7 @@ type IControlRead = Extract<
   IHqRequest,
   {
     kind:
+      | 'thread-plan'
       | 'receipt'
       | 'managed-threads'
       | 'managed-thread'
@@ -113,6 +114,8 @@ export const readControl = async (
   }
   const thread = await store.getThread(command.threadId);
   await authorize(thread);
+  if (command.kind === 'thread-plan')
+    return { kind: 'thread-plan', result: thread ? await store.getThreadPlan(thread.id) : null };
   if (command.kind === 'managed-thread') return { kind: command.kind, result: thread };
   if (!thread)
     throw new Exception('The HQ action conflicts with its recorded state', undefined, {
@@ -132,7 +135,7 @@ export const readControl = async (
   return {
     kind: 'live-items',
     result: thread.nativeId
-      ? actions.live.read(JSON.stringify([thread.provider, thread.nativeId]))
-      : { data: [], hasGap: false },
+      ? actions.live.read(JSON.stringify([thread.provider, thread.nativeId]), command.afterRevision)
+      : { data: [], hasGap: false, revision: 0, unchanged: command.afterRevision === 0 },
   };
 };

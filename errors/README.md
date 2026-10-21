@@ -89,3 +89,5 @@ These build-time failures retain operation diagnostics and their original causes
 | -1   | The HQ package release check failed |
 
 Release checks reject invalid registry metadata, oversized responses, changed contents under an existing version and versions that do not exceed the latest release. Diagnostic suffixes explain the required correction. Failed registry reads never authorize a publish.
+
+Browser host admission reuses the existing invalid-request, action-state conflict and store-failure contracts. Nonce payload/operator changes, stale new epochs, admission capacity and admission after close conflict. A dispatcher error propagates within the trusted host after marking its receipt uncertain; HTTP hosts must map it to the existing seven safe public messages. Startup quarantines submitted host receipts without invoking their handlers.

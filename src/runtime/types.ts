@@ -1,7 +1,12 @@
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 
-import type { IHqRequestInput, IHqResponse } from '../contracts/index.js';
+import type {
+  IHqRequestInput,
+  IHqResponse,
+  IBrowserAction,
+  IBrowserReceipt,
+} from '../contracts/index.js';
 import type { IPlanContractParser } from '../plans/index.js';
 
 // construction receives trusted operator configuration, never a browser-selected root
@@ -19,6 +24,28 @@ export type IAgentHqOptions = z.infer<typeof AgentHqOptionsSchema>;
 
 // the runtime owns resources independently of every client connection
 export type IAgentHq = {
+  /**
+   * Runs one trusted host dispatcher after durable admission. Never expose the callback as RPC.
+   * Dispatcher failures propagate after the receipt becomes uncertain.
+   * @returns Its receipt; replays do not execute the dispatcher.
+   * @throws
+   * - -1: The HQ request is invalid
+   * - -1: The HQ action conflicts with its recorded state
+   * - -1: The HQ store failed
+   */
+  performBrowserAction(
+    input: IBrowserAction,
+    operatorId: string,
+    execute: (action: IBrowserAction, nativeActionId: string) => Promise<void>,
+  ): Promise<IBrowserReceipt>;
+  /**
+   * Reconciles a selected receipt for its authenticated operator without repeating effects.
+   * @returns The receipt, or null for another operator or unknown ID.
+   * @throws
+   * - -1: The HQ request is invalid
+   * - -1: The HQ store failed
+   */
+  readBrowserAction(id: string, operatorId: string): Promise<IBrowserReceipt | null>;
   stateRoot: string;
   closed: Promise<void>;
   /**

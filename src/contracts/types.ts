@@ -8,6 +8,7 @@ import { HandoffCommandSchema, HandoffResultSchema } from './handoffs/index.js';
 import { NativeIdSchema } from './identities/index.js';
 import { PlanCommandSchema, PlanResultSchema } from './plans/index.js';
 import {
+  ActionPlanContextSchema,
   ActionEnvelopeSchema,
   ActionReceiptSchema,
   ActionSummarySchema,
@@ -70,6 +71,7 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     ...PageFields,
   }),
   z.strictObject({ kind: z.literal('managed-thread'), threadId: z.uuid() }),
+  z.strictObject({ kind: z.literal('thread-plan'), threadId: z.uuid() }),
   z.strictObject({
     kind: z.literal('managed-thread-name'),
     name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/i),
@@ -83,7 +85,11 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     limit: PageFields.limit,
   }),
   z.strictObject({ kind: z.literal('approvals'), threadId: z.uuid() }),
-  z.strictObject({ kind: z.literal('live-items'), threadId: z.uuid() }),
+  z.strictObject({
+    kind: z.literal('live-items'),
+    threadId: z.uuid(),
+    afterRevision: z.number().int().nonnegative().optional(),
+  }),
 ]);
 export type IHqRequest = z.infer<typeof HqRequestSchema>;
 export type IHqRequestInput = z.input<typeof HqRequestSchema>;
@@ -122,6 +128,8 @@ export const HistoryItemSchema = z.object({
 });
 export type IHistoryItem = z.infer<typeof HistoryItemSchema>;
 export const LiveItemsSchema = z.object({
+  revision: z.number().int().nonnegative(),
+  unchanged: z.boolean(),
   data: z.array(HistoryItemSchema.extend({ state: z.enum(['active', 'awaiting-flush']) })).max(128),
   hasGap: z.boolean(),
 });
@@ -165,6 +173,7 @@ export const RuntimeStatusSchema = z.object({
 export type IRuntimeStatus = z.infer<typeof RuntimeStatusSchema>;
 const PageResultFields = { nextCursor: CursorSchema.nullable(), source: z.literal('native') };
 export const HqResponseSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('thread-plan'), result: ActionPlanContextSchema.nullable() }),
   z.object({ kind: z.literal('status'), result: RuntimeStatusSchema }),
   z.object({ kind: z.literal('plan'), result: PlanResultSchema }),
   z.object({ kind: z.literal('handoff'), result: HandoffResultSchema }),

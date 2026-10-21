@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
 import {
+  BrowserActionSchema,
+  BrowserReceiptSchema,
+  type IBrowserAction,
+  type IBrowserReceipt,
   MAX_PAGE_SIZE,
   ThreadSummarySchema,
   ManagedThreadSchema,
@@ -62,6 +66,22 @@ import {
 
 // worker messages are closed, bounded operations rather than arbitrary SQL
 export const StoreCommandSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('browser-read'),
+    id: z.uuid(),
+    operatorId: z.string().min(1).max(256),
+  }),
+  z.strictObject({
+    kind: z.literal('browser-admit'),
+    action: BrowserActionSchema,
+    operatorId: z.string().min(1).max(256),
+  }),
+  z.strictObject({
+    kind: z.literal('browser-settle'),
+    id: z.uuid(),
+    operatorId: z.string().min(1).max(256),
+    state: BrowserReceiptSchema.shape.state.exclude(['submitted']),
+  }),
   z.strictObject({ kind: z.literal('handoff-read'), id: z.uuid() }),
   z.strictObject({ kind: z.literal('handoff-prepare'), record: HandoffRecordSchema }),
   z.strictObject({
@@ -153,6 +173,35 @@ export const StoreWorkerSchema = z.strictObject({
 // the worker owns persistence; callers cannot submit arbitrary statements
 export type IStore = {
   readonly isAvailable: boolean;
+  /**
+   * Reads the operator-owned browser receipt.
+   * @returns The receipt or null.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  getBrowserAction(id: string, operatorId: string): Promise<IBrowserReceipt | null>;
+  /**
+   * Admits one browser effect.
+   * @returns Its durable receipt and dispatch ownership.
+   * @throws
+   * - -1: The HQ store failed
+   * - -1: The HQ action conflicts with its recorded state
+   */
+  admitBrowserAction(
+    action: IBrowserAction,
+    operatorId: string,
+  ): Promise<{ receipt: IBrowserReceipt; isNew: boolean }>;
+  /**
+   * Settles a submitted effect.
+   * @returns Its receipt.
+   * @throws
+   * - -1: The HQ store failed
+   */
+  settleBrowserAction(
+    id: string,
+    operatorId: string,
+    state: 'acknowledged' | 'uncertain',
+  ): Promise<IBrowserReceipt | null>;
   /** Reads a bounded handoff intent.
    * @returns The selected record, or null.
    * @throws

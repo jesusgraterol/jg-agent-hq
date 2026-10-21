@@ -157,3 +157,27 @@ export type {
   IHandoffPreview,
   IHandoffResult,
 } from './handoffs/index.js';
+
+// authenticated host actions
+export {
+  BrowserCommandSchema,
+  BrowserActionSchema,
+  BrowserReceiptSchema,
+} from './browser/index.js';
+export type { IBrowserAction, IBrowserReceipt } from './browser/index.js';
+
+// host read models
+export {
+  BrowserRepositorySchema,
+  BrowserPlanSummarySchema,
+  BrowserPlanPageSchema,
+  BrowserPlanDetailSchema,
+  BrowserSessionSchema,
+} from './browser/index.js';
+
+// bounded host views
+export {
+  BrowserRepositoryPageSchema,
+  BrowserSystemSchema,
+  BrowserThreadDetailSchema,
+} from './browser/index.js';

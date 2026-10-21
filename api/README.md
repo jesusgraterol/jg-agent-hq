@@ -124,17 +124,17 @@ Trusted runtime construction also accepts `codexExtraSkillRoots?: string[]` and 
 
 ## Control reads and reconnect
 
-| Command               | Fields                                            | Result                                                                                                |
-| --------------------- | ------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `managed-threads`     | `workspaceRoot`, optional `limit`, `cursor`       | Creation/UUID seek page of HQ records, including inactive and uncertain states.                       |
-| `managed-thread`      | `threadId`                                        | One HQ record or null.                                                                                |
-| `managed-thread-name` | `name`                                            | One HQ record or null, with case-insensitive lookup and the same workspace authorization.             |
-| `suggest-thread-name` | `topic`                                           | An editable lowercase label, with a currently free suffix when needed. This read does not reserve it. |
-| `receipt`             | `actionId`                                        | One receipt or null.                                                                                  |
-| `actions`             | `threadId`, optional `limit`, `cursor`            | Creation/UUID seek page of action metadata without queued bodies.                                     |
-| `events`              | `threadId`, optional `after` (default 0), `limit` | Ascending durable sequence page and `hasMore`; continue after the final sequence.                     |
-| `approvals`           | `threadId`                                        | Current in-memory native prompts, including exact scope and question metadata.                        |
-| `live-items`          | `threadId`                                        | Active/awaiting-flush item window and `hasGap`.                                                       |
+| Command               | Fields                                            | Result                                                                                                                                  |
+| --------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `managed-threads`     | `workspaceRoot`, optional `limit`, `cursor`       | Creation/UUID seek page of HQ records, including inactive and uncertain states.                                                         |
+| `managed-thread`      | `threadId`                                        | One HQ record or null.                                                                                                                  |
+| `managed-thread-name` | `name`                                            | One HQ record or null, with case-insensitive lookup and the same workspace authorization.                                               |
+| `suggest-thread-name` | `topic`                                           | An editable lowercase label, with a currently free suffix when needed. This read does not reserve it.                                   |
+| `receipt`             | `actionId`                                        | One receipt or null.                                                                                                                    |
+| `actions`             | `threadId`, optional `limit`, `cursor`            | Creation/UUID seek page of action metadata without queued bodies.                                                                       |
+| `events`              | `threadId`, optional `after` (default 0), `limit` | Ascending durable sequence page and `hasMore`; continue after the final sequence.                                                       |
+| `approvals`           | `threadId`                                        | Current in-memory native prompts, including exact scope and question metadata.                                                          |
+| `live-items`          | `threadId`                                        | Active/awaiting-flush item window, `hasGap`, `revision` and `unchanged`. Optional `afterRevision` omits bodies for an unchanged window. |
 
 The installed CLI exposes `managed-thread-name --name <name>` and `suggest-thread-name --topic <topic>`. Suggestions normalize punctuation to hyphens, keep at most 32 characters, and use `session` when the topic contains no ASCII letters or digits. Creation checks availability again inside its admission transaction. All action targets, histories and relationships continue to use immutable HQ/native identities. Name lookup never adopts, resumes or starts a native session.
 
@@ -255,3 +255,17 @@ Feedback resolves installed `jg-feedback` in the author thread and carries the s
 Delivery is `prepared`, `queued`, `submitted`, `delivered`, `uncertain`, `failed` or `canceled`; native `completion` is separately null, `completed`, `failed` or `interrupted`. Acknowledgement alone becomes `delivered`. Busy destinations use native next-turn queues, including while waiting for permissions; feedback is never written as a permission answer. Pending native permissions remain explicit actions on their own channels. No automatic feedback, response loop, approval or publication follows collection.
 
 Lists use indexed `createdAt DESC, id DESC` seek ordering, default 32/max 128, and cursors bound to the workspace, source filter and page size. Concurrent newer inserts do not reappear on continuation; deleted unseen records disappear. Summaries do not transfer retained finding bodies through the worker. SQLite owns the small private `handoff` and `handoff_dispatch` records alongside existing actions. No database migration or transcript mirror is required. Reads are fresh and bounded; no separate cache is used.
+
+## Browser host integration
+
+`jg-agent-hq/contracts` exports closed `BrowserActionSchema`, `BrowserCommandSchema` and `BrowserReceiptSchema` contracts, plus browser session, repository and bounded plan read models. These schemas contain generic identities, not a deployment registry or private handler implementation. They do not expose native RPC, executables or provider configuration. Standalone IPC continues to support only its existing owned commands.
+
+A trusted Node host calls `runtime.performBrowserAction(request, operatorId, execute)` after validating its signed operator identity. The host supplies one dispatcher function in process. It must validate every target against its registry, check operation-specific revisions/turns, and normalize approval provenance to that authenticated operator. Never accept a callback, operator identity or handler name from HTTP input. The request has a stable UUID, current runtime epoch and one closed command: native, plan, handoff, priority, error-reservation or publication-retry. The complete serialized request is limited to 2 MiB; nested native commands retain their tighter limits.
+
+SQLite records an HMAC digest and receipt before invoking the dispatcher. The same UUID and identical normalized request returns the stored receipt without invoking it again. Changed payloads or operators conflict. New requests require the current epoch. Replaying a saved request after restart reconciles it without granting execution authority. Submitted receipts from another runtime become uncertain. Dispatcher failure also leaves the receipt uncertain because its effects may already have committed. This state never automatically resends an effect.
+
+The dispatcher receives a server-owned `nativeActionId`; use this ID for a native child action, preserving the validated runtime and command. `readBrowserAction(id, operatorId)` returns only that operator's receipt and joins its exact native receipt. Host acknowledgement means the handler completed, not that a native turn completed. An unknown or differently owned ID returns null. Receipts retain metadata rather than message bodies or arbitrary handler output. Subsequent domain reads provide the result. At most 32 host jobs are admitted concurrently. Runtime close rejects new host work and waits for admitted work before closing its worker.
+
+Live reads accept `afterRevision`. A matching revision returns `unchanged: true` with an empty data array; retain the displayed window. A changed revision returns the complete bounded window. Revisions belong to one runtime. After reconnect to a new runtime, discard the revision and refresh native history. Token bodies stay in the existing bounded memory window and are never copied into lifecycle or browser-action tables.
+
+`thread-plan` accepts a managed `threadId` and returns its nullable `ActionPlanContextSchema`. The host verifies the thread's registered checkout before exposing it. It is read-only and grants no execution authority.
