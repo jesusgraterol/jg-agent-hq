@@ -221,7 +221,7 @@ export class PlansModel {
     if (execution) {
       const other = this.__database
         .prepare(
-          'SELECT thread.id, thread.state, thread.ownership, thread.runtime_epoch FROM thread_plan INNER JOIN thread ON thread.id = thread_plan.thread_id WHERE thread_plan.authorization_id = ? AND thread_plan.milestone_id = ? AND thread_plan.thread_id != ? LIMIT 1',
+          'SELECT thread.id, thread.state, thread.ownership, thread.runtime_epoch FROM thread_plan INNER JOIN thread ON thread.id = thread_plan.thread_id WHERE thread_plan.authorization_id = ? AND thread_plan.milestone_id IS ? AND thread_plan.thread_id != ? LIMIT 1',
         )
         .get(execution.authorizationId, execution.milestoneId, threadId);
       if (other) {

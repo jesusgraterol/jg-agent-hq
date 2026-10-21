@@ -15,6 +15,8 @@ import type {
   IHandoff,
   IHandoffPhase,
   IHandoffPreview,
+  IPlanCommandInput,
+  IPlanOperatorAction,
 } from 'jg-agent-hq/contracts';
 import { expect, test } from 'vitest';
 
@@ -39,6 +41,7 @@ const setup = async (
   fixture: IClaudeFixture,
   provider: 'codex' | 'claude' = 'codex',
   purpose: 'challenge' | 'review' = 'challenge',
+  prepareSource?: (threadId: string, runtimeEpoch: string) => Promise<void>,
 ) => {
   const writeControl = (filename: 'control.json' | 'claude-control.json', settings: object) =>
     writeFixtureControl(fixture.root, filename, { skillNames: names, ...settings });
@@ -83,6 +86,7 @@ const setup = async (
     () => receipt(initial.id),
     (result) => result.completion === 'completed',
   );
+  await prepareSource?.(source.threadId!, epoch);
   const command = {
     kind: 'create' as const,
     id: randomUUID(),
@@ -213,6 +217,196 @@ test('delivered-work handoff selects jg-review-session without copying the sourc
     expect(preview.text).toContain('authoritative native history');
   });
 });
+
+test.each([
+  ['codex', 'revoked', false],
+  ['claude', 'revoked', false],
+  ['codex', 'completed', false],
+  ['claude', 'completed', false],
+  ['codex', 'revoked', true],
+  ['claude', 'revoked', true],
+] as const)(
+  '%s feedback after %s execution (queued %s) grants no implementation authority',
+  async (provider, ending, isQueued) => {
+    await withClaudeRuntime(async (fixture) => {
+      const directory = join(fixture.workspaceRoot, 'feedback-plan');
+      await mkdir(directory);
+      await writeFile(join(directory, 'plan.md'), '# Plan\nAssess the selected result.\n');
+      const target = { directory };
+      const operator = (): IPlanOperatorAction => ({
+        id: randomUUID(),
+        operatorId: 'fixture-operator',
+        source: { kind: 'user-message', reference: `fixture-invocation:${randomUUID()}` },
+      });
+      const plan = async (command: IPlanCommandInput) => {
+        const response = await fixture.request({ kind: 'plan', command });
+        if (response.kind !== 'plan') throw new Error('Missing plan');
+        return response.result;
+      };
+      const status = async () => {
+        const result = await plan({ kind: 'status', target });
+        if (result.kind !== 'status') throw new Error('Missing plan status');
+        return result.result;
+      };
+      const initial = await status();
+      const expected = initial.revision;
+      await plan({ kind: 'finalize', target, expected, action: operator() });
+      await plan({
+        kind: 'approve',
+        target,
+        expected,
+        action: operator(),
+        scope: 'plan',
+        presentationHash: initial.inspection.plan,
+      });
+      const authorization = operator();
+      await plan({
+        kind: 'authorize',
+        target,
+        expected,
+        action: authorization,
+        mode: 'auto',
+        milestoneIds: [],
+      });
+      const scope = {
+        kind: 'execution' as const,
+        authorizationId: authorization.id,
+        milestoneId: null,
+        mode: 'auto' as const,
+        revision: expected,
+      };
+      const api = await setup(fixture, provider, 'review', async (threadId, runtimeEpoch) => {
+        const submitted = await fixture.request({
+          kind: 'action',
+          action: {
+            id: randomUUID(),
+            runtimeEpoch,
+            plan: scope,
+            command: {
+              kind: 'message',
+              threadId,
+              input: { kind: 'text', text: 'Verify the approved result.' },
+            },
+          },
+        });
+        if (submitted.kind !== 'action') throw new Error('Missing scoped action');
+        await until(
+          () => fixture.request({ kind: 'receipt', actionId: submitted.result.id }),
+          (result) => result.kind === 'receipt' && result.result?.completion === 'completed',
+        );
+      });
+      await api.send('review');
+      await api.collect();
+      let busy: IActionReceipt | null = null;
+      if (isQueued) {
+        await api.control({ holdTurn: true });
+        await api.claudeControl({ holdTurn: true });
+        busy = await api.submit({
+          kind: 'message',
+          threadId: api.source.threadId!,
+          input: { kind: 'text', text: 'Finish the authorized verification.' },
+        });
+        await api.settled(busy.id);
+      }
+      if (ending === 'revoked') {
+        await plan({ kind: 'revoke', target, expected, action: operator(), scope: 'execution' });
+      } else {
+        const checked = await promisify(execFile)(
+          process.execPath,
+          ['--eval', 'process.stdout.write("assessment-ok")'],
+          { timeout: 5000 },
+        );
+        expect(checked.stdout).toBe('assessment-ok');
+        await plan({
+          kind: 'complete',
+          target,
+          expected,
+          action: operator(),
+          milestoneId: null,
+          checkouts: [],
+          checks: [
+            {
+              command: 'node --eval \'process.stdout.write("assessment-ok")\'',
+              outcome: 'passed',
+              reference: 'fixture:assessment-ok',
+            },
+          ],
+        });
+      }
+      await expect(api.send('feedback')).resolves.toMatchObject({
+        source: { threadId: api.source.threadId },
+      });
+      const feedback = await api.show();
+      const receipt = await api.receipt(feedback.feedback.actionId!);
+      expect(receipt.planContext).toStrictEqual({
+        directory,
+        scope: null,
+        observedRevision: expected,
+      });
+      if (isQueued) {
+        expect(feedback.feedback.delivery).toBe('queued');
+        await api.control({});
+        await api.claudeControl({});
+        const running = await api.receipt(busy!.id);
+        await api.submit({
+          kind: 'interrupt',
+          threadId: api.source.threadId!,
+          expectedTurnId: running.nativeTurnId!,
+        });
+        await expect
+          .poll(async () => {
+            const response = await fixture.request({
+              kind: 'managed-thread',
+              threadId: api.source.threadId!,
+            });
+            return response.kind === 'managed-thread' && response.result?.activeTurnId === null;
+          })
+          .toBe(true);
+        await api.submit({ kind: 'queue-send', queuedActionId: receipt.id });
+      }
+      await until(api.show, (result) => result.feedback.completion === 'completed');
+      const after = await status();
+      expect(after.coordination.execution!.action.id).toBe(authorization.id);
+      expect(after.coordination.execution!.revokedBy !== null).toBe(ending === 'revoked');
+      expect(after.coordination.completionCount).toBe(ending === 'completed' ? 1 : 0);
+      await expect(
+        api.submit({
+          kind: 'message',
+          threadId: api.source.threadId!,
+          input: { kind: 'text', text: 'Do more implementation without approval.' },
+        }),
+      ).rejects.toThrow('State changed. Refresh before continuing.');
+      const assessment = await api.preview('feedback');
+      await expect(
+        api.submit({
+          kind: 'message',
+          threadId: api.source.threadId!,
+          input: { kind: 'skill', skillId: assessment.skillId!, arguments: 'Assess the result.' },
+        }),
+      ).rejects.toThrow('State changed. Refresh before continuing.');
+      await expect(
+        fixture.request({
+          kind: 'action',
+          action: {
+            id: randomUUID(),
+            runtimeEpoch: api.epoch,
+            expectedPlan: { directory, scope: null, observedRevision: expected },
+            command: {
+              kind: 'message',
+              threadId: api.source.threadId!,
+              input: {
+                kind: 'text',
+                text: 'A revision guard alone grants no implementation authority.',
+              },
+            },
+          },
+        }),
+      ).rejects.toThrow('State changed. Refresh before continuing.');
+      await writeFile(join(directory, 'plan.md'), '# Plan\nChanged requirements.\n');
+      expect((await api.preview('feedback')).state).toBe('source-changed');
+    });
+  },
+);
 
 test('same creation and simultaneous sends reuse exactly one native thread and input', async () => {
   await withClaudeRuntime(async (fixture) => {

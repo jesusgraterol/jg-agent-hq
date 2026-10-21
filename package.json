@@ -1,6 +1,6 @@
 {
   "name": "jg-agent-hq",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Native coding-agent workspace primitives.",
   "type": "module",
   "license": "MIT",

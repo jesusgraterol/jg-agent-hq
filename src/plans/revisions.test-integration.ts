@@ -69,21 +69,22 @@ const sequence = (blocks: string[]) =>
 
 const setup = async (
   fixture: IClaudeFixture,
-  content?: string,
+  content?: string | null,
   planBody = '# Plan\nDeliver greeting, report and export commands.\n',
 ) => {
   const directory = join(fixture.workspaceRoot, 'revision-plan');
   await mkdir(directory);
   await writeFile(join(directory, 'plan.md'), planBody);
-  await writeFile(
-    join(directory, 'milestones.md'),
-    content ??
-      sequence([
-        milestone(1, 'Greeting', 'Return the requested greeting.'),
-        milestone(2, 'Report', 'Format the report.', 'in progress'),
-        milestone(3, 'Export', 'Export JSON.'),
-      ]),
-  );
+  if (content !== null)
+    await writeFile(
+      join(directory, 'milestones.md'),
+      content ??
+        sequence([
+          milestone(1, 'Greeting', 'Return the requested greeting.'),
+          milestone(2, 'Report', 'Format the report.', 'in progress'),
+          milestone(3, 'Export', 'Export JSON.'),
+        ]),
+    );
   await writeFile(
     join(fixture.workspaceRoot, 'greeting.mjs'),
     'export const greet = (name) => `Hello, ${name}`;\n',
@@ -170,7 +171,7 @@ const setup = async (
   };
   await finalize();
   await approve('plan');
-  await approve('sequence');
+  if (content !== null) await approve('sequence');
   return {
     directory,
     target,
@@ -260,6 +261,188 @@ const decisionsFor = async (plan: Awaited<ReturnType<typeof setup>>, sources: st
     ],
   };
 };
+
+test('an undivided plan retains real completion evidence and cannot execute its finished contract again', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const plan = await setup(fixture, null);
+    const verification = await run(process.execPath, ['verify-greeting.mjs'], {
+      cwd: fixture.workspaceRoot,
+    });
+    expect(verification.stdout).toBe('greeting-ok\n');
+    const current = await plan.status();
+    const authorization = operator();
+    await plan.send({
+      kind: 'authorize',
+      target: plan.target,
+      action: authorization,
+      expected: current.revision,
+      mode: 'auto',
+      milestoneIds: [],
+    });
+    const completion = {
+      kind: 'complete' as const,
+      target: plan.target,
+      action: operator(),
+      expected: current.revision,
+      milestoneId: null,
+      checkouts: [],
+      checks: [
+        {
+          command: 'node verify-greeting.mjs',
+          outcome: 'passed' as const,
+          reference: 'file:verify-greeting.mjs',
+        },
+      ],
+    };
+    await plan.send(completion);
+    await plan.send(completion);
+    expect((await plan.status()).state).toBe('completed');
+    const stored = await plan.stored();
+    expect(stored.completions).toHaveLength(1);
+    expect(stored.completions[0]).toMatchObject({
+      milestoneId: null,
+      contractDigest: current.revision.planDigest,
+      sharedDigest: null,
+      checks: completion.checks,
+    });
+    await expect(
+      plan.send({
+        kind: 'authorize',
+        target: plan.target,
+        action: operator(),
+        expected: current.revision,
+        mode: 'auto',
+        milestoneIds: [],
+      }),
+    ).rejects.toThrow('conflicts');
+    await expect(
+      plan.send({
+        kind: 'check-execution',
+        target: plan.target,
+        expected: current.revision,
+        authorizationId: authorization.id,
+        milestoneId: null,
+        mode: 'auto',
+      }),
+    ).rejects.toThrow('conflicts');
+    const evidence = await plan.collection('evidence');
+    expect(evidence.data).toHaveLength(1);
+    expect(evidence.data[0].kind === 'evidence' && evidence.data[0].entry.milestoneId).toBeNull();
+    await fixture.runtime.close();
+    const restarted = await createAgentHq({
+      stateRoot: fixture.stateRoot,
+      allowedRoots: [fixture.workspaceRoot],
+    });
+    try {
+      expect((await plan.status(restarted)).state).toBe('completed');
+      const retained = await plan.send(
+        { kind: 'reconciliation', target: plan.target, collection: 'evidence' },
+        restarted,
+      );
+      expect(retained.kind === 'reconciliation' && retained.result.data).toHaveLength(1);
+    } finally {
+      await restarted.close();
+    }
+  });
+});
+
+test('an undivided plan checkpoints and revises without requiring a milestone file', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const plan = await setup(fixture, null);
+    const before = await plan.status();
+    await initializeGit(fixture);
+    await run('git', ['add', '--', 'greeting.mjs'], { cwd: fixture.workspaceRoot });
+    await run('git', ['commit', '-m', 'test: preserve partial work', '-s', '-S'], {
+      cwd: fixture.workspaceRoot,
+    });
+    const partial = 'export const greet = (name) => `Welcome, ${name}`;\n';
+    await writeFile(join(fixture.workspaceRoot, 'greeting.mjs'), partial);
+    await begin(plan, [
+      {
+        repository: 'fixture',
+        directory: fixture.workspaceRoot,
+        claimReference: 'claim:whole-plan',
+        paths: ['greeting.mjs'],
+      },
+    ]);
+    const checkpoint = (await plan.stored()).revision?.checkpoint;
+    expect(checkpoint).toMatchObject({ milestones: null, entries: [], isQuiescent: true });
+    expect(checkpoint?.checkouts[0]).toMatchObject({
+      branch: 'development',
+      fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      paths: ['greeting.mjs'],
+    });
+    expect((await plan.status()).state).toBe('revising');
+    await writeFile(
+      join(plan.directory, 'plan.md'),
+      '# Plan\nDeliver the greeting and its verification.\n',
+    );
+    const finalized = await plan.finalize();
+    expect(finalized.kind).toBe('finalized');
+    if (finalized.kind !== 'finalized') throw new Error('Expected finalization');
+    expect(finalized.content).toBeNull();
+    expect(finalized.result.revision.planDigest).not.toBe(before.revision.planDigest);
+    expect(finalized.result.isPlanApproved).toBe(false);
+    await plan.approve('plan');
+    expect((await plan.status()).state).toBe('ready');
+    expect((await plan.status()).coordination.execution).toBeNull();
+    expect(await readFile(join(fixture.workspaceRoot, 'greeting.mjs'), 'utf8')).toBe(partial);
+    expect(
+      (await run('git', ['diff', '--name-only'], { cwd: fixture.workspaceRoot })).stdout,
+    ).toContain('greeting.mjs');
+  });
+});
+
+test('dropping a sequence requires one explicit omission confirmation before whole-plan execution', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const plan = await setup(fixture);
+    const completed = await completeGreeting(fixture, plan);
+    await begin(plan);
+    await writeFile(
+      join(plan.directory, 'plan.md'),
+      '# Plan\nFinish only the report after the verified greeting.\n',
+    );
+    await rm(join(plan.directory, 'milestones.md'));
+    const proposed = await plan.finalize();
+    expect(proposed.kind).toBe('reconciliation-required');
+    const stored = await plan.stored();
+    const proposal = stored.revision?.proposal;
+    if (!proposal) throw new Error('Expected saved reconciliation');
+    expect(proposal.unmatchedSourceIds).toContain(completed);
+    expect(proposal.drafts).toStrictEqual([]);
+    await plan.approve('plan');
+    const current = await plan.status();
+    await expect(
+      plan.send({
+        kind: 'authorize',
+        target: plan.target,
+        action: operator(),
+        expected: current.revision,
+        mode: 'auto',
+        milestoneIds: [],
+      }),
+    ).rejects.toThrow('conflicts');
+    const finalized = await plan.finalize({
+      proposalId: proposal.id,
+      decisions: [
+        {
+          sourceIds: proposal.unmatchedSourceIds,
+          targetIds: [],
+          relation: 'omitted',
+          retainedPairs: [],
+        },
+      ],
+    });
+    expect(finalized.kind).toBe('finalized');
+    expect((await plan.stored()).completions).toStrictEqual(stored.completions);
+    expect((await plan.status()).state).toBe('ready');
+    expect(
+      (await plan.collection('sources')).data.some(
+        (row) => row.kind === 'source' && row.entry.id === completed,
+      ),
+    ).toBe(true);
+  });
+});
 
 test('checkpoint, deletion, regeneration and one confirmation preserve reworded completed and partial work', async () => {
   await withClaudeRuntime(async (fixture) => {
@@ -467,6 +650,104 @@ const native = async (fixture: IClaudeFixture) => {
   };
   return { submit, receipt, thread, create, until };
 };
+
+test.each(['codex', 'claude'] as const)(
+  'whole-plan %s input keeps one owner and preserves authority on ordinary follow-ups',
+  async (provider) => {
+    await withClaudeRuntime(async (fixture) => {
+      const plan = await setup(fixture, null);
+      const session = await native(fixture);
+      const first = await session.create(provider, 'whole-plan');
+      const second = await session.create(provider, 'other-owner');
+      await fixture.control({ holdTurn: true });
+      await writeFile(join(fixture.root, 'control.json'), JSON.stringify({ holdTurn: true }));
+      const current = await plan.status();
+      const authorization = operator();
+      await plan.send({
+        kind: 'authorize',
+        target: plan.target,
+        expected: current.revision,
+        action: authorization,
+        mode: 'auto',
+        milestoneIds: [],
+      });
+      const scope = {
+        kind: 'execution' as const,
+        authorizationId: authorization.id,
+        milestoneId: null,
+        mode: 'auto' as const,
+        revision: current.revision,
+      };
+      const submitted = await session.submit(
+        {
+          kind: 'message',
+          threadId: first.id,
+          input: { kind: 'text', text: 'Implement the whole approved plan.' },
+        },
+        scope,
+      );
+      const delivered = await session.until(
+        () => session.receipt(submitted.id),
+        (receipt) => receipt.delivery !== 'submitted',
+      );
+      expect(delivered.delivery).toBe('acknowledged');
+      const running = await session.until(
+        () => session.thread(first.id),
+        (thread) => thread.state === 'running',
+      );
+      expect(
+        await session.submit(
+          {
+            kind: 'message',
+            threadId: second.id,
+            input: { kind: 'text', text: 'Competing implementation.' },
+          },
+          scope,
+        ),
+      ).toMatchObject({ delivery: 'failed', failure: 'state-conflict', nativeTurnId: null });
+      expect(
+        await session.submit({
+          kind: 'queue',
+          threadId: first.id,
+          expectedTurnId: running.activeTurnId!,
+          input: { kind: 'text', text: 'Verify the same plan next.' },
+        }),
+      ).toMatchObject({ delivery: 'queued', planContext: { scope } });
+      await plan.send({
+        kind: 'revoke',
+        target: plan.target,
+        expected: current.revision,
+        action: operator(),
+        scope: 'execution',
+      });
+      await expect(
+        session.submit({
+          kind: 'queue',
+          threadId: first.id,
+          expectedTurnId: running.activeTurnId!,
+          input: { kind: 'text', text: 'Unapproved follow-up.' },
+        }),
+      ).rejects.toThrow('conflicts');
+      await session.submit({
+        kind: 'interrupt',
+        threadId: first.id,
+        expectedTurnId: running.activeTurnId!,
+      });
+      await session.until(
+        () => session.thread(first.id),
+        (thread) => thread.activeTurnId === null,
+      );
+      await expect(
+        session.submit({
+          kind: 'message',
+          threadId: first.id,
+          input: { kind: 'text', text: 'Unapproved idle follow-up.' },
+        }),
+      ).rejects.toThrow('conflicts');
+      expect((await session.thread(second.id)).state).toBe('idle');
+    });
+  },
+);
 
 test.each(['codex', 'claude'] as const)(
   'revision stops bound %s input and background control while leaving another thread running',

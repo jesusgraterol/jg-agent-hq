@@ -90,7 +90,7 @@ export const PlanActionScopeSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('execution'),
     authorizationId: z.uuid(),
-    milestoneId: z.uuid(),
+    milestoneId: z.uuid().nullable(),
     mode: z.enum(['supervised', 'auto']),
     revision: PlanRevisionSchema,
   }),
