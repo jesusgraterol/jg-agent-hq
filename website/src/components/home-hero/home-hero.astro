@@ -1,76 +1,149 @@
 ---
 import Button from 'jg-personal-astro-ui/button';
+import Card from 'jg-personal-astro-ui/card';
 import Container from 'jg-personal-astro-ui/container';
-import HeroBackdrop from 'jg-personal-astro-ui/hero-backdrop';
 import InstallCommand from 'jg-personal-astro-ui/install-command';
-import TerminalWindow from 'jg-personal-astro-ui/terminal-window';
+import {
+  ArrowDownLeft,
+  ArrowUpRight,
+  CodeXml,
+  MessagesSquare,
+  GitCompareArrows,
+} from '@lucide/astro';
 
 import { HOME_CONTENT, SITE_CONFIG } from '../../site.config.ts';
 ---
 
 <section
-  class="relative isolate overflow-hidden border-b border-border py-12 sm:py-20 lg:py-28"
+  class="relative overflow-hidden border-b border-border"
   aria-labelledby="home-title"
 >
-  <HeroBackdrop />
-  <Container>
-    <div class="grid min-w-0 items-center gap-10 lg:grid-cols-2 lg:gap-16">
-      <div class="min-w-0">
-        <p class="eyebrow mb-6">{HOME_CONTENT.eyebrow}</p>
-        <h1
-          id="home-title"
-          class="display-title max-w-2xl text-balance"
+  <Container class="pt-12 pb-10 sm:pt-20 sm:pb-16">
+    <div class="mx-auto max-w-4xl text-center">
+      <p class="eyebrow mb-5">{HOME_CONTENT.eyebrow}</p>
+      <h1
+        id="home-title"
+        class="text-4xl leading-[1.08] font-semibold tracking-tight text-balance sm:text-6xl lg:text-7xl"
+      >
+        {HOME_CONTENT.headline[0]}{' '}
+        <span class="text-accent">{HOME_CONTENT.headline[1]}</span>
+      </h1>
+      <p
+        class="mx-auto mt-6 max-w-2xl text-base leading-7 text-pretty text-muted sm:text-xl sm:leading-8"
+      >
+        {HOME_CONTENT.description}
+      </p>
+      <div class="mt-7 flex flex-wrap justify-center gap-3">
+        <Button
+          href="/docs/"
+          size="lg"
+          >Read the docs</Button
         >
-          {HOME_CONTENT.title}
-        </h1>
-        <p class="lede mt-6 max-w-xl">{HOME_CONTENT.description}</p>
-        <div class="mt-8 flex flex-wrap gap-3">
-          <Button
-            href="/docs/"
-            size="lg"
-            >Read the docs</Button
-          ><Button
-            href={SITE_CONFIG.repositoryUrl}
-            external
-            size="lg"
-            variant="outline"
-            >View source</Button
-          >
+        <Button
+          href={SITE_CONFIG.repositoryUrl}
+          external
+          size="lg"
+          variant="outline"
+          >View source</Button
+        >
+      </div>
+      <p class="mt-5 font-mono text-xs text-muted">
+        Open source · TypeScript · Runs on your machine
+      </p>
+    </div>
+
+    <Card class="mt-10 sm:mt-14">
+      <figure
+        class="min-w-0"
+        aria-labelledby="collaboration-caption"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
+          <p class="flex items-center gap-2 font-mono text-xs font-medium tracking-wider uppercase">
+            <MessagesSquare
+              class="size-4 text-accent"
+              aria-hidden="true"
+            /> One workspace, two perspectives
+          </p>
+          <span class="font-mono text-xs text-muted">Example workflow</span>
         </div>
-        <p class="mt-5 font-mono text-xs text-muted">Open source · TypeScript · Local first</p>
-      </div>
-      <div class="min-w-0 space-y-4">
-        <TerminalWindow
-          title="One controller. Native sessions."
-          wrapTitle
+        <div
+          class="grid min-w-0 gap-6 py-6 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:items-center sm:gap-8 sm:py-8"
         >
-          <div class="space-y-5 wrap-anywhere whitespace-normal">
-            <p>
-              <span class="text-terminal-accent">$</span> npx jg-agent-hq serve <span
-                class="text-terminal-foreground/70">--state-root .runtime --workspace-root .</span
-              >
-            </p>
-            <div class="border-t border-terminal-foreground/20 pt-4">
-              <p class="text-terminal-foreground/60">Example workflow</p>
-              <div class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2">
-                <span class="text-terminal-accent">Codex</span><span>build-reports</span><span
-                  class="text-terminal-accent">Claude</span
-                ><span>review-reports</span>
-              </div>
-              <p class="mt-4 text-terminal-foreground/70">Preview. Send. Collect. Assess.</p>
+          <div class="min-w-0">
+            <div class="flex items-center gap-3">
+              <CodeXml
+                class="size-6 text-accent"
+                aria-hidden="true"
+              /><p class="font-semibold">
+                Claude Code <span class="ml-2 font-mono text-xs font-normal text-muted">Author</span
+                >
+              </p>
             </div>
+            <p class="mt-4 font-mono text-xl font-medium">build-reports</p>
+            <p class="mt-2 text-sm leading-6 text-muted">
+              Implements the change. Keeps the original conversation and context.
+            </p>
+            <p
+              class="mt-4 inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 font-mono text-xs"
+            >
+              <ArrowDownLeft
+                class="size-3.5 text-accent"
+                aria-hidden="true"
+              /> Receive selected feedback
+            </p>
           </div>
-        </TerminalWindow>
-        <InstallCommand
-          id="install-command"
-          command={`npm install jg-agent-hq@${SITE_CONFIG.version}`}
-          context="install command"
-          title="Install the package"
-        />
-        <p class="text-xs leading-5 text-muted">
-          Node.js 24.15.0+ on Linux or macOS. Install and sign in to the native CLIs you use.
-        </p>
-      </div>
+          <div
+            class="flex items-center gap-3 sm:flex-col sm:gap-2"
+            aria-hidden="true"
+          >
+            <span class="h-px flex-1 bg-border sm:h-8 sm:w-px sm:flex-none"></span>
+            <span
+              class="flex size-11 items-center justify-center rounded-full border border-border bg-surface"
+              ><GitCompareArrows class="size-5 text-accent" /></span
+            >
+            <span class="h-px flex-1 bg-border sm:h-8 sm:w-px sm:flex-none"></span>
+          </div>
+          <div class="min-w-0">
+            <div class="flex items-center gap-3">
+              <MessagesSquare
+                class="size-6 text-accent"
+                aria-hidden="true"
+              /><p class="font-semibold">
+                Codex <span class="ml-2 font-mono text-xs font-normal text-muted">Reviewer</span>
+              </p>
+            </div>
+            <p class="mt-4 font-mono text-xl font-medium">review-reports</p>
+            <p class="mt-2 text-sm leading-6 text-muted">
+              Reviews in a separate session. Returns findings for the author to assess.
+            </p>
+            <p
+              class="mt-4 inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 font-mono text-xs"
+            >
+              <ArrowUpRight
+                class="size-3.5 text-accent"
+                aria-hidden="true"
+              /> Preview the native skill
+            </p>
+          </div>
+        </div>
+        <figcaption
+          id="collaboration-caption"
+          class="border-t border-border pt-4 text-sm leading-6 text-muted"
+        >
+          {HOME_CONTENT.collaboration}
+        </figcaption>
+      </figure>
+    </Card>
+    <div class="mt-8 min-w-0">
+      <InstallCommand
+        command={`npm install jg-agent-hq@${SITE_CONFIG.version}`}
+        title="Install jg-agent-hq"
+        context="install command"
+        id="install-command"
+      />
+      <p class="mt-3 text-center text-xs leading-5 text-muted">
+        Node.js 24.15.0+ · Linux or macOS · Sign in through the native CLIs you use.
+      </p>
     </div>
   </Container>
 </section>

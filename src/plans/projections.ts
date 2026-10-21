@@ -1,4 +1,4 @@
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 
 import { PlanMilestoneSchema, type IPlanCommand, type IPlanResult } from '../contracts/index.js';
 import { decodeHistoryCursor, encodeHistoryCursor } from '../sessions/index.js';
@@ -13,8 +13,11 @@ import {
 } from './types.js';
 
 const conflict = (): never => {
-  throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-    kind: 'state-conflict',
+  throw new Exception('The HQ action conflicts with its recorded state', {
+    code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+    data: {
+      kind: 'state-conflict',
+    },
   });
 };
 
@@ -22,8 +25,8 @@ const conflict = (): never => {
  * Reads a selected authoritative-file projection through bounded revision-bound seek pages.
  * @returns A milestone or retained-evidence page.
  * @throws
- * - -1: The HQ cursor does not match this request
- * - -1: The HQ store failed
+ * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+ * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
  */
 export const readPlanPage = async (
   store: IStore,
@@ -47,12 +50,11 @@ export const readPlanPage = async (
           conflict();
         after = position.ordinal;
       } catch (cause) {
-        throw new Exception(
-          'The HQ cursor does not match this request',
-          undefined,
-          { kind: 'invalid-request' },
-          { cause },
-        );
+        throw new Exception('The HQ cursor does not match this request', {
+          code: 'JG_AGENT_HQ_CURSOR_INVALID',
+          data: { kind: 'invalid-request' },
+          cause,
+        });
       }
     }
     await store.projectPlan({
@@ -96,12 +98,11 @@ export const readPlanPage = async (
         if (position.inspection !== artifacts.hashes.coordination) conflict();
         after = position.id;
       } catch (cause) {
-        throw new Exception(
-          'The HQ cursor does not match this request',
-          undefined,
-          { kind: 'invalid-request' },
-          { cause },
-        );
+        throw new Exception('The HQ cursor does not match this request', {
+          code: 'JG_AGENT_HQ_CURSOR_INVALID',
+          data: { kind: 'invalid-request' },
+          cause,
+        });
       }
     }
     await store.projectPlanRevision(projectPlanRevision(artifacts));

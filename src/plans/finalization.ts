@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 
 import type { IPlanRevision } from '../contracts/index.js';
 
@@ -7,8 +7,11 @@ import { computePlanRevision, isSamePlanRevision, refreshPlanOverview } from './
 import type { IPlanArtifacts } from './types.js';
 
 const conflict = (): never => {
-  throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-    kind: 'state-conflict',
+  throw new Exception('The HQ action conflicts with its recorded state', {
+    code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+    data: {
+      kind: 'state-conflict',
+    },
   });
 };
 
@@ -16,8 +19,8 @@ const conflict = (): never => {
  * Assigns or validates the first sequence's identities and refreshes its derived status table.
  * @returns Canonical content and its revision, without approval.
  * @throws
- * - -1: The HQ action conflicts with its recorded state
- * - -1: The HQ plan is invalid
+ * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+ * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
  */
 export const finalizeInitialSequence = (
   artifacts: IPlanArtifacts,

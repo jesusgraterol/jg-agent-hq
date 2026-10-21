@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
-import { Exception, extractMessage } from 'error-message-utils';
+import { Exception, extractMessage } from 'jg-exception';
 import { z } from 'zod';
 
 import type { createActions } from '../actions/index.js';
@@ -31,8 +31,11 @@ import { hashHandoff, handoffArguments, handoffDelivery } from './utilities.js';
 const run = promisify(execFile);
 const PositionSchema = z.strictObject({ createdAt: z.number().int(), id: z.uuid() });
 const conflict = (): never => {
-  throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-    kind: 'state-conflict',
+  throw new Exception('The HQ action conflicts with its recorded state', {
+    code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+    data: {
+      kind: 'state-conflict',
+    },
   });
 };
 
@@ -53,7 +56,7 @@ export const createHandoffs = (
    * Checks selected Git attribution without staging files or traversing history.
    * @returns Whether the selected commit is still HEAD; omitted attribution requires no Git read.
    * @throws
-   * - -1: The HQ handoff operation failed
+   * - JG_AGENT_HQ_HANDOFF_FAILED: The HQ handoff operation failed
    */
   const checkCommit = async (directory: string, expected: string | null): Promise<boolean> => {
     if (!expected) return true;
@@ -66,26 +69,28 @@ export const createHandoffs = (
       });
       return result.stdout.trim() === expected;
     } catch (cause) {
-      throw new Exception(
-        `The HQ handoff operation failed: ${extractMessage(cause)}`,
-        undefined,
-        { kind: 'operation-failed' },
-        { cause },
-      );
+      throw new Exception(`The HQ handoff operation failed: ${extractMessage(cause)}`, {
+        code: 'JG_AGENT_HQ_HANDOFF_FAILED',
+        data: { kind: 'operation-failed' },
+        cause,
+      });
     }
   };
   /**
    * Reads and authorizes a selected record before exposing its retained evidence.
    * @returns The bounded persisted handoff.
    * @throws
-   * - -1: The HQ handoff is unavailable
-   * - -1: The HQ target is outside the allowed workspaces
-   * - -1: The HQ store failed
+   * - JG_AGENT_HQ_HANDOFF_UNAVAILABLE: The HQ handoff is unavailable
+   * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   const selected = async (id: string): Promise<IHandoffRecord> => {
     const record = await store.getHandoff(id);
     if (!record)
-      throw new Exception('The HQ handoff is unavailable', undefined, { kind: 'not-found' });
+      throw new Exception('The HQ handoff is unavailable', {
+        code: 'JG_AGENT_HQ_HANDOFF_UNAVAILABLE',
+        data: { kind: 'not-found' },
+      });
     await resolveWorkspaceTarget(record.source.workspaceRoot, roots);
     return record;
   };
@@ -93,7 +98,7 @@ export const createHandoffs = (
    * Resolves the original native creation receipt; discovery never creates another controller.
    * @returns The current control record, or null before creation admission.
    * @throws
-   * - -1: The HQ store failed
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   const target = async (record: IHandoffRecord): Promise<IManagedThread | null> => {
     const creation = await store.getAction(record.creation.id);
@@ -103,7 +108,7 @@ export const createHandoffs = (
    * Projects delivery from the action ledger, with no mirrored acknowledgement state.
    * @returns Selected findings and current native receipts, preserving the original reviewer identity.
    * @throws
-   * - -1: The HQ store failed
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   const show = async (record: IHandoffRecord): Promise<IHandoff> => {
     const [creation, reviewDispatch, feedbackDispatch] = await Promise.all([
@@ -136,24 +141,24 @@ export const createHandoffs = (
    * Checks that feedback still concerns the selected repository and execution contracts.
    * @returns Whether source identity, selected commit and current contracts still match.
    * @throws
-   * - -1: The HQ handoff operation failed
-   * - -1: The HQ store failed
-   * - -1: The HQ target is outside the allowed workspaces
-   * - -1: The HQ plan is invalid
-   * - -1: The HQ plan operation failed
-   * - -1: The HQ lock acquisition arguments are invalid
-   * - -1: The HQ lock requires Linux or macOS
-   * - -1: The HQ runtime directory must be a real directory
-   * - -1: The HQ runtime directory must be private and owned by the current user
-   * - -1: The HQ lock must be a regular file
-   * - -1: The HQ lock must be private and owned by the current user
-   * - -1: The HQ lock owner exceeds the supported size
-   * - -1: The HQ lock owner could not be read. Inspect .runtime/hq.lock
-   * - -1: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
-   * - -1: The HQ lock has an inactive owner
-   * - -1: The HQ lock owner could not be verified
-   * - -1: Timed out waiting for the HQ lock
-   * - -1: HQ lock ownership changed before release
+   * - JG_AGENT_HQ_HANDOFF_FAILED: The HQ handoff operation failed
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+   * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
+   * - JG_AGENT_HQ_PLAN_FAILED: The HQ plan operation failed
+   * - JG_AGENT_HQ_LOCK_INVALID_ARGUMENTS: The HQ lock acquisition arguments are invalid
+   * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
+   * - JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID: The HQ runtime directory must be a real directory
+   * - JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS: The HQ runtime directory must be private and owned by the current user
+   * - JG_AGENT_HQ_LOCK_FILE_INVALID: The HQ lock must be a regular file
+   * - JG_AGENT_HQ_LOCK_FILE_PERMISSIONS: The HQ lock must be private and owned by the current user
+   * - JG_AGENT_HQ_LOCK_OWNER_OVERSIZED: The HQ lock owner exceeds the supported size
+   * - JG_AGENT_HQ_LOCK_OWNER_UNREADABLE: The HQ lock owner could not be read. Inspect .runtime/hq.lock
+   * - JG_AGENT_HQ_LOCK_OWNER_INCOMPLETE: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
+   * - JG_AGENT_HQ_LOCK_OWNER_INACTIVE: The HQ lock has an inactive owner
+   * - JG_AGENT_HQ_LOCK_OWNER_UNVERIFIABLE: The HQ lock owner could not be verified
+   * - JG_AGENT_HQ_LOCK_TIMEOUT: Timed out waiting for the HQ lock
+   * - JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED: HQ lock ownership changed before release
    */
   const isSourceCurrent = async (record: IHandoffRecord): Promise<boolean> => {
     const source = await store.getThread(record.source.threadId);
@@ -183,25 +188,25 @@ export const createHandoffs = (
    * Resolves native skill metadata and exact invocation text without sending it.
    * @returns A digest-bound preview with explicit unavailable states.
    * @throws
-   * - -1: The HQ handoff operation failed
-   * - -1: The HQ action conflicts with its recorded state
-   * - -1: The HQ store failed
-   * - -1: The HQ target is outside the allowed workspaces
-   * - -1: The HQ plan is invalid
-   * - -1: The HQ plan operation failed
-   * - -1: The HQ lock acquisition arguments are invalid
-   * - -1: The HQ lock requires Linux or macOS
-   * - -1: The HQ runtime directory must be a real directory
-   * - -1: The HQ runtime directory must be private and owned by the current user
-   * - -1: The HQ lock must be a regular file
-   * - -1: The HQ lock must be private and owned by the current user
-   * - -1: The HQ lock owner exceeds the supported size
-   * - -1: The HQ lock owner could not be read. Inspect .runtime/hq.lock
-   * - -1: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
-   * - -1: The HQ lock has an inactive owner
-   * - -1: The HQ lock owner could not be verified
-   * - -1: Timed out waiting for the HQ lock
-   * - -1: HQ lock ownership changed before release
+   * - JG_AGENT_HQ_HANDOFF_FAILED: The HQ handoff operation failed
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+   * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
+   * - JG_AGENT_HQ_PLAN_FAILED: The HQ plan operation failed
+   * - JG_AGENT_HQ_LOCK_INVALID_ARGUMENTS: The HQ lock acquisition arguments are invalid
+   * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
+   * - JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID: The HQ runtime directory must be a real directory
+   * - JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS: The HQ runtime directory must be private and owned by the current user
+   * - JG_AGENT_HQ_LOCK_FILE_INVALID: The HQ lock must be a regular file
+   * - JG_AGENT_HQ_LOCK_FILE_PERMISSIONS: The HQ lock must be private and owned by the current user
+   * - JG_AGENT_HQ_LOCK_OWNER_OVERSIZED: The HQ lock owner exceeds the supported size
+   * - JG_AGENT_HQ_LOCK_OWNER_UNREADABLE: The HQ lock owner could not be read. Inspect .runtime/hq.lock
+   * - JG_AGENT_HQ_LOCK_OWNER_INCOMPLETE: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
+   * - JG_AGENT_HQ_LOCK_OWNER_INACTIVE: The HQ lock has an inactive owner
+   * - JG_AGENT_HQ_LOCK_OWNER_UNVERIFIABLE: The HQ lock owner could not be verified
+   * - JG_AGENT_HQ_LOCK_TIMEOUT: Timed out waiting for the HQ lock
+   * - JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED: HQ lock ownership changed before release
    */
   const preview = async (
     record: IHandoffRecord,
@@ -271,31 +276,31 @@ export const createHandoffs = (
      * Creates, previews, explicitly sends or collects one handoff without an automatic reply loop.
      * @returns A bounded handoff, native invocation preview or seek page.
      * @throws
-     * - -1: The HQ handoff is unavailable
-     * - -1: The HQ handoff operation failed
-     * - -1: The HQ action conflicts with its recorded state
-     * - -1: The HQ skill is unavailable
-     * - -1: The HQ target is outside the allowed workspaces
-     * - -1: The HQ cursor does not match this request
-     * - -1: The HQ store failed
-     * - -1: The Codex integration failed
-     * - -1: The Claude integration failed
-     * - -1: The Claude history is unavailable
-     * - -1: The HQ plan is invalid
-     * - -1: The HQ plan operation failed
-     * - -1: The HQ lock acquisition arguments are invalid
-     * - -1: The HQ lock requires Linux or macOS
-     * - -1: The HQ runtime directory must be a real directory
-     * - -1: The HQ runtime directory must be private and owned by the current user
-     * - -1: The HQ lock must be a regular file
-     * - -1: The HQ lock must be private and owned by the current user
-     * - -1: The HQ lock owner exceeds the supported size
-     * - -1: The HQ lock owner could not be read. Inspect .runtime/hq.lock
-     * - -1: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
-     * - -1: The HQ lock has an inactive owner
-     * - -1: The HQ lock owner could not be verified
-     * - -1: Timed out waiting for the HQ lock
-     * - -1: HQ lock ownership changed before release
+     * - JG_AGENT_HQ_HANDOFF_UNAVAILABLE: The HQ handoff is unavailable
+     * - JG_AGENT_HQ_HANDOFF_FAILED: The HQ handoff operation failed
+     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+     * - JG_AGENT_HQ_SKILL_UNAVAILABLE: The HQ skill is unavailable
+     * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+     * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+     * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+     * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
+     * - JG_AGENT_HQ_PLAN_FAILED: The HQ plan operation failed
+     * - JG_AGENT_HQ_LOCK_INVALID_ARGUMENTS: The HQ lock acquisition arguments are invalid
+     * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
+     * - JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID: The HQ runtime directory must be a real directory
+     * - JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS: The HQ runtime directory must be private and owned by the current user
+     * - JG_AGENT_HQ_LOCK_FILE_INVALID: The HQ lock must be a regular file
+     * - JG_AGENT_HQ_LOCK_FILE_PERMISSIONS: The HQ lock must be private and owned by the current user
+     * - JG_AGENT_HQ_LOCK_OWNER_OVERSIZED: The HQ lock owner exceeds the supported size
+     * - JG_AGENT_HQ_LOCK_OWNER_UNREADABLE: The HQ lock owner could not be read. Inspect .runtime/hq.lock
+     * - JG_AGENT_HQ_LOCK_OWNER_INCOMPLETE: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
+     * - JG_AGENT_HQ_LOCK_OWNER_INACTIVE: The HQ lock has an inactive owner
+     * - JG_AGENT_HQ_LOCK_OWNER_UNVERIFIABLE: The HQ lock owner could not be verified
+     * - JG_AGENT_HQ_LOCK_TIMEOUT: Timed out waiting for the HQ lock
+     * - JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED: HQ lock ownership changed before release
      */
     async handle(command: IHandoffCommand): Promise<IHandoffResult> {
       if (command.kind === 'list') {
@@ -308,14 +313,20 @@ export const createHandoffs = (
           try {
             value = JSON.parse(continuation);
           } catch {
-            throw new Exception('The HQ cursor does not match this request', undefined, {
-              kind: 'invalid-request',
+            throw new Exception('The HQ cursor does not match this request', {
+              code: 'JG_AGENT_HQ_CURSOR_INVALID',
+              data: {
+                kind: 'invalid-request',
+              },
             });
           }
           const parsed = PositionSchema.safeParse(value);
           if (!parsed.success)
-            throw new Exception('The HQ cursor does not match this request', undefined, {
-              kind: 'invalid-request',
+            throw new Exception('The HQ cursor does not match this request', {
+              code: 'JG_AGENT_HQ_CURSOR_INVALID',
+              data: {
+                kind: 'invalid-request',
+              },
             });
           after = parsed.data;
         }

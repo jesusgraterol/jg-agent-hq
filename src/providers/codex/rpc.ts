@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { Exception, extractMessage } from 'error-message-utils';
+import { Exception, extractMessage } from 'jg-exception';
 import { z } from 'zod';
 
 import { createProviderProcess } from '../index.js';
@@ -16,8 +16,8 @@ const EnvelopeSchema = z.object({
  * Connects to the installed CLI's stdio app-server with bounded pending requests.
  * @returns An initialized transport with exact action IDs and late-response callbacks.
  * @throws
- * - -1: The Codex integration failed
- * - -1: The HQ transport failed
+ * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+ * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
  */
 export const createCodexRpc = async (
   handlers: {
@@ -45,12 +45,11 @@ export const createCodexRpc = async (
     for (const entry of pending.values()) {
       clearTimeout(entry.timer);
       entry.reject(
-        new Exception(
-          `The Codex integration failed: ${extractMessage(cause)}`,
-          undefined,
-          { kind: 'agent-unavailable' },
-          { cause },
-        ),
+        new Exception(`The Codex integration failed: ${extractMessage(cause)}`, {
+          code: 'JG_AGENT_HQ_CODEX_FAILED',
+          data: { kind: 'agent-unavailable' },
+          cause,
+        }),
       );
     }
     pending.clear();
@@ -61,12 +60,11 @@ export const createCodexRpc = async (
     (message) => {
       const parsed = EnvelopeSchema.safeParse(message);
       if (!parsed.success)
-        throw new Exception(
-          'The Codex integration failed',
-          undefined,
-          { kind: 'agent-unavailable' },
-          { cause: parsed.error },
-        );
+        throw new Exception('The Codex integration failed', {
+          code: 'JG_AGENT_HQ_CODEX_FAILED',
+          data: { kind: 'agent-unavailable' },
+          cause: parsed.error,
+        });
       const envelope = parsed.data;
       if (envelope.method) {
         if (envelope.id !== undefined) {
@@ -75,8 +73,11 @@ export const createCodexRpc = async (
         return;
       }
       if (envelope.id === undefined)
-        throw new Exception('The Codex integration failed', undefined, {
-          kind: 'agent-unavailable',
+        throw new Exception('The Codex integration failed', {
+          code: 'JG_AGENT_HQ_CODEX_FAILED',
+          data: {
+            kind: 'agent-unavailable',
+          },
         });
       const entry = pending.get(envelope.id);
       if (!entry) {
@@ -88,9 +89,12 @@ export const createCodexRpc = async (
       clearTimeout(entry.timer);
       if (envelope.error)
         entry.reject(
-          new Exception(`The Codex integration failed: ${envelope.error.message}`, undefined, {
-            kind: 'agent-unavailable',
-            nativeCode: envelope.error.code,
+          new Exception(`The Codex integration failed: ${envelope.error.message}`, {
+            code: 'JG_AGENT_HQ_CODEX_FAILED',
+            data: {
+              kind: 'agent-unavailable',
+              nativeCode: envelope.error.code,
+            },
           }),
         );
       else entry.resolve(envelope.result);
@@ -103,16 +107,25 @@ export const createCodexRpc = async (
     actionRequestId?: string,
   ): Promise<unknown> => {
     if (!transport.isRunning || pending.size >= 32)
-      throw new Exception('The Codex integration failed', undefined, { kind: 'agent-unavailable' });
+      throw new Exception('The Codex integration failed', {
+        code: 'JG_AGENT_HQ_CODEX_FAILED',
+        data: { kind: 'agent-unavailable' },
+      });
     const id = actionRequestId ?? ++sequence;
     if (pending.has(id))
-      throw new Exception('The Codex integration failed', undefined, { kind: 'state-conflict' });
+      throw new Exception('The Codex integration failed', {
+        code: 'JG_AGENT_HQ_CODEX_FAILED',
+        data: { kind: 'state-conflict' },
+      });
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(
-          new Exception('The Codex integration failed: request deadline exceeded', undefined, {
-            kind: 'agent-unavailable',
+          new Exception('The Codex integration failed: request deadline exceeded', {
+            code: 'JG_AGENT_HQ_CODEX_FAILED',
+            data: {
+              kind: 'agent-unavailable',
+            },
           }),
         );
       }, 30_000);
@@ -123,12 +136,11 @@ export const createCodexRpc = async (
         clearTimeout(entry.timer);
         pending.delete(id);
         entry.reject(
-          new Exception(
-            `The Codex integration failed: ${extractMessage(cause)}`,
-            undefined,
-            { kind: 'agent-unavailable' },
-            { cause },
-          ),
+          new Exception(`The Codex integration failed: ${extractMessage(cause)}`, {
+            code: 'JG_AGENT_HQ_CODEX_FAILED',
+            data: { kind: 'agent-unavailable' },
+            cause,
+          }),
         );
       });
     });
@@ -141,24 +153,22 @@ export const createCodexRpc = async (
       }),
     );
     if (!initialized.success)
-      throw new Exception(
-        'The Codex integration failed',
-        undefined,
-        { kind: 'agent-unavailable' },
-        { cause: initialized.error },
-      );
+      throw new Exception('The Codex integration failed', {
+        code: 'JG_AGENT_HQ_CODEX_FAILED',
+        data: { kind: 'agent-unavailable' },
+        cause: initialized.error,
+      });
     await transport.write({ method: 'initialized', params: {} });
     if (extraSkillRoots.length) {
       const roots = z
         .object({})
         .safeParse(await request('skills/extraRoots/set', { extraRoots: extraSkillRoots }));
       if (!roots.success)
-        throw new Exception(
-          'The Codex integration failed',
-          undefined,
-          { kind: 'agent-unavailable' },
-          { cause: roots.error },
-        );
+        throw new Exception('The Codex integration failed', {
+          code: 'JG_AGENT_HQ_CODEX_FAILED',
+          data: { kind: 'agent-unavailable' },
+          cause: roots.error,
+        });
     }
     return {
       userAgent: initialized.data.userAgent,
@@ -170,7 +180,11 @@ export const createCodexRpc = async (
       reject: (id: string | number) =>
         transport.write({ id, error: { code: -32601, message: 'Unsupported request' } }),
       async close(): Promise<void> {
-        stopped(new Exception('The Codex integration failed: connection closed'));
+        stopped(
+          new Exception('The Codex integration failed: connection closed', {
+            code: 'JG_AGENT_HQ_CODEX_FAILED',
+          }),
+        );
         await transport.close();
       },
     };
@@ -178,12 +192,11 @@ export const createCodexRpc = async (
     try {
       await transport.close();
     } catch (cleanup) {
-      throw new Exception(
-        `The Codex integration failed: ${extractMessage(cleanup)}`,
-        undefined,
-        { kind: 'agent-unavailable', cleanupUnconfirmed: true },
-        { cause: error },
-      );
+      throw new Exception(`The Codex integration failed: ${extractMessage(cleanup)}`, {
+        code: 'JG_AGENT_HQ_CODEX_FAILED',
+        data: { kind: 'agent-unavailable', cleanupUnconfirmed: true },
+        cause: error,
+      });
     }
     throw error;
   }

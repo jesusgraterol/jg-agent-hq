@@ -1,7 +1,7 @@
 import { createServer, type Socket } from 'node:net';
 import { chmod } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { Exception, extractMessage } from 'error-message-utils';
+import { Exception, extractMessage } from 'jg-exception';
 
 import {
   HqResponseSchema,
@@ -25,7 +25,7 @@ import { createLineDecoder } from './framing.js';
  * Serves closed HQ commands over an owner-only Unix socket. Disconnects do not own host lifetime.
  * @returns An owned server with deterministic connection teardown.
  * @throws
- * - -1: The HQ transport failed
+ * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
  */
 export const createIpcServer = async (
   path: string,
@@ -55,19 +55,24 @@ export const createIpcServer = async (
       const id = input.success ? input.data.id : randomUUID();
       try {
         if (!input.success)
-          throw new Exception(
-            'The HQ request is invalid',
-            undefined,
-            { kind: 'invalid-request' },
-            { cause: input.error },
-          );
+          throw new Exception('The HQ request is invalid', {
+            code: 'JG_AGENT_HQ_REQUEST_INVALID',
+            data: { kind: 'invalid-request' },
+            cause: input.error,
+          });
         if (input.data.runtimeEpoch !== runtimeEpoch)
-          throw new Exception('The HQ runtime owner is unverifiable', undefined, {
-            kind: 'state-conflict',
+          throw new Exception('The HQ runtime owner is unverifiable', {
+            code: 'JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE',
+            data: {
+              kind: 'state-conflict',
+            },
           });
         const response = HqResponseSchema.safeParse(await handle(input.data.command));
         if (!response.success || response.data.kind !== input.data.command.kind)
-          throw new Exception('The HQ transport failed', undefined, { kind: 'operation-failed' });
+          throw new Exception('The HQ transport failed', {
+            code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
+            data: { kind: 'operation-failed' },
+          });
         send({ schemaVersion: 1, id, success: true, response: response.data });
       } catch (error) {
         send({ schemaVersion: 1, id, success: false, error: toPublicError(error) });
@@ -108,12 +113,11 @@ export const createIpcServer = async (
   } catch (cause) {
     for (const socket of sockets) socket.destroy();
     if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
-    throw new Exception(
-      `The HQ transport failed: ${extractMessage(cause)}`,
-      undefined,
-      { kind: 'operation-failed' },
-      { cause },
-    );
+    throw new Exception(`The HQ transport failed: ${extractMessage(cause)}`, {
+      code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
+      data: { kind: 'operation-failed' },
+      cause,
+    });
   }
   let closing: Promise<void> | undefined;
   return {
@@ -126,12 +130,11 @@ export const createIpcServer = async (
         server.close((error) =>
           error
             ? reject(
-                new Exception(
-                  `The HQ transport failed: ${extractMessage(error)}`,
-                  undefined,
-                  { kind: 'operation-failed' },
-                  { cause: error },
-                ),
+                new Exception(`The HQ transport failed: ${extractMessage(error)}`, {
+                  code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
+                  data: { kind: 'operation-failed' },
+                  cause: error,
+                }),
               )
             : resolve(),
         );

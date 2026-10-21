@@ -5,7 +5,8 @@ import { once } from 'node:events';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hasErrorCode } from 'error-message-utils';
+import { expectToRejectCode } from 'jg-exception/testing';
+import { hasErrorCode } from 'jg-exception';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { acquireHqLock, readHqLockState, releaseHqLock, withHqLock } from 'jg-agent-hq';
@@ -90,7 +91,9 @@ describe('acquisition and exact release', () => {
     ['index', { waitTimeoutMs: Number.NaN }],
     ['index', { setupWindowMs: -1 }],
   ])('invalid acquisition arguments (%s, %o) leave no lock', async (command, options) => {
-    await expect(acquireHqLock(root, command, options)).rejects.toThrow(
+    await expectToRejectCode(
+      acquireHqLock(root, command, options),
+      'JG_AGENT_HQ_LOCK_INVALID_ARGUMENTS',
       'The HQ lock acquisition arguments are invalid',
     );
     expect(await readHqLockState(root)).toStrictEqual({ kind: 'free' });
@@ -117,7 +120,11 @@ describe('acquisition and exact release', () => {
   test('does not delete a replacement owner', async () => {
     const release = await acquireHqLock(root, 'index');
     const replacement = await writeOwner(process.pid);
-    await expect(release()).rejects.toThrow('HQ lock ownership changed before release');
+    await expectToRejectCode(
+      release(),
+      'JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED',
+      'HQ lock ownership changed before release',
+    );
     expect(await readFile(lockPath(), 'utf8')).toBe(replacement);
   });
 
@@ -152,7 +159,9 @@ describe('contention and recovery', () => {
     vi.spyOn(process, 'kill').mockImplementation(() => {
       throw Object.assign(new Error('permission denied'), { code: 'EPERM' });
     });
-    await expect(acquireHqLock(root, 'index')).rejects.toThrow(
+    await expectToRejectCode(
+      acquireHqLock(root, 'index'),
+      'JG_AGENT_HQ_LOCK_OWNER_UNVERIFIABLE',
       'The HQ lock owner could not be verified',
     );
     expect(await readFile(lockPath(), 'utf8')).toBe(content);
@@ -177,9 +186,11 @@ describe('contention and recovery', () => {
 
   test('a live owner times out without losing its lock', async () => {
     await writeOwner(process.pid);
-    await expect(
+    await expectToRejectCode(
       acquireHqLock(root, 'wait', { waitTimeoutMs: 300, pollIntervalMs: 50 }),
-    ).rejects.toThrow('Timed out waiting for the HQ lock');
+      'JG_AGENT_HQ_LOCK_TIMEOUT',
+      'Timed out waiting for the HQ lock',
+    );
     expect((await readHqLockState(root)).kind).toBe('held');
   });
 
@@ -188,7 +199,11 @@ describe('contention and recovery', () => {
     await once(child, 'close');
     if (!child.pid) throw new Error('test process did not start');
     const content = await writeOwner(child.pid);
-    await expect(acquireHqLock(root, 'index')).rejects.toThrow('The HQ lock has an inactive owner');
+    await expectToRejectCode(
+      acquireHqLock(root, 'index'),
+      'JG_AGENT_HQ_LOCK_OWNER_INACTIVE',
+      'The HQ lock has an inactive owner',
+    );
     expect(await readFile(lockPath(), 'utf8')).toBe(content);
     expect(await readHqLockState(root)).toMatchObject({ kind: 'held', liveness: 'dead' });
   });
@@ -196,13 +211,19 @@ describe('contention and recovery', () => {
   test('manual recovery rejects the wrong nonce and accepts the inspected nonce without a PID test', async () => {
     const nonce = randomUUID();
     const content = await writeOwner(process.pid, nonce);
-    await expect(releaseHqLock(root, randomUUID())).rejects.toThrow(
+    await expectToRejectCode(
+      releaseHqLock(root, randomUUID()),
+      'JG_AGENT_HQ_LOCK_NONCE_MISMATCH',
       'The HQ lock nonce does not match',
     );
     expect(await readFile(lockPath(), 'utf8')).toBe(content);
     expect(await releaseHqLock(root, nonce)).toMatchObject({ pid: process.pid, nonce });
     expect(await readHqLockState(root)).toStrictEqual({ kind: 'free' });
-    await expect(releaseHqLock(root, nonce)).rejects.toThrow('The HQ lock is not held');
+    await expectToRejectCode(
+      releaseHqLock(root, nonce),
+      'JG_AGENT_HQ_LOCK_NOT_HELD',
+      'The HQ lock is not held',
+    );
   });
 
   test('an incomplete owner times out without automatic reclamation', async () => {
@@ -223,7 +244,9 @@ describe('untrusted metadata', () => {
       'The HQ lock owner could not be read',
     );
     await writeFile(lockPath(), 'x'.repeat(1_048_576));
-    await expect(acquireHqLock(root, 'index')).rejects.toThrow(
+    await expectToRejectCode(
+      acquireHqLock(root, 'index'),
+      'JG_AGENT_HQ_LOCK_OWNER_OVERSIZED',
       'The HQ lock owner exceeds the supported size',
     );
     expect((await stat(lockPath())).size).toBe(1_048_576);
@@ -231,7 +254,9 @@ describe('untrusted metadata', () => {
   });
 
   test('an oversized operation label cannot create an unreadable lock', async () => {
-    await expect(acquireHqLock(root, 'x'.repeat(16_384))).rejects.toThrow(
+    await expectToRejectCode(
+      acquireHqLock(root, 'x'.repeat(16_384)),
+      'JG_AGENT_HQ_LOCK_OWNER_OVERSIZED',
       'The HQ lock owner exceeds the supported size',
     );
     expect(await readHqLockState(root)).toStrictEqual({ kind: 'free' });
@@ -252,7 +277,9 @@ describe('untrusted metadata', () => {
     const outside = join(root, 'outside');
     await mkdir(outside, { mode: 0o700 });
     await symlink(outside, join(root, '.runtime'));
-    await expect(acquireHqLock(root, 'index')).rejects.toThrow(
+    await expectToRejectCode(
+      acquireHqLock(root, 'index'),
+      'JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID',
       'The HQ runtime directory must be a real directory',
     );
     expect((await readHqLockState(root)).kind).toBe('unreadable');
@@ -261,7 +288,9 @@ describe('untrusted metadata', () => {
     const target = join(outside, 'owner');
     await writeFile(target, 'preserve');
     await symlink(target, lockPath());
-    await expect(acquireHqLock(root, 'index')).rejects.toThrow(
+    await expectToRejectCode(
+      acquireHqLock(root, 'index'),
+      'JG_AGENT_HQ_LOCK_FILE_INVALID',
       'The HQ lock must be a regular file',
     );
     expect(await readFile(target, 'utf8')).toBe('preserve');

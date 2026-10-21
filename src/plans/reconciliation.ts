@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 
 import type {
   IPlanCompletion,
@@ -22,8 +22,11 @@ import {
 import type { IPlanArtifacts } from './types.js';
 
 const conflict = (): never => {
-  throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-    kind: 'state-conflict',
+  throw new Exception('The HQ action conflicts with its recorded state', {
+    code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+    data: {
+      kind: 'state-conflict',
+    },
   });
 };
 const contractKey = (entry: { id: string; contractDigest: string }) =>
@@ -90,7 +93,7 @@ export const createCompletionLookup = (
  * Creates stable prospective identities and exact matches without using ordinal as identity.
  * @returns A single saved proposal containing every unmatched checkpoint entry.
  * @throws
- * - -1: The HQ action conflicts with its recorded state
+ * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
  */
 export const proposeReconciliation = (
   artifacts: IPlanArtifacts,
@@ -152,7 +155,7 @@ export const proposeReconciliation = (
  * Validates one complete explicit mapping, including omitted and split/merged correspondence.
  * @returns Assigned drafts and retained evidence relationships, without granting approval.
  * @throws
- * - -1: The HQ action conflicts with its recorded state
+ * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
  */
 export const confirmReconciliation = (
   artifacts: IPlanArtifacts,
@@ -275,7 +278,7 @@ export const confirmReconciliation = (
  * Writes only framing identity/progress and the derived Overview; requirement prose is unchanged.
  * @returns The canonical sequence for explicit presentation and approval.
  * @throws
- * - -1: The HQ plan is invalid
+ * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
  */
 export const renderReconciledSequence = (
   content: string,
@@ -284,7 +287,10 @@ export const renderReconciledSequence = (
   let result = content.replace(/\r\n?/g, '\n');
   const parsed = parsePlanMilestones(result);
   if (parsed.length !== drafts.length)
-    throw new Exception('The HQ plan is invalid', undefined, { kind: 'invalid-request' });
+    throw new Exception('The HQ plan is invalid', {
+      code: 'JG_AGENT_HQ_PLAN_INVALID',
+      data: { kind: 'invalid-request' },
+    });
   for (let index = parsed.length - 1; index >= 0; index--) {
     const entry = parsed[index]!;
     const draft = drafts[index]!;

@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import {
@@ -27,8 +27,11 @@ const DeliveryRowSchema = z.object({
 });
 
 const conflict = (): never => {
-  throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-    kind: 'state-conflict',
+  throw new Exception('The HQ action conflicts with its recorded state', {
+    code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+    data: {
+      kind: 'state-conflict',
+    },
   });
 };
 
@@ -49,7 +52,7 @@ export class HandoffsModel {
   /**
    * Keeps the first identical creation intent, including its original runtime and native action.
    * @throws
-   * - -1: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */
   public prepare(record: IHandoffRecord): IHandoffRecord {
     const previous = this.get(record.id);
@@ -82,7 +85,7 @@ export class HandoffsModel {
   /**
    * Serializes concurrent sends before native admission; never creates a replacement action.
    * @throws
-   * - -1: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */
   public prepareDispatch(dispatch: IHandoffDispatch): IHandoffDispatch {
     const previous = this.getDispatch(dispatch.handoffId, dispatch.phase);
@@ -102,7 +105,7 @@ export class HandoffsModel {
   /**
    * Saves one native message as bounded findings; a changed message requires another handoff.
    * @throws
-   * - -1: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */
   public collect(id: string, findings: IHandoffFindings): IHandoffRecord {
     const record = this.get(id);

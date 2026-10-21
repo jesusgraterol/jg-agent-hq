@@ -2,7 +2,7 @@ import { lstat, open, realpath } from 'node:fs/promises';
 import { dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Loader } from 'astro/loaders';
-import { Exception, extractMessage } from 'error-message-utils';
+import { Exception, extractMessage } from 'jg-exception';
 
 import { SITE_CONFIG } from '../site.config.ts';
 
@@ -14,7 +14,7 @@ const REPOSITORY_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
  * Resolves public documentation links without allowing active or local URL schemes.
  * @returns A canonical web URL or same-page fragment.
  * @throws
- * - -1: The HQ website source is invalid
+ * - JG_AGENT_HQ_WEBSITE_SOURCE_INVALID: The HQ website source is invalid
  */
 export const resolveDocumentLink = (href: string, source: string): string => {
   if (
@@ -22,19 +22,27 @@ export const resolveDocumentLink = (href: string, source: string): string => {
     [...href].some((character) => character.charCodeAt(0) <= 32) ||
     href.startsWith('//')
   )
-    throw new Exception('The HQ website source is invalid');
+    throw new Exception('The HQ website source is invalid', {
+      code: 'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
+    });
   if (href.startsWith('#')) return href;
   if (/^https:\/\//u.test(href)) {
     const url = URL.parse(href);
     if (url && !url.username && !url.password) return url.href;
-    throw new Exception('The HQ website source is invalid');
+    throw new Exception('The HQ website source is invalid', {
+      code: 'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
+    });
   }
   if (/^[a-z][a-z\d+.-]*:/iu.test(href) || href.startsWith('/'))
-    throw new Exception('The HQ website source is invalid');
+    throw new Exception('The HQ website source is invalid', {
+      code: 'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
+    });
   const url = new URL(href, `https://source.invalid/${source}`);
   const path = url.pathname.slice(1);
   if (!['README.md', 'api/README.md', 'errors/README.md'].includes(path) || url.search)
-    throw new Exception('The HQ website source is invalid');
+    throw new Exception('The HQ website source is invalid', {
+      code: 'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
+    });
   if (path === 'README.md') return `/docs/${url.hash}`;
   if (path === 'api/README.md') return `/docs/api/${url.hash}`;
   return `${SITE_CONFIG.repositoryUrl}/blob/main/${path}${url.hash}`;
@@ -44,7 +52,9 @@ export const resolveDocumentLink = (href: string, source: string): string => {
 export const canonicalMarkdownPlugin: IMdastPlugin = {
   name: 'hq-canonical-documents',
   html: () => {
-    throw new Exception('The HQ website source is invalid');
+    throw new Exception('The HQ website source is invalid', {
+      code: 'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
+    });
   },
   link: (node, context) => {
     const source = context.fileURL
@@ -59,7 +69,9 @@ export const canonicalMarkdownPlugin: IMdastPlugin = {
     context.setProperty(node, 'url', resolveDocumentLink(node.url, source));
   },
   image: () => {
-    throw new Exception('The HQ website source is invalid');
+    throw new Exception('The HQ website source is invalid', {
+      code: 'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
+    });
   },
 };
 
@@ -67,21 +79,31 @@ export const canonicalMarkdownPlugin: IMdastPlugin = {
  * Reads one allowlisted regular source; the open handle bounds the read to 1 MiB.
  * @returns The canonical Markdown body.
  * @throws
- * - -1: The HQ website source is invalid
+ * - JG_AGENT_HQ_WEBSITE_SOURCE_INVALID: The HQ website source is invalid
  */
 export const readDocument = async (repositoryRoot: string, source: string): Promise<string> => {
   let handle;
   try {
     if (!DOCUMENT_RECORDS.some((record) => record.source === source))
-      throw new Exception('The HQ website source is invalid');
+      throw new Exception('The HQ website source is invalid', {
+        code: 'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
+      });
     const root = await realpath(repositoryRoot);
     const path = resolve(root, source);
-    if ((await realpath(path)) !== path) throw new Exception('The HQ website source is invalid');
-    if (!(await lstat(path)).isFile()) throw new Exception('The HQ website source is invalid');
+    if ((await realpath(path)) !== path)
+      throw new Exception('The HQ website source is invalid', {
+        code: 'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
+      });
+    if (!(await lstat(path)).isFile())
+      throw new Exception('The HQ website source is invalid', {
+        code: 'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
+      });
     handle = await open(path, 'r');
     const stat = await handle.stat();
     if (!stat.isFile() || stat.size === 0 || stat.size > 1048576)
-      throw new Exception('The HQ website source is invalid');
+      throw new Exception('The HQ website source is invalid', {
+        code: 'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
+      });
     const buffer = Buffer.alloc(1048577);
     let length = 0;
     while (length < buffer.length) {
@@ -89,15 +111,16 @@ export const readDocument = async (repositoryRoot: string, source: string): Prom
       if (bytesRead === 0) break;
       length += bytesRead;
     }
-    if (length > 1048576) throw new Exception('The HQ website source is invalid');
+    if (length > 1048576)
+      throw new Exception('The HQ website source is invalid', {
+        code: 'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
+      });
     return new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, length));
   } catch (error) {
-    throw new Exception(
-      `The HQ website source is invalid: ${extractMessage(error)}`,
-      undefined,
-      undefined,
-      { cause: error },
-    );
+    throw new Exception(`The HQ website source is invalid: ${extractMessage(error)}`, {
+      code: 'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
+      cause: error,
+    });
   } finally {
     await handle?.close();
   }
@@ -107,7 +130,7 @@ export const readDocument = async (repositoryRoot: string, source: string): Prom
  * Loads exactly the canonical README and API document, with one read and render each.
  * @returns Astro's native content loader.
  * @throws
- * - -1: The HQ website source is invalid
+ * - JG_AGENT_HQ_WEBSITE_SOURCE_INVALID: The HQ website source is invalid
  */
 export const canonicalDocuments = (): Loader => ({
   name: 'hq-canonical-documents',

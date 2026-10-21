@@ -1,5 +1,5 @@
 import { Worker } from 'node:worker_threads';
-import { Exception, extractMessage } from 'error-message-utils';
+import { Exception, extractMessage } from 'jg-exception';
 import { z } from 'zod';
 
 import {
@@ -42,7 +42,7 @@ import {
  * Owns SQLite in one dedicated worker; requests and queued payloads are bounded.
  * @returns A store whose close waits for worker exit.
  * @throws
- * - -1: The HQ store failed
+ * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
  */
 export const createStore = async (
   databasePath: string,
@@ -85,12 +85,11 @@ export const createStore = async (
   });
   const fail = (cause: unknown): void => {
     isAvailable = false;
-    const error = new Exception(
-      `The HQ store failed: ${extractMessage(cause)}`,
-      undefined,
-      { kind: 'operation-failed' },
-      { cause },
-    );
+    const error = new Exception(`The HQ store failed: ${extractMessage(cause)}`, {
+      code: 'JG_AGENT_HQ_STORE_FAILED',
+      data: { kind: 'operation-failed' },
+      cause,
+    });
     readyReject(error);
     for (const entry of pending.values()) {
       clearTimeout(entry.timer);
@@ -115,18 +114,30 @@ export const createStore = async (
     pending.delete(response.id);
     if (response.error)
       entry.reject(
-        new Exception(response.error.message, undefined, {
-          kind: response.error.kind,
+        new Exception(response.error.message, {
+          code: response.error.code,
+          data: {
+            kind: response.error.kind,
+          },
         }),
       );
     else entry.resolve(response.result);
   });
   worker.once('error', fail);
   worker.once('exit', (code) =>
-    fail(new Exception(`The HQ store failed: worker exited (${code})`)),
+    fail(
+      new Exception(`The HQ store failed: worker exited (${code})`, {
+        code: 'JG_AGENT_HQ_STORE_FAILED',
+      }),
+    ),
   );
   const timer = setTimeout(
-    () => fail(new Exception('The HQ store failed: startup deadline exceeded')),
+    () =>
+      fail(
+        new Exception('The HQ store failed: startup deadline exceeded', {
+          code: 'JG_AGENT_HQ_STORE_FAILED',
+        }),
+      ),
     5000,
   );
   try {
@@ -136,12 +147,11 @@ export const createStore = async (
       await worker.terminate();
       await exited;
     } catch (cleanup) {
-      throw new Exception(
-        `The HQ store failed: ${extractMessage(cleanup)}`,
-        undefined,
-        { kind: 'operation-failed', cleanupUnconfirmed: true },
-        { cause: error },
-      );
+      throw new Exception(`The HQ store failed: ${extractMessage(cleanup)}`, {
+        code: 'JG_AGENT_HQ_STORE_FAILED',
+        data: { kind: 'operation-failed', cleanupUnconfirmed: true },
+        cause: error,
+      });
     }
     throw error;
   } finally {
@@ -152,25 +162,30 @@ export const createStore = async (
     // IPC, native callbacks and queue dispatch share the one worker, with bounded headroom.
     if (!isAvailable || pending.size >= 128)
       return Promise.reject(
-        new Exception('The HQ store failed', undefined, { kind: 'operation-failed' }),
+        new Exception('The HQ store failed', {
+          code: 'JG_AGENT_HQ_STORE_FAILED',
+          data: { kind: 'operation-failed' },
+        }),
       );
     const id = ++sequence;
     const parsed = StoreRequestSchema.safeParse({ id, command });
     if (!parsed.success)
       return Promise.reject(
-        new Exception(
-          'The HQ store failed',
-          undefined,
-          { kind: 'operation-failed' },
-          { cause: parsed.error },
-        ),
+        new Exception('The HQ store failed', {
+          code: 'JG_AGENT_HQ_STORE_FAILED',
+          data: { kind: 'operation-failed' },
+          cause: parsed.error,
+        }),
       );
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(
-          new Exception('The HQ store failed: request deadline exceeded', undefined, {
-            kind: 'operation-failed',
+          new Exception('The HQ store failed: request deadline exceeded', {
+            code: 'JG_AGENT_HQ_STORE_FAILED',
+            data: {
+              kind: 'operation-failed',
+            },
           }),
         );
       }, 5000);
@@ -180,12 +195,11 @@ export const createStore = async (
           if (checked.success) resolve(checked.data);
           else
             reject(
-              new Exception(
-                'The HQ store failed',
-                undefined,
-                { kind: 'operation-failed' },
-                { cause: checked.error },
-              ),
+              new Exception('The HQ store failed', {
+                code: 'JG_AGENT_HQ_STORE_FAILED',
+                data: { kind: 'operation-failed' },
+                cause: checked.error,
+              }),
             );
         },
         reject,

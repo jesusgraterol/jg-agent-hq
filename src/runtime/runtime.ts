@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { Exception, extractMessage } from 'error-message-utils';
+import { Exception, extractMessage, isException } from 'jg-exception';
 import { z } from 'zod';
 
 import { HqRequestSchema, type IHqRequestInput, type IHqResponse } from '../contracts/index.js';
@@ -35,29 +35,28 @@ const UnconfirmedCleanupSchema = z.object({ cleanupUnconfirmed: z.literal(true) 
  * Starts one local controller with private IPC, a SQLite worker and the installed native CLI.
  * @returns The owned runtime. Client disconnects do not close it.
  * @throws
- * - -1: The HQ request is invalid
- * - -1: The HQ lock requires Linux or macOS
- * - -1: The HQ runtime directory must be a real directory
- * - -1: The HQ runtime directory must be private and owned by the current user
- * - -1: The HQ state directory is unsafe
- * - -1: The HQ state file is unsafe
- * - -1: The HQ action key is unavailable
- * - -1: The HQ runtime owner is unverifiable
- * - -1: The HQ runtime is already owned
- * - -1: The HQ runtime is not running
- * - -1: The Codex integration failed
- * - -1: The HQ transport failed
- * - -1: The HQ store failed
+ * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+ * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
+ * - JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID: The HQ runtime directory must be a real directory
+ * - JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS: The HQ runtime directory must be private and owned by the current user
+ * - JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE: The HQ state directory is unsafe
+ * - JG_AGENT_HQ_STATE_FILE_UNSAFE: The HQ state file is unsafe
+ * - JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE: The HQ action key is unavailable
+ * - JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE: The HQ runtime owner is unverifiable
+ * - JG_AGENT_HQ_RUNTIME_ALREADY_OWNED: The HQ runtime is already owned
+ * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
+ * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+ * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+ * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
  */
 export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq> => {
   const parsed = AgentHqOptionsSchema.safeParse(options);
   if (!parsed.success)
-    throw new Exception(
-      'The HQ request is invalid',
-      undefined,
-      { kind: 'invalid-request' },
-      { cause: parsed.error },
-    );
+    throw new Exception('The HQ request is invalid', {
+      code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      data: { kind: 'invalid-request' },
+      cause: parsed.error,
+    });
   const allowedRoots = await resolveAllowedRoots(parsed.data.allowedRoots);
   const codexExtraSkillRoots = parsed.data.codexExtraSkillRoots?.length
     ? await resolveAllowedRoots(parsed.data.codexExtraSkillRoots)
@@ -83,13 +82,12 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     const cleanup = await Promise.allSettled([provider?.close(), store?.close()]);
     const failed = cleanup.find((result) => result.status === 'rejected');
     if (failed?.status === 'rejected')
-      throw new Exception(
-        `The HQ transport failed: ${extractMessage(failed.reason)}`,
-        undefined,
-        { kind: 'operation-failed' },
-        { cause: error },
-      );
-    if (!(error instanceof Exception && UnconfirmedCleanupSchema.safeParse(error.data).success))
+      throw new Exception(`The HQ transport failed: ${extractMessage(failed.reason)}`, {
+        code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
+        data: { kind: 'operation-failed' },
+        cause: error,
+      });
+    if (!(isException(error) && UnconfirmedCleanupSchema.safeParse(error.data).success))
       await ownership.release();
     throw error;
   }
@@ -117,8 +115,11 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
         workspaceRoot,
       });
       if (response.kind !== 'thread')
-        throw new Exception('The Claude integration failed', undefined, {
-          kind: 'agent-unavailable',
+        throw new Exception('The Claude integration failed', {
+          code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+          data: {
+            kind: 'agent-unavailable',
+          },
         });
       return response.result;
     },
@@ -143,8 +144,11 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     if (closing) return;
     if (revisionJobs.has(job.phaseActionId)) return;
     if (revisionJobs.size >= 32)
-      throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-        kind: 'state-conflict',
+      throw new Exception('The HQ action conflicts with its recorded state', {
+        code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+        data: {
+          kind: 'state-conflict',
+        },
       });
     const task = (async () => {
       let isQuiescent = false;
@@ -188,12 +192,11 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
         results.push(...storeCleanup);
         const failure = results.find((result) => result.status === 'rejected');
         if (failure?.status === 'rejected')
-          throw new Exception(
-            `The HQ transport failed: ${extractMessage(failure.reason)}`,
-            undefined,
-            { kind: 'operation-failed' },
-            { cause: failure.reason },
-          );
+          throw new Exception(`The HQ transport failed: ${extractMessage(failure.reason)}`, {
+            code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
+            data: { kind: 'operation-failed' },
+            cause: failure.reason,
+          });
         await ownership.release();
         resolveClosed();
       } catch (error) {
@@ -205,14 +208,16 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const request = async (input: IHqRequestInput): Promise<IHqResponse> => {
     const result = HqRequestSchema.safeParse(input);
     if (!result.success)
-      throw new Exception(
-        'The HQ request is invalid',
-        undefined,
-        { kind: 'invalid-request' },
-        { cause: result.error },
-      );
+      throw new Exception('The HQ request is invalid', {
+        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+        data: { kind: 'invalid-request' },
+        cause: result.error,
+      });
     if (closing)
-      throw new Exception('The HQ runtime is not running', undefined, { kind: 'state-conflict' });
+      throw new Exception('The HQ runtime is not running', {
+        code: 'JG_AGENT_HQ_RUNTIME_NOT_RUNNING',
+        data: { kind: 'state-conflict' },
+      });
     const command = result.data;
     switch (command.kind) {
       case 'status':

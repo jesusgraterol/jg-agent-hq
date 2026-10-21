@@ -1,4 +1,4 @@
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import {
@@ -19,7 +19,10 @@ export const createBrowserActions = (store: IStore) => {
       .object({ id: z.uuid(), operatorId: OperatorSchema })
       .safeParse({ id, operatorId });
     if (!parsed.success)
-      throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+      throw new Exception('The HQ request is invalid', {
+        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+        data: { kind: 'invalid-request' },
+      });
     const receipt = await store.getBrowserAction(id, operatorId);
     if (receipt?.kind === 'native') receipt.native = await store.getAction(receipt.nativeActionId);
     return receipt;
@@ -31,14 +34,20 @@ export const createBrowserActions = (store: IStore) => {
   ): Promise<IBrowserReceipt> => {
     if (isClosing || pending.size >= 32)
       return Promise.reject(
-        new Exception('The HQ action conflicts with its recorded state', undefined, {
-          kind: 'state-conflict',
+        new Exception('The HQ action conflicts with its recorded state', {
+          code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+          data: {
+            kind: 'state-conflict',
+          },
         }),
       );
     const task = (async () => {
       const action = BrowserActionSchema.safeParse(input);
       if (!action.success || !OperatorSchema.safeParse(operatorId).success)
-        throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+        throw new Exception('The HQ request is invalid', {
+          code: 'JG_AGENT_HQ_REQUEST_INVALID',
+          data: { kind: 'invalid-request' },
+        });
       const admission = await store.admitBrowserAction(action.data, operatorId);
       if (admission.isNew) {
         try {

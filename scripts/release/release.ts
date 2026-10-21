@@ -1,5 +1,5 @@
 import { setTimeout } from 'node:timers/promises';
-import { Exception, extractMessage } from 'error-message-utils';
+import { Exception, extractMessage } from 'jg-exception';
 
 import { RegistryReleaseSchema, ReleaseVersionSchema, type IRegistryFetch } from './types.ts';
 
@@ -7,7 +7,7 @@ import { RegistryReleaseSchema, ReleaseVersionSchema, type IRegistryFetch } from
  * Reads one exact npm version without redirects, unbounded bodies or indefinite network work.
  * @returns The validated release, or null only for an HTTP 404.
  * @throws
- * - -1: The HQ package release check failed
+ * - JG_AGENT_HQ_RELEASE_CHECK_FAILED: The HQ package release check failed
  */
 const readRelease = async (version: string, fetcher: IRegistryFetch, signal: AbortSignal) => {
   let response: Response;
@@ -18,12 +18,10 @@ const readRelease = async (version: string, fetcher: IRegistryFetch, signal: Abo
       headers: { Accept: 'application/json' },
     });
   } catch (cause) {
-    throw new Exception(
-      `The HQ package release check failed: ${extractMessage(cause)}`,
-      undefined,
-      undefined,
-      { cause },
-    );
+    throw new Exception(`The HQ package release check failed: ${extractMessage(cause)}`, {
+      code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED',
+      cause,
+    });
   }
   if (response.status === 404) {
     await response.body?.cancel();
@@ -33,6 +31,7 @@ const readRelease = async (version: string, fetcher: IRegistryFetch, signal: Abo
     await response.body?.cancel();
     throw new Exception(
       `The HQ package release check failed: registry returned HTTP ${response.status}`,
+      { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
     );
   }
   const reader = response.body.getReader();
@@ -46,6 +45,7 @@ const readRelease = async (version: string, fetcher: IRegistryFetch, signal: Abo
       if (size > 65536)
         throw new Exception(
           'The HQ package release check failed: registry response exceeds 64 KiB',
+          { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
         );
       chunks.push(value);
     }
@@ -56,19 +56,21 @@ const readRelease = async (version: string, fetcher: IRegistryFetch, signal: Abo
   try {
     payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
   } catch (cause) {
-    throw new Exception(
-      `The HQ package release check failed: ${extractMessage(cause)}`,
-      undefined,
-      undefined,
-      { cause },
-    );
+    throw new Exception(`The HQ package release check failed: ${extractMessage(cause)}`, {
+      code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED',
+      cause,
+    });
   }
   const parsed = RegistryReleaseSchema.safeParse(payload);
   if (!parsed.success)
-    throw new Exception('The HQ package release check failed: registry metadata is invalid');
+    throw new Exception('The HQ package release check failed: registry metadata is invalid', {
+      code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED',
+    });
   const release = parsed.data;
   if (version !== 'latest' && release.version !== version)
-    throw new Exception('The HQ package release check failed: registry returned another version');
+    throw new Exception('The HQ package release check failed: registry returned another version', {
+      code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED',
+    });
   return release;
 };
 
@@ -77,7 +79,7 @@ const readRelease = async (version: string, fetcher: IRegistryFetch, signal: Abo
  * Registry failures never authorize publication. No response is cached between runs.
  * @returns Whether the verified archive still needs publication.
  * @throws
- * - -1: The HQ package release check failed
+ * - JG_AGENT_HQ_RELEASE_CHECK_FAILED: The HQ package release check failed
  */
 export const needsPublication = async (
   version: string,
@@ -87,6 +89,7 @@ export const needsPublication = async (
   if (!ReleaseVersionSchema.safeParse(version).success)
     throw new Exception(
       'The HQ package release check failed: a stable semantic version is required',
+      { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
     );
   const signal = AbortSignal.timeout(20000);
   const exact = await readRelease(version, fetcher, signal);
@@ -94,6 +97,7 @@ export const needsPublication = async (
     if (exact.dist.integrity !== integrity)
       throw new Exception(
         'The HQ package release check failed: published contents differ; increment the package version',
+        { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
       );
     return false;
   }
@@ -101,6 +105,7 @@ export const needsPublication = async (
   if (!latest)
     throw new Exception(
       'The HQ package release check failed: the existing package has no latest release',
+      { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
     );
   const currentParts = version.split('.').map(BigInt);
   const latestParts = latest.version.split('.').map(BigInt);
@@ -110,6 +115,7 @@ export const needsPublication = async (
   }
   throw new Exception(
     'The HQ package release check failed: the new version must exceed the latest published version',
+    { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
   );
 };
 
@@ -117,12 +123,13 @@ export const needsPublication = async (
  * Waits for npm's asynchronous processing of one submitted release, checking its exact bytes.
  * @returns Completion once the registry serves the tested archive's integrity.
  * @throws
- * - -1: The HQ package release check failed
+ * - JG_AGENT_HQ_RELEASE_CHECK_FAILED: The HQ package release check failed
  */
 export const waitForPublication = async (version: string, integrity: string): Promise<void> => {
   if (!ReleaseVersionSchema.safeParse(version).success)
     throw new Exception(
       'The HQ package release check failed: a stable semantic version is required',
+      { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
     );
   const signal = AbortSignal.timeout(180000);
   for (;;) {
@@ -131,6 +138,7 @@ export const waitForPublication = async (version: string, integrity: string): Pr
       if (release.dist.integrity !== integrity)
         throw new Exception(
           'The HQ package release check failed: published contents differ from the tested archive',
+          { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
         );
       return;
     }

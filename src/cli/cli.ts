@@ -2,7 +2,7 @@
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { setTimeout as wait } from 'node:timers/promises';
-import { Exception, hasErrorCode } from 'error-message-utils';
+import { Exception, hasErrorCode, isException } from 'jg-exception';
 
 import { HqRequestSchema } from '../contracts/index.js';
 import { toPublicError } from '../errors/index.js';
@@ -44,20 +44,32 @@ const main = async (): Promise<void> => {
     return;
   }
   if (positionals.length !== 1 || !values['state-root'])
-    throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+    throw new Exception('The HQ request is invalid', {
+      code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      data: { kind: 'invalid-request' },
+    });
   const stateRoot = resolve(values['state-root']);
   const roots = (values['workspace-root'] ?? []).map((root) => resolve(root));
   if (kind === 'request') {
     if (Object.keys(values).some((key) => key !== 'state-root'))
-      throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+      throw new Exception('The HQ request is invalid', {
+        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+        data: { kind: 'invalid-request' },
+      });
     const chunks: Buffer[] = [];
     let bytes = 0;
     for await (const chunk of process.stdin) {
       if (!Buffer.isBuffer(chunk))
-        throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+        throw new Exception('The HQ request is invalid', {
+          code: 'JG_AGENT_HQ_REQUEST_INVALID',
+          data: { kind: 'invalid-request' },
+        });
       bytes += chunk.length;
       if (bytes > 65_536)
-        throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+        throw new Exception('The HQ request is invalid', {
+          code: 'JG_AGENT_HQ_REQUEST_INVALID',
+          data: { kind: 'invalid-request' },
+        });
       chunks.push(chunk);
     }
     let input: unknown;
@@ -66,21 +78,19 @@ const main = async (): Promise<void> => {
         new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, bytes)),
       );
     } catch (cause) {
-      throw new Exception(
-        'The HQ request is invalid',
-        undefined,
-        { kind: 'invalid-request' },
-        { cause },
-      );
+      throw new Exception('The HQ request is invalid', {
+        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+        data: { kind: 'invalid-request' },
+        cause,
+      });
     }
     const parsed = HqRequestSchema.safeParse(input);
     if (!parsed.success)
-      throw new Exception(
-        'The HQ request is invalid',
-        undefined,
-        { kind: 'invalid-request' },
-        { cause: parsed.error },
-      );
+      throw new Exception('The HQ request is invalid', {
+        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+        data: { kind: 'invalid-request' },
+        cause: parsed.error,
+      });
     process.stdout.write(
       `${JSON.stringify({ schemaVersion: 1, ...(await requestAgentHq(stateRoot, parsed.data)) })}\n`,
     );
@@ -102,7 +112,10 @@ const main = async (): Promise<void> => {
       values.search ||
       values.provider
     )
-      throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+      throw new Exception('The HQ request is invalid', {
+        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+        data: { kind: 'invalid-request' },
+      });
     const runtime = await createAgentHq({
       stateRoot,
       coordinationRoot: values['coordination-root']
@@ -141,9 +154,15 @@ const main = async (): Promise<void> => {
     values['claude-additional-directory'] ||
     values['coordination-root']
   )
-    throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+    throw new Exception('The HQ request is invalid', {
+      code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      data: { kind: 'invalid-request' },
+    });
   if (roots.length > 1)
-    throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+    throw new Exception('The HQ request is invalid', {
+      code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      data: { kind: 'invalid-request' },
+    });
   if (kind === 'plan-status' || kind === 'plan-milestones') {
     const allowed = new Set([
       'state-root',
@@ -151,7 +170,10 @@ const main = async (): Promise<void> => {
       ...(kind === 'plan-milestones' ? ['limit', 'cursor'] : []),
     ]);
     if (!values.directory || Object.keys(values).some((key) => !allowed.has(key)))
-      throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+      throw new Exception('The HQ request is invalid', {
+        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+        data: { kind: 'invalid-request' },
+      });
     const parsed = HqRequestSchema.safeParse({
       kind: 'plan',
       command: {
@@ -163,12 +185,11 @@ const main = async (): Promise<void> => {
       },
     });
     if (!parsed.success)
-      throw new Exception(
-        'The HQ request is invalid',
-        undefined,
-        { kind: 'invalid-request' },
-        { cause: parsed.error },
-      );
+      throw new Exception('The HQ request is invalid', {
+        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+        data: { kind: 'invalid-request' },
+        cause: parsed.error,
+      });
     process.stdout.write(
       `${JSON.stringify({ schemaVersion: 1, ...(await requestAgentHq(stateRoot, parsed.data)) })}\n`,
     );
@@ -180,7 +201,10 @@ const main = async (): Promise<void> => {
       ...(kind === 'handoff-show' ? ['id'] : ['workspace-root', 'thread-id', 'limit', 'cursor']),
     ]);
     if (Object.keys(values).some((key) => !allowed.has(key)))
-      throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+      throw new Exception('The HQ request is invalid', {
+        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+        data: { kind: 'invalid-request' },
+      });
     const parsed = HqRequestSchema.safeParse({
       kind: 'handoff',
       command:
@@ -195,21 +219,26 @@ const main = async (): Promise<void> => {
             },
     });
     if (!parsed.success)
-      throw new Exception(
-        'The HQ request is invalid',
-        undefined,
-        { kind: 'invalid-request' },
-        { cause: parsed.error },
-      );
+      throw new Exception('The HQ request is invalid', {
+        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+        data: { kind: 'invalid-request' },
+        cause: parsed.error,
+      });
     process.stdout.write(
       `${JSON.stringify({ schemaVersion: 1, ...(await requestAgentHq(stateRoot, parsed.data)) })}\n`,
     );
     return;
   }
   if (values.id)
-    throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+    throw new Exception('The HQ request is invalid', {
+      code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      data: { kind: 'invalid-request' },
+    });
   if (values.directory)
-    throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+    throw new Exception('The HQ request is invalid', {
+      code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      data: { kind: 'invalid-request' },
+    });
   const payload = Object.fromEntries(
     [
       ['kind', kind],
@@ -234,12 +263,11 @@ const main = async (): Promise<void> => {
   );
   const parsed = HqRequestSchema.safeParse(payload);
   if (!parsed.success)
-    throw new Exception(
-      'The HQ request is invalid',
-      undefined,
-      { kind: 'invalid-request' },
-      { cause: parsed.error },
-    );
+    throw new Exception('The HQ request is invalid', {
+      code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      data: { kind: 'invalid-request' },
+      cause: parsed.error,
+    });
   const command = parsed.data;
   const response = await requestAgentHq(stateRoot, command);
   if (response.kind === 'stop') {
@@ -249,11 +277,14 @@ const main = async (): Promise<void> => {
       try {
         const { owner } = await readRuntimeOwner(stateRoot);
         if (owner.nonce !== response.result.runtimeEpoch)
-          throw new Exception('The HQ runtime owner is unverifiable', undefined, {
-            kind: 'state-conflict',
+          throw new Exception('The HQ runtime owner is unverifiable', {
+            code: 'JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE',
+            data: {
+              kind: 'state-conflict',
+            },
           });
       } catch (error) {
-        if (error instanceof Exception && hasErrorCode(error.cause, 'ENOENT')) {
+        if (isException(error) && hasErrorCode(error.cause, 'ENOENT')) {
           stopped = true;
           break;
         }
@@ -262,7 +293,10 @@ const main = async (): Promise<void> => {
       await wait(100);
     }
     if (!stopped)
-      throw new Exception('The HQ transport failed', undefined, { kind: 'state-conflict' });
+      throw new Exception('The HQ transport failed', {
+        code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
+        data: { kind: 'state-conflict' },
+      });
     process.stdout.write(
       `${JSON.stringify({ schemaVersion: 1, kind: 'stop', result: { state: 'stopped', runtimeEpoch: response.result.runtimeEpoch } })}\n`,
     );

@@ -1,4 +1,4 @@
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import type { IUsageSnapshot } from '../../contracts/index.js';
@@ -23,8 +23,8 @@ import { parseNative } from './validations.js';
  * Connects native history, account observations and explicitly admitted runtime controls.
  * @returns The owned adapter. Its caller must close it on shutdown.
  * @throws
- * - -1: The Codex integration failed
- * - -1: The HQ transport failed
+ * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+ * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
  */
 export const createCodexProvider = async (
   extraSkillRoots: string[] = [],
@@ -123,8 +123,11 @@ export const createCodexProvider = async (
         }),
       );
       if (page.data.length > limit)
-        throw new Exception('The Codex integration failed', undefined, {
-          kind: 'agent-unavailable',
+        throw new Exception('The Codex integration failed', {
+          code: 'JG_AGENT_HQ_CODEX_FAILED',
+          data: {
+            kind: 'agent-unavailable',
+          },
         });
       return { data: page.data.map(toThreadSummary), nextCursor: page.nextCursor };
     },
@@ -134,8 +137,11 @@ export const createCodexProvider = async (
         await connection.request('thread/read', { threadId: nativeId, includeTurns: false }),
       );
       if (result.thread.id !== nativeId)
-        throw new Exception('The Codex integration failed', undefined, {
-          kind: 'agent-unavailable',
+        throw new Exception('The Codex integration failed', {
+          code: 'JG_AGENT_HQ_CODEX_FAILED',
+          data: {
+            kind: 'agent-unavailable',
+          },
         });
       return toThreadSummary(result.thread);
     },
@@ -151,8 +157,11 @@ export const createCodexProvider = async (
         }),
       );
       if (page.data.length > limit)
-        throw new Exception('The Codex integration failed', undefined, {
-          kind: 'agent-unavailable',
+        throw new Exception('The Codex integration failed', {
+          code: 'JG_AGENT_HQ_CODEX_FAILED',
+          data: {
+            kind: 'agent-unavailable',
+          },
         });
       return { data: page.data.map(toTurnSummary), nextCursor: page.nextCursor };
     },
@@ -168,8 +177,11 @@ export const createCodexProvider = async (
         }),
       );
       if (page.data.length > limit)
-        throw new Exception('The Codex integration failed', undefined, {
-          kind: 'agent-unavailable',
+        throw new Exception('The Codex integration failed', {
+          code: 'JG_AGENT_HQ_CODEX_FAILED',
+          data: {
+            kind: 'agent-unavailable',
+          },
         });
       return { data: page.data.map(toHistoryItem), nextCursor: page.nextCursor };
     },
@@ -181,8 +193,11 @@ export const createCodexProvider = async (
       );
       const entry = result.data[0]!;
       if (entry.cwd !== workspaceRoot)
-        throw new Exception('The Codex integration failed', undefined, {
-          kind: 'agent-unavailable',
+        throw new Exception('The Codex integration failed', {
+          code: 'JG_AGENT_HQ_CODEX_FAILED',
+          data: {
+            kind: 'agent-unavailable',
+          },
         });
       return {
         unavailableCount: entry.errors.length,
@@ -224,8 +239,11 @@ export const createCodexProvider = async (
         ),
       );
       if (result.thread.id !== nativeId)
-        throw new Exception('The Codex integration failed', undefined, {
-          kind: 'agent-unavailable',
+        throw new Exception('The Codex integration failed', {
+          code: 'JG_AGENT_HQ_CODEX_FAILED',
+          data: {
+            kind: 'agent-unavailable',
+          },
         });
       return result.thread;
     },
@@ -261,8 +279,11 @@ export const createCodexProvider = async (
         ),
       );
       if (result.turnId !== expectedTurnId)
-        throw new Exception('The Codex integration failed', undefined, {
-          kind: 'agent-unavailable',
+        throw new Exception('The Codex integration failed', {
+          code: 'JG_AGENT_HQ_CODEX_FAILED',
+          data: {
+            kind: 'agent-unavailable',
+          },
         });
       return result.turnId;
     },
@@ -298,8 +319,11 @@ export const createCodexProvider = async (
         }),
       );
       if (page.data.length || page.nextCursor)
-        throw new Exception('The Codex integration failed', undefined, {
-          kind: 'agent-unavailable',
+        throw new Exception('The Codex integration failed', {
+          code: 'JG_AGENT_HQ_CODEX_FAILED',
+          data: {
+            kind: 'agent-unavailable',
+          },
         });
     },
     async unsubscribe(requestId, nativeId) {
@@ -308,8 +332,11 @@ export const createCodexProvider = async (
         await connection.request('thread/unsubscribe', { threadId: nativeId }, requestId),
       );
       if (!['unsubscribed', 'notSubscribed', 'notLoaded'].includes(result.status))
-        throw new Exception('The Codex integration failed', undefined, {
-          kind: 'agent-unavailable',
+        throw new Exception('The Codex integration failed', {
+          code: 'JG_AGENT_HQ_CODEX_FAILED',
+          data: {
+            kind: 'agent-unavailable',
+          },
         });
     },
     reply: connection.reply,

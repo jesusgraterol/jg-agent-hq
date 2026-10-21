@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { parentPort, workerData } from 'node:worker_threads';
-import { Exception, extractMessage } from 'error-message-utils';
+import { Exception, extractMessage, isException } from 'jg-exception';
 
 import { getErrorKind } from '../errors/index.js';
 import { ClaudeHistoryModel } from '../providers/claude/history/index.js';
@@ -13,7 +13,7 @@ import { PlansModel } from './plans/index.js';
 import { StoreRequestSchema, StoreWorkerSchema } from './types.js';
 
 const options = StoreWorkerSchema.parse(workerData);
-if (!parentPort) throw new Exception('The HQ store failed');
+if (!parentPort) throw new Exception('The HQ store failed', { code: 'JG_AGENT_HQ_STORE_FAILED' });
 const port = parentPort;
 const database = new DatabaseSync(options.databasePath, {
   timeout: 5000,
@@ -36,7 +36,10 @@ const remember = database.prepare(`INSERT INTO native_history_index
 port.on('message', (message: unknown) => {
   const parsed = StoreRequestSchema.safeParse(message);
   if (!parsed.success)
-    throw new Exception('The HQ store failed', undefined, undefined, { cause: parsed.error });
+    throw new Exception('The HQ store failed', {
+      code: 'JG_AGENT_HQ_STORE_FAILED',
+      cause: parsed.error,
+    });
   const { id, command } = parsed.data;
   try {
     if (command.kind === 'close') {
@@ -187,10 +190,10 @@ port.on('message', (message: unknown) => {
       id,
       result: null,
       error: {
-        message:
-          error instanceof Exception
-            ? extractMessage(error)
-            : `The HQ store failed: ${extractMessage(error)}`,
+        code: isException(error) ? error.code : 'JG_AGENT_HQ_STORE_FAILED',
+        message: isException(error)
+          ? extractMessage(error)
+          : `The HQ store failed: ${extractMessage(error)}`,
         kind: getErrorKind(error),
       },
     });

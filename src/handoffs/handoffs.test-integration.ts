@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as wait } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { expectToRejectCode } from 'jg-exception/testing';
 import { createAgentHq } from 'jg-agent-hq';
 import type {
   IActionCommand,
@@ -407,22 +408,26 @@ test.each([
       expect(after.coordination.execution!.action.id).toBe(authorization.id);
       expect(after.coordination.execution!.revokedBy !== null).toBe(ending === 'revoked');
       expect(after.coordination.completionCount).toBe(ending === 'completed' ? 1 : 0);
-      await expect(
+      await expectToRejectCode(
         api.submit({
           kind: 'message',
           threadId: api.source.threadId!,
           input: { kind: 'text', text: 'Do more implementation without approval.' },
         }),
-      ).rejects.toThrow('State changed. Refresh before continuing.');
+        'JG_AGENT_HQ_CLIENT_STATE_CONFLICT',
+        'State changed. Refresh before continuing.',
+      );
       const assessment = await api.preview('feedback');
-      await expect(
+      await expectToRejectCode(
         api.submit({
           kind: 'message',
           threadId: api.source.threadId!,
           input: { kind: 'skill', skillId: assessment.skillId!, arguments: 'Assess the result.' },
         }),
-      ).rejects.toThrow('State changed. Refresh before continuing.');
-      await expect(
+        'JG_AGENT_HQ_CLIENT_STATE_CONFLICT',
+        'State changed. Refresh before continuing.',
+      );
+      await expectToRejectCode(
         fixture.request({
           kind: 'action',
           action: {
@@ -439,7 +444,9 @@ test.each([
             },
           },
         }),
-      ).rejects.toThrow('State changed. Refresh before continuing.');
+        'JG_AGENT_HQ_CLIENT_STATE_CONFLICT',
+        'State changed. Refresh before continuing.',
+      );
       await writeFile(join(directory, 'plan.md'), '# Plan\nChanged requirements.\n');
       expect((await api.preview('feedback')).state).toBe('source-changed');
     });
@@ -982,24 +989,30 @@ test('installed CLI shows a selected handoff and paged inbox through the same IP
 test('unknown handoff and failed Git attribution preserve their host contracts and safe client mapping', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await setup(fixture);
-    await expect(
+    await expectToRejectCode(
       fixture.runtime.request({ kind: 'handoff', command: { kind: 'show', id: randomUUID() } }),
-    ).rejects.toThrow('The HQ handoff is unavailable');
-    await expect(
+      'JG_AGENT_HQ_HANDOFF_UNAVAILABLE',
+      'The HQ handoff is unavailable',
+    );
+    await expectToRejectCode(
       fixture.request({ kind: 'handoff', command: { kind: 'show', id: randomUUID() } }),
-    ).rejects.toThrow('Requested resource was not found.');
+      'JG_AGENT_HQ_CLIENT_NOT_FOUND',
+      'Requested resource was not found.',
+    );
     await expect(
       fixture.runtime.request({
         kind: 'handoff',
         command: { ...api.command, id: randomUUID(), commit: 'a'.repeat(40) },
       }),
     ).rejects.toThrow('The HQ handoff operation failed:');
-    await expect(
+    await expectToRejectCode(
       fixture.request({
         kind: 'handoff',
         command: { ...api.command, id: randomUUID(), commit: 'a'.repeat(40) },
       }),
-    ).rejects.toThrow('Operation could not be completed.');
+      'JG_AGENT_HQ_CLIENT_OPERATION_FAILED',
+      'Operation could not be completed.',
+    );
   });
 });
 

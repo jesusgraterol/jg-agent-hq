@@ -1,4 +1,4 @@
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import type { INativePrompt } from '../../types.js';
@@ -48,7 +48,10 @@ export const createClaudePrompt = (
       response: { subtype: 'success', request_id: requestId, response },
     });
   const invalid: () => never = () => {
-    throw new Exception('The HQ request is invalid', undefined, { kind: 'invalid-request' });
+    throw new Exception('The HQ request is invalid', {
+      code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      data: { kind: 'invalid-request' },
+    });
   };
   return {
     toolId: request.tool_use_id,

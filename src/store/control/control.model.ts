@@ -1,6 +1,6 @@
 import { createHmac, createSecretKey, randomUUID, type KeyObject } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import {
@@ -215,7 +215,7 @@ export class ControlModel {
    * Admits a command exactly once before any native write, with all ownership checks atomic.
    * @returns The durable receipt and the one action permitted to dispatch.
    * @throws
-   * - -1: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */
   public admit(input: IAdmission): IAdmissionResult {
     return this.__transaction(() => {
@@ -508,7 +508,7 @@ export class ControlModel {
    * Applies an exact native request outcome without downgrading a known acknowledgement.
    * @returns The current receipt, or null for an unrecognized/stale response.
    * @throws
-   * - -1: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */
   public applyOutcome(outcome: INativeOutcome): IActionReceipt | null {
     return this.__transaction(() => {
@@ -687,7 +687,7 @@ export class ControlModel {
    * Records only native approval identities; question text and answers stay out of SQLite.
    * @returns The stable prompt identity when its current turn is controlled here.
    * @throws
-   * - -1: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */
   public openApproval(approval: IApprovalRecord): { id: string; thread: IManagedThread } | null {
     return this.__transaction(() => {
@@ -751,7 +751,7 @@ export class ControlModel {
    * Applies ordered native lifecycle evidence and deduplicates repeated observations.
    * @returns The refreshed thread and whether its next-turn queue may advance.
    * @throws
-   * - -1: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */
   public observe(observation: INativeObservation): IObservationResult {
     return this.__transaction(() => {
@@ -1102,8 +1102,11 @@ export class ControlModel {
   }
 
   private __conflict(): never {
-    throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-      kind: 'state-conflict',
+    throw new Exception('The HQ action conflicts with its recorded state', {
+      code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+      data: {
+        kind: 'state-conflict',
+      },
     });
   }
 

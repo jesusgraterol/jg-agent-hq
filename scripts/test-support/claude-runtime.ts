@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hasErrorCode } from 'error-message-utils';
+import { hasErrorCode } from 'jg-exception';
 import { createAgentHq, requestAgentHq, type IAgentHq, type IAgentHqOptions } from 'jg-agent-hq';
 import type { IHqRequestInput } from 'jg-agent-hq/contracts';
 import { expect, onTestFinished, vi } from 'vitest';

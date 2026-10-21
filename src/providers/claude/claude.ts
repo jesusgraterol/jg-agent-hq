@@ -1,4 +1,4 @@
-import { Exception } from 'error-message-utils';
+import { Exception, isException } from 'jg-exception';
 import { scheduler } from 'node:timers/promises';
 import { z } from 'zod';
 
@@ -41,7 +41,10 @@ export const createClaudeProvider = (store: IStore) => {
   const open = () => {
     if (isClosing)
       return Promise.reject(
-        new Exception('The Claude integration failed', undefined, { kind: 'agent-unavailable' }),
+        new Exception('The Claude integration failed', {
+          code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+          data: { kind: 'agent-unavailable' },
+        }),
       );
     return (opening ??= connect());
   };
@@ -59,25 +62,31 @@ export const createClaudeProvider = (store: IStore) => {
      * Reads only a verified local transcript capability without resuming a session.
      * @returns One bounded native-file read through the owned worker.
      * @throws
-     * - -1: The Claude integration failed
-     * - -1: The Claude history is unavailable
-     * - -1: The HQ store failed
-     * - -1: The HQ cursor does not match this request
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+     * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
      */
     async readHistory(command: IHistoryRequest): Promise<IHqResponse> {
       const deadline = Date.now() + 30_000;
       const native = await open();
       if (!ClaudeHistoryCliVersionSchema.safeParse(native.version).success)
-        throw new Exception('The Claude history is unavailable', undefined, {
-          kind: 'agent-unavailable',
+        throw new Exception('The Claude history is unavailable', {
+          code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
+          data: {
+            kind: 'agent-unavailable',
+          },
         });
       while (!isClosing && Date.now() < deadline) {
         const result = await store.readClaudeHistory(command);
         if (result.kind !== 'indexing') return result;
         await scheduler.yield();
       }
-      throw new Exception('The Claude history is unavailable', undefined, {
-        kind: 'agent-unavailable',
+      throw new Exception('The Claude history is unavailable', {
+        code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
+        data: {
+          kind: 'agent-unavailable',
+        },
       });
     },
     /**
@@ -92,12 +101,11 @@ export const createClaudeProvider = (store: IStore) => {
           const epoch = generation;
           const parsed = ClaudeUsageSchema.safeParse(await native.requestUsage());
           if (!parsed.success)
-            throw new Exception(
-              'The Claude integration failed',
-              undefined,
-              { kind: 'agent-unavailable' },
-              { cause: parsed.error },
-            );
+            throw new Exception('The Claude integration failed', {
+              code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+              data: { kind: 'agent-unavailable' },
+              cause: parsed.error,
+            });
           if (epoch !== generation) return latest;
           latest = toClaudeUsageSnapshot(parsed.data, Date.now());
         } catch {
@@ -117,8 +125,8 @@ export const createClaudeProvider = (store: IStore) => {
      * Closes even a connection still starting when runtime shutdown began.
      * @returns Confirmed native shutdown, or no work when the adapter was unused.
      * @throws
-     * - -1: The Claude integration failed
-     * - -1: The HQ transport failed
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
      */
     async close(): Promise<void> {
       isClosing = true;
@@ -127,7 +135,7 @@ export const createClaudeProvider = (store: IStore) => {
           await opening;
         } catch (cause) {
           if (
-            cause instanceof Exception &&
+            isException(cause) &&
             z.object({ cleanupUnconfirmed: z.literal(true) }).safeParse(cause.data).success
           )
             throw cause;

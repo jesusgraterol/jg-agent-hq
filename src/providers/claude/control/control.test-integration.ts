@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
-import { hasErrorCode } from 'error-message-utils';
+import { expectToRejectCode } from 'jg-exception/testing';
+import { hasErrorCode } from 'jg-exception';
 import type { IActionCommand, IActionEnvelope, IManagedThread } from 'jg-agent-hq/contracts';
 import { expect, test } from 'vitest';
 
@@ -260,7 +261,11 @@ test('Claude question replies are scope-checked, acknowledged by matching tool r
       approvalId: prompt!.id,
       response: { kind: 'answers', answers: { Unknown: ['Red'] } },
     });
-    await expect(api.submit(wrong)).rejects.toThrow('Request is invalid.');
+    await expectToRejectCode(
+      api.submit(wrong),
+      'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
+      'Request is invalid.',
+    );
     const answerText = 'private-answer-example-7ac49';
     const answer = api.envelope({
       kind: 'native-reply',
@@ -311,7 +316,7 @@ test('Claude permissions preserve native input and cannot grant a session-wide a
       (rows) => rows.length === 1,
     );
     expect(prompt).toMatchObject({ kind: 'permission', decisions: ['accept', 'decline'] });
-    await expect(
+    await expectToRejectCode(
       api.submit(
         api.envelope({
           kind: 'native-reply',
@@ -321,7 +326,9 @@ test('Claude permissions preserve native input and cannot grant a session-wide a
           response: { kind: 'decision', decision: 'acceptForSession' },
         }),
       ),
-    ).rejects.toThrow('Request is invalid.');
+      'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
+      'Request is invalid.',
+    );
     const reply = api.envelope({
       kind: 'native-reply',
       threadId: thread.id,
@@ -561,7 +568,12 @@ test.each([false, true])(
         expect(
           (await api.calls()).find((call) => call.type === 'control_response')!.response?.response,
         ).toMatchObject({ updatedInput: { answers: { 'Which color?': 'Red, Blue' } } });
-      } else await expect(api.submit(answer)).rejects.toThrow('Request is invalid.');
+      } else
+        await expectToRejectCode(
+          api.submit(answer),
+          'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
+          'Request is invalid.',
+        );
     });
   },
 );

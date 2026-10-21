@@ -27,21 +27,21 @@ export type INativePrompt = {
    * Validates a reply against the exact displayed native request.
    * @returns The native response payload without widening the requested scope.
    * @throws
-   * - -1: The HQ request is invalid
+   * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
    */
   validate(response: Extract<IActionCommand, { kind: 'native-reply' }>['response']): unknown;
   /**
    * Writes this request's response on its owning native channel.
    * @returns Confirmation of the write, which does not prove native consumption.
    * @throws
-   * - -1: The HQ transport failed
+   * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
    */
   reply(response: unknown): Promise<void>;
   /**
    * Denies this request without granting any native permission.
    * @returns Confirmation that the denial was written.
    * @throws
-   * - -1: The HQ transport failed
+   * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
    */
   reject(): Promise<void>;
 };

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { expectToRejectCode } from 'jg-exception/testing';
 import { createAgentHq } from 'jg-agent-hq';
 import type {
   IActionCommand,
@@ -322,7 +323,7 @@ test.each(['codex', 'claude'] as const)(
         skill: null,
         text: null,
       });
-      await expect(
+      await expectToRejectCode(
         api.submit(
           api.envelope({
             kind: 'message',
@@ -330,7 +331,9 @@ test.each(['codex', 'claude'] as const)(
             input: { kind: 'skill', skillId: '0'.repeat(64), arguments: '' },
           }),
         ),
-      ).rejects.toThrow('State changed. Refresh before continuing.');
+        'JG_AGENT_HQ_CLIENT_STATE_CONFLICT',
+        'State changed. Refresh before continuing.',
+      );
       if (provider === 'claude') {
         expect(await api.inputs()).toStrictEqual([]);
         return;
@@ -386,12 +389,18 @@ test.each(['codex', 'claude'] as const)(
       const page = await api.catalog(32);
       expect(page.data).toHaveLength(32);
       expect(page.nextCursor).not.toBeNull();
-      await expect(api.catalog(32, page.nextCursor!, 'different')).rejects.toThrow(
+      await expectToRejectCode(
+        api.catalog(32, page.nextCursor!, 'different'),
+        'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
         'Request is invalid.',
       );
       await api.control({ skillCount: 1024, skillRevision: true });
       if (provider === 'codex')
-        await expect(api.catalog(32, page.nextCursor!)).rejects.toThrow('Request is invalid.');
+        await expectToRejectCode(
+          api.catalog(32, page.nextCursor!),
+          'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
+          'Request is invalid.',
+        );
       else expect((await api.catalog(32, page.nextCursor!)).data).toHaveLength(32);
       expect((await api.catalog(128, undefined, 'explicit-skill')).data).toHaveLength(1);
     });
@@ -448,7 +457,7 @@ test('trusted extra roots reach native loaders without becoming browser configur
           .map((line) => JSON.parse(line)),
       );
       expect(starts[0]!.args.slice(-2)).toStrictEqual(['--add-dir', extra]);
-      await expect(
+      await expectToRejectCode(
         runtime.request(
           JSON.parse(
             JSON.stringify({
@@ -458,7 +467,9 @@ test('trusted extra roots reach native loaders without becoming browser configur
             }),
           ),
         ),
-      ).rejects.toThrow('The HQ request is invalid');
+        'JG_AGENT_HQ_REQUEST_INVALID',
+        'The HQ request is invalid',
+      );
     } finally {
       await runtime.close();
     }
@@ -638,8 +649,16 @@ test.each(['codex', 'claude'] as const)(
         nextCursor: null,
         observedAt: expect.any(Number),
       });
-      await expect(api.catalog(129)).rejects.toThrow('The HQ request is invalid');
-      await expect(api.catalog(32, 'bad')).rejects.toThrow('Request is invalid.');
+      await expectToRejectCode(
+        api.catalog(129),
+        'JG_AGENT_HQ_REQUEST_INVALID',
+        'The HQ request is invalid',
+      );
+      await expectToRejectCode(
+        api.catalog(32, 'bad'),
+        'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
+        'Request is invalid.',
+      );
     });
   },
 );

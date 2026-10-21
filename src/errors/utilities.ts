@@ -1,4 +1,4 @@
-import { Exception } from 'error-message-utils';
+import { isException } from 'jg-exception';
 import { z } from 'zod';
 
 import { ErrorKindSchema, PUBLIC_ERROR_MESSAGES, type IErrorKind } from '../contracts/index.js';
@@ -7,7 +7,7 @@ const ErrorMetadataSchema = z.object({ kind: ErrorKindSchema });
 
 /** Reads only the supported classification from an application exception. */
 export const getErrorKind = (error: unknown): IErrorKind => {
-  const metadata = ErrorMetadataSchema.safeParse(error instanceof Exception ? error.data : null);
+  const metadata = ErrorMetadataSchema.safeParse(isException(error) ? error.data : null);
   return metadata.success ? metadata.data.kind : 'operation-failed';
 };
 

@@ -1,3 +1,4 @@
+import { expectToRejectCode } from 'jg-exception/testing';
 import { expect, test, vi } from 'vitest';
 
 import { needsPublication, waitForPublication } from './release.ts';
@@ -33,11 +34,13 @@ test('rerunning a release skips the exact already-published artifact without ano
 });
 
 test.each(['0.2.0', '0.3.0'])('rejects unpublished %s when latest is 0.3.0', async (version) => {
-  await expect(
+  await expectToRejectCode(
     needsPublication(version, 'sha512-tested', async (url) =>
       url.endsWith('/latest') ? published('0.3.0') : new Response(null, { status: 404 }),
     ),
-  ).rejects.toThrow('The HQ package release check failed');
+    'JG_AGENT_HQ_RELEASE_CHECK_FAILED',
+    'The HQ package release check failed',
+  );
 });
 
 test.each([

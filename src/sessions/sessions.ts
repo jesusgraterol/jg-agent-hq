@@ -1,4 +1,4 @@
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 
 import { HqResponseSchema, type IHqResponse } from '../contracts/index.js';
 import type { ICodexProvider } from '../providers/index.js';
@@ -12,10 +12,10 @@ import { decodeHistoryCursor, encodeHistoryCursor } from './utilities.js';
  * Authorizes native history before loading content and records only its discovery projection.
  * @returns One provider-paged read result, never a complete transcript scan.
  * @throws
- * - -1: The HQ target is outside the allowed workspaces
- * - -1: The HQ cursor does not match this request
- * - -1: The Codex integration failed
- * - -1: The HQ store failed
+ * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+ * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+ * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+ * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
  */
 export const readNativeHistory = async (
   command: IHistoryRequest,
@@ -40,8 +40,11 @@ export const readNativeHistory = async (
         resolvedRoots.set(thread.workspaceRoot, actualRoot);
       }
       if (actualRoot !== workspaceRoot)
-        throw new Exception('The HQ target is outside the allowed workspaces', undefined, {
-          kind: 'access-denied',
+        throw new Exception('The HQ target is outside the allowed workspaces', {
+          code: 'JG_AGENT_HQ_TARGET_FORBIDDEN',
+          data: {
+            kind: 'access-denied',
+          },
         });
       thread.workspaceRoot = actualRoot;
     }
@@ -71,8 +74,11 @@ export const readNativeHistory = async (
   }
   const thread = await native.readThread(command.nativeId);
   if ((await resolveWorkspaceTarget(thread.workspaceRoot, allowedRoots)) !== workspaceRoot)
-    throw new Exception('The HQ target is outside the allowed workspaces', undefined, {
-      kind: 'access-denied',
+    throw new Exception('The HQ target is outside the allowed workspaces', {
+      code: 'JG_AGENT_HQ_TARGET_FORBIDDEN',
+      data: {
+        kind: 'access-denied',
+      },
     });
   thread.workspaceRoot = workspaceRoot;
   const control = await projection.getThreadByNativeId('codex', command.nativeId);

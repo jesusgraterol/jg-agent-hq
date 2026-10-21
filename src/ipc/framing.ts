@@ -1,4 +1,4 @@
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 
 /**
  * Decodes bounded JSON lines with amortized linear copying across fragmented input.
@@ -6,7 +6,7 @@ import { Exception } from 'error-message-utils';
  * @param receive The owner of each decoded message.
  * @returns A decoder whose end operation rejects incomplete tails.
  * @throws
- * - -1: The HQ transport failed
+ * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
  */
 export const createLineDecoder = (maxBytes: number, receive: (message: unknown) => void) => {
   let buffer = Buffer.alloc(Math.min(1024, maxBytes));
@@ -20,7 +20,10 @@ export const createLineDecoder = (maxBytes: number, receive: (message: unknown) 
         const end = newline < 0 ? chunk.length : newline;
         const length = end - offset;
         if (used + length > maxBytes)
-          throw new Exception('The HQ transport failed', undefined, { kind: 'invalid-request' });
+          throw new Exception('The HQ transport failed', {
+            code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
+            data: { kind: 'invalid-request' },
+          });
         if (used + length > buffer.length) {
           const expanded = Buffer.alloc(
             Math.min(maxBytes, Math.max(buffer.length * 2, used + length)),
@@ -35,12 +38,11 @@ export const createLineDecoder = (maxBytes: number, receive: (message: unknown) 
           try {
             message = JSON.parse(decoder.decode(buffer.subarray(0, used)));
           } catch (cause) {
-            throw new Exception(
-              'The HQ transport failed',
-              undefined,
-              { kind: 'invalid-request' },
-              { cause },
-            );
+            throw new Exception('The HQ transport failed', {
+              code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
+              data: { kind: 'invalid-request' },
+              cause,
+            });
           }
           used = 0;
           receive(message);
@@ -50,7 +52,10 @@ export const createLineDecoder = (maxBytes: number, receive: (message: unknown) 
     },
     end(): void {
       if (used)
-        throw new Exception('The HQ transport failed', undefined, { kind: 'invalid-request' });
+        throw new Exception('The HQ transport failed', {
+          code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
+          data: { kind: 'invalid-request' },
+        });
     },
   };
 };

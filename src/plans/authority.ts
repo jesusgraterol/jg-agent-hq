@@ -1,4 +1,4 @@
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 
 import type {
   IPlanCommand,
@@ -12,8 +12,11 @@ import { createCompletionLookup } from './reconciliation.js';
 import type { IPlanArtifacts } from './types.js';
 
 const conflict = (): never => {
-  throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-    kind: 'state-conflict',
+  throw new Exception('The HQ action conflicts with its recorded state', {
+    code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+    data: {
+      kind: 'state-conflict',
+    },
   });
 };
 
@@ -158,7 +161,7 @@ const revokeExecution = (coordination: IPlanCoordination, action: IPlanOperatorA
  * Applies one explicit operator decision without native dispatch or filesystem mutation.
  * @returns Updated current authority records.
  * @throws
- * - -1: The HQ action conflicts with its recorded state
+ * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
  */
 export const updatePlanAuthority = (
   artifacts: IPlanArtifacts,

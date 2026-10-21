@@ -4,7 +4,7 @@ import { lstat, mkdir, open, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 
-import { Exception, extractMessage, hasErrorCode } from 'error-message-utils';
+import { Exception, extractMessage, hasErrorCode } from 'jg-exception';
 
 import {
   DEFAULT_POLL_INTERVAL_MS,
@@ -32,11 +32,13 @@ type IStoredLock =
 /**
  * Requires the documented POSIX host contract before filesystem access.
  * @throws
- * - -1: The HQ lock requires Linux or macOS
+ * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
  */
 const requireSupportedHost = (): void => {
   if (process.platform !== 'linux' && process.platform !== 'darwin')
-    throw new Exception('The HQ lock requires Linux or macOS');
+    throw new Exception('The HQ lock requires Linux or macOS', {
+      code: 'JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM',
+    });
 };
 
 /** Checks POSIX ownership and permission bits for private runtime metadata. */
@@ -64,9 +66,9 @@ export const getOwnerLiveness = (pid: number): IOwnerLiveness => {
  * Creates the private runtime directory when missing and rejects anything but a real directory.
  * @returns A promise that resolves to the verified runtime directory.
  * @throws
- * - -1: The HQ lock requires Linux or macOS
- * - -1: The HQ runtime directory must be a real directory
- * - -1: The HQ runtime directory must be private and owned by the current user
+ * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
+ * - JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID: The HQ runtime directory must be a real directory
+ * - JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS: The HQ runtime directory must be private and owned by the current user
  */
 export const ensurePrivateRuntimeDirectory = async (directory: string): Promise<string> => {
   requireSupportedHost();
@@ -76,17 +78,19 @@ export const ensurePrivateRuntimeDirectory = async (directory: string): Promise<
     if (hasErrorCode(error, 'EEXIST') || hasErrorCode(error, 'ENOTDIR'))
       throw new Exception(
         `The HQ runtime directory must be a real directory: ${extractMessage(error)}`,
-        undefined,
-        undefined,
-        { cause: error },
+        { code: 'JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID', cause: error },
       );
     throw error;
   }
   const details = await lstat(directory);
   if (!details.isDirectory() || details.isSymbolicLink())
-    throw new Exception('The HQ runtime directory must be a real directory');
+    throw new Exception('The HQ runtime directory must be a real directory', {
+      code: 'JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID',
+    });
   if (!isPrivateOwner(details))
-    throw new Exception('The HQ runtime directory must be private and owned by the current user');
+    throw new Exception('The HQ runtime directory must be private and owned by the current user', {
+      code: 'JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS',
+    });
   return directory;
 };
 
@@ -94,13 +98,13 @@ export const ensurePrivateRuntimeDirectory = async (directory: string): Promise<
  * Reads the stored lock without modifying it.
  * @returns A promise that resolves to the bounded owner record or its missing/empty state.
  * @throws
- * - -1: The HQ lock requires Linux or macOS
- * - -1: The HQ runtime directory must be a real directory
- * - -1: The HQ runtime directory must be private and owned by the current user
- * - -1: The HQ lock must be a regular file
- * - -1: The HQ lock must be private and owned by the current user
- * - -1: The HQ lock owner exceeds the supported size
- * - -1: The HQ lock owner could not be read. Inspect .runtime/hq.lock
+ * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
+ * - JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID: The HQ runtime directory must be a real directory
+ * - JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS: The HQ runtime directory must be private and owned by the current user
+ * - JG_AGENT_HQ_LOCK_FILE_INVALID: The HQ lock must be a regular file
+ * - JG_AGENT_HQ_LOCK_FILE_PERMISSIONS: The HQ lock must be private and owned by the current user
+ * - JG_AGENT_HQ_LOCK_OWNER_OVERSIZED: The HQ lock owner exceeds the supported size
+ * - JG_AGENT_HQ_LOCK_OWNER_UNREADABLE: The HQ lock owner could not be read. Inspect .runtime/hq.lock
  */
 const readStoredLock = async (path: string): Promise<IStoredLock> => {
   requireSupportedHost();
@@ -108,18 +112,28 @@ const readStoredLock = async (path: string): Promise<IStoredLock> => {
   try {
     const directory = await lstat(dirname(path));
     if (!directory.isDirectory() || directory.isSymbolicLink())
-      throw new Exception('The HQ runtime directory must be a real directory');
+      throw new Exception('The HQ runtime directory must be a real directory', {
+        code: 'JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID',
+      });
     if (!isPrivateOwner(directory))
-      throw new Exception('The HQ runtime directory must be private and owned by the current user');
+      throw new Exception(
+        'The HQ runtime directory must be private and owned by the current user',
+        { code: 'JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS' },
+      );
     const handle = await open(
       path,
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
     );
     try {
       const details = await handle.stat();
-      if (!details.isFile()) throw new Exception('The HQ lock must be a regular file');
+      if (!details.isFile())
+        throw new Exception('The HQ lock must be a regular file', {
+          code: 'JG_AGENT_HQ_LOCK_FILE_INVALID',
+        });
       if (!isPrivateOwner(details))
-        throw new Exception('The HQ lock must be private and owned by the current user');
+        throw new Exception('The HQ lock must be private and owned by the current user', {
+          code: 'JG_AGENT_HQ_LOCK_FILE_PERMISSIONS',
+        });
       const buffer = Buffer.alloc(MAX_LOCK_OWNER_BYTES + 1);
       let length = 0;
       while (length < buffer.length) {
@@ -128,7 +142,9 @@ const readStoredLock = async (path: string): Promise<IStoredLock> => {
         length += bytesRead;
       }
       if (length > MAX_LOCK_OWNER_BYTES)
-        throw new Exception('The HQ lock owner exceeds the supported size');
+        throw new Exception('The HQ lock owner exceeds the supported size', {
+          code: 'JG_AGENT_HQ_LOCK_OWNER_OVERSIZED',
+        });
       content = buffer.subarray(0, length).toString('utf8');
     } finally {
       await handle.close();
@@ -136,7 +152,8 @@ const readStoredLock = async (path: string): Promise<IStoredLock> => {
   } catch (error) {
     if (hasErrorCode(error, 'ENOENT')) return { kind: 'missing' };
     if (hasErrorCode(error, 'ELOOP'))
-      throw new Exception('The HQ lock must be a regular file', undefined, undefined, {
+      throw new Exception('The HQ lock must be a regular file', {
+        code: 'JG_AGENT_HQ_LOCK_FILE_INVALID',
         cause: error,
       });
     throw error;
@@ -147,9 +164,7 @@ const readStoredLock = async (path: string): Promise<IStoredLock> => {
   } catch (error) {
     throw new Exception(
       `The HQ lock owner could not be read. Inspect ${RUNTIME_DIRECTORY}/${HQ_LOCK_FILE}: ${extractMessage(error)}`,
-      undefined,
-      undefined,
-      { cause: error },
+      { code: 'JG_AGENT_HQ_LOCK_OWNER_UNREADABLE', cause: error },
     );
   }
 };
@@ -164,18 +179,18 @@ const readStoredLock = async (path: string): Promise<IStoredLock> => {
  * @returns A promise that resolves to an exact-owner release operation, which can reject with the
  * ownership-changed contract or the metadata-read contracts below.
  * @throws
- * - -1: The HQ lock acquisition arguments are invalid
- * - -1: The HQ lock requires Linux or macOS
- * - -1: The HQ runtime directory must be a real directory
- * - -1: The HQ runtime directory must be private and owned by the current user
- * - -1: The HQ lock must be a regular file
- * - -1: The HQ lock must be private and owned by the current user
- * - -1: The HQ lock owner exceeds the supported size
- * - -1: The HQ lock owner could not be read. Inspect .runtime/hq.lock
- * - -1: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
- * - -1: The HQ lock has an inactive owner
- * - -1: The HQ lock owner could not be verified
- * - -1: Timed out waiting for the HQ lock
+ * - JG_AGENT_HQ_LOCK_INVALID_ARGUMENTS: The HQ lock acquisition arguments are invalid
+ * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
+ * - JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID: The HQ runtime directory must be a real directory
+ * - JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS: The HQ runtime directory must be private and owned by the current user
+ * - JG_AGENT_HQ_LOCK_FILE_INVALID: The HQ lock must be a regular file
+ * - JG_AGENT_HQ_LOCK_FILE_PERMISSIONS: The HQ lock must be private and owned by the current user
+ * - JG_AGENT_HQ_LOCK_OWNER_OVERSIZED: The HQ lock owner exceeds the supported size
+ * - JG_AGENT_HQ_LOCK_OWNER_UNREADABLE: The HQ lock owner could not be read. Inspect .runtime/hq.lock
+ * - JG_AGENT_HQ_LOCK_OWNER_INCOMPLETE: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
+ * - JG_AGENT_HQ_LOCK_OWNER_INACTIVE: The HQ lock has an inactive owner
+ * - JG_AGENT_HQ_LOCK_OWNER_UNVERIFIABLE: The HQ lock owner could not be verified
+ * - JG_AGENT_HQ_LOCK_TIMEOUT: Timed out waiting for the HQ lock
  */
 export const acquireHqLock = async (
   root: string,
@@ -193,7 +208,8 @@ export const acquireHqLock = async (
     pollIntervalMs,
   });
   if (!input.success)
-    throw new Exception('The HQ lock acquisition arguments are invalid', undefined, undefined, {
+    throw new Exception('The HQ lock acquisition arguments are invalid', {
+      code: 'JG_AGENT_HQ_LOCK_INVALID_ARGUMENTS',
       cause: input.error,
     });
   const path = join(
@@ -208,7 +224,9 @@ export const acquireHqLock = async (
   };
   const content = `${JSON.stringify(owner)}\n`;
   if (Buffer.byteLength(content) > MAX_LOCK_OWNER_BYTES)
-    throw new Exception('The HQ lock owner exceeds the supported size');
+    throw new Exception('The HQ lock owner exceeds the supported size', {
+      code: 'JG_AGENT_HQ_LOCK_OWNER_OVERSIZED',
+    });
   const startedAt = Date.now();
   let emptySince: number | undefined;
   let hasReportedWait = false;
@@ -225,6 +243,7 @@ export const acquireHqLock = async (
         if (Date.now() - emptySince >= setupWindowMs)
           throw new Exception(
             `The HQ lock owner is incomplete. Inspect ${RUNTIME_DIRECTORY}/${HQ_LOCK_FILE} and remove it only after its owner stopped`,
+            { code: 'JG_AGENT_HQ_LOCK_OWNER_INCOMPLETE' },
           );
         await wait(pollIntervalMs);
         continue;
@@ -232,11 +251,18 @@ export const acquireHqLock = async (
       emptySince = undefined;
       const holder = describeOwner(stored.owner);
       const liveness = getOwnerLiveness(stored.owner.pid);
-      if (liveness === 'dead') throw new Exception(`The HQ lock has an inactive owner: ${holder}`);
+      if (liveness === 'dead')
+        throw new Exception(`The HQ lock has an inactive owner: ${holder}`, {
+          code: 'JG_AGENT_HQ_LOCK_OWNER_INACTIVE',
+        });
       if (liveness === 'unknown')
-        throw new Exception(`The HQ lock owner could not be verified: ${holder}`);
+        throw new Exception(`The HQ lock owner could not be verified: ${holder}`, {
+          code: 'JG_AGENT_HQ_LOCK_OWNER_UNVERIFIABLE',
+        });
       if (Date.now() - startedAt >= waitTimeoutMs)
-        throw new Exception(`Timed out waiting for the HQ lock: ${holder}`);
+        throw new Exception(`Timed out waiting for the HQ lock: ${holder}`, {
+          code: 'JG_AGENT_HQ_LOCK_TIMEOUT',
+        });
       if (!hasReportedWait) {
         process.stderr.write(`Waiting for the HQ lock (${holder}).\n`);
         hasReportedWait = true;
@@ -255,7 +281,9 @@ export const acquireHqLock = async (
       (release ??= (async () => {
         const stored = await readStoredLock(path);
         if (stored.kind !== 'owner' || stored.content !== content)
-          throw new Exception('HQ lock ownership changed before release');
+          throw new Exception('HQ lock ownership changed before release', {
+            code: 'JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED',
+          });
         await rm(path);
       })());
   }
@@ -269,19 +297,19 @@ export const acquireHqLock = async (
  * @param options Timing overrides.
  * @returns A promise that resolves to the operation's result.
  * @throws
- * - -1: The HQ lock acquisition arguments are invalid
- * - -1: The HQ lock requires Linux or macOS
- * - -1: The HQ runtime directory must be a real directory
- * - -1: The HQ runtime directory must be private and owned by the current user
- * - -1: The HQ lock must be a regular file
- * - -1: The HQ lock must be private and owned by the current user
- * - -1: The HQ lock owner exceeds the supported size
- * - -1: The HQ lock owner could not be read. Inspect .runtime/hq.lock
- * - -1: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
- * - -1: The HQ lock has an inactive owner
- * - -1: The HQ lock owner could not be verified
- * - -1: Timed out waiting for the HQ lock
- * - -1: HQ lock ownership changed before release
+ * - JG_AGENT_HQ_LOCK_INVALID_ARGUMENTS: The HQ lock acquisition arguments are invalid
+ * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
+ * - JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID: The HQ runtime directory must be a real directory
+ * - JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS: The HQ runtime directory must be private and owned by the current user
+ * - JG_AGENT_HQ_LOCK_FILE_INVALID: The HQ lock must be a regular file
+ * - JG_AGENT_HQ_LOCK_FILE_PERMISSIONS: The HQ lock must be private and owned by the current user
+ * - JG_AGENT_HQ_LOCK_OWNER_OVERSIZED: The HQ lock owner exceeds the supported size
+ * - JG_AGENT_HQ_LOCK_OWNER_UNREADABLE: The HQ lock owner could not be read. Inspect .runtime/hq.lock
+ * - JG_AGENT_HQ_LOCK_OWNER_INCOMPLETE: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
+ * - JG_AGENT_HQ_LOCK_OWNER_INACTIVE: The HQ lock has an inactive owner
+ * - JG_AGENT_HQ_LOCK_OWNER_UNVERIFIABLE: The HQ lock owner could not be verified
+ * - JG_AGENT_HQ_LOCK_TIMEOUT: Timed out waiting for the HQ lock
+ * - JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED: HQ lock ownership changed before release
  */
 export const withHqLock = async <T>(
   root: string,
@@ -312,31 +340,37 @@ export const withHqLock = async <T>(
  * @param nonce The nonce read from the inspected lock state.
  * @returns A promise that resolves to the removed owner.
  * @throws
- * - -1: The HQ lock requires Linux or macOS
- * - -1: The HQ runtime directory must be a real directory
- * - -1: The HQ runtime directory must be private and owned by the current user
- * - -1: The HQ lock must be a regular file
- * - -1: The HQ lock must be private and owned by the current user
- * - -1: The HQ lock owner exceeds the supported size
- * - -1: The HQ lock owner could not be read. Inspect .runtime/hq.lock
- * - -1: The HQ lock is not held
- * - -1: The HQ lock nonce does not match
+ * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
+ * - JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID: The HQ runtime directory must be a real directory
+ * - JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS: The HQ runtime directory must be private and owned by the current user
+ * - JG_AGENT_HQ_LOCK_FILE_INVALID: The HQ lock must be a regular file
+ * - JG_AGENT_HQ_LOCK_FILE_PERMISSIONS: The HQ lock must be private and owned by the current user
+ * - JG_AGENT_HQ_LOCK_OWNER_OVERSIZED: The HQ lock owner exceeds the supported size
+ * - JG_AGENT_HQ_LOCK_OWNER_UNREADABLE: The HQ lock owner could not be read. Inspect .runtime/hq.lock
+ * - JG_AGENT_HQ_LOCK_NOT_HELD: The HQ lock is not held
+ * - JG_AGENT_HQ_LOCK_NONCE_MISMATCH: The HQ lock nonce does not match
  */
 export const releaseHqLock = async (root: string, nonce: string): Promise<IHqLockOwner> => {
   const path = join(root, RUNTIME_DIRECTORY, HQ_LOCK_FILE);
   const stored = await readStoredLock(path);
-  if (stored.kind === 'missing') throw new Exception('The HQ lock is not held');
+  if (stored.kind === 'missing')
+    throw new Exception('The HQ lock is not held', { code: 'JG_AGENT_HQ_LOCK_NOT_HELD' });
   if (stored.kind === 'empty')
     throw new Exception(
       `The HQ lock owner could not be read. Inspect ${RUNTIME_DIRECTORY}/${HQ_LOCK_FILE}: empty file`,
+      { code: 'JG_AGENT_HQ_LOCK_OWNER_UNREADABLE' },
     );
   const holder = describeOwner(stored.owner);
   if (stored.owner.nonce !== nonce)
-    throw new Exception(`The HQ lock nonce does not match: ${holder}`);
+    throw new Exception(`The HQ lock nonce does not match: ${holder}`, {
+      code: 'JG_AGENT_HQ_LOCK_NONCE_MISMATCH',
+    });
   // remove only while the file still holds the inspected owner
   const current = await readStoredLock(path);
   if (current.kind !== 'owner' || current.content !== stored.content)
-    throw new Exception(`The HQ lock nonce does not match: ${holder}`);
+    throw new Exception(`The HQ lock nonce does not match: ${holder}`, {
+      code: 'JG_AGENT_HQ_LOCK_NONCE_MISMATCH',
+    });
   await rm(path);
   return stored.owner;
 };
@@ -347,7 +381,7 @@ export const releaseHqLock = async (root: string, nonce: string): Promise<IHqLoc
  * @param now The current time.
  * @returns A promise that resolves to the lock state.
  * @throws
- * - -1: The HQ lock requires Linux or macOS
+ * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
  */
 export const readHqLockState = async (root: string, now = new Date()): Promise<IHqLockState> => {
   requireSupportedHost();

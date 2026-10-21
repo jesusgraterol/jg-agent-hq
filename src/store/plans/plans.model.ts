@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import {
@@ -35,14 +35,17 @@ export class PlansModel {
   /**
    * Records immutable action identity before any authoritative file is changed.
    * @throws
-   * - -1: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */
   public prepare(intent: IPlanWriteIntent): IPlanWriteIntent {
     const previous = this.getIntent(intent.id);
     if (previous) {
       if (previous.digest !== intent.digest || previous.directory !== intent.directory)
-        throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-          kind: 'state-conflict',
+        throw new Exception('The HQ action conflicts with its recorded state', {
+          code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+          data: {
+            kind: 'state-conflict',
+          },
         });
       return previous;
     }
@@ -50,8 +53,11 @@ export class PlansModel {
       .prepare("SELECT id FROM plan_operation WHERE directory = ? AND state = 'prepared'")
       .get(intent.directory);
     if (unfinished)
-      throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-        kind: 'state-conflict',
+      throw new Exception('The HQ action conflicts with its recorded state', {
+        code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+        data: {
+          kind: 'state-conflict',
+        },
       });
     this.__database
       .prepare('INSERT INTO plan_operation (id, directory, state, intent) VALUES (?, ?, ?, ?)')
@@ -62,13 +68,16 @@ export class PlansModel {
   /**
    * Drops completed write bodies while retaining durable replay identity.
    * @throws
-   * - -1: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */
   public complete(id: string): void {
     const intent = this.getIntent(id);
     if (!intent)
-      throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-        kind: 'state-conflict',
+      throw new Exception('The HQ action conflicts with its recorded state', {
+        code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+        data: {
+          kind: 'state-conflict',
+        },
       });
     intent.state = 'completed';
     intent.coordination = '';
@@ -204,8 +213,11 @@ export class PlansModel {
       )
       .all(directory);
     if (rows.length > 32)
-      throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-        kind: 'state-conflict',
+      throw new Exception('The HQ action conflicts with its recorded state', {
+        code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+        data: {
+          kind: 'state-conflict',
+        },
       });
     return rows.map((row) => z.string().parse(row.id));
   }
@@ -213,7 +225,7 @@ export class PlansModel {
   /**
    * Binds guided input inside the caller's existing admission savepoint.
    * @throws
-   * - -1: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */
   public bindThread(threadId: string, context: IActionPlanContext): void {
     if (!context.scope) return;
@@ -230,8 +242,11 @@ export class PlansModel {
           other.ownership !== 'managed' ||
           other.runtime_epoch !== null
         )
-          throw new Exception('The HQ action conflicts with its recorded state', undefined, {
-            kind: 'state-conflict',
+          throw new Exception('The HQ action conflicts with its recorded state', {
+            code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+            data: {
+              kind: 'state-conflict',
+            },
           });
         this.__database
           .prepare('DELETE FROM thread_plan WHERE thread_id = ?')

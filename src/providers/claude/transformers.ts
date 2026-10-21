@@ -1,4 +1,4 @@
-import { Exception } from 'error-message-utils';
+import { Exception } from 'jg-exception';
 
 import type { IUsageSnapshot } from '../../contracts/index.js';
 
@@ -8,7 +8,7 @@ import type { IClaudeUsage } from './types.js';
  * Preserves independent native meters and leaves unreported quantities unknown.
  * @returns The complete replacement observation, never a sum across sessions.
  * @throws
- * - -1: The Claude integration failed
+ * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
  */
 export const toClaudeUsageSnapshot = (result: IClaudeUsage, observedAt: number): IUsageSnapshot => {
   const seen = new Set<string>();
@@ -17,8 +17,11 @@ export const toClaudeUsageSnapshot = (result: IClaudeUsage, observedAt: number):
     if (row.percent === null) continue;
     const bucket = JSON.stringify([row.kind, row.group, row.scope]);
     if (seen.has(bucket))
-      throw new Exception('The Claude integration failed', undefined, {
-        kind: 'agent-unavailable',
+      throw new Exception('The Claude integration failed', {
+        code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+        data: {
+          kind: 'agent-unavailable',
+        },
       });
     seen.add(bucket);
     windows.push({

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { setTimeout as wait } from 'node:timers/promises';
-import { Exception, extractMessage, hasErrorCode } from 'error-message-utils';
+import { Exception, extractMessage, hasErrorCode } from 'jg-exception';
 
 import { createLineDecoder, MAX_FRAME_BYTES } from '../ipc/index.js';
 
@@ -11,7 +11,7 @@ import type { IProviderProcess } from './types.js';
  * Owns one POSIX process group and bounded structured transport, without a shell.
  * @returns A transport whose close waits for owned process termination.
  * @throws
- * - -1: The HQ transport failed
+ * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
  */
 export const createProviderProcess = (
   executable: string,
@@ -33,12 +33,11 @@ export const createProviderProcess = (
     if (!isRunning) return;
     isRunning = false;
     stopped(
-      new Exception(
-        `The HQ transport failed: ${extractMessage(cause)}`,
-        undefined,
-        { kind: 'agent-unavailable' },
-        { cause },
-      ),
+      new Exception(`The HQ transport failed: ${extractMessage(cause)}`, {
+        code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
+        data: { kind: 'agent-unavailable' },
+        cause,
+      }),
     );
     void close().catch(stopped);
   };
@@ -53,7 +52,11 @@ export const createProviderProcess = (
   child.stdout.once('end', () => {
     try {
       decoder.end();
-      fail(new Exception('The HQ transport failed: native output ended'));
+      fail(
+        new Exception('The HQ transport failed: native output ended', {
+          code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
+        }),
+      );
     } catch (cause) {
       fail(cause);
     }
@@ -67,8 +70,7 @@ export const createProviderProcess = (
     stopped(
       new Exception(
         `The HQ transport failed: native process exited (${code ?? signal ?? 'unknown'})`,
-        undefined,
-        { kind: 'agent-unavailable' },
+        { code: 'JG_AGENT_HQ_TRANSPORT_FAILED', data: { kind: 'agent-unavailable' } },
       ),
     );
     void close().catch(stopped);
@@ -113,8 +115,7 @@ export const createProviderProcess = (
           if (Date.now() >= deadline)
             throw new Exception(
               'The HQ transport failed: native process group termination is unconfirmed',
-              undefined,
-              { kind: 'operation-failed' },
+              { code: 'JG_AGENT_HQ_TRANSPORT_FAILED', data: { kind: 'operation-failed' } },
             );
           await wait(25);
         }
@@ -129,7 +130,10 @@ export const createProviderProcess = (
     async write(message): Promise<void> {
       const content = `${JSON.stringify(message)}\n`;
       if (!isRunning || Buffer.byteLength(content) > MAX_FRAME_BYTES)
-        throw new Exception('The HQ transport failed', undefined, { kind: 'agent-unavailable' });
+        throw new Exception('The HQ transport failed', {
+          code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
+          data: { kind: 'agent-unavailable' },
+        });
       if (!child.stdin.write(content))
         await once(child.stdin, 'drain', { signal: AbortSignal.timeout(30_000) });
     },

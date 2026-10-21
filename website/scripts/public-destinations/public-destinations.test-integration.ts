@@ -3,7 +3,8 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { expect, test } from 'vitest';
+import { expectToRejectCode } from 'jg-exception/testing';
+import { test } from 'vitest';
 
 import { SITE_CONFIG } from '../../src/site.config.ts';
 
@@ -89,27 +90,39 @@ test('uses bounded real HTTP reads and verifies exact release and deployment con
     await verifyPublicDestinations(fetcher);
     await verifyDeployment(fetcher);
     mode = 'wrong-version';
-    await expect(verifyPublicDestinations(fetcher)).rejects.toThrow(
+    await expectToRejectCode(
+      verifyPublicDestinations(fetcher),
+      'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED',
       'The HQ website destination check failed',
     );
     mode = 'wrong-content';
-    await expect(verifyPublicDestinations(fetcher)).rejects.toThrow(
+    await expectToRejectCode(
+      verifyPublicDestinations(fetcher),
+      'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED',
       'The HQ website destination check failed',
     );
     mode = 'soft-404';
-    await expect(verifyDeployment(fetcher)).rejects.toThrow(
+    await expectToRejectCode(
+      verifyDeployment(fetcher),
+      'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED',
       'The HQ website destination check failed',
     );
     mode = 'wrong-mime';
-    await expect(verifyDeployment(fetcher)).rejects.toThrow(
+    await expectToRejectCode(
+      verifyDeployment(fetcher),
+      'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED',
       'The HQ website destination check failed',
     );
     mode = 'oversized';
-    await expect(readDestination('https://example.com', 200, fetcher)).rejects.toThrow(
+    await expectToRejectCode(
+      readDestination('https://example.com', 200, fetcher),
+      'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED',
       'The HQ website destination check failed',
     );
     mode = 'redirect';
-    await expect(readDestination('https://example.com', 200, fetcher)).rejects.toThrow(
+    await expectToRejectCode(
+      readDestination('https://example.com', 200, fetcher),
+      'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED',
       'The HQ website destination check failed',
     );
   } finally {
