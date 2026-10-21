@@ -24,6 +24,7 @@ import {
   withClaudeRuntime,
   type IClaudeFixture,
 } from '../../scripts/test-support/claude-runtime.js';
+import { writeFixtureControl } from '../../scripts/test-support/index.js';
 
 const run = promisify(execFile);
 
@@ -660,7 +661,7 @@ test.each(['codex', 'claude'] as const)(
       const first = await session.create(provider, 'whole-plan');
       const second = await session.create(provider, 'other-owner');
       await fixture.control({ holdTurn: true });
-      await writeFile(join(fixture.root, 'control.json'), JSON.stringify({ holdTurn: true }));
+      await writeFixtureControl(fixture.root, 'control.json', { holdTurn: true });
       const current = await plan.status();
       const authorization = operator();
       await plan.send({
@@ -758,7 +759,7 @@ test.each(['codex', 'claude'] as const)(
       const target = await session.create(provider, 'revise-target');
       const other = await session.create(provider, 'other-task');
       await fixture.control({ holdTurn: true });
-      await writeFile(join(fixture.root, 'control.json'), JSON.stringify({ holdTurn: true }));
+      await writeFixtureControl(fixture.root, 'control.json', { holdTurn: true });
       const milestoneId = (await plan.entries())[1]!.id!;
       const state = await plan.status();
       const authorization = operator();
@@ -846,7 +847,7 @@ test('observed external deletion closes admission and stops only bound execution
     const plan = await setup(fixture);
     const session = await native(fixture);
     const target = await session.create('codex', 'external-change');
-    await writeFile(join(fixture.root, 'control.json'), JSON.stringify({ holdTurn: true }));
+    await writeFixtureControl(fixture.root, 'control.json', { holdTurn: true });
     const milestoneId = (await plan.entries())[1]!.id!;
     const state = await plan.status();
     const authorization = operator();
@@ -1099,7 +1100,7 @@ test('unproven native background cleanup retains the checkpoint and blocks editi
       revision: current.revision,
       mode: 'auto' as const,
     };
-    await writeFile(join(fixture.root, 'control.json'), JSON.stringify({ holdTurn: true }));
+    await writeFixtureControl(fixture.root, 'control.json', { holdTurn: true });
     await session.submit(
       { kind: 'message', threadId: target.id, input: { kind: 'text', text: 'Work on catalog' } },
       scope,
@@ -1108,10 +1109,10 @@ test('unproven native background cleanup retains the checkpoint and blocks editi
       () => session.thread(target.id),
       (thread) => thread.state === 'running',
     );
-    await writeFile(
-      join(fixture.root, 'control.json'),
-      JSON.stringify({ holdTurn: true, backgroundRemaining: true }),
-    );
+    await writeFixtureControl(fixture.root, 'control.json', {
+      holdTurn: true,
+      backgroundRemaining: true,
+    });
     try {
       await plan.send({
         kind: 'begin-revision',
@@ -1134,7 +1135,7 @@ test('unproven native background cleanup retains the checkpoint and blocks editi
       expect(calls.some((call) => call.method === 'thread/backgroundTerminals/list')).toBe(true);
       expect(calls.some((call) => call.method === 'thread/unsubscribe')).toBe(false);
     } finally {
-      await writeFile(join(fixture.root, 'control.json'), '{}');
+      await writeFixtureControl(fixture.root, 'control.json', {});
     }
   });
 });
@@ -1340,7 +1341,7 @@ test('malformed external milestone text requests interruption and retains a clos
       mode: 'auto' as const,
       revision: state.revision,
     };
-    await writeFile(join(fixture.root, 'control.json'), JSON.stringify({ holdTurn: true }));
+    await writeFixtureControl(fixture.root, 'control.json', { holdTurn: true });
     await session.submit(
       {
         kind: 'message',
@@ -1418,21 +1419,18 @@ test('planning permits only the selected native skill and canonical finalization
         scope,
       ),
     ).rejects.toThrow('conflicts');
-    await writeFile(
-      join(fixture.root, 'control.json'),
-      JSON.stringify({
-        planSkill: 'jg-plan',
-        holdTurn: true,
-        prompt: {
-          method: 'item/fileChange/requestApproval',
-          params: {
-            startedAtMs: Date.now(),
-            grantRoot: fixture.workspaceRoot,
-            reason: 'Update the selected plan',
-          },
+    await writeFixtureControl(fixture.root, 'control.json', {
+      planSkill: 'jg-plan',
+      holdTurn: true,
+      prompt: {
+        method: 'item/fileChange/requestApproval',
+        params: {
+          startedAtMs: Date.now(),
+          grantRoot: fixture.workspaceRoot,
+          reason: 'Update the selected plan',
         },
-      }),
-    );
+      },
+    });
     const selected = await fixture.runtime.request({ kind: 'skills', threadId: target.id });
     if (selected.kind !== 'skills' || selected.result.state === 'unavailable')
       throw new Error('Missing planning skill');
@@ -1669,10 +1667,10 @@ test('an explicit new planning invocation reconciles an edit observed while inte
       mode: 'auto',
       milestoneIds: [ids[1]!],
     });
-    await writeFile(
-      join(fixture.root, 'control.json'),
-      JSON.stringify({ holdTurn: true, interruptDelay: 500 }),
-    );
+    await writeFixtureControl(fixture.root, 'control.json', {
+      holdTurn: true,
+      interruptDelay: 500,
+    });
     await session.submit(
       {
         kind: 'message',
@@ -1779,7 +1777,7 @@ test('queued ordinary input cannot inherit a plan scope attached after its admis
     const plan = await setup(fixture);
     const session = await native(fixture);
     const target = await session.create('codex', 'queue-scope-boundary');
-    await writeFile(join(fixture.root, 'control.json'), JSON.stringify({ holdTurn: true }));
+    await writeFixtureControl(fixture.root, 'control.json', { holdTurn: true });
     await session.submit({
       kind: 'message',
       threadId: target.id,
@@ -1826,16 +1824,16 @@ test('queued ordinary input cannot inherit a plan scope attached after its admis
       () => session.receipt(scoped.id),
       (entry) => entry.delivery === 'acknowledged',
     );
-    await writeFile(
-      join(fixture.root, 'control.json'),
-      JSON.stringify({ holdTurn: true, releaseThreadId: target.nativeId }),
-    );
+    await writeFixtureControl(fixture.root, 'control.json', {
+      holdTurn: true,
+      releaseThreadId: target.nativeId,
+    });
     await fixture.runtime.request({ kind: 'skills', threadId: target.id });
     await session.until(
       () => session.thread(target.id),
       (thread) => thread.state === 'completed',
     );
-    await writeFile(join(fixture.root, 'control.json'), JSON.stringify({ holdTurn: true }));
+    await writeFixtureControl(fixture.root, 'control.json', { holdTurn: true });
     await wait(100);
     expect((await session.receipt(queued.id)).delivery).toBe('queued');
     const before = (await readFile(join(fixture.root, 'calls.jsonl'), 'utf8'))
@@ -1906,7 +1904,7 @@ test.each(['record-count', 'written-bytes', 'written-bytes-malformed'] as const)
           mode: 'auto',
           milestoneIds: [milestoneId],
         });
-        await writeFile(join(fixture.root, 'control.json'), JSON.stringify({ holdTurn: true }));
+        await writeFixtureControl(fixture.root, 'control.json', { holdTurn: true });
         await session.submit(
           {
             kind: 'message',

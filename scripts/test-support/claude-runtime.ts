@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hasErrorCode } from 'error-message-utils';
@@ -10,6 +10,7 @@ import { z } from 'zod';
 
 import { installClaudeFixture } from './claude.js';
 import { installCodexFixture } from './codex.js';
+import { writeFixtureControl } from './controls.js';
 
 // owned filesystem/native setup shared by Claude usage and history integration tests
 export type IClaudeFixture = {
@@ -54,7 +55,7 @@ export const withClaudeRuntime = async (
       configRoot,
       runtime,
       request: (command) => requestAgentHq(stateRoot, command),
-      control: (settings) => writeFile(join(root, 'claude-control.json'), JSON.stringify(settings)),
+      control: (settings) => writeFixtureControl(root, 'claude-control.json', settings),
       transcript: (nativeId) => join(projectRoot, `${nativeId}.jsonl`),
     });
   } finally {

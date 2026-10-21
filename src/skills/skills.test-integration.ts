@@ -21,6 +21,7 @@ import {
   withClaudeRuntime,
   type IClaudeFixture,
 } from '../../scripts/test-support/claude-runtime.js';
+import { writeFixtureControl } from '../../scripts/test-support/index.js';
 
 const setup = async (fixture: IClaudeFixture, provider: 'codex' | 'claude') => {
   const status = await fixture.request({ kind: 'status' });
@@ -139,9 +140,10 @@ const setup = async (fixture: IClaudeFixture, provider: 'codex' | 'claude') => {
           ]);
   };
   const control = (settings: object) =>
-    writeFile(
-      join(fixture.root, provider === 'codex' ? 'control.json' : 'claude-control.json'),
-      JSON.stringify(settings),
+    writeFixtureControl(
+      fixture.root,
+      provider === 'codex' ? 'control.json' : 'claude-control.json',
+      settings,
     );
   return {
     envelope,
