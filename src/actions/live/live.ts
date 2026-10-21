@@ -1,7 +1,7 @@
 import type { IHistoryItem } from '../../contracts/index.js';
 
 type ILiveEntry = { item: IHistoryItem; isComplete: boolean; bytes: number };
-type ILiveThread = { items: Map<string, ILiveEntry>; hasGap: boolean };
+type ILiveThread = { items: Map<string, ILiveEntry>; hasGap: boolean; revision: number };
 // serialized accounting includes escaping/identifiers and leaves space inside the 8 MiB IPC frame
 const MAX_LIVE_BYTES = 4 * 1024 * 1024;
 
@@ -9,12 +9,13 @@ const MAX_LIVE_BYTES = 4 * 1024 * 1024;
 export class LiveItems {
   private readonly __threads = new Map<string, ILiveThread>();
   private __bytes = 0;
+  private __revision = 0;
 
   /** Starts a known presentation window without discarding retained awaiting-flush items. */
   public open(nativeId: string): void {
     if (this.__threads.has(nativeId)) return;
     if (this.__threads.size >= 32) this.__remove(this.__threads.keys().next().value!);
-    this.__threads.set(nativeId, { items: new Map(), hasGap: false });
+    this.__threads.set(nativeId, { items: new Map(), hasGap: false, revision: ++this.__revision });
   }
 
   /** Replaces one native item without persisting token or tool-output bodies. */
@@ -22,9 +23,10 @@ export class LiveItems {
     let thread = this.__threads.get(nativeId);
     if (!thread) {
       if (this.__threads.size >= 32) this.__remove(this.__threads.keys().next().value!);
-      thread = { items: new Map(), hasGap: true };
+      thread = { items: new Map(), hasGap: true, revision: ++this.__revision };
       this.__threads.set(nativeId, thread);
     }
+    thread.revision = ++this.__revision;
     const key = JSON.stringify([item.turnId, item.nativeId]);
     const previous = thread.items.get(key);
     if (previous) this.__bytes -= previous.bytes;
@@ -42,7 +44,10 @@ export class LiveItems {
   /** Marks missing native stream evidence without discarding the surviving presentation. */
   public markGap(nativeId: string): void {
     const thread = this.__threads.get(nativeId);
-    if (thread) thread.hasGap = true;
+    if (thread) {
+      thread.hasGap = true;
+      thread.revision = ++this.__revision;
+    }
   }
 
   /** Replaces an ephemeral stream identity when the native persisted identity arrives. */
@@ -53,6 +58,7 @@ export class LiveItems {
     if (!thread || !entry) return;
     this.__bytes -= entry.bytes;
     thread.items.delete(key);
+    thread.revision = ++this.__revision;
   }
 
   /** Appends bounded text; a truncated prefix is never presented as the complete item. */
@@ -60,7 +66,10 @@ export class LiveItems {
     const thread = this.__threads.get(nativeId);
     const entry = thread?.items.get(JSON.stringify([turnId, itemId]));
     if (!entry || entry.isComplete) {
-      if (thread) thread.hasGap = true;
+      if (thread) {
+        thread.hasGap = true;
+        thread.revision = ++this.__revision;
+      }
       return;
     }
     if (entry.item.isTruncated) return;
@@ -79,18 +88,27 @@ export class LiveItems {
   }
 
   /** Returns a copy of the bounded window and explicit incompleteness evidence. */
-  public read(nativeId: string): {
+  public read(
+    nativeId: string,
+    afterRevision?: number,
+  ): {
+    revision: number;
+    unchanged: boolean;
     data: (IHistoryItem & { state: 'active' | 'awaiting-flush' })[];
     hasGap: boolean;
   } {
     const thread = this.__threads.get(nativeId);
+    const revision = thread?.revision ?? this.__revision;
     return {
-      data: thread
-        ? [...thread.items.values()].map((entry) => ({
-            ...entry.item,
-            state: entry.isComplete ? 'awaiting-flush' : 'active',
-          }))
-        : [],
+      revision,
+      unchanged: afterRevision === revision,
+      data:
+        thread && afterRevision !== revision
+          ? [...thread.items.values()].map((entry) => ({
+              ...entry.item,
+              state: entry.isComplete ? 'awaiting-flush' : 'active',
+            }))
+          : [],
       hasGap: thread?.hasGap ?? true,
     };
   }
@@ -105,6 +123,7 @@ export class LiveItems {
       if (entry?.isComplete && JSON.stringify(entry.item) === JSON.stringify(item)) {
         this.__bytes -= entry.bytes;
         thread.items.delete(key);
+        thread.revision = ++this.__revision;
       }
     }
   }
@@ -112,6 +131,7 @@ export class LiveItems {
   /** Keeps interrupted partial items available while their final native history is pending. */
   public completeTurn(nativeId: string, turnId: string): void {
     const thread = this.__threads.get(nativeId);
+    if (thread) thread.revision = ++this.__revision;
     if (thread)
       for (const entry of thread.items.values())
         if (entry.item.turnId === turnId) entry.isComplete = true;
@@ -122,11 +142,13 @@ export class LiveItems {
     const thread = this.__threads.get(nativeId);
     if (thread) for (const entry of thread.items.values()) this.__bytes -= entry.bytes;
     this.__threads.delete(nativeId);
+    this.__revision += 1;
   }
 
   /** Releases every retained body when the owning runtime has stopped. */
   public clear(): void {
     this.__threads.clear();
+    this.__revision += 1;
     this.__bytes = 0;
   }
 
@@ -135,6 +157,7 @@ export class LiveItems {
     if (!entry) return;
     this.__bytes -= entry.bytes;
     thread.items.delete(key);
+    thread.revision = ++this.__revision;
     thread.hasGap = true;
   }
 }

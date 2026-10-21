@@ -84,7 +84,7 @@ test(
       );
       const script = `
       import { createAgentHq, requestAgentHq, withHqLock, readHqLockState } from 'jg-agent-hq';
-      import { HqResponseSchema } from 'jg-agent-hq/contracts';
+      import { HqResponseSchema, BrowserActionSchema } from 'jg-agent-hq/contracts';
       import { join } from 'node:path';
       const stateRoot = join(process.cwd(), 'state');
       const value = await withHqLock(stateRoot, 'smoke', async () => 42);
@@ -95,6 +95,12 @@ test(
       try {
         const response = HqResponseSchema.parse(await requestAgentHq(runtime.stateRoot, { kind: 'threads', provider: 'codex', workspaceRoot: process.cwd(), limit: 1 }));
         if (response.kind !== 'threads' || response.result.data.length !== 1) throw new Error('packed runtime failed');
+        const status = await runtime.request({kind:'status'});
+        const input = BrowserActionSchema.parse({id:crypto.randomUUID(),runtimeEpoch:status.result.runtimeEpoch,command:{kind:'publication-retry',expectedCommit:'a'.repeat(40)}});
+        let effects = 0;
+        await runtime.performBrowserAction(input,'packed-operator',async()=>{effects++;});
+        await runtime.performBrowserAction(input,'packed-operator',async()=>{effects++;});
+        if(effects!==1 || (await runtime.readBrowserAction(input.id,'packed-operator')).state!=='acknowledged') throw new Error('packed receipt failed');
       } finally { await runtime.close(); }
     `;
       const bin = await installCodexFixture(scratch);

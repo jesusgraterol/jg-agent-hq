@@ -26,6 +26,7 @@ import {
   resolveAllowedRoots,
   resolveWorkspaceTarget,
 } from './state/index.js';
+import { createBrowserActions } from './browser/index.js';
 import { AgentHqOptionsSchema, type IAgentHq, type IAgentHqOptions } from './types.js';
 
 const UnconfirmedCleanupSchema = z.object({ cleanupUnconfirmed: z.literal(true) });
@@ -92,6 +93,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       await ownership.release();
     throw error;
   }
+  const browser = createBrowserActions(store);
   const native = provider;
   const projection = store;
   const claude = createClaudeProvider(projection);
@@ -179,6 +181,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const close = (): Promise<void> =>
     (closing ??= (async () => {
       try {
+        await browser.close();
         await Promise.allSettled([...revisionJobs.values()]);
         const results = await Promise.allSettled([ipc?.close(), actions.close(), claude.close()]);
         const storeCleanup = await Promise.allSettled([projection.close()]);
@@ -266,6 +269,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           kind: command.kind,
           result: { name: await projection.suggestThreadName(suggestThreadName(command.topic)) },
         };
+      case 'thread-plan':
       case 'managed-thread-name':
       case 'receipt':
       case 'managed-threads':
@@ -336,5 +340,12 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     await close();
     throw error;
   }
-  return { stateRoot, closed, request, close };
+  return {
+    stateRoot,
+    closed,
+    request,
+    close,
+    performBrowserAction: browser.perform,
+    readBrowserAction: browser.read,
+  };
 };

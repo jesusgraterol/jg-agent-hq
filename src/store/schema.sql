@@ -193,3 +193,13 @@ CREATE TABLE IF NOT EXISTS handoff_dispatch (
  CONSTRAINT uq_hd__action_id UNIQUE (action_id),
  CONSTRAINT fk_hd__handoff_id FOREIGN KEY (handoff_id) REFERENCES handoff(id)
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS browser_action (
+  id TEXT CONSTRAINT pk_ba__id PRIMARY KEY,
+  operator_id TEXT NOT NULL,
+  digest TEXT NOT NULL CHECK (length(digest) = 64),
+  receipt TEXT NOT NULL CHECK (json_valid(receipt))
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_ba__submitted_epoch ON browser_action (json_extract(receipt, '$.runtimeEpoch'))
+WHERE json_extract(receipt, '$.state') = 'submitted';

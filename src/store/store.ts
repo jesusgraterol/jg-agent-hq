@@ -3,6 +3,7 @@ import { Exception, extractMessage } from 'error-message-utils';
 import { z } from 'zod';
 
 import {
+  BrowserReceiptSchema,
   ActionReceiptSchema,
   ActionPlanContextSchema,
   ManagedThreadSchema,
@@ -194,6 +195,15 @@ export const createStore = async (
     });
   };
   return {
+    getBrowserAction: (id, operatorId) =>
+      request({ kind: 'browser-read', id, operatorId }, BrowserReceiptSchema.nullable()),
+    admitBrowserAction: (action, operatorId) =>
+      request(
+        { kind: 'browser-admit', action, operatorId },
+        z.object({ receipt: BrowserReceiptSchema, isNew: z.boolean() }),
+      ),
+    settleBrowserAction: (id, operatorId, state) =>
+      request({ kind: 'browser-settle', id, operatorId, state }, BrowserReceiptSchema.nullable()),
     get isAvailable() {
       return isAvailable;
     },
