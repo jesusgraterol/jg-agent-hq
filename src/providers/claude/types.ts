@@ -1,7 +1,12 @@
 import { z } from 'zod';
 
 // only explicitly qualified CLI and transcript versions may use the local reader
-export const ClaudeHistoryVersionSchema = z.enum(['2.1.304', '2.1.306']);
+export const ClaudeHistoryCliVersionSchema = z.enum(['2.1.304', '2.1.306']);
+export const ClaudeHistoryRecordVersionSchema = z.enum([
+  '2.1.296',
+  '2.1.299',
+  ...ClaudeHistoryCliVersionSchema.options,
+]);
 export const ClaudeInitializeSchema = z.object({
   claude_code_version: z.string().min(1).max(128),
   commands: z.unknown().optional(),

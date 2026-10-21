@@ -1,7 +1,18 @@
 // @vitest-environment node
-import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, rename, stat, symlink, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  appendFile,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { createAgentHq } from 'jg-agent-hq';
 import { HqResponseSchema } from 'jg-agent-hq/contracts';
 import { expect, test } from 'vitest';
 
@@ -320,6 +331,7 @@ test.each(['truncate', 'replace'])(
 
 test.each([
   ['2.1.304', ['2.1.304', '2.1.304']],
+  ['2.1.306', ['2.1.296', '2.1.299']],
   ['2.1.306', ['2.1.306', '2.1.306']],
   ['2.1.306', ['2.1.304', '2.1.306']],
 ])('qualified CLI %s reads and pages transcript versions %o', async (cliVersion, versions) => {
@@ -374,6 +386,54 @@ test.each([
     expect(last.result.nextCursor).toBeNull();
   });
 });
+
+test('history qualification refreshes a rejected projection after runtime restart', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, stateRoot, runtime, request }) => {
+    const nativeId = randomUUID();
+    const path = transcript(nativeId);
+    await writeFile(path, JSON.stringify(claudeRecord(workspaceRoot, nativeId)) + '\n');
+    const initial = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
+    expect(initial.kind === 'items' && initial.result.data.length).toBe(1);
+    await runtime.close();
+    const identity = await stat(path);
+    const prefix = (await readFile(path)).subarray(0, 256);
+    const fileIdentity = `${identity.dev}:${identity.ino}:${identity.birthtimeMs}:${createHash('sha256').update(prefix).digest('hex')}`;
+    const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'));
+    try {
+      database
+        .prepare('UPDATE claude_file SET identity = ?, supported = -1 WHERE native_id = ?')
+        .run(fileIdentity, nativeId);
+    } finally {
+      database.close();
+    }
+    const replacement = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
+    try {
+      const refreshed = await replacement.request({
+        kind: 'items',
+        provider: 'claude',
+        workspaceRoot,
+        nativeId,
+      });
+      expect(
+        refreshed.kind === 'items' && refreshed.result.data.map((item) => item.text),
+      ).toStrictEqual(['Example native message']);
+    } finally {
+      await replacement.close();
+    }
+  });
+});
+
+test.each(['2.1.296', '2.1.299'])(
+  'qualifying transcript version %s does not qualify that installed CLI version',
+  async (version) => {
+    await withClaudeRuntime(async ({ workspaceRoot, request, control }) => {
+      await control({ version });
+      await expect(request({ kind: 'threads', provider: 'claude', workspaceRoot })).rejects.toThrow(
+        'Coding agent is unavailable',
+      );
+    });
+  },
+);
 
 test.each(['2.1.305', '9.0.0'])(
   'unqualified file/CLI version %s is unavailable while qualified discoveries remain browsable',
@@ -432,6 +492,60 @@ test('a malformed conversation record makes the file unavailable instead of sile
     ).rejects.toThrow('Coding agent is unavailable');
   });
 });
+
+test.each(['existing', 'removed'])(
+  'a native transcript retains messages from a workspace subdirectory (%s)',
+  async (state) => {
+    await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+      const nativeId = randomUUID();
+      const child = join(workspaceRoot, 'planning');
+      await mkdir(child);
+      if (state === 'removed') await rm(child, { recursive: true });
+      const first = claudeRecord(workspaceRoot, nativeId);
+      const next = {
+        ...claudeRecord(child, nativeId, {
+          type: 'assistant',
+          parentUuid: first.uuid,
+          text: 'Subdirectory response',
+        }),
+        version: '2.1.299',
+      };
+      await writeFile(
+        transcript(nativeId),
+        [first, next].map((record) => JSON.stringify(record)).join('\n') + '\n',
+      );
+      const items = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
+      expect(items.kind === 'items' && items.result.data.map((item) => item.text)).toStrictEqual([
+        'Example native message',
+        'Subdirectory response',
+      ]);
+    });
+  },
+);
+
+test.each(['sibling', 'symlink', 'excluded', 'symlink-excluded'])(
+  'native cwd %s cannot escape the selected workspace',
+  async (state) => {
+    await withClaudeRuntime(async ({ workspaceRoot, transcript, request, root }) => {
+      const nativeId = randomUUID();
+      let cwd = workspaceRoot + '-other';
+      if (state === 'symlink' || state === 'symlink-excluded') {
+        const target =
+          state === 'symlink' ? join(root, 'foreign') : join(workspaceRoot, '_archive');
+        await mkdir(target);
+        const link = join(workspaceRoot, 'escape');
+        await symlink(target, link);
+        cwd = join(link, 'removed');
+      } else if (state === 'excluded') cwd = join(workspaceRoot, '_archive');
+      await writeFile(transcript(nativeId), JSON.stringify(claudeRecord(cwd, nativeId)) + '\n');
+      const threads = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+      expect(threads.kind === 'threads' && threads.result.data).toStrictEqual([]);
+      await expect(
+        request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId }),
+      ).rejects.toThrow('Coding agent is unavailable');
+    });
+  },
+);
 
 test('workspace authorization, excluded subtrees, links and malformed native identity fail closed', async () => {
   await withClaudeRuntime(async ({ workspaceRoot, projectRoot, transcript, request, root }) => {

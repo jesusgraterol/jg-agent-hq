@@ -833,30 +833,86 @@ test(
   },
 );
 
-test('rename, close and explicit resume retain the HQ identity while native discovery shows its owner', async () => {
+test.each(['notLoaded', 'idle'])(
+  'rename, close and explicit resume retain the HQ identity when native state is %s',
+  async (unsubscribeState) => {
+    const fixture = await setup();
+    try {
+      await fixture.control({ unsubscribeState });
+      const { thread } = await fixture.create('inspect-api');
+      const rename = await fixture.submit(
+        fixture.envelope({ kind: 'thread-rename', threadId: thread.id, name: 'fix-api' }),
+      );
+      await fixture.until(
+        () => fixture.receipt(rename.id),
+        (entry) => entry.delivery === 'acknowledged',
+      );
+      expect(await fixture.thread(thread.id)).toMatchObject({
+        id: thread.id,
+        name: 'fix-api',
+        nativeId: thread.nativeId,
+      });
+      expect(
+        await fixture.request({
+          kind: 'thread',
+          provider: 'codex',
+          workspaceRoot: fixture.workspaceRoot,
+          nativeId: thread.nativeId!,
+        }),
+      ).toMatchObject({ result: { ownership: 'managed', managedId: thread.id, name: 'fix-api' } });
+      const close = await fixture.submit(
+        fixture.envelope({ kind: 'thread-close', threadId: thread.id }),
+      );
+      await fixture.until(
+        () => fixture.receipt(close.id),
+        (entry) => entry.delivery === 'acknowledged',
+      );
+      expect(await fixture.thread(thread.id)).toMatchObject({
+        state: 'inactive',
+        runtimeEpoch: null,
+      });
+      const resume = await fixture.submit(
+        fixture.envelope({
+          kind: 'thread-resume',
+          threadId: thread.id,
+          operatorConfirmation: 'This native thread is closed in other CLIs',
+        }),
+      );
+      await fixture.until(
+        () => fixture.receipt(resume.id),
+        (entry) => entry.delivery === 'acknowledged',
+      );
+      expect(await fixture.thread(thread.id)).toMatchObject({
+        id: thread.id,
+        nativeId: thread.nativeId,
+        state: 'idle',
+      });
+      const calls = (await fixture.calls()).map((call) => call.method);
+      expect(calls.indexOf('thread/backgroundTerminals/clean')).toBeLessThan(
+        calls.indexOf('thread/backgroundTerminals/list'),
+      );
+      expect(calls.indexOf('thread/backgroundTerminals/list')).toBeLessThan(
+        calls.indexOf('thread/unsubscribe'),
+      );
+    } finally {
+      await fixture.close();
+    }
+  },
+);
+
+test('explicit resume cannot acquire an active native thread or an already controlled idle thread', async () => {
   const fixture = await setup();
   try {
-    const { thread } = await fixture.create('inspect-api');
-    const rename = await fixture.submit(
-      fixture.envelope({ kind: 'thread-rename', threadId: thread.id, name: 'fix-api' }),
+    await fixture.control({ unsubscribeState: 'active' });
+    const { thread } = await fixture.create('resume-guard');
+    const command = {
+      kind: 'thread-resume' as const,
+      threadId: thread.id,
+      operatorConfirmation: 'No other CLI controller owns this task-owned session',
+    };
+    await expect(fixture.submit(fixture.envelope(command))).rejects.toThrow(
+      'State changed. Refresh before continuing.',
     );
-    await fixture.until(
-      () => fixture.receipt(rename.id),
-      (entry) => entry.delivery === 'acknowledged',
-    );
-    expect(await fixture.thread(thread.id)).toMatchObject({
-      id: thread.id,
-      name: 'fix-api',
-      nativeId: thread.nativeId,
-    });
-    expect(
-      await fixture.request({
-        kind: 'thread',
-        provider: 'codex',
-        workspaceRoot: fixture.workspaceRoot,
-        nativeId: thread.nativeId!,
-      }),
-    ).toMatchObject({ result: { ownership: 'managed', managedId: thread.id, name: 'fix-api' } });
     const close = await fixture.submit(
       fixture.envelope({ kind: 'thread-close', threadId: thread.id }),
     );
@@ -864,32 +920,11 @@ test('rename, close and explicit resume retain the HQ identity while native disc
       () => fixture.receipt(close.id),
       (entry) => entry.delivery === 'acknowledged',
     );
-    expect(await fixture.thread(thread.id)).toMatchObject({
-      state: 'inactive',
-      runtimeEpoch: null,
-    });
-    const resume = await fixture.submit(
-      fixture.envelope({
-        kind: 'thread-resume',
-        threadId: thread.id,
-        operatorConfirmation: 'This native thread is closed in other CLIs',
-      }),
+    await expect(fixture.submit(fixture.envelope(command))).rejects.toThrow(
+      'State changed. Refresh before continuing.',
     );
-    await fixture.until(
-      () => fixture.receipt(resume.id),
-      (entry) => entry.delivery === 'acknowledged',
-    );
-    expect(await fixture.thread(thread.id)).toMatchObject({
-      id: thread.id,
-      nativeId: thread.nativeId,
-      state: 'idle',
-    });
-    const calls = (await fixture.calls()).map((call) => call.method);
-    expect(calls.indexOf('thread/backgroundTerminals/clean')).toBeLessThan(
-      calls.indexOf('thread/backgroundTerminals/list'),
-    );
-    expect(calls.indexOf('thread/backgroundTerminals/list')).toBeLessThan(
-      calls.indexOf('thread/unsubscribe'),
+    expect((await fixture.calls()).filter((call) => call.method === 'thread/resume')).toHaveLength(
+      0,
     );
   } finally {
     await fixture.close();

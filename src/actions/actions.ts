@@ -758,10 +758,17 @@ export const createActions = (
           provider === 'codex'
             ? await native.readThread(nativeId)
             : await readClaudeThread(nativeId, thread.workspaceRoot);
+        // native unsubscribe may retain an idle thread after its managed control is closed
+        const canResume =
+          provider === 'codex'
+            ? target.nativeState === 'notLoaded' ||
+              (command.kind === 'thread-resume' &&
+                thread.state === 'inactive' &&
+                thread.ownership === 'managed' &&
+                target.nativeState === 'idle')
+            : target.historyState === 'available';
         if (
-          (provider === 'codex'
-            ? target.nativeState !== 'notLoaded'
-            : target.historyState !== 'available') ||
+          !canResume ||
           (await resolveWorkspaceTarget(target.workspaceRoot, roots)) !== thread.workspaceRoot
         )
           conflict();

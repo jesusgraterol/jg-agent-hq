@@ -1140,47 +1140,54 @@ test('unproven native background cleanup retains the checkpoint and blocks editi
   });
 });
 
-test('retained checkpoint and proposed drafts use bounded stable seek pages over 1024 milestones', async () => {
-  await withClaudeRuntime(async (fixture) => {
-    const content = sequence(
-      Array.from({ length: 1024 }, (_, index) =>
-        milestone(index + 1, `Feature ${index + 1}`, `Deliver requirement ${index + 1}.`),
-      ),
-    );
-    const plan = await setup(fixture, content);
-    await begin(plan);
-    await writeFile(
-      join(plan.directory, 'milestones.md'),
-      content.replaceAll('Deliver requirement', 'Implement requirement'),
-    );
-    await plan.finalize();
-    for (const collection of ['sources', 'drafts'] as const) {
-      const ids: string[] = [];
-      let cursor: string | undefined;
-      do {
-        const page = await plan.collection(collection, 128, cursor);
-        expect(page.data).toHaveLength(128);
-        ids.push(
-          ...page.data.map((row) =>
-            row.kind === 'source' || row.kind === 'draft' ? row.entry.id : 'invalid',
-          ),
-        );
-        cursor = page.nextCursor ?? undefined;
-      } while (cursor);
-      expect(ids).toHaveLength(1024);
-      expect(new Set(ids).size).toBe(1024);
-    }
-    expect((await plan.collection('evidence')).data).toStrictEqual([]);
-    expect((await plan.collection('correspondences')).nextCursor).toBeNull();
-    const first = await plan.collection('sources');
-    expect(first.data).toHaveLength(32);
-    await expect(plan.collection('sources', 64, first.nextCursor!)).rejects.toThrow('cursor');
-    await expect(plan.collection('drafts', 32, first.nextCursor!)).rejects.toThrow('cursor');
-    await expect(plan.collection('sources', 32, 'invalid')).rejects.toThrow('cursor');
-    await plan.approve('plan');
-    await expect(plan.collection('sources', 32, first.nextCursor!)).rejects.toThrow('cursor');
-  });
-});
+test(
+  'retained checkpoint and proposed drafts use bounded stable seek pages over 1024 milestones',
+  {
+    // a complete filesystem/SQLite revision of 1,024 milestones needs a larger CI budget
+    timeout: 30_000,
+  },
+  async () => {
+    await withClaudeRuntime(async (fixture) => {
+      const content = sequence(
+        Array.from({ length: 1024 }, (_, index) =>
+          milestone(index + 1, `Feature ${index + 1}`, `Deliver requirement ${index + 1}.`),
+        ),
+      );
+      const plan = await setup(fixture, content);
+      await begin(plan);
+      await writeFile(
+        join(plan.directory, 'milestones.md'),
+        content.replaceAll('Deliver requirement', 'Implement requirement'),
+      );
+      await plan.finalize();
+      for (const collection of ['sources', 'drafts'] as const) {
+        const ids: string[] = [];
+        let cursor: string | undefined;
+        do {
+          const page = await plan.collection(collection, 128, cursor);
+          expect(page.data).toHaveLength(128);
+          ids.push(
+            ...page.data.map((row) =>
+              row.kind === 'source' || row.kind === 'draft' ? row.entry.id : 'invalid',
+            ),
+          );
+          cursor = page.nextCursor ?? undefined;
+        } while (cursor);
+        expect(ids).toHaveLength(1024);
+        expect(new Set(ids).size).toBe(1024);
+      }
+      expect((await plan.collection('evidence')).data).toStrictEqual([]);
+      expect((await plan.collection('correspondences')).nextCursor).toBeNull();
+      const first = await plan.collection('sources');
+      expect(first.data).toHaveLength(32);
+      await expect(plan.collection('sources', 64, first.nextCursor!)).rejects.toThrow('cursor');
+      await expect(plan.collection('drafts', 32, first.nextCursor!)).rejects.toThrow('cursor');
+      await expect(plan.collection('sources', 32, 'invalid')).rejects.toThrow('cursor');
+      await plan.approve('plan');
+      await expect(plan.collection('sources', 32, first.nextCursor!)).rejects.toThrow('cursor');
+    });
+  },
+);
 
 test('a finalization write retry after restart reuses the saved mapping, assigned IDs and original evidence', async () => {
   await withClaudeRuntime(async (fixture) => {

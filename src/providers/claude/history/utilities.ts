@@ -1,7 +1,7 @@
 import { constants, lstatSync, openSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { Exception } from 'error-message-utils';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { Exception, hasErrorCode } from 'error-message-utils';
 import { z } from 'zod';
 
 import type { IHistoryItem } from '../../../contracts/index.js';
@@ -42,6 +42,37 @@ export const projectDirectory = (workspaceRoot: string): string => {
       kind: 'agent-unavailable',
     });
   return directory;
+};
+
+/**
+ * Verifies a native cwd within its selected workspace, including removed subdirectories.
+ * @returns Whether existing path ancestors remain inside the workspace without excluded segments.
+ */
+export const isClaudeWorkspaceCwd = (cwd: string | undefined, workspaceRoot: string): boolean => {
+  if (cwd === workspaceRoot) return true;
+  if (
+    !cwd ||
+    cwd.length > 4096 ||
+    !isAbsolute(cwd) ||
+    resolve(cwd) !== cwd ||
+    cwd.split(sep).some((part) => EXCLUDED.has(part))
+  )
+    return false;
+  const child = relative(workspaceRoot, cwd);
+  if (isAbsolute(child) || child === '..' || child.startsWith(`..${sep}`)) return false;
+  let ancestor = cwd;
+  while (ancestor !== workspaceRoot) {
+    try {
+      const canonical = realpathSync(ancestor);
+      if (canonical.split(sep).some((part) => EXCLUDED.has(part))) return false;
+      const resolved = relative(workspaceRoot, canonical);
+      return !isAbsolute(resolved) && resolved !== '..' && !resolved.startsWith(`..${sep}`);
+    } catch (cause) {
+      if (!hasErrorCode(cause, 'ENOENT') && !hasErrorCode(cause, 'ENOTDIR')) throw cause;
+      ancestor = dirname(ancestor);
+    }
+  }
+  return true;
 };
 
 /**

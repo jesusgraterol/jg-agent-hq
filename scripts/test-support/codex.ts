@@ -121,7 +121,7 @@ else {
     }
     if (method === 'thread/backgroundTerminals/clean') { respond(request.id,{});return; }
     if (method === 'thread/backgroundTerminals/list') { respond(request.id,{data:control.backgroundRemaining?[{id:'remaining-task'}]:[],nextCursor:null});return; }
-    if (method === 'thread/unsubscribe') { managed.get(params.threadId).status={type:'notLoaded'};respond(request.id,{status:'unsubscribed'});return; }
+    if (method === 'thread/unsubscribe') { managed.get(params.threadId).status={type:control.unsubscribeState??'notLoaded'};respond(request.id,{status:'unsubscribed'});return; }
     if (method === 'thread/list') {
       if (control.mode === 'exit-on-list') { process.stdout.end();return; }
       if (control.notifyUsage) {
