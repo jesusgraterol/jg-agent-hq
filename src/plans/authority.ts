@@ -118,6 +118,7 @@ export const describePlan = (
             hasUncertainEffects: workflow.hasUncertainEffects,
             hasCheckpoint: !!workflow.checkpoint,
             hasProposal: !!workflow.proposal,
+            proposalId: workflow.proposal?.id ?? null,
             unmatchedCount: workflow.proposal?.confirmation
               ? 0
               : (workflow.proposal?.unmatchedSourceIds.length ?? 0),

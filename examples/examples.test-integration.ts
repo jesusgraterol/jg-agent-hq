@@ -1,0 +1,405 @@
+// @vitest-environment node
+import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
+import type { IHandoff, IPlanOperatorAction, IPlanStatus } from 'jg-agent-hq/contracts';
+import {
+  fingerprintPlan,
+  inspectPlan,
+  parseMilestones,
+  preparePlanDocumentWrite,
+  writePlanDocument,
+} from 'jg-plans';
+import { expect, test } from 'vitest';
+
+import { withClaudeRuntime, writeFixtureControl } from '../scripts/test-support/index.js';
+import { controlSession } from './control-session.ts';
+import { reviewHandoff } from './review-handoff.ts';
+import { revisePlan } from './revise-plan.ts';
+
+const operator = (): IPlanOperatorAction => ({
+  id: randomUUID(),
+  operatorId: 'example-reader',
+  source: { kind: 'user-action', reference: `example:confirmed:${randomUUID()}` },
+});
+const skills = ['jg-review-session', 'jg-feedback', 'jg-plan', 'jg-breakdown'];
+
+test.each(['codex', 'claude'] as const)(
+  'the control-session source operates the real %s controller and IPC',
+  async (provider) => {
+    await withClaudeRuntime(async (fixture) => {
+      const ids = { create: randomUUID(), message: randomUUID() };
+      const result = await controlSession({
+        stateRoot: fixture.stateRoot,
+        workspaceRoot: fixture.workspaceRoot,
+        provider,
+        name: 'example-session',
+        text: 'Discuss the selected task without changing files.',
+        actionIds: ids,
+      });
+      expect(result.thread.provider).toBe(provider);
+      expect(result.receipt.id).toBe(ids.message);
+      expect(result.receipt.threadId).toBe(result.thread.id);
+      expect(result.receipt.delivery).toBe('acknowledged');
+      const latest = await fixture.request({ kind: 'receipt', actionId: ids.message });
+      expect(latest).toMatchObject({
+        kind: 'receipt',
+        result: {
+          id: result.receipt.id,
+          digest: result.receipt.digest,
+          threadId: result.thread.id,
+          delivery: 'acknowledged',
+        },
+      });
+      if (latest.kind !== 'receipt' || !latest.result) throw new Error('Missing current receipt');
+      expect(latest.result.updatedAt).toBeGreaterThanOrEqual(result.receipt.updatedAt);
+      if (result.receipt.completion === 'completed')
+        expect(latest.result.completion).toBe('completed');
+      expect(result.usage).toMatchObject({ provider, source: 'native' });
+      expect(result.approvals).toStrictEqual([]);
+    });
+  },
+);
+
+test.each(['codex', 'claude'] as const)(
+  'the handoff source sends confirmed selected findings back to the %s author',
+  async (provider) => {
+    await withClaudeRuntime(async (fixture) => {
+      await writeFixtureControl(fixture.root, 'control.json', { skillNames: skills });
+      await fixture.control({ skillNames: skills });
+      const source = await controlSession({
+        stateRoot: fixture.stateRoot,
+        workspaceRoot: fixture.workspaceRoot,
+        provider,
+        name: 'example-author',
+        text: 'Discuss the task without changing files.',
+        actionIds: { create: randomUUID(), message: randomUUID() },
+      });
+      const phases: string[] = [];
+      const id = randomUUID();
+      const result = await reviewHandoff({
+        stateRoot: fixture.stateRoot,
+        handoffId: id,
+        sourceThreadId: source.thread.id,
+        commit: null,
+        confirmPreview: async (preview) => {
+          phases.push(preview.phase);
+          expect(preview.text).toContain(
+            preview.phase === 'review' ? 'jg-review-session' : 'jg-feedback',
+          );
+          return true;
+        },
+        selectFindings: async () => {
+          let current: IHandoff | undefined;
+          await expect
+            .poll(
+              async () => {
+                const response = await fixture.request({
+                  kind: 'handoff',
+                  command: { kind: 'show', id },
+                });
+                if (response.kind !== 'handoff' || response.result.kind !== 'handoff')
+                  throw new Error('Missing handoff');
+                current = response.result.handoff;
+                return current.review.completion;
+              },
+              { timeout: 5000 },
+            )
+            .toBe('completed');
+          if (!current?.targetNativeId || !current.review.nativeTurnId)
+            throw new Error('Missing completed review');
+          if (current.targetProvider === 'codex')
+            await writeFixtureControl(fixture.root, 'control.json', {
+              skillNames: skills,
+              items: [
+                {
+                  turnId: current.review.nativeTurnId,
+                  item: {
+                    id: 'selected-findings',
+                    type: 'agentMessage',
+                    text: 'Verify the actual implementation before accepting these findings.',
+                  },
+                },
+              ],
+            });
+          const items = await fixture.request({
+            kind: 'items',
+            provider: current.targetProvider,
+            nativeId: current.targetNativeId,
+            workspaceRoot: fixture.workspaceRoot,
+            turnId: current.review.nativeTurnId,
+          });
+          if (items.kind !== 'items') throw new Error('Missing history items');
+          const item = items.result.data.find((item) => item.kind === 'agent-message');
+          if (!item) throw new Error('Missing reviewer message');
+          return { turnId: current.review.nativeTurnId, itemId: item.nativeId };
+        },
+      });
+      expect(phases).toStrictEqual(['review', 'feedback']);
+      expect(result.findings?.text).not.toBe('');
+      expect(result.targetProvider).toBe(provider === 'codex' ? 'claude' : 'codex');
+      expect(result.source.threadId).toBe(source.thread.id);
+      expect(result.feedback.actionId).not.toBeNull();
+      expect(
+        await fixture.request({ kind: 'thread-plan', threadId: source.thread.id }),
+      ).toStrictEqual({ kind: 'thread-plan', result: null });
+    });
+  },
+);
+
+test('declining the exact handoff preview sends no review or feedback', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    await writeFixtureControl(fixture.root, 'control.json', { skillNames: skills });
+    await fixture.control({ skillNames: skills });
+    const source = await controlSession({
+      stateRoot: fixture.stateRoot,
+      workspaceRoot: fixture.workspaceRoot,
+      provider: 'codex',
+      name: 'declined-review',
+      text: 'Discuss the task.',
+      actionIds: { create: randomUUID(), message: randomUUID() },
+    });
+    let selections = 0;
+    const result = await reviewHandoff({
+      stateRoot: fixture.stateRoot,
+      handoffId: randomUUID(),
+      sourceThreadId: source.thread.id,
+      commit: null,
+      confirmPreview: async () => false,
+      selectFindings: async () => {
+        selections++;
+        throw new Error('Unexpected findings selection');
+      },
+    });
+    expect(result.review.delivery).toBe('prepared');
+    expect(result.feedback.delivery).toBe('prepared');
+    expect(selections).toBe(0);
+  });
+});
+
+test('the revision source retains verified work and obtains current approval through public IPC only', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const directory = join(fixture.workspaceRoot, 'example-plan');
+    const target = { directory };
+    await mkdir(directory);
+    const source =
+      '---\nid: example-plan\nrevision: 1\nstatus: pending\n---\n# Plan\nReturn the requested greeting.\n';
+    const fingerprint = (text: string) =>
+      fingerprintPlan(text, {
+        excludeMetadataKeys: ['created_at', 'updated_at', 'revision', 'status'],
+      }).sha256!;
+    const binding = (plan: string, revision: number) =>
+      `---\njg_skills:\n  plan_id: example-plan\n  plan_revision: ${revision}\n  plan_content_sha256: ${fingerprint(plan)}\n---\n`;
+    await writeFile(join(directory, 'plan.md'), source);
+    await writePlanDocument(directory, {
+      document: 'milestones',
+      expectedSha256: null,
+      source:
+        binding(source, 1) +
+        '# Milestones\n\n## Milestone 1: Greeting\n**Status:** pending\n\nReturn the requested greeting.\n',
+      assignMissingIds: true,
+    });
+    const status = async (): Promise<IPlanStatus> => {
+      const response = await fixture.request({ kind: 'plan', command: { kind: 'status', target } });
+      if (response.kind !== 'plan' || response.result.kind !== 'status')
+        throw new Error('Missing status');
+      return response.result.result;
+    };
+    let current = await status();
+    await fixture.request({
+      kind: 'plan',
+      command: { kind: 'finalize', target, action: operator(), expected: current.revision },
+    });
+    for (const scope of ['plan', 'sequence'] as const) {
+      current = await status();
+      await fixture.request({
+        kind: 'plan',
+        command: {
+          kind: 'approve',
+          target,
+          action: operator(),
+          expected: current.revision,
+          scope,
+          presentationHash: (scope === 'plan'
+            ? current.inspection.plan
+            : current.inspection.milestones)!,
+        },
+      });
+    }
+    let observed = await inspectPlan(directory);
+    if (observed.milestones.state !== 'readable') throw new Error('Missing milestones');
+    const originalId = observed.milestones.value.milestones[0]!.id!;
+    await writeFile(
+      join(fixture.workspaceRoot, 'greeting.mjs'),
+      'export const greet = name => `Hello, ${name}`;\n',
+    );
+    const proof = await promisify(execFile)(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        'import assert from "node:assert/strict";import {greet} from "./greeting.mjs";assert.equal(greet("Reader"), "Hello, Reader");console.log("greeting verified");',
+      ],
+      { cwd: fixture.workspaceRoot, timeout: 5000 },
+    );
+    expect(proof.stdout).toBe('greeting verified\n');
+    await fixture.request({
+      kind: 'plan',
+      command: {
+        kind: 'complete',
+        target,
+        action: operator(),
+        expected: (await status()).revision,
+        milestoneId: originalId,
+        checkouts: [],
+        checks: [
+          {
+            command: 'node:assert greeting verification',
+            outcome: 'passed',
+            reference: 'example:actual-greeting-check',
+          },
+        ],
+      },
+    });
+    const retained = await readFile(join(directory, 'milestones.md'), 'utf8');
+    const revised = source
+      .replace('revision: 1', 'revision: 2')
+      .replace('Return the requested greeting.\n', 'Return the requested greeting and a report.\n');
+    const draft =
+      retained
+        .replace(binding(source, 1), binding(revised, 2))
+        .replace('Milestone 1: Greeting', 'Milestone 1: Greeting result') +
+      '\n## Milestone 2: Report\n**Status:** pending\n\nFormat the requested report.\n';
+    observed = await inspectPlan(directory);
+    if (observed.milestones.state !== 'readable') throw new Error('Missing milestones');
+    const candidate = preparePlanDocumentWrite(retained, {
+      document: 'milestones',
+      expectedSha256: observed.milestones.sha256,
+      source: draft,
+      assignMissingIds: true,
+    }).source;
+    await writeFixtureControl(fixture.root, 'control.json', {
+      skillNames: skills,
+      planningSources: {
+        'jg-plan': { 'plan.md': revised },
+        'jg-breakdown': { 'milestones.md': candidate },
+      },
+    });
+    const runtime = await fixture.request({ kind: 'status' });
+    if (runtime.kind !== 'status') throw new Error('Missing runtime');
+    const created = await fixture.request({
+      kind: 'action',
+      action: {
+        id: randomUUID(),
+        runtimeEpoch: runtime.result.runtimeEpoch,
+        command: {
+          kind: 'thread-create',
+          provider: 'codex',
+          workspaceRoot: fixture.workspaceRoot,
+          name: 'plan-example',
+        },
+      },
+    });
+    if (created.kind !== 'action' || !created.result.threadId) throw new Error('Missing thread');
+    const threadId = created.result.threadId;
+    await expect
+      .poll(async () => {
+        const response = await fixture.request({ kind: 'managed-thread', threadId });
+        return response.kind === 'managed-thread' ? response.result?.state : null;
+      })
+      .toBe('idle');
+    const confirmations: string[] = [];
+    const result = await revisePlan({
+      stateRoot: fixture.stateRoot,
+      target,
+      planningThreadId: threadId,
+      amendments:
+        'Add the report and rename the greeting heading without changing its requirements.',
+      begin: operator(),
+      threadIds: [],
+      checkouts: [],
+      finalize: operator(),
+      confirmFinalization: operator(),
+      nativeActionIds: {
+        plan: randomUUID(),
+        resume: randomUUID(),
+        breakdown: randomUUID(),
+        close: randomUUID(),
+      },
+      planningTimeoutSeconds: 5,
+      approvePlan: async (body, state) => {
+        confirmations.push('plan');
+        expect(body).toBe(revised);
+        expect(state.skillsBinding).toBe('stale');
+        expect(await readFile(join(directory, 'milestones.md'), 'utf8')).toBe(retained);
+        return operator();
+      },
+      requestBreakdown: async (state) => {
+        confirmations.push('breakdown');
+        expect(state).toMatchObject({
+          isPlanApproved: true,
+          isFinalized: false,
+          skillsBinding: 'stale',
+        });
+        return operator();
+      },
+      confirmCorrespondence: async (state, read) => {
+        confirmations.push('correspondence');
+        expect(state.coordination.revision?.proposalId).toMatch(/^[a-f0-9-]{36}$/);
+        const page = await read({ kind: 'reconciliation', target, collection: 'drafts' });
+        if (page.kind !== 'plan' || page.result.kind !== 'reconciliation')
+          throw new Error('Missing proposal drafts');
+        const draft = page.result.result.data.find(
+          (row) => row.kind === 'draft' && row.entry.title === 'Greeting result',
+        );
+        if (draft?.kind !== 'draft') throw new Error('Missing selected draft');
+        return [
+          {
+            sourceIds: [originalId],
+            targetIds: [draft.entry.id],
+            relation: 'equivalent',
+            retainedPairs: [{ sourceId: originalId, targetId: draft.entry.id }],
+          },
+        ];
+      },
+      approveSequence: async (body, state) => {
+        confirmations.push('sequence');
+        expect(state.skillsBinding).toBe('current');
+        expect(parseMilestones(body!).milestones[0]).toMatchObject({
+          id: originalId,
+          status: 'done',
+        });
+        return operator();
+      },
+      authorize: async (state) => {
+        confirmations.push('execution');
+        expect(state.isSequenceApproved).toBe(true);
+        const source = await readFile(join(directory, 'milestones.md'), 'utf8');
+        return {
+          action: operator(),
+          mode: 'supervised',
+          milestoneIds: [parseMilestones(source).milestones[1]!.id!],
+        };
+      },
+    });
+    expect(confirmations).toStrictEqual([
+      'plan',
+      'breakdown',
+      'correspondence',
+      'sequence',
+      'execution',
+    ]);
+    expect(result.skillsBinding).toBe('current');
+    expect(result.coordination.completionCount).toBe(1);
+    expect(result.coordination.execution?.mode).toBe('supervised');
+    expect(result.coordination.execution?.milestoneIds).not.toContain(originalId);
+    expect(result.coordination.revision?.phase).toBe('finished');
+    const actual = parseMilestones(await readFile(join(directory, 'milestones.md'), 'utf8'));
+    expect(actual.milestones.map((milestone) => milestone.status)).toStrictEqual([
+      'done',
+      'pending',
+    ]);
+  });
+});

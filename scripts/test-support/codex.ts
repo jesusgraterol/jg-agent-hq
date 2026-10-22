@@ -83,6 +83,14 @@ else {
     }
     if (method === 'thread/name/set') { managed.get(params.threadId).name=params.name;respond(request.id,{});return; }
     if (method === 'turn/start') {
+      const skill = params.input?.find(item => item.type === 'skill')?.name;
+      const documents = control.planningSources?.[skill];
+      if (documents) {
+        // Test-owned provider output only; the real HQ observes these files afterward.
+        for (const filename of ['plan.md', 'milestones.md'])
+          if (documents[filename] !== undefined)
+            writeFileSync(join(workspaceRoot, 'example-plan', filename), documents[filename]);
+      }
       if (control.rejectTurn) { process.stdout.write(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic input rejection'}})+'\n');return; }
       const thread = managed.get(params.threadId);
       const turn = {id:'native-turn-'+(++turnSequence),status:'inProgress'};

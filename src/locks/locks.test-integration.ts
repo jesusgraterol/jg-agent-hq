@@ -140,6 +140,61 @@ describe('acquisition and exact release', () => {
 });
 
 describe('contention and recovery', () => {
+  test('local waiters acquire in order even when later callers poll faster', async () => {
+    const reported = vi.spyOn(process.stderr, 'write');
+    const first = await acquireHqLock(root, 'holder');
+    const order: string[] = [];
+    const waiting = async (command: string, pollIntervalMs: number) => {
+      const release = await acquireHqLock(root, command, { pollIntervalMs });
+      try {
+        order.push(command);
+      } finally {
+        await release();
+      }
+    };
+    // Deliberately unequal polling exposes later readers overtaking a checkpoint.
+    const pending: Promise<void>[] = [];
+    const waitForReported = (count: number) =>
+      expect
+        .poll(
+          () =>
+            reported.mock.calls.filter(([message]) =>
+              String(message).startsWith('Waiting for the HQ lock'),
+            ).length,
+        )
+        .toBe(count);
+    let results: PromiseSettledResult<void>[] = [];
+    try {
+      pending.push(waiting('checkpoint', 1000));
+      // Its real wait report proves it entered the queue before the next caller.
+      await waitForReported(1);
+      pending.push(waiting('status', 16));
+      await waitForReported(2);
+    } finally {
+      await first();
+      results = await Promise.allSettled(pending);
+    }
+    expect(order).toStrictEqual(['checkpoint', 'status']);
+    expect(results.every((result) => result.status === 'fulfilled')).toBe(true);
+    expect(await readHqLockState(root)).toStrictEqual({ kind: 'free' });
+  });
+
+  test('a timed-out local waiter does not block the following acquisition', async () => {
+    const release = await acquireHqLock(root, 'holder');
+    try {
+      await expectToRejectCode(
+        acquireHqLock(root, 'expired', { waitTimeoutMs: 0 }),
+        'JG_AGENT_HQ_LOCK_TIMEOUT',
+        'Timed out waiting for the HQ lock',
+      );
+    } finally {
+      await release();
+    }
+    const next = await acquireHqLock(root, 'next');
+    await next();
+    expect(await readHqLockState(root)).toStrictEqual({ kind: 'free' });
+  });
+
   test('an operation failure stays primary when its lock was replaced', async () => {
     const failure = new Error('operation failed');
     const reported = vi.spyOn(process.stderr, 'write').mockReturnValue(true);

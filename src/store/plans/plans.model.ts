@@ -81,7 +81,8 @@ export class PlansModel {
       });
     intent.state = 'completed';
     intent.coordination = '';
-    intent.milestones = null;
+    intent.plan = null;
+    intent.milestones = { operation: 'keep' };
     this.__database
       .prepare("UPDATE plan_operation SET state = 'completed', intent = ? WHERE id = ?")
       .run(JSON.stringify(intent), id);

@@ -1,9 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { Exception, extractMessage } from 'jg-exception';
+import { withPlanDocumentLocks } from 'jg-plans';
+import { z } from 'zod';
+import { Exception, extractMessage, hasErrorCode } from 'jg-exception';
 
 import {
   PlanMilestoneSchema,
   type IPlanCommand,
+  type IActionEnvelope,
   type IPlanResult,
   type IPlanRevisionWorkflow,
 } from '../contracts/index.js';
@@ -15,6 +18,7 @@ import type { IStore } from '../store/index.js';
 import { canExecutePlanUnit, describePlan, updatePlanAuthority } from './authority.js';
 import { createPlanAdmission } from './admission.js';
 import { readPlanPage } from './projections.js';
+import { prepareAggregateProgress, prepareSequenceMarkers } from './documents.js';
 import { finalizeInitialSequence } from './finalization.js';
 import {
   beginPlanRevision,
@@ -34,13 +38,21 @@ import {
   readPlanArtifacts,
   readPlanFile,
   writePlanFile,
+  removePlanMilestones,
+  resolvePlanDirectory,
 } from './files.js';
-import { hashPlanContent, isSamePlanRevision, computePlanRevision } from './utilities.js';
+import {
+  hashPlanContent,
+  isSamePlanRevision,
+  computePlanRevision,
+  parsePlanMilestones,
+} from './utilities.js';
 import type {
   IPlanArtifacts,
   IPlanWriteIntent,
   IPlanContractParser,
   IPlanStopJob,
+  IApplyPlanIntent,
 } from './types.js';
 
 const conflict = (): never => {
@@ -63,6 +75,28 @@ export const createPlans = (
   runtimeEpoch: string,
   parseContract?: IPlanContractParser,
 ) => {
+  const assertWriteBounds = (intent: IPlanWriteIntent): void => {
+    const markdown = [
+      intent.plan,
+      intent.milestones.operation === 'write' ? intent.milestones.source : null,
+    ];
+    if (
+      markdown.some(
+        (source) =>
+          source !== null &&
+          (Buffer.byteLength(source) > 1_048_576 || /[\uD800-\uDFFF]/u.test(source)),
+      ) ||
+      Buffer.byteLength(intent.coordination) > 8_388_608
+    )
+      throw new Exception('The HQ plan is invalid', {
+        code: 'JG_AGENT_HQ_PLAN_INVALID',
+        data: { kind: 'invalid-request' },
+      });
+  };
+  const prepareWrite = (intent: IPlanWriteIntent) => {
+    assertWriteBounds(intent);
+    return store.preparePlanOperation(intent);
+  };
   const activeStopPhases = new Set<string>();
   const invalidStops = new Map<string, string>();
   let stopHandler: ((job: IPlanStopJob) => void) | undefined;
@@ -84,7 +118,8 @@ export const createPlans = (
   /** Converts unavailable contract reads into paused input, preserving the underlying diagnostics. */
   const readAdmissionPlan = async (
     directory: string,
-    translateError = true,
+    translateError: boolean,
+    apply: IApplyPlanIntent,
   ): Promise<IPlanArtifacts> => {
     try {
       return await readPlanArtifacts({ directory }, roots, parseContract);
@@ -104,7 +139,7 @@ export const createPlans = (
             let observation: Awaited<ReturnType<typeof retainUnavailable>> | undefined;
             let persistenceFailure: unknown;
             try {
-              observation = await retainUnavailable(directory, id, threadIds);
+              observation = await retainUnavailable(directory, id, threadIds, apply);
             } catch (error) {
               persistenceFailure = error;
             }
@@ -145,35 +180,121 @@ export const createPlans = (
    * - JG_AGENT_HQ_PLAN_FAILED: The HQ plan operation failed
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
-  const apply = async (intent: IPlanWriteIntent): Promise<void> => {
+  const applyFiles = async (intent: IPlanWriteIntent): Promise<void> => {
     if (intent.state === 'completed') return;
+    assertWriteBounds(intent);
     const [plan, milestones, coordination] = await Promise.all([
       intent.before.plan === null ? null : readPlanFile(intent.directory, 'plan.md'),
       intent.before.plan === null ? null : readPlanFile(intent.directory, 'milestones.md', true),
       readPlanFile(intent.directory, 'coordination.json', true, 8_388_608),
     ]);
     const hash = (text: string | null) => (text === null ? null : hashPlanContent(text));
-    if (intent.before.plan === null && intent.milestones !== null) conflict();
-    if (intent.before.plan !== null && hash(plan) !== intent.before.plan) conflict();
+    const desiredMilestones =
+      intent.milestones.operation === 'write'
+        ? intent.milestones.source
+        : intent.milestones.operation === 'remove'
+          ? null
+          : milestones;
+    if (
+      intent.before.plan === null &&
+      (intent.plan !== null || intent.milestones.operation !== 'keep')
+    )
+      conflict();
+    if (
+      intent.before.plan !== null &&
+      hash(plan) !== intent.before.plan &&
+      (intent.plan === null || plan !== intent.plan)
+    )
+      conflict();
     if (
       intent.before.plan !== null &&
       hash(milestones) !== intent.before.milestones &&
-      (!intent.milestones || hash(milestones) !== hash(intent.milestones))
+      (intent.milestones.operation === 'keep' || milestones !== desiredMilestones)
     )
       conflict();
-    if (
-      hash(coordination) !== intent.before.coordination &&
-      hash(coordination) !== hash(intent.coordination)
-    )
+    if (hash(coordination) !== intent.before.coordination && coordination !== intent.coordination)
       conflict();
-    if (intent.milestones !== null && milestones !== intent.milestones)
-      await writePlanFile(intent.directory, 'milestones.md', intent.milestones);
-    if (coordination !== intent.coordination)
-      await writePlanFile(intent.directory, 'coordination.json', intent.coordination);
-    await store.completePlanOperation(intent.id);
+    // All guards precede any write. Replaying desired bytes flushes durability and explicit privacy.
+    if (intent.plan !== null) await writePlanFile(intent.directory, 'plan.md', intent.plan, plan);
+    if (intent.milestones.operation === 'write')
+      await writePlanFile(intent.directory, 'milestones.md', intent.milestones.source, milestones);
+    else if (intent.milestones.operation === 'remove')
+      await removePlanMilestones(intent.directory, milestones);
+    await writePlanFile(intent.directory, 'coordination.json', intent.coordination, coordination);
+  };
+  /** The HQ metadata owner remains held through document release and durable ledger completion. */
+  const withDocuments = async <T>(
+    selected: string,
+    operation: (apply: IApplyPlanIntent) => Promise<T>,
+  ): Promise<T> => {
+    const directory = await resolvePlanDirectory(selected, roots);
+    const applied = new Set<string>();
+    const apply: IApplyPlanIntent = async (intent) => {
+      await applyFiles(intent);
+      if (intent.state !== 'completed') applied.add(intent.id);
+    };
+    let result: T | undefined;
+    let operationFailed = false;
+    let operationFailure: unknown;
+    const run = async () => {
+      try {
+        return await operation(apply);
+      } catch (cause) {
+        operationFailed = true;
+        operationFailure = cause;
+        throw cause;
+      }
+    };
+    try {
+      result = await withPlanDocumentLocks(directory, ['plan', 'milestones'], run);
+    } catch (cause) {
+      // The callback's exact error can escape only after successful document release.
+      if (!(operationFailed && cause === operationFailure)) {
+        if (hasErrorCode(cause, 'JG_PLANS_LOCK_BUSY'))
+          throw new Exception('The HQ action conflicts with its recorded state', {
+            code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+            data: { kind: 'state-conflict', reason: 'document-locked' },
+            cause,
+          });
+        if (hasErrorCode(cause, 'JG_PLANS_LOCK_FAILED')) {
+          const outcome = z
+            .object({
+              data: z.object({
+                mutationOutcome: z.enum(['not-applied', 'uncertain']),
+                phase: z.enum(['canonicalize', 'acquire', 'release']),
+                operationCompleted: z.boolean(),
+              }),
+            })
+            .safeParse(cause);
+          throw new Exception(`The HQ plan operation failed: ${extractMessage(cause)}`, {
+            code: 'JG_AGENT_HQ_PLAN_FAILED',
+            data: {
+              kind: 'operation-failed',
+              outcome: outcome.success ? outcome.data.data.mutationOutcome : 'uncertain',
+              ...(outcome.success
+                ? {
+                    phase: outcome.data.data.phase,
+                    operationCompleted: outcome.data.data.operationCompleted,
+                  }
+                : {}),
+            },
+            cause,
+          });
+        }
+        throw cause;
+      }
+    }
+    for (const id of applied) await store.completePlanOperation(id);
+    if (operationFailed) throw operationFailure;
+    return result as T;
   };
   /** Retains a closed gate even when current contract framing cannot be parsed. */
-  const retainUnavailable = async (selected: string, id: string, threadIds: string[]) => {
+  const retainUnavailable = async (
+    selected: string,
+    id: string,
+    threadIds: string[],
+    apply: IApplyPlanIntent,
+  ) => {
     const directory = await resolveWorkspaceTarget(selected, roots);
     const text = await readPlanFile(directory, 'coordination.json', true, 8_388_608);
     if (text === null || (await store.getPendingPlanOperationId(directory))) return null;
@@ -197,20 +318,24 @@ export const createPlans = (
       })),
     };
     coordination.observedConflict = observation;
-    const intent = await store.preparePlanOperation({
+    const intent = await prepareWrite({
       id,
       digest: hashPlanContent(JSON.stringify(observation)),
       directory,
       before: { plan: null, milestones: null, coordination: hashPlanContent(text) },
       coordination: serializePlanCoordination(coordination),
-      milestones: null,
+      plan: null,
+      milestones: { operation: 'keep' },
       state: 'prepared',
     });
     await apply(intent);
     return observation;
   };
   /** Persists an observed external contract change before asking the runtime to stop its exact threads. */
-  const observeChange = async (artifacts: IPlanArtifacts): Promise<IPlanArtifacts> => {
+  const observeChange = async (
+    artifacts: IPlanArtifacts,
+    apply: IApplyPlanIntent,
+  ): Promise<IPlanArtifacts> => {
     const coordination = artifacts.coordination;
     const workflow = coordination.revision;
     if (
@@ -238,13 +363,14 @@ export const createPlans = (
     };
     const next = { ...coordination, observedConflict };
     try {
-      const intent = await store.preparePlanOperation({
+      const intent = await prepareWrite({
         id,
         digest: hashPlanContent(JSON.stringify(observedConflict)),
         directory: artifacts.directory,
         before: artifacts.hashes,
         coordination: serializePlanCoordination(next),
-        milestones: null,
+        plan: null,
+        milestones: { operation: 'keep' },
         state: 'prepared',
       });
       await apply(intent);
@@ -268,8 +394,72 @@ export const createPlans = (
       });
     return readPlanArtifacts({ directory: artifacts.directory }, roots, parseContract);
   };
-  const admission = createPlanAdmission(coordinationRoot, store, runtimeEpoch, async (directory) =>
-    observeChange(await readAdmissionPlan(directory)),
+  const implementationDigest = (action: IActionEnvelope) =>
+    hashPlanContent(JSON.stringify(['implementation-progress', action]));
+  const resumeImplementation = async (
+    directory: string,
+    action: IActionEnvelope,
+  ): Promise<void> => {
+    const previous = await store.getPlanOperation(action.id);
+    if (!previous) return;
+    if (previous.directory !== directory || previous.digest !== implementationDigest(action))
+      conflict();
+    if (previous.state === 'prepared') await withDocuments(directory, (apply) => apply(previous));
+  };
+  const prepareImplementation = async (
+    artifacts: IPlanArtifacts,
+    action: IActionEnvelope,
+    milestoneId: string | null,
+    apply: IApplyPlanIntent,
+  ): Promise<void> => {
+    const previous = await store.getPlanOperation(action.id);
+    if (previous) {
+      if (
+        previous.directory !== artifacts.directory ||
+        previous.digest !== implementationDigest(action)
+      )
+        conflict();
+      return;
+    }
+    // Native replay owns its existing receipt. A reused identity cannot start new progress.
+    if (await store.getAction(action.id)) return;
+    const plan = prepareAggregateProgress(artifacts.plan, 'in progress');
+    const entry = artifacts.parsed.find((item) => item.id === milestoneId);
+    const milestones =
+      artifacts.milestones !== null && entry?.id && entry.status === 'pending'
+        ? prepareSequenceMarkers(artifacts.milestones, [
+            { ordinal: entry.ordinal, id: entry.id, status: 'in progress' },
+          ])
+        : artifacts.milestones;
+    if (plan === null && milestones === artifacts.milestones) return;
+    const coordination = structuredClone(artifacts.coordination);
+    coordination.lastActionId = action.id;
+    coordination.baseline = refreshPlanBaseline(artifacts, milestones, artifacts.revision);
+    if (plan !== null) coordination.baseline.plan = plan;
+    const intent = await prepareWrite({
+      id: action.id,
+      digest: implementationDigest(action),
+      directory: artifacts.directory,
+      before: artifacts.hashes,
+      plan,
+      milestones:
+        milestones === artifacts.milestones
+          ? { operation: 'keep' }
+          : { operation: 'write', source: milestones! },
+      coordination: serializePlanCoordination(coordination),
+      state: 'prepared',
+    });
+    await apply(intent);
+  };
+  const admission = createPlanAdmission(
+    coordinationRoot,
+    store,
+    runtimeEpoch,
+    async (directory, apply) =>
+      observeChange(await readAdmissionPlan(directory, true, apply), apply),
+    withDocuments,
+    prepareImplementation,
+    resumeImplementation,
   );
   return {
     ...admission,
@@ -323,35 +513,38 @@ export const createPlans = (
       phaseActionId: string,
       reason: 'native-quiescence-unavailable' | 'checkpoint-unavailable',
     ): Promise<void> {
-      await withHqLock(coordinationRoot, 'plan-revision-blocked', async () => {
-        const artifacts = await readPlanArtifacts(target, roots, parseContract);
-        const workflow = artifacts.coordination.revision;
-        if (
-          !workflow ||
-          workflow.id !== revisionId ||
-          workflow.phaseActionId !== phaseActionId ||
-          (await store.getPendingPlanOperationId(artifacts.directory))
-        )
-          return;
-        const previous = await store.getPlanOperation(workflow.blockActionId);
-        if (previous) {
-          await apply(previous);
-          return;
-        }
-        const coordination = structuredClone(artifacts.coordination);
-        coordination.revision!.phase = 'blocked';
-        coordination.revision!.reason = reason;
-        const intent = await store.preparePlanOperation({
-          id: workflow.blockActionId,
-          digest: hashPlanContent(JSON.stringify([revisionId, phaseActionId, 'blocked'])),
-          directory: artifacts.directory,
-          before: artifacts.hashes,
-          coordination: serializePlanCoordination(coordination),
-          milestones: null,
-          state: 'prepared',
-        });
-        await apply(intent);
-      });
+      await withHqLock(coordinationRoot, 'plan-revision-blocked', () =>
+        withDocuments(target.directory, async (apply) => {
+          const artifacts = await readPlanArtifacts(target, roots, parseContract);
+          const workflow = artifacts.coordination.revision;
+          if (
+            !workflow ||
+            workflow.id !== revisionId ||
+            workflow.phaseActionId !== phaseActionId ||
+            (await store.getPendingPlanOperationId(artifacts.directory))
+          )
+            return;
+          const previous = await store.getPlanOperation(workflow.blockActionId);
+          if (previous) {
+            await apply(previous);
+            return;
+          }
+          const coordination = structuredClone(artifacts.coordination);
+          coordination.revision!.phase = 'blocked';
+          coordination.revision!.reason = reason;
+          const intent = await prepareWrite({
+            id: workflow.blockActionId,
+            digest: hashPlanContent(JSON.stringify([revisionId, phaseActionId, 'blocked'])),
+            directory: artifacts.directory,
+            before: artifacts.hashes,
+            coordination: serializePlanCoordination(coordination),
+            plan: null,
+            milestones: { operation: 'keep' },
+            state: 'prepared',
+          });
+          await apply(intent);
+        }),
+      );
     },
     /**
      * Reads or explicitly changes plan authority without approving native tools or starting execution.
@@ -380,14 +573,12 @@ export const createPlans = (
     async handle(command: IPlanCommand): Promise<IPlanResult> {
       const completionWorktrees =
         command.kind === 'complete' ? await capturePlanWorktrees(command.checkouts, roots) : [];
-      const result = await withHqLock(
-        coordinationRoot,
-        `plan-${command.kind}`,
-        async (): Promise<IPlanResult> => {
-          let artifacts = await readAdmissionPlan(command.target.directory, false);
+      const result = await withHqLock(coordinationRoot, `plan-${command.kind}`, () =>
+        withDocuments(command.target.directory, async (apply): Promise<IPlanResult> => {
+          let artifacts = await readAdmissionPlan(command.target.directory, false, apply);
           const pendingActionId = await store.getPendingPlanOperationId(artifacts.directory);
           if (['status', 'milestones', 'check-execution'].includes(command.kind))
-            artifacts = await observeChange(artifacts);
+            artifacts = await observeChange(artifacts, apply);
           if (command.kind === 'status')
             return { kind: 'status', result: describeCurrent(artifacts, pendingActionId) };
           if (command.kind === 'milestones' || command.kind === 'reconciliation')
@@ -437,6 +628,7 @@ export const createPlans = (
             conflict();
           const coordination = structuredClone(artifacts.coordination);
           let milestones: string | null = null;
+          let planSource: string | null = null;
           let needsReconciliation = false;
           if (command.kind === 'begin-revision') {
             const threadIds = [
@@ -586,14 +778,32 @@ export const createPlans = (
               code: 'JG_AGENT_HQ_PLAN_INVALID',
               data: { kind: 'invalid-request' },
             });
+          const progressed = {
+            ...artifacts,
+            coordination,
+            parsed: milestones === null ? artifacts.parsed : parsePlanMilestones(milestones),
+          };
+          if (describePlan(progressed).state === 'completed')
+            planSource = prepareAggregateProgress(artifacts.plan, 'done');
+          else if (
+            command.kind === 'complete' &&
+            (command.milestoneId === null ||
+              artifacts.parsed.some((entry) => entry.id === command.milestoneId))
+          )
+            planSource = prepareAggregateProgress(artifacts.plan, 'in progress');
+          if (planSource !== null && coordination.baseline) coordination.baseline.plan = planSource;
           coordination.lastActionId = command.action.id;
-          const intent = await store.preparePlanOperation({
+          const intent = await prepareWrite({
             id: command.action.id,
             digest,
             directory: artifacts.directory,
             before: artifacts.hashes,
             coordination: serializePlanCoordination(coordination),
-            milestones,
+            plan: planSource,
+            milestones:
+              milestones === null || milestones === artifacts.milestones
+                ? { operation: 'keep' }
+                : { operation: 'write', source: milestones },
             state: 'prepared',
           });
           await apply(intent);
@@ -612,7 +822,7 @@ export const createPlans = (
                 content: artifacts.milestones,
               }
             : { kind: 'status', result: describeCurrent(artifacts) };
-        },
+        }),
       );
       if (command.kind === 'begin-revision' || command.kind === 'revision-invoke') {
         const workflow = await this.stopPhase(command.target);
@@ -663,31 +873,34 @@ export const createPlans = (
      * - JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED: HQ lock ownership changed before release
      */
     async finishObservation(job: IPlanStopJob, isQuiescent: boolean): Promise<void> {
-      await withHqLock(coordinationRoot, 'plan-observation-result', async () => {
-        const directory = await resolveWorkspaceTarget(job.directory, roots);
-        if (await store.getPendingPlanOperationId(directory)) return;
-        const text = await readPlanFile(directory, 'coordination.json', false, 8_388_608);
-        const coordination = parsePlanCoordination(text);
-        const observation = coordination.observedConflict;
-        if (
-          !observation ||
-          observation.id !== job.revisionId ||
-          observation.ownerRuntimeEpoch !== runtimeEpoch
-        )
-          return;
-        observation.phase = isQuiescent ? 'quiescent' : 'blocked';
-        const id = randomUUID();
-        const intent = await store.preparePlanOperation({
-          id,
-          digest: hashPlanContent(JSON.stringify([observation.id, isQuiescent])),
-          directory,
-          before: { plan: null, milestones: null, coordination: hashPlanContent(text!) },
-          coordination: serializePlanCoordination(coordination),
-          milestones: null,
-          state: 'prepared',
-        });
-        await apply(intent);
-      });
+      await withHqLock(coordinationRoot, 'plan-observation-result', () =>
+        withDocuments(job.directory, async (apply) => {
+          const directory = await resolveWorkspaceTarget(job.directory, roots);
+          if (await store.getPendingPlanOperationId(directory)) return;
+          const text = await readPlanFile(directory, 'coordination.json', false, 8_388_608);
+          const coordination = parsePlanCoordination(text);
+          const observation = coordination.observedConflict;
+          if (
+            !observation ||
+            observation.id !== job.revisionId ||
+            observation.ownerRuntimeEpoch !== runtimeEpoch
+          )
+            return;
+          observation.phase = isQuiescent ? 'quiescent' : 'blocked';
+          const id = randomUUID();
+          const intent = await prepareWrite({
+            id,
+            digest: hashPlanContent(JSON.stringify([observation.id, isQuiescent])),
+            directory,
+            before: { plan: null, milestones: null, coordination: hashPlanContent(text!) },
+            coordination: serializePlanCoordination(coordination),
+            plan: null,
+            milestones: { operation: 'keep' },
+            state: 'prepared',
+          });
+          await apply(intent);
+        }),
+      );
     },
     /**
      * Saves a checkpoint only after proven owned native/background shutdown.
@@ -722,37 +935,40 @@ export const createPlans = (
       if (!current || current.id !== revisionId || current.phaseActionId !== phaseActionId)
         conflict();
       const proofs = await capturePlanWorktrees(current!.checkouts, roots);
-      await withHqLock(coordinationRoot, 'plan-checkpoint', async () => {
-        const artifacts = await readPlanArtifacts(target, roots, parseContract);
-        const workflow = artifacts.coordination.revision;
-        if (!workflow || workflow.id !== revisionId || workflow.phaseActionId !== phaseActionId)
-          conflict();
-        let coordination;
-        if (workflow!.checkpoint?.isQuiescent) {
-          coordination = structuredClone(artifacts.coordination);
-          coordination.revision!.phase = 'editing';
-          coordination.revision!.reason = null;
-        } else coordination = finishPlanCheckpoint(artifacts, revisionId, proofs);
-        const actionId = workflow!.invocation?.action.id ?? workflow!.action.id;
-        const id = workflow!.checkpointActionId;
-        const prior = await store.getPlanOperation(id);
-        if (prior) {
-          await apply(prior);
-          return;
-        }
-        const intent = await store.preparePlanOperation({
-          id,
-          digest: hashPlanContent(
-            JSON.stringify([revisionId, actionId, 'checkpoint', artifacts.hashes]),
-          ),
-          directory: artifacts.directory,
-          before: artifacts.hashes,
-          coordination: serializePlanCoordination(coordination),
-          milestones: null,
-          state: 'prepared',
-        });
-        await apply(intent);
-      });
+      await withHqLock(coordinationRoot, 'plan-checkpoint', () =>
+        withDocuments(target.directory, async (apply) => {
+          const artifacts = await readPlanArtifacts(target, roots, parseContract);
+          const workflow = artifacts.coordination.revision;
+          if (!workflow || workflow.id !== revisionId || workflow.phaseActionId !== phaseActionId)
+            conflict();
+          let coordination;
+          if (workflow!.checkpoint?.isQuiescent) {
+            coordination = structuredClone(artifacts.coordination);
+            coordination.revision!.phase = 'editing';
+            coordination.revision!.reason = null;
+          } else coordination = finishPlanCheckpoint(artifacts, revisionId, proofs);
+          const actionId = workflow!.invocation?.action.id ?? workflow!.action.id;
+          const id = workflow!.checkpointActionId;
+          const prior = await store.getPlanOperation(id);
+          if (prior) {
+            await apply(prior);
+            return;
+          }
+          const intent = await prepareWrite({
+            id,
+            digest: hashPlanContent(
+              JSON.stringify([revisionId, actionId, 'checkpoint', artifacts.hashes]),
+            ),
+            directory: artifacts.directory,
+            before: artifacts.hashes,
+            coordination: serializePlanCoordination(coordination),
+            plan: null,
+            milestones: { operation: 'keep' },
+            state: 'prepared',
+          });
+          await apply(intent);
+        }),
+      );
     },
   };
 };

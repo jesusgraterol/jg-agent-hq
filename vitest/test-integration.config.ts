@@ -10,7 +10,11 @@ export default defineConfig({
       '**/_backup/**',
       '**/_backups/**',
     ],
-    include: ['src/**/*.test-integration.ts', 'scripts/**/*.test-integration.ts'],
+    include: [
+      'src/**/*.test-integration.ts',
+      'scripts/**/*.test-integration.ts',
+      'examples/**/*.test-integration.ts',
+    ],
     fileParallelism: false,
     maxWorkers: 1,
   },

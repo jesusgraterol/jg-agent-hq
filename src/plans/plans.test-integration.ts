@@ -612,7 +612,8 @@ test.each(['complete-files', 'milestones-only', 'external-edit'] as const)(
               .get(command.action.id)!;
             expect(JSON.parse(String(row.intent))).toMatchObject({
               state: 'completed',
-              milestones: null,
+              plan: null,
+              milestones: { operation: 'keep' },
               coordination: '',
             });
           }

@@ -277,3 +277,32 @@ export const prepareSequenceMarkers = (
     return invalid(cause);
   }
 };
+
+/**
+ * Prepares explicit aggregate progress without changing revision or an unchanged timestamp.
+ * @throws
+ * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
+ */
+export const prepareAggregateProgress = (
+  source: string,
+  status: 'in progress' | 'done',
+): string | null => {
+  const document = parsePlan(source);
+  const metadata = metadataOf(document);
+  if (
+    'status' in metadata &&
+    !z.enum(['pending', 'in progress', 'done']).safeParse(metadata.status).success
+  )
+    return invalid();
+  if (metadata.status === status || (metadata.status === 'done' && status === 'in progress'))
+    return null;
+  try {
+    return preparePlanUpdate(source, {
+      document: 'plan',
+      expectedSha256: fingerprintSource(source),
+      set: { status, updated_at: new Date().toISOString() },
+    }).source;
+  } catch (cause) {
+    return invalid(cause);
+  }
+};

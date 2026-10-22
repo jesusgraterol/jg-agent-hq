@@ -363,6 +363,7 @@ export const PlanCoordinationSummarySchema = PlanCoordinationSchema.omit({
     .extend({
       hasCheckpoint: z.boolean(),
       hasProposal: z.boolean(),
+      proposalId: z.uuid().nullable(),
       unmatchedCount: z.number().int().nonnegative(),
     })
     .nullable(),

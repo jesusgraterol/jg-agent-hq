@@ -250,7 +250,24 @@ export const createStore = async (
     preparePlanOperation: (intent) =>
       request({ kind: 'plan-prepare', intent }, PlanWriteIntentSchema),
     completePlanOperation: async (id) => {
-      await request({ kind: 'plan-complete', id }, z.null());
+      try {
+        await request({ kind: 'plan-complete', id }, z.null());
+      } catch (cause) {
+        let recorded;
+        try {
+          recorded = await request(
+            { kind: 'plan-operation', id },
+            PlanWriteIntentSchema.nullable(),
+          );
+        } catch (observation) {
+          throw new Exception('The HQ store failed: plan completion could not be confirmed', {
+            code: 'JG_AGENT_HQ_STORE_FAILED',
+            data: { kind: 'operation-failed' },
+            cause: new AggregateError([cause, observation], 'Plan ledger completion is uncertain'),
+          });
+        }
+        if (recorded?.state !== 'completed') throw cause;
+      }
     },
     projectPlan: async (projection) => {
       await request({ kind: 'plan-project', projection }, z.null());
