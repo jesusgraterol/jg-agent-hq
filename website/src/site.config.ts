@@ -63,6 +63,6 @@ export const PAGE_RECORDS = [
     markdown: '/examples/index.md',
     title: 'Worked examples | jg-agent-hq',
     description:
-      'Create and follow a native coding-agent session with complete TypeScript source, an observable result and explicit delivery and permission boundaries.',
+      'Three complete TypeScript walkthroughs: native session control, cross-provider review and plan revision with retained verification, explicit approvals and real source.',
   },
 ] as const;

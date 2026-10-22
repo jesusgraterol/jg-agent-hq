@@ -39,17 +39,17 @@ import HomeWorkflow from '../home-workflow/home-workflow.astro';
             ))}
           </ol>
           <p class="mt-5 text-sm font-medium">{scenario.result}</p>
-          {'href' in scenario && (
+          {
             <p class="mt-4 text-sm">
               <TextLink href={scenario.href}>
-                Complete session walkthrough{' '}
+                {scenario.linkLabel}{' '}
                 <ArrowRight
                   class="ml-1 inline size-3.5"
                   aria-hidden="true"
                 />
               </TextLink>
             </p>
-          )}
+          }
         </article>
       ))
     }

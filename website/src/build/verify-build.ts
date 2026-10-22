@@ -201,12 +201,20 @@ export const verifyBuild = async (directory: string): Promise<IBuildVerification
         const expected = source
           ? await readDocument(fileURLToPath(new URL('../../../', import.meta.url)), source.source)
           : record.id === 'examples'
-            ? examplesMarkdown(
-                await readDocument(
+            ? examplesMarkdown({
+                'control-session': await readDocument(
                   fileURLToPath(new URL('../../../', import.meta.url)),
                   'examples/control-session.ts',
                 ),
-              )
+                'review-handoff': await readDocument(
+                  fileURLToPath(new URL('../../../', import.meta.url)),
+                  'examples/review-handoff.ts',
+                ),
+                'revise-plan': await readDocument(
+                  fileURLToPath(new URL('../../../', import.meta.url)),
+                  'examples/revise-plan.ts',
+                ),
+              })
             : homeMarkdown();
         if (
           markdown !== expected ||

@@ -54,7 +54,7 @@ export const resolveDocumentLink = (href: string, source: string): string => {
   if (path === 'README.md') return `/docs/${url.hash}`;
   if (path === 'api/README.md') return `/docs/api/${url.hash}`;
   const example = EXAMPLE_SOURCE_RECORDS.find((record) => record.source === path);
-  if (example?.id === 'control-session') return `/examples/#${example.id}`;
+  if (example) return `/examples/#${example.id}`;
   return `${SITE_CONFIG.repositoryUrl}/blob/main/${path}${url.hash}`;
 };
 

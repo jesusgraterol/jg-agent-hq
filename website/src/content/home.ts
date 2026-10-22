@@ -33,6 +33,7 @@ export const HOME_CONTENT = {
       flow: ['Create', 'Send', 'Observe'],
       result: 'A session and a durable delivery receipt',
       href: '/examples/#control-session',
+      linkLabel: 'Read the session walkthrough',
     },
     {
       id: 'review-handoff',
@@ -42,6 +43,8 @@ export const HOME_CONTENT = {
         'Preview a cross-provider review, select completed findings and return them to the author.',
       flow: ['Author', 'Reviewer', 'Selected feedback'],
       result: 'A traceable review handoff',
+      href: '/examples/#review-handoff',
+      linkLabel: 'Read the review walkthrough',
     },
     {
       id: 'revise-plan',
@@ -51,6 +54,8 @@ export const HOME_CONTENT = {
         'Pause execution, revise the documents and retain verified completion through explicit correspondence.',
       flow: ['Checkpoint', 'Revise', 'Approve'],
       result: 'Retained evidence and a fresh execution scope',
+      href: '/examples/#revise-plan',
+      linkLabel: 'Read the revision walkthrough',
     },
   ],
   startTitle: 'Your first local connection.',
@@ -108,9 +113,8 @@ export const homeMarkdown = (): string =>
     HOME_CONTENT.scenariosDescription,
     ...HOME_CONTENT.scenarios.map(
       (item) =>
-        `### ${item.title}\n\n${item.description}\n\n${item.flow.join(' → ')}\n\n${item.result}`,
+        `### ${item.title}\n\n${item.description}\n\n${item.flow.join(' → ')}\n\n${item.result}\n\n[${item.linkLabel}](${SITE_CONFIG.url}${item.href})`,
     ),
-    `[Complete session walkthrough](${SITE_CONFIG.url}/examples/#control-session)`,
     `## ${HOME_CONTENT.startTitle}`,
     HOME_CONTENT.startDescription,
     HOME_CONTENT.requirements,

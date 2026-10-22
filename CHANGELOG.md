@@ -2,6 +2,7 @@
 
 ## 1.1.0
 
+- Rebuild the homepage around a native-session visual, local setup and three complete source-backed walkthroughs. Show cross-provider reviews and retained revision evidence with explicit host decisions.
 - Queue local metadata-lock acquisitions in order, preventing frequent status reads from starving a revision checkpoint. Preserve exact owner checks, wait deadlines and explicit recovery.
 - Coordinate journaled private writes with public document locks, explicit keep/write/remove intents and durable completion acknowledgement recovery. Prepare aggregate and milestone progress before native admission; preserve exact replay output and completion evidence.
 

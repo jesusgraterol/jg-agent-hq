@@ -181,29 +181,21 @@ test('the session example exposes its result and complete copyable source throug
   ).not.toBe('none');
   await page.getByRole('link', { name: 'See it in action' }).click();
   await expect(page).toHaveURL('/examples/');
-  const tabs = page.getByRole('tablist', { name: 'Session walkthrough' });
-  await expect(tabs.getByRole('tab', { name: 'What you get back' })).toHaveAttribute(
-    'aria-selected',
-    'true',
-  );
-  await tabs.getByRole('tab', { name: 'What you get back' }).focus();
+  const example = page.getByRole('article', { name: CONTROL_EXAMPLE.title });
+  const tabs = example.getByRole('tablist', { name: 'Native session control walkthrough' });
+  await expect(tabs.getByRole('tab', { name: 'Result' })).toHaveAttribute('aria-selected', 'true');
+  await tabs.getByRole('tab', { name: 'Result' }).focus();
   await page.keyboard.press('ArrowRight');
-  await expect(tabs.getByRole('tab', { name: 'Call the helper' })).toBeFocused();
+  await expect(tabs.getByRole('tab', { name: 'Run it' })).toBeFocused();
   await page.keyboard.press('ArrowLeft');
-  await expect(tabs.getByRole('tab', { name: 'What you get back' })).toHaveAttribute(
-    'aria-selected',
-    'true',
-  );
-  await expect(page.getByRole('tabpanel', { name: 'What you get back' })).toContainText(
-    'acknowledged',
-  );
-  await expect(page.getByRole('tabpanel', { name: 'What you get back' })).toContainText(
+  await expect(tabs.getByRole('tab', { name: 'Result' })).toHaveAttribute('aria-selected', 'true');
+  await expect(example.getByRole('tabpanel', { name: 'Result' })).toContainText('acknowledged');
+  await expect(example.getByRole('tabpanel', { name: 'Result' })).toContainText(
     'handle tool permissions separately',
   );
-  const disclosure = page.locator('summary').filter({ hasText: 'Complete source' });
-  await disclosure.focus();
+  await tabs.getByRole('tab', { name: 'Source' }).focus();
   await page.keyboard.press('Enter');
-  const source = page.locator('details[open]');
+  const source = example.getByRole('tabpanel', { name: 'Source' });
   await expect(source).toContainText('export const controlSession');
   await source.getByRole('button', { name: 'Copy code', exact: true }).click();
   const markdown = await page.request.get('/examples/index.md');
@@ -214,3 +206,84 @@ test('the session example exposes its result and complete copyable source throug
   await expectNoHorizontalOverflow(page);
   expect(failures).toStrictEqual([]);
 });
+
+for (const walkthrough of [
+  {
+    id: 'review-handoff',
+    title: 'Get another agent’s perspective',
+    category: 'Cross-provider review',
+    link: 'Read the review walkthrough',
+    helper: 'reviewHandoff',
+    boundary: 'Feedback may still be queued or in flight.',
+    callback: 'selectFindings',
+  },
+  {
+    id: 'revise-plan',
+    title: 'Change the plan. Keep verified work.',
+    category: 'Plan revision',
+    link: 'Read the revision walkthrough',
+    helper: 'revisePlan',
+    boundary: 'Status markers alone never create verified completion.',
+    callback: 'confirmCorrespondence',
+  },
+])
+  for (const width of [320, 1440])
+    for (const colorScheme of ['light', 'dark'] as const) {
+      test(`${walkthrough.id}: ${width}px ${colorScheme} navigation, host decisions and complete source`, async ({
+        page,
+        context,
+      }, testInfo) => {
+        const errors: string[] = [];
+        page.on('pageerror', (error) => errors.push(error.stack || error.message));
+        page.on('console', (message) => {
+          if (message.type() === 'error') errors.push(message.text());
+        });
+        await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+        await page.setViewportSize({ width, height: 1000 });
+        await page.emulateMedia({ colorScheme, reducedMotion: 'reduce' });
+        await page.goto('/');
+        await page.getByRole('link', { name: walkthrough.link }).click();
+        await expect(page).toHaveURL(`/examples/#${walkthrough.id}`);
+        const example = page.getByRole('article', { name: walkthrough.title });
+        const tabs = example.getByRole('tablist', { name: `${walkthrough.category} walkthrough` });
+        for (const tab of await tabs.getByRole('tab').all()) {
+          const box = await tab.boundingBox();
+          expect(box!.x).toBeGreaterThanOrEqual(0);
+          expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+        }
+        await expect(example.getByRole('tabpanel', { name: 'Result' })).toContainText(
+          walkthrough.boundary,
+        );
+        await expect(example.getByRole('figure')).toContainText('Illustrative');
+        await example.screenshot({
+          path: testInfo.outputPath(`${walkthrough.id}-${width}-${colorScheme}.png`),
+        });
+        await tabs.getByRole('tab', { name: 'Result' }).focus();
+        await page.keyboard.press('ArrowRight');
+        await expect(tabs.getByRole('tab', { name: 'Host inputs' })).toBeFocused();
+        await expect(example.getByRole('tabpanel', { name: 'Host inputs' })).toContainText(
+          walkthrough.callback,
+        );
+        await page.keyboard.press('ArrowRight');
+        await expect(tabs.getByRole('tab', { name: 'Source' })).toBeFocused();
+        const source = example.getByRole('tabpanel', { name: 'Source' });
+        await expect(source).toContainText(`export const ${walkthrough.helper}`);
+        const region = source.getByRole('region', {
+          name: `${walkthrough.category} complete source`,
+        });
+        await region.focus();
+        expect(await region.evaluate((element) => getComputedStyle(element).outlineStyle)).not.toBe(
+          'none',
+        );
+        await source.getByRole('button', { name: 'Copy code', exact: true }).click();
+        const copied = await page.evaluate(() => navigator.clipboard.readText());
+        expect(copied).toContain(`export const ${walkthrough.helper}`);
+        expect(await (await page.request.get('/examples/index.md')).text()).toContain(copied);
+        await expectNoHorizontalOverflow(page);
+        const accessibility = await new AxeBuilder({ page })
+          .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+          .analyze();
+        expect(accessibility.violations).toStrictEqual([]);
+        expect(errors).toStrictEqual([]);
+      });
+    }

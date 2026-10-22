@@ -18,3 +18,36 @@ export const EXAMPLE_SOURCE_RECORDS = [
   { id: 'review-handoff', source: 'examples/review-handoff.ts' },
   { id: 'revise-plan', source: 'examples/revise-plan.ts' },
 ] as const;
+
+export type IExampleId = (typeof EXAMPLE_SOURCE_RECORDS)[number]['id'];
+
+export interface IExampleDefinition {
+  id: IExampleId;
+  number: string;
+  category: string;
+  title: string;
+  goal: string;
+  install: string;
+  prerequisites: readonly string[];
+  steps: readonly { title: string; text: string }[];
+  setup: string;
+  call: string | null;
+  hostFields: readonly { name: string; text: string }[];
+  visual: {
+    caption: string;
+    groups: readonly {
+      label: string;
+      items: readonly { title: string; detail: string; state: 'done' | 'pending' | null }[];
+    }[];
+  } | null;
+  result: string;
+  resultLabel: string;
+  resultNote: string;
+  returns: readonly { name: string; text: string }[];
+}
+
+export type IExampleSources = Record<IExampleId, string | undefined>;
+export interface IWorkedExample extends IExampleDefinition {
+  sourcePath: (typeof EXAMPLE_SOURCE_RECORDS)[number]['source'];
+  source: string;
+}
