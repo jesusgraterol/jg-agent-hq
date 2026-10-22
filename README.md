@@ -77,6 +77,8 @@ Collect one completed reviewer message by its exact native turn/item reference. 
 
 ## Source examples
 
+Follow the [complete session walkthrough](https://jg-agent-hq.jesusgraterol.dev/examples/#control-session), with copyable source and expected delivery output.
+
 `examples/control-session.ts` creates a native session and reads its actual delivery, output, permission and usage observations. `examples/review-handoff.ts` presents exact cross-provider review/feedback previews and delivers selected findings. `examples/revise-plan.ts` runs the planning skills through the revision lease, retains verified work through explicit correspondence, and obtains fresh approvals and execution scope.
 
 These complete TypeScript examples use the public client and contracts. Start the local controller, sign in to the native CLIs, and install the required skills and supported jg-plans CLI first. The host supplies actual user decisions and keeps native permission handling separate. Retain request identities before submission; after an interrupted client call, inspect those receipts instead of rerunning a whole example. Examples are development sources, not package exports or automatic website actions.

@@ -1,0 +1,95 @@
+---
+import Card from 'jg-personal-astro-ui/card';
+import Tabs from 'jg-personal-astro-ui/tabs';
+import CodeBlock from 'jg-personal-astro-ui/code-block';
+import Badge from 'jg-personal-astro-ui/badge';
+import { ArrowDown, Check, Terminal } from '@lucide/astro';
+
+import { HOME_CONTENT, CONTROL_EXAMPLE } from '../../content/index.ts';
+
+const scene = HOME_CONTENT.visual;
+---
+
+<figure
+  class="min-w-0"
+  aria-labelledby="workspace-caption"
+>
+  <Card class="shadow-raised">
+    <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
+      <p class="flex items-center gap-2 font-mono text-xs font-semibold">
+        <Terminal
+          class="size-4 text-accent"
+          aria-hidden="true"
+        />
+        {scene.workspace}
+      </p>
+      <Badge variant="outline">{scene.label}</Badge>
+    </div>
+    <Tabs
+      id="workspace-demo"
+      label="Session example view"
+      tabs={[
+        { id: 'flow', label: 'Session flow' },
+        { id: 'code', label: 'TypeScript' },
+      ]}
+    >
+      <div
+        slot="flow"
+        class="pt-6"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <p class="text-xl font-semibold tracking-tight">{scene.session}</p>
+          <span class="font-mono text-xs text-muted">Codex · native session</span>
+        </div>
+        <p class="mt-4 border-l-2 border-accent py-1 pl-4 text-sm leading-6">“{scene.prompt}”</p>
+        <ol class="mt-7 space-y-5">
+          {
+            scene.steps.map((step, index) => (
+              <li class="flex min-w-0 gap-4">
+                <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-secondary font-mono text-xs text-accent">
+                  0{index + 1}
+                </span>
+                <div class="min-w-0 flex-1 border-b border-border pb-4">
+                  <p class="font-semibold">{step.title}</p>
+                  <p class="mt-1 font-mono text-xs leading-6 wrap-anywhere text-muted">
+                    {step.detail}
+                  </p>
+                </div>
+              </li>
+            ))
+          }
+        </ol>
+        <div class="mt-6 flex flex-wrap items-center justify-between gap-3">
+          <span class="flex items-center gap-2 text-sm font-medium text-success"
+            ><Check
+              class="size-4"
+              aria-hidden="true"
+            /> Delivery acknowledged</span
+          >
+          <span class="flex items-center gap-1 font-mono text-xs text-muted"
+            ><ArrowDown
+              class="size-3.5"
+              aria-hidden="true"
+            /> Follow native output</span
+          >
+        </div>
+      </div>
+      <div
+        slot="code"
+        class="pt-5"
+      >
+        <CodeBlock
+          code={CONTROL_EXAMPLE.call}
+          lang="ts"
+          title="run-session.ts"
+        />
+      </div>
+    </Tabs>
+  </Card>
+  <figcaption
+    id="workspace-caption"
+    class="mt-4 max-w-xl text-xs leading-6 text-muted"
+  >
+    {scene.caption}
+  </figcaption>
+</figure>

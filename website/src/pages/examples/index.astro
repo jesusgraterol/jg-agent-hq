@@ -1,0 +1,20 @@
+---
+import { getEntry } from 'astro:content';
+import PageHeader from 'jg-personal-astro-ui/page-header';
+
+import ExampleWalkthrough from '../../components/example-walkthrough/example-walkthrough.astro';
+import { createControlExample } from '../../content/index.ts';
+import BaseLayout from '../../layouts/base-layout/base-layout.astro';
+import { PAGE_RECORDS } from '../../site.config.ts';
+
+const example = createControlExample((await getEntry('examples', 'control-session'))?.body);
+---
+
+<BaseLayout page={PAGE_RECORDS.find((page) => page.id === 'examples')!}>
+  <PageHeader
+    eyebrow="From code to result"
+    title="Worked examples"
+    lede="A complete local workflow, from a public API call to an observable result."
+  />
+  <ExampleWalkthrough example={example} />
+</BaseLayout>

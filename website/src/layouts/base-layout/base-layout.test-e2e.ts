@@ -2,7 +2,8 @@ import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 import { expectNoHorizontalOverflow, waitForPageAssets } from 'jg-playwright';
 
-import { HOME_CONTENT, PAGE_RECORDS, SITE_CONFIG, USAGE_EXAMPLE } from '../../site.config.ts';
+import { HOME_CONTENT, CONTROL_EXAMPLE } from '../../content/index.ts';
+import { PAGE_RECORDS, SITE_CONFIG } from '../../site.config.ts';
 
 for (const width of [320, 768, 1440]) {
   for (const colorScheme of ['light', 'dark'] as const) {
@@ -12,7 +13,10 @@ for (const width of [320, 768, 1440]) {
       await page.setViewportSize({ width, height: 1000 });
       await page.emulateMedia({ colorScheme, reducedMotion: 'reduce' });
       const failures: string[] = [];
-      page.on('pageerror', (error) => failures.push(error.message));
+      page.on('pageerror', (error) => failures.push(error.stack || error.message));
+      page.on('console', (message) => {
+        if (message.type() === 'error') failures.push(message.text());
+      });
       page.on('response', (response) => {
         if (response.status() >= 400) failures.push(`${response.status()} ${response.url()}`);
       });
@@ -34,9 +38,9 @@ for (const width of [320, 768, 1440]) {
           .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
           .analyze();
         expect(accessibility.violations).toStrictEqual([]);
-        if (record.id === 'home')
+        if (record.id === 'home' || record.id === 'examples')
           await page.screenshot({
-            path: testInfo.outputPath(`home-${width}-${colorScheme}.png`),
+            path: testInfo.outputPath(`${record.id}-${width}-${colorScheme}.png`),
             fullPage: true,
           });
       }
@@ -134,9 +138,10 @@ test('documentation section navigation follows its rendered heading', async ({ p
 test('the API example copies the visible client code', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.goto('/');
-  await page.getByRole('button', { name: 'Copy code', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Copied code', exact: true })).toBeVisible();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(USAGE_EXAMPLE);
+  const example = page.locator('section#session-code');
+  await example.getByRole('button', { name: 'Copy code', exact: true }).click();
+  await expect(example.getByRole('button', { name: 'Copied code', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(CONTROL_EXAMPLE.call);
 });
 
 test('missing page has useful navigation and no indexing contract', async ({ page }) => {
@@ -146,4 +151,66 @@ test('missing page has useful navigation and no indexing contract', async ({ pag
   await expect(page.getByRole('link', { name: 'Browse docs' })).toHaveAttribute('href', '/docs/');
   await expect(page.locator('link[rel="canonical"]')).toHaveCount(0);
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex/u);
+});
+
+test('the session example exposes its result and complete copyable source through keyboard controls', async ({
+  page,
+  context,
+}) => {
+  const failures: string[] = [];
+  page.on('pageerror', (error) => failures.push(error.stack || error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') failures.push(message.text());
+  });
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/');
+  const demo = page.getByRole('tablist', { name: 'Session example view' });
+  await demo.getByRole('tab', { name: 'Session flow' }).focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(demo.getByRole('tab', { name: 'TypeScript' })).toBeFocused();
+  await expect(demo.getByRole('tab', { name: 'TypeScript' })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  expect(
+    await demo
+      .getByRole('tab', { name: 'TypeScript' })
+      .evaluate((element) => getComputedStyle(element).outlineStyle),
+  ).not.toBe('none');
+  await page.getByRole('link', { name: 'See it in action' }).click();
+  await expect(page).toHaveURL('/examples/');
+  const tabs = page.getByRole('tablist', { name: 'Session walkthrough' });
+  await expect(tabs.getByRole('tab', { name: 'What you get back' })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await tabs.getByRole('tab', { name: 'What you get back' }).focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(tabs.getByRole('tab', { name: 'Call the helper' })).toBeFocused();
+  await page.keyboard.press('ArrowLeft');
+  await expect(tabs.getByRole('tab', { name: 'What you get back' })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await expect(page.getByRole('tabpanel', { name: 'What you get back' })).toContainText(
+    'acknowledged',
+  );
+  await expect(page.getByRole('tabpanel', { name: 'What you get back' })).toContainText(
+    'handle tool permissions separately',
+  );
+  const disclosure = page.locator('summary').filter({ hasText: 'Complete source' });
+  await disclosure.focus();
+  await page.keyboard.press('Enter');
+  const source = page.locator('details[open]');
+  await expect(source).toContainText('export const controlSession');
+  await source.getByRole('button', { name: 'Copy code', exact: true }).click();
+  const markdown = await page.request.get('/examples/index.md');
+  const body = await markdown.text();
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copied).toContain('export const controlSession');
+  expect(body).toContain(copied);
+  await expectNoHorizontalOverflow(page);
+  expect(failures).toStrictEqual([]);
 });
