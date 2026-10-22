@@ -61,6 +61,7 @@ test(
             ].includes(path),
         ),
       ).toBe(true);
+      expect(paths.some((path) => path.startsWith('examples/'))).toBe(false);
       await writeFile(
         join(scratch, 'package.json'),
         JSON.stringify({ private: true, type: 'module' }),
@@ -82,9 +83,32 @@ test(
           maxBuffer: 2_097_152,
         },
       );
+      const sourceExamples = ['control-session.ts', 'review-handoff.ts', 'revise-plan.ts'];
+      await mkdir(join(scratch, 'examples'));
+      for (const example of sourceExamples)
+        await copyFile(join(ROOT, 'examples', example), join(scratch, 'examples', example));
+      const config = ts.readConfigFile(join(ROOT, 'tsconfig.json'), ts.sys.readFile);
+      expect(config.error).toBeUndefined();
+      const development = ts.parseJsonConfigFileContent(config.config, ts.sys, ROOT);
+      const program = ts.createProgram(
+        sourceExamples.map((example) => join(scratch, 'examples', example)),
+        {
+          ...development.options,
+          typeRoots: [join(ROOT, 'node_modules/@types')],
+          noEmit: true,
+        },
+      );
+      expect(
+        ts.formatDiagnosticsWithColorAndContext(ts.getPreEmitDiagnostics(program), {
+          getCanonicalFileName: (path) => path,
+          getCurrentDirectory: () => scratch,
+          getNewLine: () => '\n',
+        }),
+      ).toBe('');
       const script = `
       import { createAgentHq, requestAgentHq, withHqLock, readHqLockState } from 'jg-agent-hq';
       import { HqResponseSchema, BrowserActionSchema } from 'jg-agent-hq/contracts';
+      import { controlSession } from './examples/control-session.ts';
       import { join } from 'node:path';
       const stateRoot = join(process.cwd(), 'state');
       const value = await withHqLock(stateRoot, 'smoke', async () => 42);
@@ -101,6 +125,8 @@ test(
         await runtime.performBrowserAction(input,'packed-operator',async()=>{effects++;});
         await runtime.performBrowserAction(input,'packed-operator',async()=>{effects++;});
         if(effects!==1 || (await runtime.readBrowserAction(input.id,'packed-operator')).state!=='acknowledged') throw new Error('packed receipt failed');
+        const session = await controlSession({stateRoot: runtime.stateRoot, workspaceRoot: process.cwd(), provider: 'codex', name: 'packed-example', text: 'Discuss the task without changing files.', actionIds: {create:crypto.randomUUID(), message:crypto.randomUUID()}});
+        if(session.receipt.delivery!=='acknowledged' || session.thread.provider!=='codex' || session.usage.source!=='native') throw new Error('packed source example failed');
       } finally { await runtime.close(); }
     `;
       const bin = await installCodexFixture(scratch);

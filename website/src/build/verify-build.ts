@@ -4,8 +4,14 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 import { Exception, extractMessage } from 'jg-exception';
 
-import { DOCUMENT_RECORDS, readDocument } from '../content/index.ts';
-import { HOME_CONTENT, PAGE_RECORDS, SITE_CONFIG, homeMarkdown } from '../site.config.ts';
+import {
+  DOCUMENT_RECORDS,
+  readDocument,
+  HOME_CONTENT,
+  homeMarkdown,
+  examplesMarkdown,
+} from '../content/index.ts';
+import { PAGE_RECORDS, SITE_CONFIG } from '../site.config.ts';
 
 import type { IBuildVerification } from './types.ts';
 
@@ -194,9 +200,25 @@ export const verifyBuild = async (directory: string): Promise<IBuildVerification
         const source = DOCUMENT_RECORDS.find((item) => item.id === record.id);
         const expected = source
           ? await readDocument(fileURLToPath(new URL('../../../', import.meta.url)), source.source)
-          : homeMarkdown();
+          : record.id === 'examples'
+            ? examplesMarkdown({
+                'control-session': await readDocument(
+                  fileURLToPath(new URL('../../../', import.meta.url)),
+                  'examples/control-session.ts',
+                ),
+                'review-handoff': await readDocument(
+                  fileURLToPath(new URL('../../../', import.meta.url)),
+                  'examples/review-handoff.ts',
+                ),
+                'revise-plan': await readDocument(
+                  fileURLToPath(new URL('../../../', import.meta.url)),
+                  'examples/revise-plan.ts',
+                ),
+              })
+            : homeMarkdown();
         if (
           markdown !== expected ||
+          data.text.includes('Read this page as Markdown') ||
           (record.id === 'home' &&
             (data.headings[0] !== HOME_CONTENT.title ||
               !data.text.includes(`npm install jg-agent-hq@${SITE_CONFIG.version}`)))

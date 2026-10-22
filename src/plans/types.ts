@@ -6,7 +6,9 @@ import {
   PlanMilestoneSchema,
   PlanRevisionSchema,
   PlanReconciliationEntrySchema,
+  type IActionEnvelope,
   type IPlanMetadata,
+  type IPlanStatus,
   type IPlanMilestone,
   type IPlanRevision,
   type IPlanRevisionWorkflow,
@@ -14,8 +16,6 @@ import {
 
 // full bounded artifacts are used only for the selected plan, never a repository scan
 export type IParsedMilestone = IPlanMilestone & {
-  headingStart: number;
-  statusEnd: number;
   contract: string;
   sharedDigest: string;
 };
@@ -25,6 +25,7 @@ export type IPlanArtifacts = {
   plan: string;
   milestones: string | null;
   coordinationText: string | null;
+  skillsBinding: IPlanStatus['skillsBinding'];
   coordination: z.infer<typeof PlanCoordinationSchema>;
   parsed: IParsedMilestone[];
   revision: IPlanRevision;
@@ -33,19 +34,30 @@ export type IPlanArtifacts = {
 export type IPlanContract = { body: string; metadata: IPlanMetadata; milestones: string | null };
 
 // persisted intents make an interrupted finalization retry reuse its assigned UUIDs
-export const PlanWriteIntentSchema = z.strictObject({
-  id: z.uuid(),
-  digest: z.string().regex(/^[a-f0-9]{64}$/),
-  directory: z.string(),
-  before: z.strictObject({
-    plan: z.string().nullable(),
-    milestones: z.string().nullable(),
-    coordination: z.string().nullable(),
-  }),
-  coordination: z.string().max(8_388_608),
-  milestones: z.string().max(1_048_576).nullable(),
-  state: z.enum(['prepared', 'completed']),
-});
+export const PlanWriteIntentSchema = z
+  .strictObject({
+    id: z.uuid(),
+    digest: z.string().regex(/^[a-f0-9]{64}$/),
+    directory: z.string(),
+    before: z.strictObject({
+      plan: z.string().nullable(),
+      milestones: z.string().nullable(),
+      coordination: z.string().nullable(),
+    }),
+    coordination: z.string().max(8_388_608),
+    plan: z.string().max(1_048_576).nullable(),
+    milestones: z.discriminatedUnion('operation', [
+      z.strictObject({ operation: z.literal('keep') }),
+      z.strictObject({ operation: z.literal('write'), source: z.string().max(1_048_576) }),
+      z.strictObject({ operation: z.literal('remove') }),
+    ]),
+    state: z.enum(['prepared', 'completed']),
+  })
+  .refine(
+    (intent) =>
+      intent.before.plan !== null ||
+      (intent.plan === null && intent.milestones.operation === 'keep'),
+  );
 export type IPlanWriteIntent = z.infer<typeof PlanWriteIntentSchema>;
 export const PlanProjectionSchema = z.strictObject({
   directory: z.string(),
@@ -117,3 +129,18 @@ export type IPlanStopJob = {
   phaseActionId: string;
   controls: IPlanRevisionWorkflow['controls'];
 };
+
+// The caller owns the HQ metadata lock; this callback owns only bounded document work.
+export type IApplyPlanIntent = (intent: IPlanWriteIntent) => Promise<void>;
+export type IWithPlanDocuments = <T>(
+  directory: string,
+  operation: (apply: IApplyPlanIntent) => Promise<T>,
+) => Promise<T>;
+
+export type IPrepareImplementation = (
+  artifacts: IPlanArtifacts,
+  action: IActionEnvelope,
+  milestoneId: string | null,
+  apply: IApplyPlanIntent,
+) => Promise<void>;
+export type IResumeImplementation = (directory: string, action: IActionEnvelope) => Promise<void>;

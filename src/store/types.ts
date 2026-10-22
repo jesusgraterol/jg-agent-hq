@@ -299,7 +299,8 @@ export type IStore = {
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */
   preparePlanOperation(intent: IPlanWriteIntent): Promise<IPlanWriteIntent>;
-  /** Marks a confirmed file write complete without discarding its replay identity.
+  /** Completes a released durable write, reconciling a failed acknowledgement from the ledger.
+   * Prepared payload remains available when completion did not commit; an unknown outcome stays closed.
    * @returns A promise resolved after persistence.
    * @throws
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed

@@ -6,7 +6,7 @@ import { Exception, extractMessage } from 'jg-exception';
 
 import { SITE_CONFIG } from '../site.config.ts';
 
-import { DOCUMENT_RECORDS, type IMdastPlugin } from './types.ts';
+import { DOCUMENT_RECORDS, EXAMPLE_SOURCE_RECORDS, type IMdastPlugin } from './types.ts';
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -39,12 +39,22 @@ export const resolveDocumentLink = (href: string, source: string): string => {
     });
   const url = new URL(href, `https://source.invalid/${source}`);
   const path = url.pathname.slice(1);
-  if (!['README.md', 'api/README.md', 'errors/README.md'].includes(path) || url.search)
+  if (
+    ![
+      'README.md',
+      'api/README.md',
+      'errors/README.md',
+      ...EXAMPLE_SOURCE_RECORDS.map((record) => record.source),
+    ].includes(path) ||
+    url.search
+  )
     throw new Exception('The HQ website source is invalid', {
       code: 'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
     });
   if (path === 'README.md') return `/docs/${url.hash}`;
   if (path === 'api/README.md') return `/docs/api/${url.hash}`;
+  const example = EXAMPLE_SOURCE_RECORDS.find((record) => record.source === path);
+  if (example) return `/examples/#${example.id}`;
   return `${SITE_CONFIG.repositoryUrl}/blob/main/${path}${url.hash}`;
 };
 
@@ -76,15 +86,17 @@ export const canonicalMarkdownPlugin: IMdastPlugin = {
 };
 
 /**
- * Reads one allowlisted regular source; the open handle bounds the read to 1 MiB.
- * @returns The canonical Markdown body.
+ * Reads one allowlisted canonical document or complete source example; the open handle bounds the read to 1 MiB.
+ * @returns The exact UTF-8 source body.
  * @throws
  * - JG_AGENT_HQ_WEBSITE_SOURCE_INVALID: The HQ website source is invalid
  */
 export const readDocument = async (repositoryRoot: string, source: string): Promise<string> => {
   let handle;
   try {
-    if (!DOCUMENT_RECORDS.some((record) => record.source === source))
+    if (
+      ![...DOCUMENT_RECORDS, ...EXAMPLE_SOURCE_RECORDS].some((record) => record.source === source)
+    )
       throw new Exception('The HQ website source is invalid', {
         code: 'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
       });
@@ -152,6 +164,24 @@ export const canonicalDocuments = (): Loader => ({
           fileURLToPath(fileURL),
         ),
       });
+    }
+  },
+});
+
+/**
+ * Loads only the three complete source examples during content sync, before Astro relocates server chunks.
+ * @returns The native content loader, without rendering TypeScript as Markdown.
+ * @throws
+ * - JG_AGENT_HQ_WEBSITE_SOURCE_INVALID: The HQ website source is invalid
+ */
+export const exampleSources = (): Loader => ({
+  name: 'hq-example-sources',
+  load: async (context) => {
+    context.store.clear();
+    for (const record of EXAMPLE_SOURCE_RECORDS) {
+      const body = await readDocument(REPOSITORY_ROOT, record.source);
+      const data = await context.parseData({ id: record.id, data: { source: record.source } });
+      context.store.set({ id: record.id, body, data, digest: context.generateDigest(body) });
     }
   },
 });

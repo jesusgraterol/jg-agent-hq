@@ -1,18 +1,22 @@
 import { constants } from 'node:fs';
-import { open, lstat, rename, rm } from 'node:fs/promises';
+import { open, lstat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { writeFileAtomicIfUnchanged } from 'jg-fs';
 import { Exception, extractMessage, hasErrorCode, isException } from 'jg-exception';
 
 import {
   PlanCoordinationSchema,
-  PlanMetadataSchema,
   type IPlanTarget,
   type IPlanCoordination,
 } from '../contracts/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 
-import { computePlanRevision, hashPlanContent, parsePlanMilestones } from './utilities.js';
+import {
+  computeObservedPlanRevision,
+  hashPlanContent,
+  projectPlanMilestones,
+} from './utilities.js';
+import { observePlanContract, observeSkillsBinding, observeSequence } from './documents.js';
 import type { IPlanArtifacts, IPlanContractParser } from './types.js';
 
 const MAX_PLAN_BYTES = 1_048_576;
@@ -127,6 +131,27 @@ export const serializePlanCoordination = (coordination: IPlanCoordination): stri
 };
 
 /**
+ * Resolves the selected live directory before acquiring document locks or reading artifacts.
+ * @throws
+ * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+ * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
+ */
+export const resolvePlanDirectory = async (selected: string, roots: string[]): Promise<string> => {
+  const directory = await resolveWorkspaceTarget(selected, roots);
+  if (
+    directory
+      .split(/[\\/]/)
+      .some((component) => ['_archive', '_archives', '_backup', '_backups'].includes(component)) ||
+    !(await lstat(directory)).isDirectory()
+  )
+    throw new Exception('The HQ plan is invalid', {
+      code: 'JG_AGENT_HQ_PLAN_INVALID',
+      data: { kind: 'invalid-request' },
+    });
+  return directory;
+};
+
+/**
  * Resolves an authorized selected directory and computes current execution and inspection identity.
  * @returns Current bounded artifacts, never a recursive repository scan.
  * @throws
@@ -139,17 +164,7 @@ export const readPlanArtifacts = async (
   roots: string[],
   parseContract?: IPlanContractParser,
 ): Promise<IPlanArtifacts> => {
-  const directory = await resolveWorkspaceTarget(target.directory, roots);
-  if (
-    directory
-      .split(/[\\/]/)
-      .some((component) => ['_archive', '_archives', '_backup', '_backups'].includes(component)) ||
-    !(await lstat(directory)).isDirectory()
-  )
-    throw new Exception('The HQ plan is invalid', {
-      code: 'JG_AGENT_HQ_PLAN_INVALID',
-      data: { kind: 'invalid-request' },
-    });
+  const directory = await resolvePlanDirectory(target.directory, roots);
   const [plan, milestones, coordinationText] = await Promise.all([
     readPlanFile(directory, 'plan.md'),
     readPlanFile(directory, 'milestones.md', true),
@@ -160,31 +175,24 @@ export const readPlanArtifacts = async (
       code: 'JG_AGENT_HQ_PLAN_INVALID',
       data: { kind: 'invalid-request' },
     });
-  const contract = parseContract
-    ? await parseContract({ directory, content: plan })
-    : { body: plan, metadata: { scope: 'local', repositories: [], errorReservations: [] } };
-  const parsedMetadata = PlanMetadataSchema.safeParse(contract.metadata);
-  const prefix = plan.slice(0, plan.length - contract.body.length);
-  if (
-    !parsedMetadata.success ||
-    !contract.body ||
-    !plan.endsWith(contract.body) ||
-    (prefix && !/^---\r?\n[\s\S]*?\r?\n---\r?\n$/.test(prefix))
-  )
-    throw new Exception('The HQ plan is invalid', {
-      code: 'JG_AGENT_HQ_PLAN_INVALID',
-      data: { kind: 'invalid-request' },
-    });
+  const contract = observePlanContract(
+    plan,
+    parseContract ? await parseContract({ directory, content: plan }) : undefined,
+  );
+  const sequence = milestones === null ? null : observeSequence(milestones);
+  const skillsBinding = observeSkillsBinding(plan, sequence);
   const coordination = parsePlanCoordination(coordinationText);
+  const parsed = sequence === null ? null : projectPlanMilestones(sequence);
   return {
     directory,
-    contract: { body: contract.body, metadata: parsedMetadata.data },
+    contract: { body: contract.body, metadata: contract.metadata },
     plan,
     milestones,
     coordinationText,
+    skillsBinding,
     coordination,
-    parsed: milestones === null ? [] : parsePlanMilestones(milestones),
-    revision: computePlanRevision({ ...contract, metadata: parsedMetadata.data, milestones }),
+    parsed: parsed ?? [],
+    revision: computeObservedPlanRevision({ ...contract, milestones: parsed }),
     hashes: {
       plan: hashPlanContent(plan),
       milestones: milestones === null ? null : hashPlanContent(milestones),
@@ -193,51 +201,99 @@ export const readPlanArtifacts = async (
   };
 };
 
+/** Flushes fixed-name creation/removal before journal completion. */
+const syncPlanDirectory = async (directory: string): Promise<void> => {
+  const parent = await open(directory, 'r');
+  try {
+    await parent.sync();
+  } finally {
+    await parent.close();
+  }
+};
+
 /**
- * Atomically replaces a selected artifact after syncing its task-owned temporary file.
- * @returns A promise resolved after the containing directory is synced.
+ * Applies a private checked replacement or exclusive creation under the caller's document locks.
  * @throws
+ * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
  * - JG_AGENT_HQ_PLAN_FAILED: The HQ plan operation failed
  */
 export const writePlanFile = async (
   directory: string,
-  name: string,
+  name: 'plan.md' | 'milestones.md' | 'coordination.json',
   content: string,
+  expected: string | null,
 ): Promise<void> => {
-  const path = join(directory, `.hq-${randomUUID()}.tmp`);
-  let hasTemporaryFile = false;
+  const path = join(directory, name);
+  let owned: { dev: number; ino: number } | undefined;
+  let isDurable = false;
   try {
+    if (expected !== null) {
+      await writeFileAtomicIfUnchanged(path, content, Buffer.from(expected), 0o600);
+      return;
+    }
     const file = await open(path, 'wx', 0o600);
-    hasTemporaryFile = true;
     try {
+      owned = await file.stat();
+      await file.chmod(0o600);
       await file.writeFile(content);
       await file.sync();
+      isDurable = true;
     } finally {
       await file.close();
     }
-    await rename(path, join(directory, name));
-    hasTemporaryFile = false;
-    const parent = await open(directory, 'r');
-    try {
-      await parent.sync();
-    } finally {
-      await parent.close();
+    await syncPlanDirectory(directory);
+  } catch (cause) {
+    if (owned && !isDurable) {
+      try {
+        const current = await lstat(path);
+        if (current.dev === owned.dev && current.ino === owned.ino) {
+          await unlink(path);
+          await syncPlanDirectory(directory);
+        }
+      } catch (cleanup) {
+        if (!hasErrorCode(cleanup, 'ENOENT'))
+          cause = new AggregateError([cause, cleanup], 'Private plan creation cleanup failed');
+      }
     }
+    if (hasErrorCode(cause, 'FILE_CHANGED') || hasErrorCode(cause, 'EEXIST'))
+      throw new Exception('The HQ action conflicts with its recorded state', {
+        code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+        data: { kind: 'state-conflict' },
+        cause,
+      });
+    throw new Exception(`The HQ plan operation failed: ${extractMessage(cause)}`, {
+      code: 'JG_AGENT_HQ_PLAN_FAILED',
+      data: { kind: 'operation-failed' },
+      cause,
+    });
+  }
+};
+
+/**
+ * Removes only the unchanged selected milestone artifact and flushes its parent directory.
+ * @throws
+ * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+ * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
+ * - JG_AGENT_HQ_PLAN_FAILED: The HQ plan operation failed
+ */
+export const removePlanMilestones = async (
+  directory: string,
+  expected: string | null,
+): Promise<void> => {
+  const current = await readPlanFile(directory, 'milestones.md', true);
+  if (current !== expected)
+    throw new Exception('The HQ action conflicts with its recorded state', {
+      code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+      data: { kind: 'state-conflict' },
+    });
+  try {
+    if (current !== null) await unlink(join(directory, 'milestones.md'));
+    await syncPlanDirectory(directory);
   } catch (cause) {
     throw new Exception(`The HQ plan operation failed: ${extractMessage(cause)}`, {
       code: 'JG_AGENT_HQ_PLAN_FAILED',
       data: { kind: 'operation-failed' },
       cause,
     });
-  } finally {
-    try {
-      if (hasTemporaryFile) await rm(path, { force: true });
-    } catch (cause) {
-      throw new Exception(`The HQ plan operation failed: ${extractMessage(cause)}`, {
-        code: 'JG_AGENT_HQ_PLAN_FAILED',
-        data: { kind: 'operation-failed' },
-        cause,
-      });
-    }
   }
 };

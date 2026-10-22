@@ -1,5 +1,10 @@
 packages:
   - website
 
+minimumReleaseAgeExclude:
+  # Exact owned releases; qualified archive checksums verified before adoption.
+  - jg-fs@1.7.0
+  - jg-plans@0.2.0
+
 allowBuilds:
   esbuild: true

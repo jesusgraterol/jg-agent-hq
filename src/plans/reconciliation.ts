@@ -17,8 +17,8 @@ import {
   hashPlanContent,
   isSamePlanRevision,
   parsePlanMilestones,
-  refreshPlanOverview,
 } from './utilities.js';
+import { prepareReconciliationIds, prepareSequenceMarkers } from './documents.js';
 import type { IPlanArtifacts } from './types.js';
 
 const conflict = (): never => {
@@ -119,15 +119,29 @@ export const proposeReconciliation = (
     artifacts.coordination.correspondences,
   );
   const matched = new Set<string>();
-  const drafts: IPlanDraftMilestone[] = artifacts.parsed.map((entry) => {
+  const exactMatches = artifacts.parsed.map((entry) => {
     const key = matchKey(entry);
     const candidates = oldByContract.get(key) ?? [];
     const candidate = candidates.length === 1 && newCounts.get(key) === 1 ? candidates[0]! : null;
     const exact =
       candidate && (candidate.status !== 'done' || verified(candidate)) ? candidate : null;
     if (entry.id && exact && entry.id !== exact.id) conflict();
+    return exact;
+  });
+  const retained = new Map(
+    artifacts.parsed.flatMap((entry, index) => {
+      const exact = exactMatches[index];
+      return exact ? [[entry.ordinal, exact.id] as const] : [];
+    }),
+  );
+  const assigned =
+    artifacts.milestones === null
+      ? []
+      : parsePlanMilestones(prepareReconciliationIds(artifacts.milestones, retained));
+  const drafts: IPlanDraftMilestone[] = artifacts.parsed.map((entry, index) => {
+    const exact = exactMatches[index];
     if (exact) matched.add(exact.id);
-    const id = exact?.id ?? randomUUID();
+    const id = exact?.id ?? assigned[index]!.id!;
     return {
       id,
       ordinal: entry.ordinal,
@@ -275,7 +289,7 @@ export const confirmReconciliation = (
 };
 
 /**
- * Writes only framing identity/progress and the derived Overview; requirement prose is unchanged.
+ * Prepares selected identity/progress through the document engine; requirement prose is unchanged.
  * @returns The canonical sequence for explicit presentation and approval.
  * @throws
  * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
@@ -284,23 +298,14 @@ export const renderReconciledSequence = (
   content: string,
   drafts: IPlanDraftMilestone[],
 ): string => {
-  let result = content.replace(/\r\n?/g, '\n');
-  const parsed = parsePlanMilestones(result);
-  if (parsed.length !== drafts.length)
+  const parsed = parsePlanMilestones(content);
+  if (
+    parsed.length !== drafts.length ||
+    parsed.some((entry, index) => entry.ordinal !== drafts[index]!.ordinal)
+  )
     throw new Exception('The HQ plan is invalid', {
       code: 'JG_AGENT_HQ_PLAN_INVALID',
       data: { kind: 'invalid-request' },
     });
-  for (let index = parsed.length - 1; index >= 0; index--) {
-    const entry = parsed[index]!;
-    const draft = drafts[index]!;
-    const start = result.indexOf('\n', entry.headingStart) + 1;
-    const idEnd = entry.id ? result.indexOf('\n', entry.statusEnd) + 1 : entry.statusEnd;
-    const end = idEnd === 0 ? result.length : idEnd;
-    result =
-      result.slice(0, start) +
-      `**Status:** ${draft.status}\n**Milestone ID:** ${draft.id}\n` +
-      result.slice(end);
-  }
-  return refreshPlanOverview(result, drafts);
+  return prepareSequenceMarkers(content, drafts);
 };

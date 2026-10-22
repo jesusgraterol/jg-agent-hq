@@ -11,7 +11,7 @@ import { verifyBuild } from './index.ts';
 const DIST = fileURLToPath(new URL('../../dist', import.meta.url));
 
 test('verifies the actual production artifact', async () => {
-  expect(await verifyBuild(DIST)).toMatchObject({ pages: 4 });
+  expect(await verifyBuild(DIST)).toMatchObject({ pages: 5 });
 });
 
 test.each([
@@ -20,6 +20,13 @@ test.each([
   ['Markdown', 'docs/index.md', '# jg-agent-hq', '# Different content'],
   ['404 indexing', '404.html', 'noindex, follow', 'index, follow'],
   ['discovery', 'sitemap-0.xml', '/docs/api/', '/unknown/'],
+  ['example source', 'examples/index.md', 'Caller action IDs retained', 'Silently retry actions'],
+  [
+    'removed Markdown section',
+    'index.html',
+    'Your first local connection.',
+    'Read this page as Markdown',
+  ],
   ['asset', 'index.html', '/favicon.ico', '/missing.ico'],
 ])('rejects damaged %s in real built output', async (_description, path, before, after) => {
   const root = await mkdtemp(join(tmpdir(), 'hq-site-build-'));

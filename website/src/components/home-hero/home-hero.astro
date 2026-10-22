@@ -1,149 +1,80 @@
 ---
 import Button from 'jg-personal-astro-ui/button';
-import Card from 'jg-personal-astro-ui/card';
 import Container from 'jg-personal-astro-ui/container';
-import InstallCommand from 'jg-personal-astro-ui/install-command';
-import {
-  ArrowDownLeft,
-  ArrowUpRight,
-  CodeXml,
-  MessagesSquare,
-  GitCompareArrows,
-} from '@lucide/astro';
+import TextLink from 'jg-personal-astro-ui/text-link';
+import { ArrowDown, ArrowRight } from '@lucide/astro';
 
-import { HOME_CONTENT, SITE_CONFIG } from '../../site.config.ts';
+import { HOME_CONTENT } from '../../content/index.ts';
+import { SITE_CONFIG } from '../../site.config.ts';
+import WorkflowExplorer from '../workflow-explorer/workflow-explorer.astro';
 ---
 
 <section
-  class="relative overflow-hidden border-b border-border"
+  class="hq-hero relative border-b border-border"
   aria-labelledby="home-title"
 >
-  <Container class="pt-12 pb-10 sm:pt-20 sm:pb-16">
-    <div class="mx-auto max-w-4xl text-center">
-      <p class="eyebrow mb-5">{HOME_CONTENT.eyebrow}</p>
-      <h1
-        id="home-title"
-        class="text-4xl leading-[1.08] font-semibold tracking-tight text-balance sm:text-6xl lg:text-7xl"
-      >
-        {HOME_CONTENT.headline[0]}{' '}
-        <span class="text-accent">{HOME_CONTENT.headline[1]}</span>
-      </h1>
-      <p
-        class="mx-auto mt-6 max-w-2xl text-base leading-7 text-pretty text-muted sm:text-xl sm:leading-8"
-      >
-        {HOME_CONTENT.description}
-      </p>
-      <div class="mt-7 flex flex-wrap justify-center gap-3">
-        <Button
-          href="/docs/"
-          size="lg"
-          >Read the docs</Button
-        >
-        <Button
-          href={SITE_CONFIG.repositoryUrl}
-          external
-          size="lg"
-          variant="outline"
-          >View source</Button
-        >
-      </div>
-      <p class="mt-5 font-mono text-xs text-muted">
-        Open source · TypeScript · Runs on your machine
-      </p>
-    </div>
-
-    <Card class="mt-10 sm:mt-14">
-      <figure
-        class="min-w-0"
-        aria-labelledby="collaboration-caption"
-      >
-        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
-          <p class="flex items-center gap-2 font-mono text-xs font-medium tracking-wider uppercase">
-            <MessagesSquare
-              class="size-4 text-accent"
-              aria-hidden="true"
-            /> One workspace, two perspectives
-          </p>
-          <span class="font-mono text-xs text-muted">Example workflow</span>
-        </div>
-        <div
-          class="grid min-w-0 gap-6 py-6 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:items-center sm:gap-8 sm:py-8"
-        >
-          <div class="min-w-0">
-            <div class="flex items-center gap-3">
-              <CodeXml
-                class="size-6 text-accent"
-                aria-hidden="true"
-              /><p class="font-semibold">
-                Claude Code <span class="ml-2 font-mono text-xs font-normal text-muted">Author</span
-                >
-              </p>
-            </div>
-            <p class="mt-4 font-mono text-xl font-medium">build-reports</p>
-            <p class="mt-2 text-sm leading-6 text-muted">
-              Implements the change. Keeps the original conversation and context.
-            </p>
-            <p
-              class="mt-4 inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 font-mono text-xs"
-            >
-              <ArrowDownLeft
-                class="size-3.5 text-accent"
-                aria-hidden="true"
-              /> Receive selected feedback
-            </p>
-          </div>
-          <div
-            class="flex items-center gap-3 sm:flex-col sm:gap-2"
+  <Container class="relative py-12 sm:py-20 lg:py-24">
+    <div
+      class="grid min-w-0 items-center gap-10 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] lg:gap-16"
+    >
+      <div class="min-w-0">
+        <p class="eyebrow flex items-center gap-3">
+          <span
+            class="h-px w-8 bg-accent"
             aria-hidden="true"
-          >
-            <span class="h-px flex-1 bg-border sm:h-8 sm:w-px sm:flex-none"></span>
-            <span
-              class="flex size-11 items-center justify-center rounded-full border border-border bg-surface"
-              ><GitCompareArrows class="size-5 text-accent" /></span
-            >
-            <span class="h-px flex-1 bg-border sm:h-8 sm:w-px sm:flex-none"></span>
-          </div>
-          <div class="min-w-0">
-            <div class="flex items-center gap-3">
-              <MessagesSquare
-                class="size-6 text-accent"
-                aria-hidden="true"
-              /><p class="font-semibold">
-                Codex <span class="ml-2 font-mono text-xs font-normal text-muted">Reviewer</span>
-              </p>
-            </div>
-            <p class="mt-4 font-mono text-xl font-medium">review-reports</p>
-            <p class="mt-2 text-sm leading-6 text-muted">
-              Reviews in a separate session. Returns findings for the author to assess.
-            </p>
-            <p
-              class="mt-4 inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 font-mono text-xs"
-            >
-              <ArrowUpRight
-                class="size-3.5 text-accent"
-                aria-hidden="true"
-              /> Preview the native skill
-            </p>
-          </div>
-        </div>
-        <figcaption
-          id="collaboration-caption"
-          class="border-t border-border pt-4 text-sm leading-6 text-muted"
+          ></span>{HOME_CONTENT.eyebrow}
+        </p>
+        <h1
+          id="home-title"
+          class="mt-6 text-[clamp(2.75rem,5.6vw,4.75rem)] leading-[1.05] font-semibold tracking-[-0.045em]"
         >
-          {HOME_CONTENT.collaboration}
-        </figcaption>
-      </figure>
-    </Card>
-    <div class="mt-8 min-w-0">
-      <InstallCommand
-        command={`npm install jg-agent-hq@${SITE_CONFIG.version}`}
-        title="Install jg-agent-hq"
-        context="install command"
-        id="install-command"
-      />
-      <p class="mt-3 text-center text-xs leading-5 text-muted">
-        Node.js 24.15.0+ · Linux or macOS · Sign in through the native CLIs you use.
-      </p>
+          {HOME_CONTENT.headline[0]}{' '}<span class="block text-accent"
+            >{HOME_CONTENT.headline[1]}</span
+          >{' '}{HOME_CONTENT.headline[2]}
+        </h1>
+        <p class="mt-7 max-w-xl text-lg leading-8 text-pretty text-muted">
+          {HOME_CONTENT.description}
+        </p>
+        <div class="mt-8 flex flex-wrap items-center gap-3">
+          <Button
+            href="/examples/"
+            size="lg"
+            >See it in action <ArrowRight
+              class="size-4"
+              aria-hidden="true"
+            /></Button
+          >
+          <Button
+            href="#start"
+            size="lg"
+            variant="outline"
+            >Start locally <ArrowDown
+              class="size-4"
+              aria-hidden="true"
+            /></Button
+          >
+        </div>
+        <div class="mt-7 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
+          <span class="font-mono text-xs text-muted">Open source · Runs on your machine</span>
+          <TextLink
+            href={SITE_CONFIG.repositoryUrl}
+            external
+            >View source</TextLink
+          >
+        </div>
+      </div>
+      <WorkflowExplorer />
     </div>
+    <p class="mt-10 border-t border-border pt-6 font-mono text-xs leading-6 text-muted sm:mt-14">
+      Claude Code + Codex <span
+        class="px-2 text-accent"
+        aria-hidden="true"
+        >/</span
+      > Native sign-in, skills and tools <span
+        class="px-2 text-accent"
+        aria-hidden="true"
+        >/</span
+      > An API for your own interface
+    </p>
   </Container>
 </section>

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { constants, type Stats } from 'node:fs';
 import { lstat, mkdir, open, rm } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 
 import { Exception, extractMessage, hasErrorCode } from 'jg-exception';
@@ -28,6 +28,9 @@ type IStoredLock =
   | { kind: 'missing' }
   | { kind: 'empty' }
   | { kind: 'owner'; owner: IHqLockOwner; content: string };
+
+// Active acquisitions only; release or failure removes each waiter and empty root.
+const localWaiters = new Map<string, Set<symbol>>();
 
 /**
  * Requires the documented POSIX host contract before filesystem access.
@@ -227,65 +230,92 @@ export const acquireHqLock = async (
     throw new Exception('The HQ lock owner exceeds the supported size', {
       code: 'JG_AGENT_HQ_LOCK_OWNER_OVERSIZED',
     });
+  const queueKey = resolve(path);
+  const queue = localWaiters.get(queueKey) ?? new Set<symbol>();
+  localWaiters.set(queueKey, queue);
+  const waiter = Symbol();
+  queue.add(waiter);
+  const leaveQueue = (): void => {
+    queue.delete(waiter);
+    if (!queue.size) localWaiters.delete(queueKey);
+  };
   const startedAt = Date.now();
   let emptySince: number | undefined;
   let hasReportedWait = false;
-  while (true) {
-    let handle;
-    try {
-      handle = await open(path, 'wx', 0o600);
-    } catch (error) {
-      if (!hasErrorCode(error, 'EEXIST')) throw error;
-      const stored = await readStoredLock(path);
-      if (stored.kind === 'missing') continue;
-      if (stored.kind === 'empty') {
-        emptySince ??= Date.now();
-        if (Date.now() - emptySince >= setupWindowMs)
-          throw new Exception(
-            `The HQ lock owner is incomplete. Inspect ${RUNTIME_DIRECTORY}/${HQ_LOCK_FILE} and remove it only after its owner stopped`,
-            { code: 'JG_AGENT_HQ_LOCK_OWNER_INCOMPLETE' },
-          );
+  try {
+    while (true) {
+      let handle;
+      const hasPriority = queue.values().next().value === waiter;
+      if (hasPriority) {
+        try {
+          handle = await open(path, 'wx', 0o600);
+        } catch (error) {
+          if (!hasErrorCode(error, 'EEXIST')) throw error;
+        }
+      }
+      if (!handle) {
+        const stored = await readStoredLock(path);
+        if (stored.kind === 'missing') {
+          if (!hasPriority) {
+            if (Date.now() - startedAt >= waitTimeoutMs)
+              throw new Exception('Timed out waiting for the HQ lock', {
+                code: 'JG_AGENT_HQ_LOCK_TIMEOUT',
+              });
+            await wait(pollIntervalMs);
+          }
+          continue;
+        }
+        if (stored.kind === 'empty') {
+          emptySince ??= Date.now();
+          if (Date.now() - emptySince >= setupWindowMs)
+            throw new Exception(
+              `The HQ lock owner is incomplete. Inspect ${RUNTIME_DIRECTORY}/${HQ_LOCK_FILE} and remove it only after its owner stopped`,
+              { code: 'JG_AGENT_HQ_LOCK_OWNER_INCOMPLETE' },
+            );
+          await wait(pollIntervalMs);
+          continue;
+        }
+        emptySince = undefined;
+        const holder = describeOwner(stored.owner);
+        const liveness = getOwnerLiveness(stored.owner.pid);
+        if (liveness === 'dead')
+          throw new Exception(`The HQ lock has an inactive owner: ${holder}`, {
+            code: 'JG_AGENT_HQ_LOCK_OWNER_INACTIVE',
+          });
+        if (liveness === 'unknown')
+          throw new Exception(`The HQ lock owner could not be verified: ${holder}`, {
+            code: 'JG_AGENT_HQ_LOCK_OWNER_UNVERIFIABLE',
+          });
+        if (Date.now() - startedAt >= waitTimeoutMs)
+          throw new Exception(`Timed out waiting for the HQ lock: ${holder}`, {
+            code: 'JG_AGENT_HQ_LOCK_TIMEOUT',
+          });
+        if (!hasReportedWait) {
+          process.stderr.write(`Waiting for the HQ lock (${holder}).\n`);
+          hasReportedWait = true;
+        }
         await wait(pollIntervalMs);
         continue;
       }
-      emptySince = undefined;
-      const holder = describeOwner(stored.owner);
-      const liveness = getOwnerLiveness(stored.owner.pid);
-      if (liveness === 'dead')
-        throw new Exception(`The HQ lock has an inactive owner: ${holder}`, {
-          code: 'JG_AGENT_HQ_LOCK_OWNER_INACTIVE',
-        });
-      if (liveness === 'unknown')
-        throw new Exception(`The HQ lock owner could not be verified: ${holder}`, {
-          code: 'JG_AGENT_HQ_LOCK_OWNER_UNVERIFIABLE',
-        });
-      if (Date.now() - startedAt >= waitTimeoutMs)
-        throw new Exception(`Timed out waiting for the HQ lock: ${holder}`, {
-          code: 'JG_AGENT_HQ_LOCK_TIMEOUT',
-        });
-      if (!hasReportedWait) {
-        process.stderr.write(`Waiting for the HQ lock (${holder}).\n`);
-        hasReportedWait = true;
+      try {
+        await handle.writeFile(content);
+      } finally {
+        // a failed write leaves an uncertain lock in place rather than deleting it
+        await handle.close();
       }
-      await wait(pollIntervalMs);
-      continue;
+      let release: Promise<void> | undefined;
+      return () =>
+        (release ??= (async () => {
+          const stored = await readStoredLock(path);
+          if (stored.kind !== 'owner' || stored.content !== content)
+            throw new Exception('HQ lock ownership changed before release', {
+              code: 'JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED',
+            });
+          await rm(path);
+        })());
     }
-    try {
-      await handle.writeFile(content);
-    } finally {
-      // a failed write leaves an uncertain lock in place rather than deleting it
-      await handle.close();
-    }
-    let release: Promise<void> | undefined;
-    return () =>
-      (release ??= (async () => {
-        const stored = await readStoredLock(path);
-        if (stored.kind !== 'owner' || stored.content !== content)
-          throw new Exception('HQ lock ownership changed before release', {
-            code: 'JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED',
-          });
-        await rm(path);
-      })());
+  } finally {
+    leaveQueue();
   }
 };
 

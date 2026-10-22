@@ -166,8 +166,20 @@ importers:
 
   .:
     dependencies:
+      jg-crypto:
+        specifier: 0.3.0
+        version: 0.3.0
       jg-exception:
         specifier: ^1.7.0
+        version: 1.7.0
+      jg-fs:
+        specifier: 1.7.0
+        version: 1.7.0
+      jg-plans:
+        specifier: 0.2.0
+        version: 0.2.0
+      jg-utilities:
+        specifier: 1.7.0
         version: 1.7.0
       zod:
         specifier: ^4.3.6
@@ -1664,8 +1676,16 @@ packages:
     resolution: {integrity: sha512-KB4KDxoSU7c/oGRLVDis5H139JN7iwYCc8pw4i9Jfoeasg4mi2mXu4BDfyOWfHhqyh0D+dQR+B6QqRDiZF+cLQ==}
     engines: {node: '>=22.17.0'}
 
+  jg-crypto@0.3.0:
+    resolution: {integrity: sha512-S7Bq9kmAK43xZeNQ41iubJ2LYxxyW3yMEoh2ciFkmm0/LAD3i2OgKOV4YPUL4j8NVGdjFuyJ5L8Ew6ti3wwVIQ==}
+    engines: {node: '>=22.17.0'}
+
   jg-exception@1.7.0:
     resolution: {integrity: sha512-EmhkDdWxunZdYt+xjqe1G9tPbaSkVqF6xu/TxxChz7yVI+vXiWk8K5D+0J+masNL4MJwJv1sTDPC2x3QYMbJxA==}
+    engines: {node: '>=22.17.0'}
+
+  jg-fs@1.7.0:
+    resolution: {integrity: sha512-LEttOq6o3dqpim3v20IPF3bx+gWH7BHGels1hLTugpIghbnjycw+IgMMmSigrmpUVkBxhiwpLLMXsQliVfKfdQ==}
     engines: {node: '>=22.17.0'}
 
   jg-personal-astro-ui@0.4.0:
@@ -1674,6 +1694,11 @@ packages:
     peerDependencies:
       astro: ^7.4.0
       tailwindcss: ^4.3.0
+
+  jg-plans@0.2.0:
+    resolution: {integrity: sha512-IzX1gefbz19ru3RGZ9OGhC3AUQervimo3PeFy1lRe/40YVvuN/Pha4n2Wa1zbzNdZ9b5+gVlomyiLEsuyFKjJw==}
+    engines: {node: '>=24.15.0'}
+    hasBin: true
 
   jg-playwright@0.1.0:
     resolution: {integrity: sha512-z45It3kyIc1TShbnQprALft/4dQeKo9lHHphLhagR7IZcEADDaB0RVxj0KAjgVG1EyXl/NhtotaV4mSsWAr4rA==}
@@ -1685,8 +1710,16 @@ packages:
       '@axe-core/playwright':
         optional: true
 
+  jg-process@1.6.1:
+    resolution: {integrity: sha512-F75AiEaJLTRcPNvH/LEC1neSA6wa316W6O++lJYWsObdghBl3p18q5ueDxFZ8C8HnY/kLTdgHpdaC18SF3/gQg==}
+    engines: {node: '>=22.17.0'}
+
   jg-site@0.1.0:
     resolution: {integrity: sha512-wHL9HvqU+mzECiqKwVB0iiln5C/mP3EdIW43KfFFFf/Kk4zWSIEfXg6W0Iq6VjRFMfRFAOaFr4unSbf2/X/Nig==}
+    engines: {node: '>=22.17.0'}
+
+  jg-utilities@1.7.0:
+    resolution: {integrity: sha512-Cdec4v/QW7TPaY68/McjGxLCvrwH7aKI9H0DsXoo3qi27R81DTbxVZpsg7/LVZ3Ah3Kai1OHiUgpju2rmF2VEA==}
     engines: {node: '>=22.17.0'}
 
   jiti@2.7.0:
@@ -2438,6 +2471,10 @@ packages:
 
   uri-js@4.4.1:
     resolution: {integrity: sha512-7rKUyy33Q1yc98pQ1DAmLtwX109F7TIfWlW1Ydo8Wl1ii1SeHieeh0HHfPeL2fMXK6z0s8ecKs9frCuLJvndBg==}
+
+  uuid@14.0.3:
+    resolution: {integrity: sha512-Sc5u1VVln93y1Xnz4R+CunOZc7R9LUcTmhj7Rc7Eg3HVcf7rVn2FOoa812fe0W8p3jD7xeoGSYbfqCGGH2B6xw==}
+    hasBin: true
 
   verkit@0.5.0:
     resolution: {integrity: sha512-u4J1hr6Y+C/hit34GwL3eIcUf3wngT8TlYUjK7tk0jxydKLAq3sYvifjdTDA6U3KCKRcQCQDGf/srjxfZF3l7g==}
@@ -4175,7 +4212,16 @@ snapshots:
     dependencies:
       jg-exception: 1.7.0
 
+  jg-crypto@0.3.0:
+    dependencies:
+      jg-exception: 1.7.0
+
   jg-exception@1.7.0: {}
+
+  jg-fs@1.7.0:
+    dependencies:
+      jg-exception: 1.7.0
+      jg-utilities: 1.7.0
 
   jg-personal-astro-ui@0.4.0(astro@7.4.0(@types/node@24.12.0)(jiti@2.7.0)(yaml@2.9.1))(tailwindcss@4.3.3):
     dependencies:
@@ -4190,6 +4236,16 @@ snapshots:
       shiki: 4.5.0
       tailwindcss: 4.3.3
 
+  jg-plans@0.2.0:
+    dependencies:
+      jg-crypto: 0.3.0
+      jg-exception: 1.7.0
+      jg-fs: 1.7.0
+      jg-process: 1.6.1
+      jg-utilities: 1.7.0
+      yaml: 2.9.1
+      zod: 4.6.7
+
   jg-playwright@0.1.0(@axe-core/playwright@4.13.0(playwright-core@1.62.1))(@playwright/test@1.62.1):
     dependencies:
       '@playwright/test': 1.62.1
@@ -4197,7 +4253,17 @@ snapshots:
     optionalDependencies:
       '@axe-core/playwright': 4.13.0(playwright-core@1.62.1)
 
+  jg-process@1.6.1:
+    dependencies:
+      jg-exception: 1.7.0
+      jg-utilities: 1.7.0
+
   jg-site@0.1.0: {}
+
+  jg-utilities@1.7.0:
+    dependencies:
+      jg-exception: 1.7.0
+      uuid: 14.0.3
 
   jiti@2.7.0: {}
 
@@ -4817,6 +4883,8 @@ snapshots:
   uri-js@4.4.1:
     dependencies:
       punycode: 2.3.1
+
+  uuid@14.0.3: {}
 
   verkit@0.5.0: {}
 

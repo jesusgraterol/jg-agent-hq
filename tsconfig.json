@@ -12,7 +12,7 @@
     "erasableSyntaxOnly": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "scripts/**/*.ts", "vitest/**/*.ts"],
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "vitest/**/*.ts", "examples/**/*.ts"],
   "exclude": [
     "node_modules",
     "dist",

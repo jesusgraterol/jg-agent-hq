@@ -8,7 +8,13 @@ import type { IAdmission } from '../store/control/index.js';
 
 import { canExecutePlanUnit, describePlan } from './authority.js';
 import { isSamePlanRevision } from './utilities.js';
-import type { IPlanArtifacts } from './types.js';
+import type {
+  IPlanArtifacts,
+  IApplyPlanIntent,
+  IWithPlanDocuments,
+  IPrepareImplementation,
+  IResumeImplementation,
+} from './types.js';
 
 const conflict = (): never => {
   throw new Exception('The HQ action conflicts with its recorded state', {
@@ -27,17 +33,21 @@ export const createPlanAdmission = (
   coordinationRoot: string,
   store: IStore,
   runtimeEpoch: string,
-  readPlan: (directory: string) => Promise<IPlanArtifacts>,
+  readPlan: (directory: string, apply: IApplyPlanIntent) => Promise<IPlanArtifacts>,
+  withDocuments: IWithPlanDocuments,
+  prepareImplementation: IPrepareImplementation,
+  resumeImplementation: IResumeImplementation,
 ) => {
   /** Resolves a small immutable scope reference against the current authoritative file. */
   const scopeContext = async (
     scope: NonNullable<IActionEnvelope['plan']>,
+    apply: IApplyPlanIntent,
   ): Promise<{ artifacts: IPlanArtifacts; context: IActionPlanContext }> => {
     const source = await store.getPlanOperation(
       scope.kind === 'execution' ? scope.authorizationId : scope.revisionId,
     );
     if (!source) conflict();
-    const artifacts = await readPlan(source!.directory);
+    const artifacts = await readPlan(source!.directory, apply);
     if (await store.getPendingPlanOperationId(artifacts.directory)) conflict();
     if (scope.kind === 'execution') {
       const status = describePlan(artifacts);
@@ -74,8 +84,11 @@ export const createPlanAdmission = (
     };
   };
   /** Blocks work on a bound thread while its contracts or owner are being reconciled. */
-  const boundArtifacts = async (context: IActionPlanContext): Promise<IPlanArtifacts> => {
-    const artifacts = await readPlan(context.directory);
+  const boundArtifacts = async (
+    context: IActionPlanContext,
+    apply: IApplyPlanIntent,
+  ): Promise<IPlanArtifacts> => {
+    const artifacts = await readPlan(context.directory, apply);
     if (
       (await store.getPendingPlanOperationId(artifacts.directory)) ||
       artifacts.coordination.observedConflict ||
@@ -124,103 +137,151 @@ export const createPlanAdmission = (
           (command.kind === 'native-reply' &&
             command.response.kind !== 'answers' &&
             ['decline', 'cancel'].includes(command.response.decision));
-        if ('expectedPlan' in action) {
-          if (!['message', 'queue'].includes(command.kind) || !threadId) conflict();
-          const expected = action.expectedPlan;
-          if (binding?.directory !== expected?.directory) conflict();
-          if (expected) {
-            const current = await readPlan(expected.directory);
-            if (!isSamePlanRevision(expected.observedRevision, current.revision)) conflict();
+        if (safe && !action.plan && !action.expectedPlan) return store.admit({ action, prepared });
+        const source = action.plan
+          ? await store.getPlanOperation(
+              action.plan.kind === 'execution'
+                ? action.plan.authorizationId
+                : action.plan.revisionId,
+            )
+          : null;
+        if (action.plan && !source) conflict();
+        const directory =
+          source?.directory ??
+          action.expectedPlan?.directory ??
+          queued?.planContext?.directory ??
+          binding?.directory;
+        if (!directory) return store.admit({ action, prepared });
+        await resumeImplementation(directory, action);
+        await withDocuments(directory, async (apply) => {
+          if ('expectedPlan' in action) {
+            if (!['message', 'queue'].includes(command.kind) || !threadId) conflict();
+            const expected = action.expectedPlan;
+            if (binding?.directory !== expected?.directory) conflict();
+            if (expected) {
+              const current = await readPlan(expected.directory, apply);
+              if (!isSamePlanRevision(expected.observedRevision, current.revision)) conflict();
+            }
           }
-        }
-        // explicit assessment keeps its revision guard without inheriting implementation authority
-        const isFeedbackAssessment =
-          !!action.expectedPlan &&
-          (command.kind === 'message' || command.kind === 'queue') &&
-          command.input.kind === 'skill' &&
-          prepared.skill?.name === 'jg-feedback';
-        // current-turn permission replies and labels do not start another implementation unit
-        const isSeparateNativeControl =
-          command.kind === 'native-reply' || command.kind === 'thread-rename';
-        if (action.plan) {
-          if (
-            !['message', 'queue', 'steer', 'thread-resume', 'thread-recover'].includes(
-              command.kind,
-            ) ||
-            !threadId
-          )
-            conflict();
-          const selected = await scopeContext(action.plan);
-          if (binding && JSON.stringify(binding.scope) !== JSON.stringify(action.plan)) {
-            const current = await store.getThread(threadId!);
+          // explicit assessment keeps its revision guard without inheriting implementation authority
+          const isFeedbackAssessment =
+            !!action.expectedPlan &&
+            (command.kind === 'message' || command.kind === 'queue') &&
+            command.input.kind === 'skill' &&
+            prepared.skill?.name === 'jg-feedback';
+          // current-turn permission replies and labels do not start another implementation unit
+          const isSeparateNativeControl =
+            command.kind === 'native-reply' || command.kind === 'thread-rename';
+          if (action.plan) {
             if (
-              !current ||
-              current.state !== 'inactive' ||
-              current.runtimeEpoch !== null ||
-              current.ownership !== 'managed'
+              !['message', 'queue', 'steer', 'thread-resume', 'thread-recover'].includes(
+                command.kind,
+              ) ||
+              !threadId
             )
               conflict();
-          }
-          const requestedMilestone =
-            action.plan.kind === 'execution' ? action.plan.milestoneId : null;
-          if (action.plan.kind === 'planning') {
-            const existing = binding?.scope;
-            if (
-              (command.kind === 'message' || command.kind === 'queue') &&
-              command.input.kind === 'skill'
-            ) {
+            const selected = await scopeContext(action.plan, apply);
+            if (binding && JSON.stringify(binding.scope) !== JSON.stringify(action.plan)) {
+              const current = await store.getThread(threadId!);
               if (
-                prepared.skill?.name !== selected.artifacts.coordination.revision!.invocation!.skill
+                !current ||
+                current.state !== 'inactive' ||
+                current.runtimeEpoch !== null ||
+                current.ownership !== 'managed'
               )
                 conflict();
-            } else if (
-              (command.kind === 'message' ||
-                command.kind === 'queue' ||
-                command.kind === 'steer') &&
-              (!existing ||
-                existing.kind !== 'planning' ||
-                existing.revisionId !== action.plan.revisionId ||
-                existing.invocationId !== action.plan.invocationId)
-            )
-              conflict();
-          } else if (command.kind === 'message' || command.kind === 'queue') {
+            }
+            const requestedMilestone =
+              action.plan.kind === 'execution' ? action.plan.milestoneId : null;
+            if (action.plan.kind === 'planning') {
+              const existing = binding?.scope;
+              if (
+                (command.kind === 'message' || command.kind === 'queue') &&
+                command.input.kind === 'skill'
+              ) {
+                if (
+                  prepared.skill?.name !==
+                  selected.artifacts.coordination.revision!.invocation!.skill
+                )
+                  conflict();
+              } else if (
+                (command.kind === 'message' ||
+                  command.kind === 'queue' ||
+                  command.kind === 'steer') &&
+                (!existing ||
+                  existing.kind !== 'planning' ||
+                  existing.revisionId !== action.plan.revisionId ||
+                  existing.invocationId !== action.plan.invocationId)
+              )
+                conflict();
+            } else if (command.kind === 'message' || command.kind === 'queue') {
+              if (
+                describePlan(selected.artifacts).state === 'blocked' ||
+                selected.artifacts.parsed.some(
+                  (entry) => entry.id === requestedMilestone && entry.status === 'done',
+                )
+              )
+                conflict();
+            }
+            prepared.planContext = selected.context;
+          } else if (command.kind === 'queue-send' && queued?.planContext) {
+            const context = queued.planContext;
+            if (context.scope) {
+              const current = await scopeContext(context.scope, apply);
+              if (
+                !isSamePlanRevision(context.observedRevision, current.artifacts.revision) &&
+                context.scope.kind === 'execution'
+              )
+                conflict();
+            } else await boundArtifacts(context, apply);
+            prepared.planContext = context;
+          } else if (binding && !safe) {
             if (
-              describePlan(selected.artifacts).state === 'blocked' ||
-              selected.artifacts.parsed.some(
-                (entry) => entry.id === requestedMilestone && entry.status === 'done',
+              binding.scope &&
+              !isFeedbackAssessment &&
+              !(binding.scope.kind === 'execution' && isSeparateNativeControl)
+            ) {
+              prepared.planContext = (await scopeContext(binding.scope, apply)).context;
+            } else {
+              const artifacts = await boundArtifacts(binding, apply);
+              prepared.planContext = {
+                directory: binding.directory,
+                scope: null,
+                observedRevision: artifacts.revision,
+              };
+            }
+          }
+          const context = prepared.planContext;
+          if (
+            context?.scope?.kind === 'execution' &&
+            ['message', 'queue', 'steer'].includes(command.kind)
+          ) {
+            const current = await scopeContext(context.scope, apply);
+            await prepareImplementation(
+              current.artifacts,
+              action,
+              context.scope.milestoneId,
+              apply,
+            );
+          }
+        });
+        // Progress is durable and its locks released before native admission. Recheck current authority.
+        return withDocuments(directory, async (apply) => {
+          const context = prepared.planContext;
+          const scope = context?.scope;
+          if (scope) {
+            const current = await scopeContext(scope, apply);
+            if (
+              scope.kind === 'execution' &&
+              ['message', 'queue', 'steer'].includes(command.kind) &&
+              current.artifacts.parsed.some(
+                (entry) => entry.id === scope.milestoneId && entry.status === 'done',
               )
             )
               conflict();
-          }
-          prepared.planContext = selected.context;
-        } else if (command.kind === 'queue-send' && queued?.planContext) {
-          const context = queued.planContext;
-          if (context.scope) {
-            const current = await scopeContext(context.scope);
-            if (
-              !isSamePlanRevision(context.observedRevision, current.artifacts.revision) &&
-              context.scope.kind === 'execution'
-            )
-              conflict();
-          } else await boundArtifacts(context);
-          prepared.planContext = context;
-        } else if (binding && !safe) {
-          if (
-            binding.scope &&
-            !isFeedbackAssessment &&
-            !(binding.scope.kind === 'execution' && isSeparateNativeControl)
-          ) {
-            prepared.planContext = (await scopeContext(binding.scope)).context;
-          } else {
-            const artifacts = await boundArtifacts(binding);
-            prepared.planContext = {
-              directory: binding.directory,
-              scope: null,
-              observedRevision: artifacts.revision,
-            };
-          }
-        }
-        return store.admit({ action, prepared });
+          } else if (context) await boundArtifacts(context, apply);
+          return store.admit({ action, prepared });
+        });
       });
     },
     /**
@@ -250,27 +311,32 @@ export const createPlanAdmission = (
       return withHqLock(coordinationRoot, 'plan-queue-admission', async () => {
         const queued = await store.peekQueued(threadId);
         if (!queued) return null;
-        try {
-          const context = queued.planContext;
-          if (!context && (await store.getThreadPlan(threadId))) return null;
-          const queuedMilestone =
-            context?.scope?.kind === 'execution' ? context.scope.milestoneId : null;
-          if (context?.scope) {
-            const current = await scopeContext(context.scope);
-            if (
-              context.scope.kind === 'execution' &&
-              (!isSamePlanRevision(context.observedRevision, current.artifacts.revision) ||
-                current.artifacts.parsed.some(
-                  (entry) => entry.id === queuedMilestone && entry.status === 'done',
-                ))
-            )
-              return null;
-          } else if (context) await boundArtifacts(context);
-        } catch (error) {
-          if (getErrorKind(error) === 'state-conflict') return null;
-          throw error;
-        }
-        return store.claimQueued(threadId);
+        const directory = queued.planContext?.directory;
+        if (!directory)
+          return (await store.getThreadPlan(threadId)) ? null : store.claimQueued(threadId);
+        return withDocuments(directory, async (apply) => {
+          try {
+            const context = queued.planContext;
+            if (!context && (await store.getThreadPlan(threadId))) return null;
+            const queuedMilestone =
+              context?.scope?.kind === 'execution' ? context.scope.milestoneId : null;
+            if (context?.scope) {
+              const current = await scopeContext(context.scope, apply);
+              if (
+                context.scope.kind === 'execution' &&
+                (!isSamePlanRevision(context.observedRevision, current.artifacts.revision) ||
+                  current.artifacts.parsed.some(
+                    (entry) => entry.id === queuedMilestone && entry.status === 'done',
+                  ))
+              )
+                return null;
+            } else if (context) await boundArtifacts(context, apply);
+          } catch (error) {
+            if (getErrorKind(error) === 'state-conflict') return null;
+            throw error;
+          }
+          return store.claimQueued(threadId);
+        });
       });
     },
   };

@@ -1,17 +1,58 @@
 ---
+import Section from 'jg-personal-astro-ui/section';
 import TextLink from 'jg-personal-astro-ui/text-link';
-import Container from 'jg-personal-astro-ui/container';
+import { ArrowRight } from '@lucide/astro';
 
+import { HOME_CONTENT } from '../../content/index.ts';
 import HomeHero from '../home-hero/home-hero.astro';
-import HomeCapabilities from '../home-capabilities/home-capabilities.astro';
 import HomeWorkflow from '../home-workflow/home-workflow.astro';
 ---
 
 <HomeHero />
-<HomeCapabilities />
-<HomeWorkflow />
-<Container
-  ><p class="py-6 text-sm text-muted">
-    <TextLink href="/index.md">Read this page as Markdown</TextLink>
-  </p></Container
+<Section
+  id="workflows"
+  eyebrow="What you can build"
+  title={HOME_CONTENT.scenariosTitle}
+  lede={HOME_CONTENT.scenariosDescription}
 >
+  <div class="mt-10 grid min-w-0 gap-10 md:grid-cols-3 md:gap-8">
+    {
+      HOME_CONTENT.scenarios.map((scenario) => (
+        <article class="min-w-0 border-t border-border pt-6">
+          <p class="font-mono text-xs text-accent">{scenario.number} / WORKFLOW</p>
+          <h3 class="mt-4 text-2xl leading-tight font-semibold tracking-tight">{scenario.title}</h3>
+          <p class="mt-4 text-sm leading-7 text-muted">{scenario.description}</p>
+          <ol
+            aria-label={`${scenario.title} flow`}
+            class="mt-6 flex min-w-0 flex-wrap items-center gap-2 font-mono text-xs"
+          >
+            {scenario.flow.map((step, index) => (
+              <li class="flex items-center gap-2">
+                <span class="rounded-md bg-secondary px-2.5 py-2">{step}</span>
+                {index < scenario.flow.length - 1 && (
+                  <ArrowRight
+                    class="size-3 text-muted"
+                    aria-hidden="true"
+                  />
+                )}
+              </li>
+            ))}
+          </ol>
+          <p class="mt-5 text-sm font-medium">{scenario.result}</p>
+          {
+            <p class="mt-4 text-sm">
+              <TextLink href={scenario.href}>
+                {scenario.linkLabel}{' '}
+                <ArrowRight
+                  class="ml-1 inline size-3.5"
+                  aria-hidden="true"
+                />
+              </TextLink>
+            </p>
+          }
+        </article>
+      ))
+    }
+  </div>
+</Section>
+<HomeWorkflow />
