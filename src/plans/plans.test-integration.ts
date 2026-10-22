@@ -13,6 +13,7 @@ import type {
   IPlanStatus,
   IPlanMetadata,
 } from 'jg-agent-hq/contracts';
+import { fingerprintPlan } from 'jg-plans';
 import { expect, test } from 'vitest';
 
 import {
@@ -139,6 +140,7 @@ test.each(['supervised', 'auto'] as const)(
       expect(response.content).toBeNull();
       expect(response.result.isFinalized).toBe(true);
       expect(response.result.isPlanApproved).toBe(false);
+      expect(response.result.skillsBinding).toBe('absent');
       expect(response.result.milestoneCount).toBe(0);
       expect(await plan.send(command)).toStrictEqual(response);
       await plan.approve('plan');
@@ -369,9 +371,10 @@ test('approval rejects raw output, stale inspection, stale revision, forged prov
   });
 });
 
-test('administrative frontmatter, status, Overview and unrelated session labels preserve approval; contract changes do not', async () => {
+test('host profile, status, Overview and unrelated session labels preserve approval; contract changes do not', async () => {
   const metadata: IPlanMetadata = {
     scope: 'local',
+    extensions: {},
     repositories: ['workspace'],
     errorReservations: [],
   };
@@ -704,7 +707,7 @@ test('a failed projection refresh rolls back rows and its source guard, then ret
   });
 });
 
-test('finalization leaves fenced Overview and identity examples unchanged', async () => {
+test('finalization leaves both real and fenced Overview text and identity examples unchanged', async () => {
   await withClaudeRuntime(async (fixture) => {
     const sample =
       '```md\n## Overview\n\n| Milestone | Name | Status |\n| --- | --- | --- |\n| 1 | Example | pending |\n\n## Milestone 99: Example only\n**Status:** pending\n**Milestone ID:** invalid-example\n```\n';
@@ -718,6 +721,143 @@ test('finalization leaves fenced Overview and identity examples unchanged', asyn
     await plan.finalize();
     const result = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
     expect(result).toContain(sample);
-    expect(result).toContain('| 1 | Feature 1 | in progress |');
+    expect(result).toContain('| 1 | Feature 1 | pending |');
+    expect(
+      result.replace(/^\*\*Milestone ID:\*\* [a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\n/gm, ''),
+    ).toBe(content);
+  });
+});
+
+test('the default profile excludes only administrative fields and retains the complete contract', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const plan = await setup(fixture);
+    const source =
+      '---\nid: workspace-plan\nrevision: 1\nstatus: pending\ncreated_at: 2026-10-22T10:00:00Z\nupdated_at: 2026-10-22T10:00:00Z\nscope: cross-repo\nrepositories: [workspace]\ncustom: { acceptance: true }\n---\n# Plan\nBuild the workspace.\n';
+    await writeFile(join(plan.directory, 'plan.md'), source);
+    const before = await plan.ready();
+    const administrative = source
+      .replace('revision: 1', 'revision: 2')
+      .replace('status: pending', 'status: in progress')
+      .replaceAll('10:00:00Z', '11:00:00Z');
+    await writeFile(join(plan.directory, 'plan.md'), administrative);
+    const current = await plan.status();
+    expect(current.revision).toStrictEqual(before.revision);
+    expect(current.isPlanApproved).toBe(true);
+    expect(current.isSequenceApproved).toBe(true);
+    expect(current.inspection.plan).not.toBe(before.inspection.plan);
+    for (const changed of [
+      source.replace('workspace-plan', 'new-plan'),
+      source.replace('acceptance: true', 'acceptance: false'),
+      source.replace('cross-repo', 'single-repo'),
+    ]) {
+      await writeFile(join(plan.directory, 'plan.md'), changed);
+      expect((await plan.status()).revision.planDigest).not.toBe(before.revision.planDigest);
+    }
+  });
+});
+
+test.each([
+  'scope: null',
+  'repositories: false',
+  'errorReservations: invalid',
+  'custom: .nan',
+  '- not-a-mapping',
+  'custom: [unterminated',
+])('the default profile refuses malformed contractual metadata: %s', async (metadata) => {
+  await withClaudeRuntime(async (fixture) => {
+    const plan = await setup(fixture);
+    await writeFile(
+      join(plan.directory, 'plan.md'),
+      `---\n${metadata}\n---\n# Plan\nBuild the workspace.\n`,
+    );
+    await expect(plan.status()).rejects.toMatchObject({ code: 'JG_AGENT_HQ_PLAN_INVALID' });
+  });
+});
+
+test('the host hook must use the exact engine-observed body boundary', async () => {
+  await withClaudeRuntime(
+    async (fixture) => {
+      const plan = await setup(fixture);
+      await expect(plan.status()).rejects.toMatchObject({ code: 'JG_AGENT_HQ_PLAN_INVALID' });
+    },
+    {
+      parsePlanContract: () => ({
+        body: 'Build the workspace.\n',
+        metadata: { scope: 'local', repositories: [], errorReservations: [], extensions: {} },
+      }),
+    },
+  );
+});
+
+test('finalization preserves BOM, CRLF, metadata and Overview bytes while assigning replayable identities', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const original =
+      '\uFEFF---\r\ncontract: retained\r\n---\r\n' + sequence().replaceAll('\n', '\r\n');
+    const plan = await setup(fixture, original);
+    const finalized = await plan.finalize();
+    const source = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
+    expect(source.replace(/^\*\*Milestone ID:\*\* [^\r\n]+\r\n/gm, '')).toBe(original);
+    expect(await plan.send(finalized.command)).toStrictEqual(finalized.response);
+    expect(await readFile(join(plan.directory, 'milestones.md'), 'utf8')).toBe(source);
+  });
+});
+
+test('stale skills bindings remain observable and close execution authority', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const plan = await setup(fixture);
+    const source =
+      '---\nid: selected-plan\nrevision: 1\nstatus: pending\n---\n# Plan\nBuild the workspace.\n';
+    const fingerprint = fingerprintPlan(source, {
+      excludeMetadataKeys: ['created_at', 'updated_at', 'revision', 'status'],
+    }).sha256;
+    const binding = `---\njg_skills:\n  plan_id: selected-plan\n  plan_revision: 1\n  plan_content_sha256: ${fingerprint}\n---\n`;
+    await writeFile(join(plan.directory, 'plan.md'), source);
+    await writeFile(join(plan.directory, 'milestones.md'), binding + sequence());
+    const before = await plan.ready();
+    expect(before.skillsBinding).toBe('current');
+    const entries = (await plan.page()).data;
+    const authorization = action();
+    await plan.send({
+      kind: 'authorize',
+      target: plan.target,
+      action: authorization,
+      expected: before.revision,
+      mode: 'supervised',
+      milestoneIds: [entries[0]!.id!],
+    });
+    const milestones = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
+    for (const changed of [
+      source.replace('selected-plan', 'other-plan'),
+      source.replace('revision: 1', 'revision: 2'),
+      source.replace('Build the workspace.', 'Build a different workspace.'),
+    ]) {
+      await writeFile(join(plan.directory, 'plan.md'), changed);
+      const stale = await plan.status();
+      expect(stale).toMatchObject({
+        skillsBinding: 'stale',
+        isFinalized: false,
+        isSequenceApproved: false,
+      });
+      await expect(plan.finalize()).rejects.toMatchObject({ code: 'JG_AGENT_HQ_ACTION_CONFLICT' });
+      await expect(
+        plan.send({
+          kind: 'check-execution',
+          target: plan.target,
+          expected: stale.revision,
+          authorizationId: authorization.id,
+          mode: 'supervised',
+          milestoneId: entries[0]!.id!,
+        }),
+      ).rejects.toMatchObject({ code: 'JG_AGENT_HQ_ACTION_CONFLICT' });
+    }
+    await writeFile(join(plan.directory, 'plan.md'), source.replace('revision: 1', 'revision: 2'));
+    await writeFile(
+      join(plan.directory, 'milestones.md'),
+      milestones.replace('plan_revision: 1', 'plan_revision: 2'),
+    );
+    const current = await plan.status();
+    expect(current.revision).toStrictEqual(before.revision);
+    expect(current.isPlanApproved).toBe(true);
+    expect(current.skillsBinding).toBe('current');
   });
 });

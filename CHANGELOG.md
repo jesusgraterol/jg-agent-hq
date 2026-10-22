@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.0
+
+- Use jg-plans for document observations, guarded edit preparation and explicit milestone identity assignment. Preserve complete shared requirements and JSON-safe contract metadata; report skills binding freshness without blocking the revision approval flow; require current bindings for finalization and execution.
+- Keep exact body and requirement bytes in execution digests, with deterministic metadata serialization. Stop regenerating derived Overview tables.
+
 ## 1.0.0
 
 - Use `jg-exception` with named string codes for runtime, lock, plan, provider, client and tooling failures. Preserve codes through SQLite-worker responses and publish browser-safe client codes alongside their safe messages. This changes the Node error contract; callers should handle the documented named codes.

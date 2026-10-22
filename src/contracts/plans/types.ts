@@ -8,7 +8,7 @@ export const PlanRevisionSchema = z.strictObject({
 });
 export type IPlanRevision = z.infer<typeof PlanRevisionSchema>;
 
-// private coordinators supply parsed frontmatter boundaries and contract metadata
+// JSON-only contract metadata remains safe in the browser contracts entry point.
 export const PlanMetadataSchema = z.strictObject({
   scope: z.string().min(1).max(128),
   repositories: z.array(z.string().min(1).max(128)).max(128),
@@ -26,6 +26,7 @@ export const PlanMetadataSchema = z.strictObject({
         .refine((reservation) => reservation.end >= reservation.start),
     )
     .max(128),
+  extensions: z.record(z.string(), z.json()).default({}),
 });
 export type IPlanMetadata = z.infer<typeof PlanMetadataSchema>;
 export const PlanTargetSchema = z.strictObject({
@@ -385,6 +386,7 @@ export const PlanStatusSchema = z.object({
     'completed',
   ]),
   pendingActionId: z.uuid().nullable(),
+  skillsBinding: z.enum(['absent', 'current', 'stale']),
   isFinalized: z.boolean(),
   isPlanApproved: z.boolean(),
   isSequenceApproved: z.boolean(),

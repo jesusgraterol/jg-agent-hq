@@ -18,6 +18,7 @@ import {
   type IPlanCorrespondence,
   type IPlanCheckout,
 } from 'jg-agent-hq/contracts';
+import { fingerprintPlan } from 'jg-plans';
 import { expect, test } from 'vitest';
 
 import {
@@ -1975,3 +1976,87 @@ test.each(['record-count', 'written-bytes', 'written-bytes-malformed'] as const)
     });
   },
 );
+
+test('a retained stale skills binding permits plan approval and breakdown revision without reopening execution', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const source =
+      '---\nid: revision-example\nrevision: 1\nstatus: pending\n---\n# Plan\nDeliver greeting, report and export commands.\n';
+    const fingerprint = (plan: string) =>
+      fingerprintPlan(plan, {
+        excludeMetadataKeys: ['created_at', 'updated_at', 'revision', 'status'],
+      }).sha256!;
+    const binding = `---\njg_skills:\n  plan_id: revision-example\n  plan_revision: 1\n  plan_content_sha256: ${fingerprint(source)}\n---\n`;
+    const plan = await setup(
+      fixture,
+      binding +
+        sequence([
+          milestone(1, 'Greeting', 'Return the requested greeting.'),
+          milestone(2, 'Report', 'Format the report.', 'in progress'),
+        ]),
+      source,
+    );
+    const before = await plan.entries();
+    const revisionAction = await begin(plan);
+    const originalSequence = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
+    const revised = source
+      .replace('revision: 1', 'revision: 2')
+      .replace('export commands.', 'export commands with strict validation.');
+    await writeFile(join(plan.directory, 'plan.md'), revised);
+    const stale = await plan.status();
+    expect(stale).toMatchObject({
+      skillsBinding: 'stale',
+      state: 'plan-approval-required',
+      isPlanApproved: false,
+      isFinalized: false,
+    });
+    expect(await readFile(join(plan.directory, 'milestones.md'), 'utf8')).toBe(originalSequence);
+    await plan.approve('plan');
+    expect(await plan.status()).toMatchObject({
+      skillsBinding: 'stale',
+      state: 'breakdown-required',
+      isPlanApproved: true,
+      isSequenceApproved: false,
+    });
+    await expect(plan.finalize()).rejects.toMatchObject({ code: 'JG_AGENT_HQ_ACTION_CONFLICT' });
+    const approved = await plan.status();
+    await plan.send({
+      kind: 'revision-invoke',
+      target: plan.target,
+      action: operator(),
+      expected: approved.revision,
+      revisionId: revisionAction.id,
+      skill: 'jg-breakdown',
+    });
+    await plan.until((status) => status.coordination.revision?.phase === 'editing');
+    await writeFile(
+      join(plan.directory, 'milestones.md'),
+      originalSequence
+        .replace('plan_revision: 1', 'plan_revision: 2')
+        .replace(fingerprint(source), fingerprint(revised)),
+    );
+    const result = await plan.finalize();
+    expect(result.kind).toBe('finalized');
+    expect(await plan.status()).toMatchObject({
+      skillsBinding: 'current',
+      isFinalized: true,
+      isPlanApproved: true,
+      isSequenceApproved: false,
+    });
+    expect((await plan.entries()).map((entry) => entry.id)).toStrictEqual(
+      before.map((entry) => entry.id),
+    );
+    await plan.approve('sequence');
+    await plan.mutate({ kind: 'authorize', mode: 'supervised', milestoneIds: [before[0]!.id!] });
+    const current = await plan.status();
+    const execution = current.coordination.execution!;
+    const checked = await plan.send({
+      kind: 'check-execution',
+      target: plan.target,
+      expected: current.revision,
+      authorizationId: execution.action.id,
+      milestoneId: before[0]!.id!,
+      mode: 'supervised',
+    });
+    expect(checked.kind).toBe('execution-check');
+  });
+});

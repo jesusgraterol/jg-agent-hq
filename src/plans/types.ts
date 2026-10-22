@@ -7,6 +7,7 @@ import {
   PlanRevisionSchema,
   PlanReconciliationEntrySchema,
   type IPlanMetadata,
+  type IPlanStatus,
   type IPlanMilestone,
   type IPlanRevision,
   type IPlanRevisionWorkflow,
@@ -14,8 +15,6 @@ import {
 
 // full bounded artifacts are used only for the selected plan, never a repository scan
 export type IParsedMilestone = IPlanMilestone & {
-  headingStart: number;
-  statusEnd: number;
   contract: string;
   sharedDigest: string;
 };
@@ -25,6 +24,7 @@ export type IPlanArtifacts = {
   plan: string;
   milestones: string | null;
   coordinationText: string | null;
+  skillsBinding: IPlanStatus['skillsBinding'];
   coordination: z.infer<typeof PlanCoordinationSchema>;
   parsed: IParsedMilestone[];
   revision: IPlanRevision;

@@ -6,13 +6,17 @@ import { Exception, extractMessage, hasErrorCode, isException } from 'jg-excepti
 
 import {
   PlanCoordinationSchema,
-  PlanMetadataSchema,
   type IPlanTarget,
   type IPlanCoordination,
 } from '../contracts/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 
-import { computePlanRevision, hashPlanContent, parsePlanMilestones } from './utilities.js';
+import {
+  computeObservedPlanRevision,
+  hashPlanContent,
+  projectPlanMilestones,
+} from './utilities.js';
+import { observePlanContract, observeSkillsBinding, observeSequence } from './documents.js';
 import type { IPlanArtifacts, IPlanContractParser } from './types.js';
 
 const MAX_PLAN_BYTES = 1_048_576;
@@ -160,31 +164,24 @@ export const readPlanArtifacts = async (
       code: 'JG_AGENT_HQ_PLAN_INVALID',
       data: { kind: 'invalid-request' },
     });
-  const contract = parseContract
-    ? await parseContract({ directory, content: plan })
-    : { body: plan, metadata: { scope: 'local', repositories: [], errorReservations: [] } };
-  const parsedMetadata = PlanMetadataSchema.safeParse(contract.metadata);
-  const prefix = plan.slice(0, plan.length - contract.body.length);
-  if (
-    !parsedMetadata.success ||
-    !contract.body ||
-    !plan.endsWith(contract.body) ||
-    (prefix && !/^---\r?\n[\s\S]*?\r?\n---\r?\n$/.test(prefix))
-  )
-    throw new Exception('The HQ plan is invalid', {
-      code: 'JG_AGENT_HQ_PLAN_INVALID',
-      data: { kind: 'invalid-request' },
-    });
+  const contract = observePlanContract(
+    plan,
+    parseContract ? await parseContract({ directory, content: plan }) : undefined,
+  );
+  const sequence = milestones === null ? null : observeSequence(milestones);
+  const skillsBinding = observeSkillsBinding(plan, sequence);
   const coordination = parsePlanCoordination(coordinationText);
+  const parsed = sequence === null ? null : projectPlanMilestones(sequence);
   return {
     directory,
-    contract: { body: contract.body, metadata: parsedMetadata.data },
+    contract: { body: contract.body, metadata: contract.metadata },
     plan,
     milestones,
     coordinationText,
+    skillsBinding,
     coordination,
-    parsed: milestones === null ? [] : parsePlanMilestones(milestones),
-    revision: computePlanRevision({ ...contract, metadata: parsedMetadata.data, milestones }),
+    parsed: parsed ?? [],
+    revision: computeObservedPlanRevision({ ...contract, milestones: parsed }),
     hashes: {
       plan: hashPlanContent(plan),
       milestones: milestones === null ? null : hashPlanContent(milestones),

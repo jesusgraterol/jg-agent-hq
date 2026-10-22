@@ -14,6 +14,7 @@ const input = (): IPlanContract => ({
   body: '# Plan\nImplement a native workspace.\n',
   metadata: {
     scope: 'cross-repo',
+    extensions: {},
     repositories: ['b', 'a'],
     errorReservations: [
       {
@@ -33,11 +34,11 @@ test('execution digests preserve only documented administrative and ordinal diff
   const baseline = input();
   const expected = computePlanRevision(baseline);
   const changed = input();
-  changed.body = changed.body.replaceAll('\n', '\r\n');
   changed.metadata.repositories.reverse();
-  changed.milestones = sequence(block(11, 'First', idA, 'in progress'), block(12, 'Second', idB))
-    .replace('| 1 | First | pending |', '| 11 | First | in progress |')
-    .replaceAll('\n', '\r\n');
+  changed.milestones = sequence(
+    block(11, 'First', idA, 'in progress'),
+    block(12, 'Second', idB),
+  ).replace('| 1 | First | pending |', '| 11 | First | in progress |');
   expect(computePlanRevision(changed)).toStrictEqual(expected);
 });
 
@@ -194,4 +195,83 @@ test('fenced headings within Overview do not make the following real table contr
     milestones: first.milestones.replace('| 1 | First | pending |', '| 1 | First | in progress |'),
   };
   expect(computePlanRevision(changed)).toStrictEqual(computePlanRevision(first));
+});
+
+test('exact plan and requirement bytes retain their line endings in execution identity', () => {
+  const baseline = input();
+  expect(
+    computePlanRevision({ ...baseline, body: baseline.body.replaceAll('\n', '\r\n') }).planDigest,
+  ).not.toBe(computePlanRevision(baseline).planDigest);
+  expect(
+    computePlanRevision({ ...baseline, milestones: baseline.milestones!.replaceAll('\n', '\r\n') })
+      .breakdownDigest,
+  ).not.toBe(computePlanRevision(baseline).breakdownDigest);
+});
+
+test('unknown JSON contract metadata has deterministic key order and meaningful values', () => {
+  const first = input();
+  first.metadata.extensions = { id: 'feature', acceptance: { b: 2, a: 1 }, steps: ['a', 'b'] };
+  const second = input();
+  second.metadata.extensions = { steps: ['a', 'b'], acceptance: { a: 1, b: 2 }, id: 'feature' };
+  expect(computePlanRevision(second)).toStrictEqual(computePlanRevision(first));
+  second.metadata.extensions.steps = ['b', 'a'];
+  expect(computePlanRevision(second).planDigest).not.toBe(computePlanRevision(first).planDigest);
+});
+
+test.each([
+  '## Between milestones\nShared requirement.\n',
+  '## Last shared section\nShared requirement.\n',
+])(
+  'every intervening and trailing shared section contributes to all milestone contracts',
+  (section) => {
+    const first = input();
+    first.milestones = section.startsWith('## Between')
+      ? sequence().replace('## Milestone 2:', section + '## Milestone 2:')
+      : sequence() + section;
+    const changed = {
+      ...first,
+      milestones: first.milestones.replace('Shared requirement.', 'Changed requirement.'),
+    };
+    expect(computePlanRevision(changed).breakdownDigest).not.toBe(
+      computePlanRevision(first).breakdownDigest,
+    );
+  },
+);
+
+test('milestone metadata preserves unknown requirements and excludes only valid binding fields', () => {
+  const binding = `jg_skills:\n  plan_id: feature\n  plan_revision: 1\n  plan_content_sha256: ${'a'.repeat(64)}\n`;
+  const first = {
+    ...input(),
+    milestones: `---\n${binding}guard: { b: 2, a: 1 }\n---\n` + sequence(),
+  };
+  const administrative = {
+    ...first,
+    milestones: first.milestones.replace('plan_revision: 1', 'plan_revision: 2'),
+  };
+  expect(computePlanRevision(administrative)).toStrictEqual(computePlanRevision(first));
+  const changed = { ...first, milestones: first.milestones.replace('a: 1', 'a: 3') };
+  expect(computePlanRevision(changed).breakdownDigest).not.toBe(
+    computePlanRevision(first).breakdownDigest,
+  );
+  const extra = {
+    ...first,
+    milestones: first.milestones.replace('  plan_revision:', '  contract: a\n  plan_revision:'),
+  };
+  expect(computePlanRevision(extra).breakdownDigest).not.toBe(
+    computePlanRevision(first).breakdownDigest,
+  );
+});
+
+test.each([
+  'jg_skills: false',
+  'jg_skills: { plan_id: feature }',
+  'custom: .nan',
+  '- list',
+  'custom: [unterminated',
+])('unavailable or invalid milestone metadata fails closed: %s', (metadata) => {
+  expectToThrowCode(
+    () => computePlanRevision({ ...input(), milestones: `---\n${metadata}\n---\n` + sequence() }),
+    'JG_AGENT_HQ_PLAN_INVALID',
+    'The HQ plan is invalid',
+  );
 });

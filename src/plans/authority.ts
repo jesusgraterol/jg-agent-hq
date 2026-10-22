@@ -31,7 +31,9 @@ export const describePlan = (
     !coordination.planApproval.revokedBy &&
     coordination.planApproval.revision.planDigest === revision.planDigest;
   const isFinalized =
-    !!coordination.finalized && isSamePlanRevision(coordination.finalized.revision, revision);
+    artifacts.skillsBinding !== 'stale' &&
+    !!coordination.finalized &&
+    isSamePlanRevision(coordination.finalized.revision, revision);
   const isSequenceApproved =
     isPlanApproved &&
     isFinalized &&
@@ -86,6 +88,7 @@ export const describePlan = (
     inspection: artifacts.hashes,
     state,
     pendingActionId,
+    skillsBinding: artifacts.skillsBinding,
     isFinalized,
     isPlanApproved,
     isSequenceApproved,

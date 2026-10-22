@@ -217,7 +217,8 @@ export const createPlans = (
       !coordination.baseline ||
       coordination.observedConflict ||
       (workflow && workflow.phase !== 'finished') ||
-      isSamePlanRevision(coordination.baseline.revision, artifacts.revision) ||
+      (isSamePlanRevision(coordination.baseline.revision, artifacts.revision) &&
+        artifacts.skillsBinding !== 'stale') ||
       (await store.getPendingPlanOperationId(artifacts.directory))
     )
       return artifacts;
@@ -510,6 +511,7 @@ export const createPlans = (
               );
             }
           } else if (command.kind === 'finalize') {
+            if (artifacts.skillsBinding === 'stale') conflict();
             const workflow = coordination.revision;
             let finalized: { content: string | null; revision: typeof artifacts.revision } | null =
               null;

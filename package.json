@@ -1,6 +1,6 @@
 {
   "name": "jg-agent-hq",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Native coding-agent workspace primitives.",
   "type": "module",
   "license": "MIT",
@@ -46,7 +46,11 @@
     "check": "pnpm check:package && pnpm --dir website check"
   },
   "dependencies": {
+    "jg-crypto": "0.3.0",
     "jg-exception": "^1.7.0",
+    "jg-fs": "1.7.0",
+    "jg-plans": "0.2.0",
+    "jg-utilities": "1.7.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

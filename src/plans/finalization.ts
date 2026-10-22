@@ -1,9 +1,9 @@
-import { randomUUID } from 'node:crypto';
 import { Exception } from 'jg-exception';
 
 import type { IPlanRevision } from '../contracts/index.js';
 
-import { computePlanRevision, isSamePlanRevision, refreshPlanOverview } from './utilities.js';
+import { computePlanRevision, isSamePlanRevision } from './utilities.js';
+import { prepareSequenceIds } from './documents.js';
 import type { IPlanArtifacts } from './types.js';
 
 const conflict = (): never => {
@@ -16,7 +16,7 @@ const conflict = (): never => {
 };
 
 /**
- * Assigns or validates the first sequence's identities and refreshes its derived status table.
+ * Assigns or validates the first sequence's identities without changing other source bytes.
  * @returns Canonical content and its revision, without approval.
  * @throws
  * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
@@ -31,15 +31,7 @@ export const finalizeInitialSequence = (
   )
     conflict();
   if (artifacts.milestones === null) return { content: null, revision: artifacts.revision };
-  let milestones = artifacts.milestones.replace(/\r\n?/g, '\n');
-  // insertion offsets are applied backwards so original positions stay valid
-  for (const milestone of [...artifacts.parsed].reverse())
-    if (!milestone.id)
-      milestones =
-        milestones.slice(0, milestone.statusEnd) +
-        `**Milestone ID:** ${randomUUID()}\n` +
-        milestones.slice(milestone.statusEnd);
-  milestones = refreshPlanOverview(milestones, artifacts.parsed);
+  const milestones = prepareSequenceIds(artifacts.milestones, artifacts.hashes.milestones!);
   const revised = computePlanRevision({
     ...artifacts.contract,
     milestones,
