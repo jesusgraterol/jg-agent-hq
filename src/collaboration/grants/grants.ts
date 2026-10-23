@@ -124,6 +124,23 @@ const isPlanWithinGrant = (
 };
 
 /**
+ * Keeps child effects, paths and plan selection within the active parent invocation.
+ * @throws
+ * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+ */
+export const assertDelegationScope = (
+  child: IRequestSpecification,
+  parent: IRequestSpecification,
+): void => {
+  if (
+    child.effects.some((effect) => !parent.effects.includes(effect)) ||
+    !isPlanWithinGrant(child.plan, parent.plan)
+  )
+    collaborationForbidden();
+  assertScopesAllowed(child.scopes, parent.scopes);
+};
+
+/**
  * Checks a requested invocation against the recipient's current task permissions and skill grant.
  * This grants admission only; plan approvals and native permissions are checked at execution.
  * @throws

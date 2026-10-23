@@ -67,6 +67,7 @@ else {
       respond(request.id,{ ...(control.omitVersion?{}:{userAgent:control.version??'codex-cli/fixture'}), futureMetadata:control.futureMetadata });return;
     }
     const { method,params = {} } = request;
+    if (control.emitOnce) writeFileSync(join(directory,'control.json'),JSON.stringify({...control,emit:undefined,emitOnce:undefined}));
     if (control.emit) for (const event of control.emit) notify(event.method,event.params);
     if (method === 'model/list') {
       const choices = Array.from({length:control.modelCount??4},(_,index)=>({id:'model-'+String(index).padStart(4,'0'),model:'model-'+String(index).padStart(4,'0'),displayName:'Native model '+index,description:control.modelRevision?'Updated choice':'Native model choice',supportedReasoningEfforts:[{reasoningEffort:control.modelEffort??'native-effort'}],defaultReasoningEffort:control.modelEffort??'native-effort',isDefault:index===0}));
@@ -159,7 +160,7 @@ else {
       if (control.rejectTurn) { process.stdout.write(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic input rejection'}})+'\n');return; }
       const thread = managed.get(params.threadId);
       thread.model=params.model??thread.model;thread.reasoningEffort=params.effort??thread.reasoningEffort;
-      const turn = {id:'native-turn-'+(++turnSequence),status:'inProgress'};
+      const turn = {id:(control.turnPrefix??'')+'native-turn-'+(++turnSequence),status:'inProgress'};
       thread.activeTurn=turn.id;
       notify('turn/started',{threadId:thread.id,turn});
       const item = {id:'live-'+turnSequence,type:'agentMessage',text:''};

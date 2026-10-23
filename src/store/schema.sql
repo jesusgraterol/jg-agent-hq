@@ -401,6 +401,12 @@ CREATE TABLE hq_request (
   is_claimable INTEGER NOT NULL CHECK (is_claimable IN (0,1)),
   state TEXT NOT NULL CHECK (state IN ('open','claimed','waiting-children','waiting-input','interrupted','resolved','canceled')),
   current_action_id TEXT REFERENCES hq_action(id),
+  parent_request_id TEXT REFERENCES hq_request(id),
+  parent_action_id TEXT REFERENCES hq_action(id),
+  child_request_ids TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(child_request_ids) AND json_type(child_request_ids) = 'array' AND json_array_length(child_request_ids) <= 32),
+  wait_generation INTEGER NOT NULL DEFAULT 0 CHECK (wait_generation >= 0),
+  continuation_action_id TEXT,
+  clarification_consumed_action_id TEXT REFERENCES hq_action(id),
   pending_action_id TEXT,
   pending_input_message_id TEXT REFERENCES hq_message(id),
   manual_dispatch_id TEXT,
@@ -440,6 +446,12 @@ CREATE INDEX hq_idx_r__target_sequence ON hq_request(task_id, target_agent_id, s
 CREATE UNIQUE INDEX hq_uidx_r__assignee_active ON hq_request(assignee_agent_id) WHERE current_action_id IS NOT NULL;
 CREATE INDEX hq_idx_r__dispatch_sequence ON hq_request(sequence) WHERE current_action_id IS NOT NULL OR pending_action_id IS NOT NULL;
 CREATE INDEX hq_idx_r__task_active ON hq_request(task_id, sequence) WHERE current_action_id IS NOT NULL;
+CREATE INDEX hq_idx_r__parent_state ON hq_request(parent_request_id, state);
+CREATE INDEX hq_idx_r__waiting_sequence ON hq_request(sequence) WHERE state = 'waiting-children';
+CREATE INDEX hq_idx_r__assignee_waiting ON hq_request(assignee_agent_id, sequence) WHERE state = 'waiting-children';
+CREATE TRIGGER hq_trg_r__parent_immutable BEFORE UPDATE OF parent_request_id, parent_action_id ON hq_request
+WHEN new.parent_request_id IS NOT old.parent_request_id OR new.parent_action_id IS NOT old.parent_action_id
+BEGIN SELECT RAISE(ABORT, 'HQ request parent links are immutable'); END;
 
 CREATE TABLE hq_report (
   id TEXT NOT NULL PRIMARY KEY,
@@ -455,7 +467,7 @@ CREATE TABLE hq_report (
   provider TEXT NOT NULL,
   native_id TEXT NOT NULL,
   native_turn_id TEXT NOT NULL,
-  outcome TEXT NOT NULL CHECK (outcome IN ('completed','needs-input','paused','failed')),
+  outcome TEXT NOT NULL CHECK (outcome IN ('completed','waiting-children','needs-input','paused','failed')),
   payload BLOB NOT NULL CHECK (length(payload) <= 1048576),
   byte_count INTEGER GENERATED ALWAYS AS (length(payload)) STORED,
   sha256 TEXT NOT NULL CHECK (length(sha256) = 64),

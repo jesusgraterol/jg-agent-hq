@@ -7,6 +7,7 @@ import {
   CollaborationTaskSchema,
   TaskAgentSchema,
   DispatchBlockedSchema,
+  ContinuationSchema,
 } from '../../contracts/collaboration/index.js';
 import { ManagedThreadSchema } from '../../contracts/actions/index.js';
 
@@ -22,6 +23,7 @@ export const DispatchContextSchema = DispatchAdmissionSchema.extend({
   specification: RequestSpecificationSchema,
   requester: CollaborationActorSchema,
   inputMessageId: z.uuid().nullable(),
+  continuation: ContinuationSchema.nullable(),
   isAutomatic: z.boolean(),
   replyMessageId: z.uuid(),
   interruptActionId: z.uuid(),
@@ -53,6 +55,7 @@ export const DispatchJobSchema = z.object({
   member: TaskAgentSchema.nullable(),
   thread: ManagedThreadSchema.nullable(),
   context: DispatchContextSchema.nullable(),
+  continuation: ContinuationSchema.nullable(),
   packet: z.string().nullable(),
   blockedReason: DispatchBlockedSchema.nullable(),
 });

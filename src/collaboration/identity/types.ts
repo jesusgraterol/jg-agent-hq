@@ -56,6 +56,20 @@ export const AgentIdentitySchema = z.object({
       blockedReason: DispatchBlockedSchema.nullable(),
     })
     .nullable(),
+  waiting: z.object({
+    requests: z
+      .array(
+        z.object({
+          requestId: z.uuid(),
+          taskId: z.uuid(),
+          waitGeneration: z.number().int().positive(),
+          childCount: z.number().int().min(1).max(32),
+          continuationActionId: z.uuid().nullable(),
+        }),
+      )
+      .max(32),
+    hasMore: z.boolean(),
+  }),
   tasks: z.array(TaskSummarySchema).max(128),
   nextCursor: CursorSchema.nullable(),
 });

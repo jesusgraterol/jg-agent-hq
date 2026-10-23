@@ -67,7 +67,10 @@ export const createDispatch = (
       }
       return;
     }
-    if (job.request.pendingActionId === null || !['open', 'claimed'].includes(job.request.state))
+    if (
+      job.request.pendingActionId === null ||
+      !['open', 'claimed', 'waiting-children'].includes(job.request.state)
+    )
       return;
     let reason = job.blockedReason;
     if (reason === null && job.thread && job.packet !== null) {

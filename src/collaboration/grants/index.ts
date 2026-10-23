@@ -6,4 +6,5 @@ export {
   assertPermissionsSubset,
   assertScopesAllowed,
   assertRequestAuthority,
+  assertDelegationScope,
 } from './grants.js';

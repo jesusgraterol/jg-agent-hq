@@ -16,7 +16,7 @@ export const MESSAGE_METADATA_COLUMNS =
   'm.sequence, m.id, m.task_id, m.stream_id, m.author, m.kind, CAST(m.summary AS BLOB) AS summary, m.body_bytes, m.reference_count, m.reply_to_message_id, m.created_at';
 export const MESSAGE_COLUMNS = `${MESSAGE_METADATA_COLUMNS}, CAST(m.body AS BLOB) AS body, m.artifact_references`;
 export const REQUEST_METADATA_COLUMNS =
-  'r.id, r.task_id, r.stream_id, r.sequence, m.author AS requester, r.assignee_agent_id, r.state, r.current_action_id, r.pending_action_id, r.pending_input_message_id, r.manual_dispatch_id, r.last_action_id, r.last_report_id, r.dispatch_count, r.required_authority, r.pause_agent_revision, r.dispatch_blocked_reason, r.failure_reason, r.outcome, r.created_at, r.updated_at, r.target_agent_id, r.is_claimable, r.skill_name, r.skill_mode, r.grant_id, r.grant_revision';
+  'r.id, r.task_id, r.stream_id, r.sequence, m.author AS requester, r.assignee_agent_id, r.parent_request_id, r.parent_action_id, r.child_request_ids, r.wait_generation, r.continuation_action_id, r.clarification_consumed_action_id, r.state, r.current_action_id, r.pending_action_id, r.pending_input_message_id, r.manual_dispatch_id, r.last_action_id, r.last_report_id, r.dispatch_count, r.required_authority, r.pause_agent_revision, r.dispatch_blocked_reason, r.failure_reason, r.outcome, r.created_at, r.updated_at, r.target_agent_id, r.is_claimable, r.skill_name, r.skill_mode, r.grant_id, r.grant_revision';
 export const REQUEST_COLUMNS = `${REQUEST_METADATA_COLUMNS}, r.specification, r.result_references`;
 export const DELIVERY_COLUMNS =
   'sequence, task_id, message_id, message_sequence, recipient_agent_id, native_action_id, delivered_at, acknowledged_at';

@@ -20,6 +20,7 @@ import {
 import { authorizeRecipient, ensureDelivery } from './requests.js';
 import { insertMessage } from './messages.js';
 import type { ICollaborationContext } from './types.js';
+import { refreshWait, refreshParentWait } from './waits.js';
 
 /**
  * Returns the one active assigned invocation, checking its exact current selected authority.
@@ -66,6 +67,7 @@ export const readInvocation = (
     request,
     actionId: z.uuid().parse(row.current_action_id),
     nativeTurnId: z.string().nullable().parse(action?.native_turn_id),
+    continuation: selected.continuation,
     grant:
       grant === null
         ? null
@@ -92,13 +94,15 @@ export const mutateCheckpoint = (
   context: ICollaborationContext,
   command: ICheckpointCommand,
 ): ICollaborationResult => {
+  if (command.kind === 'request-dispatch')
+    refreshWait(database, context.task.id, command.requestId);
   const request = readRequest(database, context.task.id, command.requestId);
   if (request.currentActionId !== null || ['resolved', 'canceled'].includes(request.state))
     return collaborationConflict();
   if (command.kind === 'request-dispatch') {
     requireHost(context);
     if (
-      !['open', 'claimed'].includes(request.state) ||
+      !['open', 'claimed', 'waiting-children'].includes(request.state) ||
       request.pendingActionId === null ||
       (request.assigneeAgentId === null && request.specification.targetAgentId === null)
     )
@@ -115,7 +119,7 @@ export const mutateCheckpoint = (
     if (command.kind === 'request-authorize') {
       requireHost(context);
       if (
-        !['interrupted', 'waiting-input'].includes(request.state) &&
+        !['interrupted', 'waiting-input', 'waiting-children'].includes(request.state) &&
         !(request.dispatchCount === 0 && ['open', 'claimed'].includes(request.state))
       )
         return collaborationConflict();
@@ -149,11 +153,16 @@ export const mutateCheckpoint = (
             request.requester.agentId !== context.actor.agentId)
         )
           return collaborationForbidden();
+        if (context.actor.kind === 'agent') {
+          const invocation = readInvocation(database, context);
+          if (invocation !== null && request.parentRequestId !== invocation.request.id)
+            return collaborationForbidden();
+        }
       } else {
         requireHost(context);
         const member = readMember(database, context.task.id, assigneeId);
         if (
-          request.state !== 'interrupted' ||
+          !['interrupted', 'waiting-children'].includes(request.state) ||
           context.task.state !== 'active' ||
           context.task.lifecycleRevision !== command.expectedTaskRevision ||
           member.revision !== command.expectedAgentRevision ||
@@ -183,6 +192,15 @@ export const mutateCheckpoint = (
         replyToMessageId: request.id,
       });
       ensureDelivery(database, context.task.id, input.id, input.sequence, assigneeId);
+      if (request.state === 'waiting-children') {
+        database
+          .prepare(
+            'UPDATE hq_request SET pending_input_message_id = ?, manual_dispatch_id = ?, dispatch_blocked_reason = NULL, updated_at = ? WHERE id = ?',
+          )
+          .run(input.id, command.id, Date.now(), request.id);
+        refreshWait(database, context.task.id, request.id);
+        return { kind: 'request', request: readRequest(database, context.task.id, request.id) };
+      }
       database
         .prepare(
           `UPDATE hq_request SET state = 'claimed', pending_action_id = ?, pending_input_message_id = ?, manual_dispatch_id = ?, required_authority = NULL, pause_agent_revision = NULL, dispatch_blocked_reason = NULL, updated_at = ? WHERE id = ?`,
@@ -196,5 +214,6 @@ export const mutateCheckpoint = (
         );
     }
   }
+  refreshParentWait(database, context.task.id, request.id);
   return { kind: 'request', request: readRequest(database, context.task.id, request.id) };
 };

@@ -19,6 +19,7 @@ import { THREAD_COLUMNS, ThreadRowSchema, toManagedThread } from '../control/ind
 import { readTask, readRequest, readMember } from './authority.js';
 import { authorizeRecipient } from './requests.js';
 import { toContentText } from './transformers.js';
+import { readContinuation } from './waits.js';
 
 /** Reads a bounded keyset page of retained dispatch intent and unsettled active bindings. */
 export const scanDispatch = (database: DatabaseSync, query: IDispatchScan): IDispatchPage => {
@@ -33,7 +34,7 @@ export const scanDispatch = (database: DatabaseSync, query: IDispatchScan): IDis
   const data = database
     .prepare(
       `SELECT sequence, task_id, id FROM hq_request
-    WHERE (current_action_id IS NOT NULL OR pending_action_id IS NOT NULL)
+    WHERE (current_action_id IS NOT NULL OR pending_action_id IS NOT NULL OR state = 'waiting-children')
     AND sequence > ? AND sequence <= ? ORDER BY sequence LIMIT 32`,
     )
     .all(query.after, boundary)
@@ -157,6 +158,10 @@ export const readDispatchJob = (
     }
   }
   let packet: string | null = null;
+  const continuation =
+    request.state === 'waiting-children' ? readContinuation(database, request) : null;
+  if (blockedReason === null && request.state === 'waiting-children' && continuation === null)
+    blockedReason = 'child-wait';
   if (request.currentActionId === null && blockedReason === null && member) {
     const body = database
       .prepare(
@@ -177,16 +182,20 @@ export const readDispatchJob = (
         taskId,
         requestId,
         actionId: request.pendingActionId,
-        summary,
-        bodyExcerpt: truncateToUtf8Bytes(bodyText, 1024),
-        isBodyComplete: Buffer.byteLength(bodyText) <= 1024,
+        ...(continuation === null
+          ? {
+              summary,
+              bodyExcerpt: truncateToUtf8Bytes(bodyText, 1024),
+              isBodyComplete: Buffer.byteLength(bodyText) <= 1024,
+            }
+          : { continuation }),
         input: input
           ? { messageId: input.id, author: JSON.parse(z.string().parse(input.author)) }
           : null,
       }),
     ].join('\n');
   }
-  return { request, task, member, thread, context, packet, blockedReason };
+  return { request, task, member, thread, context, continuation, packet, blockedReason };
 };
 
 /**
@@ -208,7 +217,7 @@ export const prepareDispatch = (
     job.request.currentActionId !== null ||
     job.request.pendingActionId !== actionId ||
     selection.pendingActionId !== actionId ||
-    !['open', 'claimed'].includes(job.request.state)
+    !['open', 'claimed', 'waiting-children'].includes(job.request.state)
   )
     return collaborationConflict();
   if (
@@ -224,6 +233,7 @@ export const prepareDispatch = (
     specification: job.request.specification,
     requester: job.request.requester,
     inputMessageId: job.request.pendingInputMessageId,
+    continuation: job.continuation,
     isAutomatic: job.request.manualDispatchId === null,
     replyMessageId: randomUUID(),
     interruptActionId: randomUUID(),

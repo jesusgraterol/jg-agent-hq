@@ -5,9 +5,11 @@ import type {
   ICollaborationCommand,
   ICollaborationResult,
   IMessageAuthor,
+  IInvocation,
 } from '../../contracts/collaboration/index.js';
 import {
   assertRequestAuthority,
+  assertDelegationScope,
   assertScopesAllowed,
   collaborationConflict,
   collaborationForbidden,
@@ -140,7 +142,7 @@ export const insertMessage = (
 };
 
 /**
- * Publishes immutable bounded content and root-request metadata with its initial delivery intent.
+ * Publishes immutable bounded content and request metadata with its initial delivery intent.
  * @returns Metadata only; no native action is dispatched.
  * @throws
  * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
@@ -150,6 +152,7 @@ export const publishMessage = (
   database: DatabaseSync,
   context: ICollaborationContext,
   command: Extract<ICollaborationCommand, { kind: 'message-publish' }>,
+  invocation: IInvocation | null = null,
 ): ICollaborationResult => {
   if (context.actor.kind === 'agent') requireActiveAgent(context);
   const stream = readStream(database, context.task.id, command.streamId);
@@ -168,6 +171,17 @@ export const publishMessage = (
       return collaborationConflict();
   }
   const specification = command.request;
+  if (command.parentRequestId !== undefined) {
+    if (
+      specification === null ||
+      invocation === null ||
+      context.actor.kind !== 'agent' ||
+      invocation.request.id !== command.parentRequestId ||
+      invocation.agentId !== context.actor.agentId
+    )
+      return collaborationForbidden();
+    assertDelegationScope(specification, invocation.request.specification);
+  }
   if (specification !== null) {
     const grant =
       specification.grantId === null
@@ -200,8 +214,8 @@ export const publishMessage = (
   if (specification !== null) {
     database
       .prepare(
-        `INSERT INTO hq_request (id, sequence, task_id, stream_id, specification, target_agent_id, is_claimable, state, grant_id, grant_revision, skill_name, skill_mode, result_references, return_stream_id, pending_action_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, '[]', ?, ?, ?, ?)`,
+        `INSERT INTO hq_request (id, sequence, task_id, stream_id, specification, target_agent_id, is_claimable, state, grant_id, grant_revision, skill_name, skill_mode, result_references, return_stream_id, pending_action_id, parent_request_id, parent_action_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         command.id,
@@ -217,6 +231,8 @@ export const publishMessage = (
         specification.skill?.mode ?? null,
         specification.returnStreamId ?? stream.id,
         specification.claimable ? null : command.id,
+        command.parentRequestId ?? null,
+        command.parentRequestId === undefined ? null : invocation!.actionId,
         now,
         now,
       );

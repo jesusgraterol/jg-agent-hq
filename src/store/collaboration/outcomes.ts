@@ -18,6 +18,7 @@ import { readRequest, readTask, readMember } from './authority.js';
 import { authorizeRecipient, ensureDelivery } from './requests.js';
 import { insertMessage } from './messages.js';
 import { captureReport, REPORT_COLUMNS, toReportSummary } from './reports.js';
+import { canRegisterWait, hasPendingChildren, refreshWait, refreshParentWait } from './waits.js';
 
 /**
  * Atomically records exact terminal native evidence and transport-owned return delivery.
@@ -155,6 +156,15 @@ export const collectDispatch = (
     }
   }
   const now = Date.now();
+  if (request.state !== 'canceled' && response !== null && failure === null) {
+    if (
+      response.outcome === 'waiting-children' &&
+      !canRegisterWait(database, request, response.childRequestIds)
+    )
+      failure = 'invalid-child-wait';
+    else if (response.outcome === 'completed' && hasPendingChildren(database, request.id))
+      failure = 'children-pending';
+  }
   const savedReport =
     response !== null && capture !== null && 'payload' in capture ? { response, capture } : null;
   const references = savedReport
@@ -224,9 +234,11 @@ export const collectDispatch = (
       ? 'canceled'
       : isInterrupted || (response?.outcome === 'paused' && failure === null)
         ? 'interrupted'
-        : response?.outcome === 'needs-input' && failure === null
-          ? 'waiting-input'
-          : 'resolved';
+        : response?.outcome === 'waiting-children' && failure === null
+          ? 'waiting-children'
+          : response?.outcome === 'needs-input' && failure === null
+            ? 'waiting-input'
+            : 'resolved';
   const outcome =
     state === 'resolved'
       ? failure !== null || response?.outcome === 'failed'
@@ -249,6 +261,14 @@ export const collectDispatch = (
       now,
       requestId,
     );
+  if (state === 'waiting-children')
+    database
+      .prepare(
+        'UPDATE hq_request SET child_request_ids = ?, wait_generation = wait_generation + 1, continuation_action_id = NULL WHERE id = ?',
+      )
+      .run(JSON.stringify(response!.childRequestIds), requestId);
+  refreshWait(database, taskId, requestId);
+  refreshParentWait(database, taskId, requestId);
   const report = savedReport
     ? toReportSummary(
         database.prepare(`SELECT ${REPORT_COLUMNS} FROM hq_report WHERE id = ?`).get(actionId),

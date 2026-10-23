@@ -1493,6 +1493,20 @@ export class ControlModel {
     const context = DispatchContextSchema.parse(
       JSON.parse(z.string().parse(saved.collaboration_context)),
     );
+    for (const child of context.continuation?.children ?? []) {
+      if (child.report !== null)
+        this.__database
+          .prepare(
+            'UPDATE hq_delivery SET native_action_id = ?, delivered_at = ? WHERE task_id = ? AND recipient_agent_id = ? AND message_id = (SELECT reply_message_id FROM hq_report WHERE id = ?) AND delivered_at IS NULL',
+          )
+          .run(actionId, now, context.taskId, context.agentId, child.report.id);
+      if (child.isClarification && child.actionId !== null)
+        this.__database
+          .prepare(
+            'UPDATE hq_request SET clarification_consumed_action_id = ? WHERE id = ? AND parent_request_id = ? AND last_action_id = ?',
+          )
+          .run(child.actionId, child.requestId, context.requestId, child.actionId);
+    }
     this.__database
       .prepare(
         'UPDATE hq_delivery SET native_action_id = ?, delivered_at = ? WHERE task_id = ? AND recipient_agent_id = ? AND message_id IN (?, ?) AND delivered_at IS NULL',

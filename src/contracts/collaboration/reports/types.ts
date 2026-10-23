@@ -13,7 +13,11 @@ export const DispatchResponseSchema = z
       description:
         'The request ID from hq_invocation_read for active HQ work; null for ordinary conversation.',
     }),
-    outcome: z.enum(['completed', 'needs-input', 'paused', 'failed']),
+    outcome: z.enum(['completed', 'waiting-children', 'needs-input', 'paused', 'failed']),
+    childRequestIds: z.array(z.uuid()).max(32).meta({
+      description:
+        'Unique direct child requests to await. Nonempty only for waiting-children; retain every unsatisfied dependency from the current wait.',
+    }),
     report: z.string().max(MAX_RESULT_BYTES).meta({
       description:
         'The normal Markdown report. Delegated reports must fit 1,048,576 UTF-8 bytes. Only the outermost workflow returns this envelope.',
@@ -26,6 +30,12 @@ export const DispatchResponseSchema = z
   .refine(
     (response) => (response.outcome === 'needs-input') === (response.requiredAuthority !== null),
     'Only a needs-input outcome names required authority',
+  )
+  .refine(
+    (response) =>
+      (response.outcome === 'waiting-children') === response.childRequestIds.length > 0 &&
+      new Set(response.childRequestIds).size === response.childRequestIds.length,
+    'Only waiting-children names a nonempty unique child wait set',
   );
 export type IDispatchResponse = z.infer<typeof DispatchResponseSchema>;
 

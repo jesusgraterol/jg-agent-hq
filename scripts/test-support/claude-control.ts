@@ -44,7 +44,7 @@ export const startClaudeControl = () => {
   input=null;hasPrompt=false;
  };
  const lines=createInterface({input:process.stdin});
- const interval=setInterval(()=>{if(input&&control().release&&!hasPrompt)complete();},25);
+ const interval=setInterval(()=>{if(input&&control().release&&!hasPrompt){if(control().releaseOnce)writeFileSync(join(root,'claude-control.json'),JSON.stringify({...control(),release:false,releaseOnce:false}));complete();}},25);
  lines.on('line',line=>{
   const message=JSON.parse(line),settings=control();
   appendFileSync(join(root,'claude-calls.jsonl'),JSON.stringify(message)+'\n');

@@ -108,6 +108,11 @@ export const readAgentIdentity = (
       : taskAccess(database, { kind: 'agent', agentId: native.agentId }, taskId);
   const member = context?.member ?? null;
   const task = context?.task ?? null;
+  const waiting = database
+    .prepare(
+      "SELECT r.id, r.task_id, r.wait_generation, json_array_length(r.child_request_ids) AS child_count, r.continuation_action_id FROM hq_request r JOIN hq_task_agent a ON a.task_id = r.task_id AND a.agent_id = r.assignee_agent_id WHERE r.assignee_agent_id = ? AND r.state = 'waiting-children' AND a.is_revoked = 0 ORDER BY r.sequence DESC LIMIT 33",
+    )
+    .all(native.agentId);
   const base: IAgentIdentity = {
     agentId: native.agentId,
     provider: query.binding.provider,
@@ -130,6 +135,16 @@ export const readAgentIdentity = (
                 .get(native.agentId, task.id)?.purpose ?? null,
             ),
     permissions: member !== null && task !== null ? effectivePermissions(member, task) : null,
+    waiting: {
+      requests: waiting.slice(0, 32).map((row) => ({
+        requestId: z.uuid().parse(row.id),
+        taskId: z.uuid().parse(row.task_id),
+        waitGeneration: z.number().parse(row.wait_generation),
+        childCount: z.number().parse(row.child_count),
+        continuationActionId: z.uuid().nullable().parse(row.continuation_action_id),
+      })),
+      hasMore: waiting.length > 32,
+    },
     invocation:
       active && taskId === active.task_id
         ? {

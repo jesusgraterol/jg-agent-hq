@@ -19,6 +19,7 @@ import {
   requireActiveAgent,
 } from './authority.js';
 import type { ICollaborationContext, IRequestMutation } from './types.js';
+import { refreshParentWait } from './waits.js';
 
 /**
  * Rechecks the selected recipient's current membership, policy and grant.
@@ -159,5 +160,6 @@ export const mutateRequest = (
       break;
     }
   }
+  refreshParentWait(database, request.taskId, request.id);
   return { kind: 'request', request: readRequest(database, request.taskId, request.id) };
 };

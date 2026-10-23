@@ -9,6 +9,7 @@ import {
   type ICollaborationRequest,
   type ICollaborationResponse,
   type ICollaborationResult,
+  type IInvocation,
 } from '../../contracts/collaboration/index.js';
 import { collaborationConflict, collaborationForbidden } from '../../collaboration/grants/index.js';
 import type {
@@ -34,6 +35,7 @@ import { readReport } from './reports.js';
 import { scanDispatch, readDispatchJob } from './dispatch.js';
 import type { IDispatchScan } from '../../collaboration/dispatch/index.js';
 import type { IDispatchBlocked } from '../../contracts/collaboration/index.js';
+import { refreshWait, canReserveContinuation } from './waits.js';
 
 /** Owns short collaboration transactions and exact metadata-operation replay in the SQLite worker. */
 export class CollaborationModel {
@@ -76,7 +78,18 @@ export class CollaborationModel {
 
   /** Reads a bounded durable recovery page without loading native results. */
   public dispatchPage(query: IDispatchScan) {
-    return this.__transaction(() => scanDispatch(this.__database, query), true);
+    const { page, ready } = this.__transaction(() => {
+      const page = scanDispatch(this.__database, query);
+      const ready = page.data.filter((entry) =>
+        canReserveContinuation(this.__database, entry.taskId, entry.requestId),
+      );
+      return { page, ready };
+    }, true);
+    if (ready.length > 0)
+      this.__transaction(() => {
+        for (const entry of ready) refreshWait(this.__database, entry.taskId, entry.requestId);
+      });
+    return page;
   }
 
   /** Resolves one dispatch intent against current membership, policy and native ownership. */
@@ -134,22 +147,23 @@ export class CollaborationModel {
         const taskId = command.kind === 'task-create' ? command.id : command.taskId;
         const context =
           command.kind === 'task-create' ? null : taskAccess(this.__database, actor, taskId);
+        let invocation: IInvocation | null = null;
         if (actor.kind === 'agent' && context !== null && command.kind !== 'status') {
-          const invocation = readInvocation(this.__database, context);
+          invocation = readInvocation(this.__database, context);
           if (invocation !== null && !invocation.request.specification.effects.includes('read'))
-            return collaborationForbidden();
-          // Parent-linked publication is introduced together with its complete wait protocol.
-          if (invocation !== null && command.kind === 'message-publish' && command.request !== null)
             return collaborationForbidden();
           if (
             invocation !== null &&
-            [
-              'request-claim',
-              'request-resolve',
-              'request-input',
-              'request-reassign',
-              'request-cancel',
-            ].includes(command.kind)
+            command.kind === 'message-publish' &&
+            command.request !== null &&
+            command.parentRequestId !== invocation.request.id
+          )
+            return collaborationForbidden();
+          if (
+            invocation !== null &&
+            ['request-claim', 'request-resolve', 'request-reassign', 'request-cancel'].includes(
+              command.kind,
+            )
           )
             return collaborationForbidden();
         }
@@ -203,7 +217,7 @@ export class CollaborationModel {
               result = mutateStream(this.__database, context, command);
               break;
             case 'message-publish':
-              result = publishMessage(this.__database, context, command);
+              result = publishMessage(this.__database, context, command, invocation);
               break;
             case 'message-ack':
               result = acknowledgeMessage(this.__database, context, command.messageId);

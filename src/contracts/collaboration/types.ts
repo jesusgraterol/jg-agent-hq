@@ -65,6 +65,8 @@ export const DispatchFailureSchema = z.enum([
   'report-too-large',
   'report-invalid-utf8',
   'pause-not-authorized',
+  'invalid-child-wait',
+  'children-pending',
 ]);
 export type IDispatchFailure = z.infer<typeof DispatchFailureSchema>;
 export const DispatchBlockedSchema = z.enum([
@@ -82,6 +84,7 @@ export const DispatchBlockedSchema = z.enum([
   'turn-limit',
   'native-uncertain',
   'action-conflict',
+  'child-wait',
 ]);
 export type IDispatchBlocked = z.infer<typeof DispatchBlockedSchema>;
 
@@ -306,6 +309,12 @@ export const CollaborationRequestRecordSchema = z.object({
   requester: CollaborationActorSchema,
   specification: RequestSpecificationSchema,
   assigneeAgentId: UuidSchema.nullable(),
+  parentRequestId: UuidSchema.nullable(),
+  parentActionId: UuidSchema.nullable(),
+  childRequestIds: z.array(UuidSchema).max(32),
+  waitGeneration: z.number().int().nonnegative(),
+  continuationActionId: UuidSchema.nullable(),
+  clarificationConsumedActionId: UuidSchema.nullable(),
   state: z.enum([
     'open',
     'claimed',
@@ -332,6 +341,29 @@ export const CollaborationRequestRecordSchema = z.object({
   updatedAt: TimeSchema,
 });
 export type ICollaborationRequestRecord = z.infer<typeof CollaborationRequestRecordSchema>;
+
+// a continuation carries bounded result references, never full reports or additional authority
+export const ContinuationSchema = z.object({
+  generation: z.number().int().positive(),
+  kind: z.enum(['terminal-results', 'clarification']),
+  children: z
+    .array(
+      z.object({
+        requestId: UuidSchema,
+        state: CollaborationRequestRecordSchema.shape.state,
+        outcome: CollaborationRequestRecordSchema.shape.outcome,
+        actionId: UuidSchema.nullable(),
+        report: z.object({ id: UuidSchema, sha256: HashSchema }).nullable(),
+        requiredAuthority: z.enum(['requester', 'operator']).nullable(),
+        failureReason: DispatchFailureSchema.nullable(),
+        excerpt: utf8Text(64),
+        isClarification: z.boolean(),
+      }),
+    )
+    .min(1)
+    .max(32),
+});
+export type IContinuation = z.infer<typeof ContinuationSchema>;
 export const DeliverySchema = z.object({
   taskId: UuidSchema,
   messageId: UuidSchema,
@@ -355,10 +387,12 @@ const PublishSchema = z
     references: z.array(ArtifactReferenceSchema).max(16),
     replyToMessageId: UuidSchema.nullable(),
     request: RequestSpecificationSchema.nullable(),
+    parentRequestId: UuidSchema.optional(),
   })
   .refine(
     (message) =>
       (message.messageKind === 'request') === (message.request !== null) &&
+      (message.parentRequestId === undefined || message.request !== null) &&
       (message.messageKind !== 'reply' || message.replyToMessageId !== null),
     'Request and reply publications require their exact relationships',
   );
@@ -625,6 +659,7 @@ export const InvocationSchema = z.object({
   request: CollaborationRequestRecordSchema,
   actionId: UuidSchema,
   nativeTurnId: NativeIdSchema.nullable(),
+  continuation: ContinuationSchema.nullable(),
   grant: z
     .object({ id: UuidSchema, revision: RevisionSchema, issuerOperatorRef: utf8Text(256) })
     .nullable(),
