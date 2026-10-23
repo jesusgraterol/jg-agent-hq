@@ -1,14 +1,20 @@
 import { z } from 'zod';
 
+import { AgentSpawnAdmissionSchema } from '../../collaboration/identity/index.js';
+import { DispatchAdmissionSchema } from '../../collaboration/dispatch/index.js';
+
 import {
   ActionEnvelopeSchema,
   ActionPlanContextSchema,
-  NativeSkillInputSchema,
+  PreparedInputSchema,
+  TurnResultSchema,
   ActionReceiptSchema,
   ActionSummarySchema,
   ManagedThreadSchema,
   NativeApprovalSchema,
+  NativeApprovalSummarySchema,
   LifecycleEventSchema,
+  NativeLineageSchema,
 } from '../../contracts/index.js';
 
 // these shapes mirror SQLite columns; transformations retain the public camelCase contracts
@@ -16,6 +22,9 @@ export const ThreadRowSchema = z.object({
   id: ManagedThreadSchema.shape.id,
   provider: ManagedThreadSchema.shape.provider,
   native_id: ManagedThreadSchema.shape.nativeId,
+  native_lineage: z.string().nullable(),
+  fork_source_thread_id: z.uuid().nullable(),
+  is_archived: z.number().int().min(0).max(1),
   name: ManagedThreadSchema.shape.name,
   workspace_root: z.string(),
   ownership: ManagedThreadSchema.shape.ownership,
@@ -36,6 +45,8 @@ export const ActionRowSchema = z.object({
   requested_runtime_epoch: z.uuid(),
   runtime_epoch: z.uuid(),
   kind: ActionReceiptSchema.shape.kind,
+  provider: ActionReceiptSchema.shape.provider,
+  control_state: ActionReceiptSchema.shape.controlState,
   thread_id: z.uuid().nullable(),
   expected_turn_id: ActionReceiptSchema.shape.nativeTurnId,
   native_turn_id: ActionReceiptSchema.shape.nativeTurnId,
@@ -44,8 +55,8 @@ export const ActionRowSchema = z.object({
   completion: ActionReceiptSchema.shape.completion,
   failure: ActionReceiptSchema.shape.failure,
   related_action_id: z.uuid().nullable(),
-  queued_text: ActionReceiptSchema.shape.queuedText,
-  queued_skill: z.string().nullable(),
+  queued_input: z.string().nullable(),
+  result: z.string().nullable(),
   plan_context: z.string().nullable(),
   requested_name: ManagedThreadSchema.shape.name.nullable(),
   queue_ready: z.number().int().min(0).max(1),
@@ -57,15 +68,29 @@ export type IActionRow = z.infer<typeof ActionRowSchema>;
 const NativeIdSchema = ManagedThreadSchema.shape.nativeId.unwrap();
 const OutcomeFields = { actionId: z.uuid(), requestId: z.string().min(1).max(256) };
 export const NativeOutcomeSchema = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('created'), ...OutcomeFields, nativeId: NativeIdSchema }),
+  z.strictObject({
+    kind: z.literal('created'),
+    ...OutcomeFields,
+    nativeId: NativeIdSchema,
+    nativeLineage: NativeLineageSchema.nullable(),
+  }),
   z.strictObject({
     kind: z.literal('resumed'),
     ...OutcomeFields,
     nativeState: z.enum(['notLoaded', 'idle', 'systemError', 'active']),
+    nativeLineage: NativeLineageSchema.nullable(),
   }),
   z.strictObject({ kind: z.literal('closed'), ...OutcomeFields }),
   z.strictObject({ kind: z.literal('cleaned'), ...OutcomeFields }),
   z.strictObject({ kind: z.literal('renamed'), ...OutcomeFields }),
+  z.strictObject({ kind: z.literal('archived'), ...OutcomeFields }),
+  z.strictObject({ kind: z.literal('unarchived'), ...OutcomeFields }),
+  z.strictObject({ kind: z.literal('reverted'), ...OutcomeFields }),
+  z.strictObject({
+    kind: z.literal('compaction-accepted'),
+    ...OutcomeFields,
+    nativeTurnId: NativeIdSchema.nullable(),
+  }),
   z.strictObject({
     kind: z.literal('turn-accepted'),
     ...OutcomeFields,
@@ -78,6 +103,17 @@ export const NativeOutcomeSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({ kind: z.literal('interrupt-accepted'), ...OutcomeFields }),
   z.strictObject({ kind: z.literal('reply-written'), ...OutcomeFields }),
+  z.strictObject({
+    kind: z.literal('control-accepted'),
+    ...OutcomeFields,
+    state: z.enum(['accepted', 'applied', 'held']),
+    completion: ActionReceiptSchema.shape.completion,
+  }),
+  z.strictObject({
+    kind: z.literal('control-completed'),
+    ...OutcomeFields,
+    completion: ActionReceiptSchema.shape.completion.unwrap(),
+  }),
   z.strictObject({ kind: z.literal('uncertain'), ...OutcomeFields }),
   z.strictObject({
     kind: z.literal('failed'),
@@ -99,6 +135,7 @@ export const NativeObservationSchema = z.discriminatedUnion('kind', [
     kind: z.literal('turn-completed'),
     ...NativeTurnFields,
     state: ActionReceiptSchema.shape.completion.unwrap(),
+    result: TurnResultSchema.optional(),
   }),
   z.strictObject({
     kind: z.literal('item-started'),
@@ -136,9 +173,10 @@ export const AdmissionSchema = z.strictObject({
   prepared: z.strictObject({
     workspaceRoot: z.string().optional(),
     nativeId: NativeIdSchema.optional(),
-    text: z.string().min(1).max(65_536).optional(),
-    skill: NativeSkillInputSchema.nullable().optional(),
+    input: PreparedInputSchema.optional(),
     planContext: ActionPlanContextSchema.optional(),
+    agentSpawn: AgentSpawnAdmissionSchema.optional(),
+    collaboration: DispatchAdmissionSchema.optional(),
   }),
 });
 export type IAdmission = z.infer<typeof AdmissionSchema>;
@@ -152,8 +190,7 @@ export type IAdmissionResult = z.infer<typeof AdmissionResultSchema>;
 export const DispatchSchema = z.object({
   receipt: ActionReceiptSchema,
   thread: ManagedThreadSchema,
-  text: z.string().max(65_536),
-  skill: NativeSkillInputSchema.nullable(),
+  input: PreparedInputSchema,
 });
 export type IDispatch = z.infer<typeof DispatchSchema>;
 export const ObservationResultSchema = z.object({
@@ -168,6 +205,10 @@ export const ControlPageSchema = z.strictObject({
   position: z.strictObject({ createdAt: z.number().int(), id: z.uuid() }).nullable(),
 });
 export type IControlPage = z.infer<typeof ControlPageSchema>;
+export const ApprovalPageRequestSchema = ControlPageSchema.extend({
+  state: NativeApprovalSummarySchema.shape.state.optional(),
+});
+export type IApprovalPageRequest = z.infer<typeof ApprovalPageRequestSchema>;
 export const EventPageSchema = z.strictObject({
   limit: z.number().int().min(1).max(128),
   after: z.number().int().nonnegative(),
@@ -194,6 +235,10 @@ export const ManagedThreadPageSchema = z.object({
 });
 export const ActionPageSchema = z.object({
   data: z.array(ActionSummarySchema).max(128),
+  hasMore: z.boolean(),
+});
+export const ApprovalPageSchema = z.object({
+  data: z.array(NativeApprovalSummarySchema).max(128),
   hasMore: z.boolean(),
 });
 export const LifecyclePageSchema = z.object({

@@ -283,7 +283,7 @@ test.each(['codex', 'claude'] as const)(
       });
       expect(await api.submit(queued)).toMatchObject({
         delivery: 'queued',
-        queuedSkill: { name: skill.name, path: skill.path },
+        queuedInput: { skill: { name: skill.name, path: skill.path } },
       });
       expect(await api.inputs()).toHaveLength(1);
       await api.control({});
@@ -308,7 +308,7 @@ test.each(['codex', 'claude'] as const)(
         { type: 'text', text: `${provider === 'codex' ? '$' : '/'}${skill.name} after this turn` },
         ...(provider === 'codex' ? [{ type: 'skill', name: skill.name, path: skill.path }] : []),
       ]);
-      expect(await api.receipt(queued.id)).toMatchObject({ queuedText: null, queuedSkill: null });
+      expect(await api.receipt(queued.id)).toMatchObject({ queuedInput: null });
     });
   },
 );
@@ -442,6 +442,12 @@ test('trusted extra roots reach native loaders without becoming browser configur
         if (Date.now() > deadline) throw new Error('Creation timed out');
         await wait(10);
       }
+      expect(await readFile(join(fixture.root, 'calls.jsonl'), 'utf8')).toBe('');
+      await runtime.request({
+        kind: 'threads',
+        provider: 'codex',
+        workspaceRoot: fixture.workspaceRoot,
+      });
       const calls = (await readFile(join(fixture.root, 'calls.jsonl'), 'utf8'))
         .trim()
         .split('\n')
@@ -456,7 +462,13 @@ test('trusted extra roots reach native loaders without becoming browser configur
           .split('\n')
           .map((line) => JSON.parse(line)),
       );
-      expect(starts[0]!.args.slice(-2)).toStrictEqual(['--add-dir', extra]);
+      const directoryFlag = starts[0]!.args.indexOf('--add-dir');
+      expect(directoryFlag).toBeGreaterThanOrEqual(0);
+      expect(starts[0]!.args.slice(directoryFlag, directoryFlag + 2)).toStrictEqual([
+        '--add-dir',
+        extra,
+      ]);
+      expect(starts[0]!.args).not.toContain('--strict-mcp-config');
       await expectToRejectCode(
         runtime.request(
           JSON.parse(

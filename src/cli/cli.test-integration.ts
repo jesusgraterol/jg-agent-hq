@@ -13,7 +13,7 @@ import { z } from 'zod';
 
 import { installCodexFixture, withClaudeRuntime } from '../../scripts/test-support/index.js';
 
-test('dedicated CLI provider selection reads real Claude IPC and rejects unsupported providers', async () => {
+test('dedicated CLI provider selection reads Claude capabilities and reports unavailable provider data', async () => {
   await withClaudeRuntime(async ({ stateRoot }) => {
     const run = promisify(execFile);
     const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
@@ -27,10 +27,40 @@ test('dedicated CLI provider selection reads real Claude IPC and rejects unsuppo
       kind: 'usage',
       result: { provider: 'claude', state: 'available' },
     });
+    const capabilities = await run(
+      process.execPath,
+      [cli, 'capabilities', '--state-root', stateRoot, '--provider', 'claude'],
+      { timeout: 5000 },
+    );
+    expect(JSON.parse(capabilities.stdout)).toMatchObject({
+      kind: 'capabilities',
+      result: {
+        provider: 'claude',
+        scope: { kind: 'provider' },
+        operations: { steer: { state: 'unsupported' } },
+      },
+    });
+    const unavailable = await run(
+      process.execPath,
+      [cli, 'usage', '--state-root', stateRoot, '--provider', 'unregistered-provider'],
+      { timeout: 5000 },
+    );
+    expect(JSON.parse(unavailable.stdout)).toStrictEqual({
+      schemaVersion: 1,
+      kind: 'usage',
+      result: {
+        provider: 'unregistered-provider',
+        state: 'unavailable',
+        source: 'native',
+        observedAt: null,
+        ordinaryUsageAllowed: null,
+        windows: [],
+      },
+    });
     await expect(
       run(
         process.execPath,
-        [cli, 'usage', '--state-root', stateRoot, '--provider', 'unsupported'],
+        [cli, 'usage', '--state-root', stateRoot, '--provider', '../provider'],
         { timeout: 5000 },
       ),
     ).rejects.toThrow();

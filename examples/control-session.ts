@@ -1,5 +1,5 @@
 import { requestAgentHq } from 'jg-agent-hq';
-import type { IActionReceipt } from 'jg-agent-hq/contracts';
+import type { IActionReceipt, IProviderId } from 'jg-agent-hq/contracts';
 import { waitUntil } from 'jg-utilities';
 
 /**
@@ -11,7 +11,7 @@ import { waitUntil } from 'jg-utilities';
 export const controlSession = async (input: {
   stateRoot: string;
   workspaceRoot: string;
-  provider: 'claude' | 'codex';
+  provider: IProviderId;
   name: string;
   text: string;
   actionIds: { create: string; message: string };
@@ -74,7 +74,7 @@ export const controlSession = async (input: {
   const receipt = await acknowledged(input.actionIds.message);
   const [liveItems, approvals, usage] = await Promise.all([
     requestAgentHq(stateRoot, { kind: 'live-items', threadId }),
-    requestAgentHq(stateRoot, { kind: 'approvals', threadId }),
+    requestAgentHq(stateRoot, { kind: 'approvals', threadId, state: 'pending' }),
     requestAgentHq(stateRoot, { kind: 'usage', provider: input.provider }),
   ]);
   if (liveItems.kind !== 'live-items' || approvals.kind !== 'approvals' || usage.kind !== 'usage')
@@ -83,7 +83,7 @@ export const controlSession = async (input: {
     thread,
     receipt,
     liveItems: liveItems.result,
-    approvals: approvals.result,
+    approvals: approvals.result.data,
     usage: usage.result,
   };
 };

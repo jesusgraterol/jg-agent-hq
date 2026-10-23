@@ -1,6 +1,7 @@
 ---
 import { render, type CollectionEntry } from 'astro:content';
-import Container from 'jg-personal-astro-ui/container';
+import DocumentationOutline from 'jg-personal-astro-ui/documentation-outline';
+import DocumentationShell from 'jg-personal-astro-ui/documentation-shell';
 import Prose from 'jg-personal-astro-ui/prose';
 import TextLink from 'jg-personal-astro-ui/text-link';
 
@@ -12,53 +13,30 @@ interface Props {
 }
 const { document, page } = Astro.props;
 const { Content, headings } = await render(document);
-const sections = headings.filter((heading) => heading.depth === 2);
+const sections = headings
+  .filter((heading) => heading.depth === 2)
+  .map((heading) => ({ label: heading.text, href: `#${heading.slug}` }));
 ---
 
-<Container class="py-8 sm:py-12">
-  <div class="grid min-w-0 gap-8 xl:grid-cols-[minmax(0,1fr)_14rem] xl:gap-12">
-    <aside class="min-w-0 xl:order-last">
-      <nav
-        aria-label="On this page"
-        class="min-w-0 xl:sticky xl:top-24"
+<DocumentationShell>
+  <DocumentationOutline
+    slot="outline"
+    items={sections}
+  />
+  <article class="min-w-0">
+    <div
+      class="mb-8 flex flex-wrap items-center justify-between gap-3 border-b border-border pb-5 text-sm text-muted"
+    >
+      <p class="font-mono">jg-agent-hq / {page.id === 'api' ? 'api' : 'docs'}</p><div
+        class="flex flex-wrap gap-4"
       >
-        <p class="eyebrow mb-3">On this page</p>
-        <ul
-          class="flex min-w-0 gap-4 overflow-x-auto overscroll-contain border-b border-border pb-3 xl:max-h-[calc(100svh-9rem)] xl:flex-col xl:gap-1 xl:overflow-y-auto xl:border-b-0 xl:pb-0"
+        <TextLink href={page.markdown}>Markdown</TextLink><TextLink
+          href={`${SITE_CONFIG.repositoryUrl}/blob/main/${document.data.source}`}
+          external
+          >Source</TextLink
         >
-          {
-            sections.map((heading) => (
-              <li class="shrink-0 xl:shrink">
-                <TextLink
-                  href={`#${heading.slug}`}
-                  class="block py-2 text-sm whitespace-nowrap xl:whitespace-normal"
-                >
-                  {heading.text}
-                </TextLink>
-              </li>
-            ))
-          }
-        </ul>
-      </nav>
-    </aside>
-    <article class="min-w-0">
-      <div
-        class="mb-8 flex flex-wrap items-center justify-between gap-3 border-b border-border pb-5 text-sm text-muted"
-      >
-        <p class="font-mono">jg-agent-hq / {page.id === 'api' ? 'api' : 'docs'}</p><div
-          class="flex flex-wrap gap-4"
-        >
-          <TextLink href={page.markdown}>Markdown</TextLink><TextLink
-            href={`${SITE_CONFIG.repositoryUrl}/blob/main/${document.data.source}`}
-            external
-            >Source</TextLink
-          >
-        </div>
       </div>
-      <Prose
-        class="[&_h1]:text-4xl [&_h1]:leading-tight [&_h1]:font-semibold [&_h1]:tracking-tight [&_h1]:text-balance sm:[&_h1]:text-5xl"
-        ><Content /></Prose
-      >
-    </article>
-  </div>
-</Container>
+    </div>
+    <Prose titleVariant="document"><Content /></Prose>
+  </article>
+</DocumentationShell>

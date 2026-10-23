@@ -1,6 +1,7 @@
-import type { IHistoryItem } from '../../../contracts/index.js';
-import type { INativeOutcome, INativeObservation } from '../../../store/control/index.js';
-import type { INativePrompt, IProviderSkills } from '../../types.js';
+import type { IHistoryItem, ISessionSettings } from '../../../contracts/index.js';
+import type { IAgentMcpLease } from '../../../agent-tools/index.js';
+import type { INativeObservation } from '../../../store/control/index.js';
+import type { INativePrompt, IProviderSkills, IAgentProviderOutcome } from '../../index.js';
 
 // normalized Claude evidence is consumed by the existing action and live-window owners
 export type IClaudeControlEvents = {
@@ -9,7 +10,7 @@ export type IClaudeControlEvents = {
   gap(nativeId: string): void;
   delta(nativeId: string, turnId: string, itemId: string, text: string): void;
   prompt(prompt: INativePrompt): void;
-  outcome(outcome: INativeOutcome): void;
+  outcome(outcome: IAgentProviderOutcome): void;
   unavailable(nativeId: string): void;
 };
 
@@ -20,6 +21,9 @@ export type IClaudeInput = {
   isAcknowledged: boolean;
   interruptRequested: boolean;
   hasInterruptionMarker: boolean;
+  finalText: string | null;
+  isOutputOversized: boolean;
+  isOrdinaryEnvelope: boolean;
   resolve(turn: { id: string }): void;
   reject(error: unknown): void;
   timer: ReturnType<typeof setTimeout>;
@@ -27,13 +31,19 @@ export type IClaudeInput = {
 export type IClaudeSession = {
   id: string;
   workspaceRoot: string;
+  settings: ISessionSettings;
   scope: string;
   isClosing: boolean;
+  hasInput: boolean;
   connection?: Awaited<ReturnType<typeof import('../rpc.js').createClaudeRpc>>;
+  agentBridge?: IAgentMcpLease;
   opening: Promise<void>;
   skills?: IProviderSkills | null;
   input?: IClaudeInput;
   apiMessageId?: string;
   previews: Map<number, { id: string; type: string }>;
-  requests: Map<string, { toolId: string; scopedId: string }>;
+  requests: Map<
+    string,
+    { toolId: string | null; scopedId: string; fingerprint: string; isWritten: boolean }
+  >;
 };

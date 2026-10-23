@@ -654,6 +654,60 @@ const native = async (fixture: IClaudeFixture) => {
 };
 
 test.each(['codex', 'claude'] as const)(
+  'forking a plan-bound %s session does not copy execution authority',
+  async (provider) => {
+    await withClaudeRuntime(async (fixture) => {
+      const plan = await setup(fixture, null);
+      const session = await native(fixture);
+      const source = await session.create(provider, 'bound-fork-source');
+      const current = await plan.status();
+      const authorization = operator();
+      await plan.send({
+        kind: 'authorize',
+        target: plan.target,
+        expected: current.revision,
+        action: authorization,
+        mode: 'auto',
+        milestoneIds: [],
+      });
+      const scope = {
+        kind: 'execution' as const,
+        authorizationId: authorization.id,
+        milestoneId: null,
+        mode: 'auto' as const,
+        revision: current.revision,
+      };
+      const message = await session.submit(
+        {
+          kind: 'message',
+          threadId: source.id,
+          input: { kind: 'text', text: 'Assess the authorized work.' },
+        },
+        scope,
+      );
+      await expect
+        .poll(() => session.receipt(message.id))
+        .toMatchObject({ delivery: 'acknowledged', completion: 'completed' });
+      expect(
+        await fixture.runtime.request({ kind: 'thread-plan', threadId: source.id }),
+      ).toMatchObject({ kind: 'thread-plan', result: { scope } });
+      const fork = await session.submit({
+        kind: 'thread-fork',
+        threadId: source.id,
+        name: 'unbound-fork',
+      });
+      await expect.poll(() => session.receipt(fork.id)).toMatchObject({ delivery: 'acknowledged' });
+      expect(
+        await fixture.runtime.request({ kind: 'thread-plan', threadId: fork.threadId! }),
+      ).toStrictEqual({ kind: 'thread-plan', result: null });
+      expect(
+        await fixture.runtime.request({ kind: 'thread-plan', threadId: source.id }),
+      ).toMatchObject({ kind: 'thread-plan', result: { scope } });
+    });
+  },
+);
+
+test.each(['codex', 'claude'] as const)(
   'whole-plan %s input keeps one owner and preserves authority on ordinary follow-ups',
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
@@ -1217,7 +1271,7 @@ test('a finalization write retry after restart reuses the saved mapping, assigne
     const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
     try {
       database.exec(
-        "CREATE TRIGGER stop_plan_completion BEFORE UPDATE ON plan_operation WHEN NEW.state = 'completed' BEGIN SELECT RAISE(ABORT, 'checkpoint replay test'); END;",
+        "CREATE TRIGGER stop_plan_completion BEFORE UPDATE ON hq_plan_operation WHEN NEW.state = 'completed' BEGIN SELECT RAISE(ABORT, 'checkpoint replay test'); END;",
       );
       await expect(plan.send(command)).rejects.toThrow('store failed');
     } finally {
@@ -1460,13 +1514,13 @@ test('planning permits only the selected native skill and canonical finalization
     );
     const prompts = await fixture.runtime.request({ kind: 'approvals', threadId: target.id });
     if (prompts.kind !== 'approvals') throw new Error('Missing native permission');
-    expect(prompts.result).toHaveLength(1);
+    expect(prompts.result.data).toHaveLength(1);
     const activeTurn = (await session.thread(target.id)).activeTurnId!;
     const reply = await session.submit({
       kind: 'native-reply',
       threadId: target.id,
       expectedTurnId: activeTurn,
-      approvalId: prompts.result[0]!.id,
+      approvalId: prompts.result.data[0]!.id,
       response: { kind: 'decision', decision: 'accept' },
     });
     await session.until(

@@ -96,6 +96,10 @@ test('copies the exact package command and identifies external destinations', as
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
     `npm install jg-agent-hq@${SITE_CONFIG.version}`,
   );
+  await expect(page.getByRole('list', { name: 'Local setup' }).getByRole('article')).toHaveCount(3);
+  await expect(
+    page.getByRole('list', { name: 'Local setup' }).getByRole('heading', { level: 3 }),
+  ).toHaveText(HOME_CONTENT.setup.map((step) => step.title));
   const source = page.getByRole('link', { name: /View source/ });
   await expect(source).toHaveAttribute('target', '_blank');
   await expect(source).toHaveAttribute('rel', /noreferrer/u);
@@ -211,11 +215,11 @@ for (const walkthrough of [
   {
     id: 'review-handoff',
     title: 'Get another agent’s perspective',
-    category: 'Cross-provider review',
+    category: 'Agent review',
     link: 'Read the review walkthrough',
     helper: 'reviewHandoff',
     boundary: 'Feedback may still be queued or in flight.',
-    callback: 'selectFindings',
+    callback: 'confirmRequest',
   },
   {
     id: 'revise-plan',

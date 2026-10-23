@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { ProviderIdSchema } from '../providers/index.js';
+
 // execution revisions are independent of exact file inspection hashes
 export const PlanDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const PlanRevisionSchema = z.strictObject({
@@ -308,7 +310,7 @@ export const PlanComparisonSchema = z.strictObject({
   verdict: z.enum(['compatible', 'contradiction']),
   reason: z.string().min(1).max(4096),
   reviewer: z.strictObject({
-    provider: z.enum(['claude', 'codex']),
+    provider: ProviderIdSchema,
     cliVersion: z.string().min(1).max(128),
     model: z.string().min(1).max(256).nullable(),
     reference: z.string().min(1).max(4096),

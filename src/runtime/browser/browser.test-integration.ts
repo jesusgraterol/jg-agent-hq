@@ -192,7 +192,7 @@ test('startup quarantines a submitted receipt and never dispatches it automatica
     try {
       database
         .prepare(
-          "UPDATE browser_action SET receipt = json_set(receipt, '$.state', 'submitted') WHERE id = ?",
+          "UPDATE hq_browser_action SET receipt = json_set(receipt, '$.state', 'submitted') WHERE id = ?",
         )
         .run(input.id);
     } finally {

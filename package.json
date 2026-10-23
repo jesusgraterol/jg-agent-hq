@@ -1,7 +1,7 @@
 {
   "name": "jg-agent-hq",
-  "version": "1.1.0",
-  "description": "Native coding-agent workspace primitives.",
+  "version": "2.0.0",
+  "description": "Native coding-agent session control, agent streams and durable collaboration for Node.js apps.",
   "type": "module",
   "license": "MIT",
   "packageManager": "pnpm@12.4.0",
@@ -25,6 +25,7 @@
     "dist",
     "api/README.md",
     "errors/README.md",
+    "docs/recovery.md",
     "CHANGELOG.md"
   ],
   "publishConfig": {
@@ -46,6 +47,7 @@
     "check": "pnpm check:package && pnpm --dir website check"
   },
   "dependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
     "jg-crypto": "0.3.0",
     "jg-exception": "^1.7.0",
     "jg-fs": "1.7.0",

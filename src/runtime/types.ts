@@ -1,6 +1,8 @@
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 
+import { MAX_PROVIDERS, ProviderIdSchema } from '../contracts/index.js';
+
 import type {
   IHqRequestInput,
   IHqResponse,
@@ -8,9 +10,20 @@ import type {
   IBrowserReceipt,
 } from '../contracts/index.js';
 import type { IPlanContractParser } from '../plans/index.js';
+import type { IStorageDescriptor, IStorageMaintenanceOperation } from '../storage/index.js';
+import type { IAgentProviderFactory } from '../providers/index.js';
 
 // construction receives trusted operator configuration, never a browser-selected root
 export const AgentHqOptionsSchema = z.strictObject({
+  providerFactories: z
+    .array(
+      z.object({
+        id: ProviderIdSchema,
+        create: z.custom<IAgentProviderFactory['create']>((input) => typeof input === 'function'),
+      }),
+    )
+    .max(MAX_PROVIDERS)
+    .optional(),
   stateRoot: z.string().min(1).refine(isAbsolute),
   coordinationRoot: z.string().min(1).refine(isAbsolute).optional(),
   parsePlanContract: z
@@ -24,6 +37,19 @@ export type IAgentHqOptions = z.infer<typeof AgentHqOptionsSchema>;
 
 // the runtime owns resources independently of every client connection
 export type IAgentHq = {
+  readonly storage: IStorageDescriptor;
+  /**
+   * Drains admitted HQ work and runs a host callback under exclusive maintenance admission.
+   * The callback owns its SQLite connection; its errors propagate unchanged.
+   * It must not call HQ or resume native work. Conflicting requests are rejected.
+   * @returns The callback result after maintenance is released.
+   * @throws
+   * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  withStorageMaintenance<T>(operation: IStorageMaintenanceOperation<T>): Promise<T>;
   /**
    * Runs one trusted host dispatcher after durable admission. Never expose the callback as RPC.
    * Dispatcher failures propagate after the receipt becomes uncertain.
@@ -43,6 +69,7 @@ export type IAgentHq = {
    * @returns The receipt, or null for another operator or unknown ID.
    * @throws
    * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   readBrowserAction(id: string, operatorId: string): Promise<IBrowserReceipt | null>;
@@ -56,13 +83,15 @@ export type IAgentHq = {
    * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
    * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
    * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
-   * - JG_AGENT_HQ_HANDOFF_UNAVAILABLE: The HQ handoff is unavailable
-   * - JG_AGENT_HQ_HANDOFF_FAILED: The HQ handoff operation failed
+   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
    * - JG_AGENT_HQ_SKILL_UNAVAILABLE: The HQ skill is unavailable
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
    * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
    * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+   * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+   * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
    * - JG_AGENT_HQ_PLAN_FAILED: The HQ plan operation failed
@@ -86,6 +115,7 @@ export type IAgentHq = {
    * @returns A promise resolved after confirmed resource shutdown and owner release.
    * @throws
    * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    * - JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE: The HQ state directory is unsafe
    * - JG_AGENT_HQ_STATE_FILE_UNSAFE: The HQ state file is unsafe
    * - JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE: The HQ runtime owner is unverifiable

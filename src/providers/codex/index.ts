@@ -1,5 +1,6 @@
 // adapter
 export { createCodexProvider } from './codex.js';
+export { createCodexProviderFactory } from './adapter.js';
 export type { ICodexProvider, ICodexEvents } from './types.js';
 export { NativeThreadSchema, NativeTurnSchema, NativeItemSchema } from './types.js';
 export { toHistoryItem } from './transformers.js';

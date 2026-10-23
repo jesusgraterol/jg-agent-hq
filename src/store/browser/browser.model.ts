@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { Exception } from 'jg-exception';
 import { z } from 'zod';
@@ -24,7 +24,7 @@ export class BrowserModel {
     this.__key = key;
     database
       .prepare(
-        `UPDATE browser_action SET receipt = json_set(receipt, '$.state', 'uncertain', '$.updatedAt', ?)
+        `UPDATE hq_browser_action SET receipt = json_set(receipt, '$.state', 'uncertain', '$.updatedAt', ?)
       WHERE json_extract(receipt, '$.runtimeEpoch') != ? AND json_extract(receipt, '$.state') = 'submitted'`,
       )
       .run(Date.now(), epoch);
@@ -33,7 +33,7 @@ export class BrowserModel {
   /** Reads only the authenticated operator's selected receipt. */
   public get(id: string, operatorId: string): IBrowserReceipt | null {
     const row = this.__database
-      .prepare('SELECT receipt FROM browser_action WHERE id = ? AND operator_id = ?')
+      .prepare('SELECT receipt FROM hq_browser_action WHERE id = ? AND operator_id = ?')
       .get(id, operatorId);
     return row ? BrowserReceiptSchema.parse(JSON.parse(z.string().parse(row.receipt))) : null;
   }
@@ -49,7 +49,7 @@ export class BrowserModel {
   ): { receipt: IBrowserReceipt; isNew: boolean } {
     const digest = createHmac('sha256', this.__key).update(JSON.stringify(action)).digest('hex');
     const previous = this.__database
-      .prepare('SELECT digest, operator_id, receipt FROM browser_action WHERE id = ?')
+      .prepare('SELECT digest, operator_id, receipt FROM hq_browser_action WHERE id = ?')
       .get(action.id);
     if (previous) {
       const record = RecordSchema.parse(previous);
@@ -68,9 +68,27 @@ export class BrowserModel {
       updatedAt: now,
       native: null,
     };
+    const native = action.command.kind === 'native' ? action.command.action.command : null;
+    const nativeText =
+      native?.kind === 'steer'
+        ? native.text
+        : native &&
+            (native.kind === 'message' || native.kind === 'queue') &&
+            native.input.kind === 'text'
+          ? native.input.text
+          : null;
     this.__database
-      .prepare('INSERT INTO browser_action (id, operator_id, digest, receipt) VALUES (?, ?, ?, ?)')
-      .run(action.id, operatorId, digest, JSON.stringify(receipt));
+      .prepare(
+        'INSERT INTO hq_browser_action (id, operator_id, digest, receipt, native_thread_id, native_input_sha256) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        action.id,
+        operatorId,
+        digest,
+        JSON.stringify(receipt),
+        native && 'threadId' in native ? native.threadId : null,
+        nativeText === null ? null : createHash('sha256').update(nativeText).digest('hex'),
+      );
     return { receipt, isNew: true };
   }
 
@@ -82,7 +100,7 @@ export class BrowserModel {
   ): IBrowserReceipt | null {
     this.__database
       .prepare(
-        `UPDATE browser_action SET receipt = json_set(receipt, '$.state', ?, '$.updatedAt', ?)
+        `UPDATE hq_browser_action SET receipt = json_set(receipt, '$.state', ?, '$.updatedAt', ?)
       WHERE id = ? AND operator_id = ? AND json_extract(receipt, '$.state') = 'submitted'`,
       )
       .run(state, Date.now(), id, operatorId);

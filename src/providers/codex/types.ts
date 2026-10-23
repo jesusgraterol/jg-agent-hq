@@ -7,12 +7,33 @@ import {
   type IThreadSummary,
   type ITurnSummary,
   type IUsageSnapshot,
+  type IProviderModel,
+  type IConfigurationRequest,
+  type ISessionConfiguration,
+  type ISessionSettings,
+  type ITurnSettings,
+  type IOutputSchema,
+  type IAccountObservation,
+  type IAccountControlCommand,
+  type IExtensionControlCommand,
+  type ILoginObservation,
+  type INativeControlResult,
 } from '../../contracts/index.js';
+import type { IProviderInputFile } from '../inputs/index.js';
+import type { IAgentProviderOutcome } from '../index.js';
 import type { IProviderSkills } from '../types.js';
+import type {
+  IProviderMcpServerPage,
+  IProviderMcpTools,
+  IProviderMcpResources,
+} from '../extensions/index.js';
 
 // additive native responses are narrowed to fields this adapter actually uses
 export const NativeThreadSchema = z.object({
   id: z.string().min(1).max(4096),
+  sessionId: z.string().min(1).max(4096).nullable().optional(),
+  parentThreadId: z.string().min(1).max(4096).nullable().optional(),
+  forkedFromId: z.string().min(1).max(4096).nullable().optional(),
   cwd: z.string().min(1).max(4096),
   name: z.string().nullable().optional(),
   createdAt: z.number().int().safe(),
@@ -68,6 +89,9 @@ export type INativePage<T> = { data: T[]; nextCursor: string | null };
 
 // callbacks are owned by the runtime, independently of connected clients
 export type ICodexEvents = {
+  controlOutcome(outcome: IAgentProviderOutcome): void;
+  forgetTurn(nativeId: string): void;
+  prepareTurn(nativeId: string, outputSchema: IOutputSchema | undefined): void;
   notify(method: string, params: unknown): void;
   request(id: string | number, method: string, params: unknown): void;
   lateResponse(id: string, result: unknown, error: unknown): void;
@@ -76,7 +100,32 @@ export type ICodexEvents = {
 
 // native read models and explicit control operations; execution settings remain with Codex
 export type ICodexProvider = {
-  userAgent: string;
+  /** Reports declared or observed experimental dynamic tools for a controlled session. */
+  hasAgentTools(nativeId: string): boolean;
+  /** @returns Safe native account metadata without refreshing tokens. */
+  readAccount(): Promise<IAccountObservation>;
+  /** @returns Live presentation for the exact native challenge. */
+  readLogin(requestId: string): Promise<ILoginObservation>;
+  /** @returns Native authentication admission without accepting raw credentials. */
+  controlAccount(
+    requestId: string,
+    command: IAccountControlCommand,
+    loginRequestId?: string,
+  ): Promise<INativeControlResult>;
+  /** @returns One concrete native extension-control acknowledgement. */
+  controlExtensions(
+    requestId: string,
+    nativeId: string,
+    workspaceRoot: string,
+    command: IExtensionControlCommand,
+  ): Promise<INativeControlResult>;
+  /** @returns A safe native MCP server page for the selected thread. */
+  readMcpServers(nativeId: string, limit: number, cursor?: string): Promise<IProviderMcpServerPage>;
+  /** @returns One bounded configured tool inventory. */
+  readMcpTools(nativeId: string, serverName: string): Promise<IProviderMcpTools>;
+  /** @returns One bounded configured resource inventory. */
+  readMcpResources(nativeId: string, serverName: string): Promise<IProviderMcpResources>;
+  userAgent: string | null;
   readonly isAvailable: boolean;
   listThreads(
     workspaceRoot: string,
@@ -91,8 +140,59 @@ export type ICodexProvider = {
     limit: number,
     cursor?: string,
     turnId?: string,
+    evidence?: boolean,
   ): Promise<INativePage<IHistoryItem>>;
   readUsage(): Promise<IUsageSnapshot>;
+  /**
+   * Reads one native model page without starting inference.
+   * @returns Model and effort choices with native continuation.
+   * @throws
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   */
+  readModels(limit: number, cursor?: string): Promise<INativePage<IProviderModel>>;
+  /**
+   * Reads known native settings without returning the configuration document.
+   * @returns Effective fields and one bounded native agent/profile page.
+   * @throws
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+   */
+  readConfiguration(
+    command: IConfigurationRequest,
+    nativeId?: string,
+    signal?: AbortSignal,
+  ): Promise<ISessionConfiguration>;
+  /**
+   * Forks stored history into a new native identity.
+   * @returns An idle native fork with its source identity.
+   * @throws
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   */
+  forkThread(requestId: string, nativeId: string): Promise<INativeThread>;
+  /**
+   * @returns Native archive acknowledgement.
+   * @throws
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   */
+  archiveThread(requestId: string, nativeId: string): Promise<void>;
+  /**
+   * @returns The exact restored native identity.
+   * @throws
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   */
+  unarchiveThread(requestId: string, nativeId: string): Promise<INativeThread>;
+  /**
+   * @returns Native compaction admission, independent of completion.
+   * @throws
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   */
+  compactThread(requestId: string, nativeId: string): Promise<void>;
+  /**
+   * @returns The native thread after history reversion, without changing files.
+   * @throws
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   */
+  revertThread(requestId: string, nativeId: string, beforeTurnId: string): Promise<INativeThread>;
   /**
    * Reads the native workspace inventory without loading skill content or starting inference.
    * @returns Bounded metadata and the count of native discovery failures.
@@ -107,15 +207,26 @@ export type ICodexProvider = {
    * @returns The created native thread metadata.
    * @throws
    * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
    */
-  startThread(requestId: string, workspaceRoot: string): Promise<INativeThread>;
+  startThread(
+    requestId: string,
+    workspaceRoot: string,
+    settings?: ISessionSettings,
+  ): Promise<INativeThread>;
   /**
    * Loads one explicitly adopted thread without hydrating its complete history.
    * @returns The resumed native thread metadata.
    * @throws
    * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
    */
-  resumeThread(requestId: string, nativeId: string): Promise<INativeThread>;
+  resumeThread(
+    requestId: string,
+    nativeId: string,
+    settings?: ISessionSettings,
+    signal?: AbortSignal,
+  ): Promise<INativeThread>;
   /**
    * Sets the native readable name with the admitted request identity.
    * @returns A promise resolved after native name acknowledgement.
@@ -124,7 +235,7 @@ export type ICodexProvider = {
    */
   nameThread(requestId: string, nativeId: string, name: string): Promise<void>;
   /**
-   * Starts idle input without overriding model, sandbox or approval policy.
+   * Starts idle input with optional native model and effort selection.
    * @returns The accepted native turn metadata.
    * @throws
    * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
@@ -134,6 +245,8 @@ export type ICodexProvider = {
     nativeId: string,
     text: string,
     skill?: INativeSkillInput | null,
+    settings?: ITurnSettings,
+    files?: IProviderInputFile[],
   ): Promise<INativeTurn>;
   /**
    * Steers only the required active native turn and verifies its response identity.

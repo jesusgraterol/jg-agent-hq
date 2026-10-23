@@ -5,6 +5,7 @@ import { Exception, hasErrorCode } from 'jg-exception';
 import { z } from 'zod';
 
 import type { IHistoryItem } from '../../../contracts/index.js';
+import { nativeProvenance } from '../../../sessions/evidence/index.js';
 
 import type { IRecord } from './types.js';
 
@@ -108,6 +109,8 @@ const BlockSchema = z.object({
   type: z.string(),
   text: z.string().optional(),
   content: z.unknown().optional(),
+  name: z.string().optional(),
+  input: z.unknown().optional(),
 });
 
 /**
@@ -115,7 +118,7 @@ const BlockSchema = z.object({
  * @throws
  * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
  */
-export const toClaudeItem = (record: IRecord, turnId: string): IHistoryItem => {
+export const toClaudeItem = (record: IRecord, turnId: string, fullBody = false): IHistoryItem => {
   if (!record.uuid)
     throw new Exception('The Claude history is unavailable', {
       code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
@@ -123,9 +126,20 @@ export const toClaudeItem = (record: IRecord, turnId: string): IHistoryItem => {
         kind: 'agent-unavailable',
       },
     });
+  if (record.type !== 'user' && record.type !== 'assistant')
+    return {
+      nativeId: record.uuid,
+      turnId,
+      nativeType: record.type,
+      kind: 'unsupported',
+      provenance: nativeProvenance('unsupported'),
+      text: '[Unsupported native content]',
+      isTruncated: false,
+    };
   const content = record.message?.content;
   let text = '[Unsupported native content]';
   let isToolResult = false;
+  let hasToolUse = false;
   if (typeof content === 'string') text = content;
   else if (Array.isArray(content)) {
     isToolResult =
@@ -137,6 +151,10 @@ export const toClaudeItem = (record: IRecord, turnId: string): IHistoryItem => {
       .map((block: unknown) => {
         const parsed = BlockSchema.safeParse(block);
         if (!parsed.success) return '[Unsupported native content]';
+        if (parsed.data.type === 'tool_use' && parsed.data.name) {
+          hasToolUse = true;
+          return `${parsed.data.name}\n${JSON.stringify(parsed.data.input ?? {})}`;
+        }
         if (parsed.data.type === 'text') return parsed.data.text ?? '';
         if (parsed.data.type === 'tool_result' && typeof parsed.data.content === 'string')
           return parsed.data.content;
@@ -144,13 +162,28 @@ export const toClaudeItem = (record: IRecord, turnId: string): IHistoryItem => {
       })
       .join('\n');
   }
-  let end = Math.min(text.length, 65_536);
+  let end = fullBody ? text.length : Math.min(text.length, 65_536);
   if (end < text.length && /[\uD800-\uDBFF]/.test(text.charAt(end - 1))) end -= 1;
   return {
     nativeId: record.uuid,
     turnId,
     nativeType: isToolResult ? 'tool-result' : record.type,
-    kind: isToolResult ? 'command' : record.type === 'user' ? 'user-message' : 'agent-message',
+    provenance: record.isCompactSummary
+      ? { ...nativeProvenance('unsupported'), origin: 'system', source: 'native-kind' }
+      : nativeProvenance(
+          isToolResult || hasToolUse
+            ? 'tool'
+            : record.type === 'user'
+              ? 'user-message'
+              : 'agent-message',
+          record.type === 'user' && !isToolResult ? record.uuid : null,
+        ),
+    kind:
+      isToolResult || hasToolUse
+        ? 'tool'
+        : record.type === 'user'
+          ? 'user-message'
+          : 'agent-message',
     text: text.slice(0, end),
     isTruncated: end < text.length,
   };

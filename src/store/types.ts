@@ -1,4 +1,30 @@
 import { z } from 'zod';
+import {
+  DispatchScanSchema,
+  type IDispatchScan,
+  type IDispatchPage,
+  type IDispatchJob,
+} from '../collaboration/dispatch/index.js';
+
+import {
+  AgentIdentityQuerySchema,
+  type IAgentIdentityQuery,
+  type IAgentIdentity,
+  NativeToolBindingSchema,
+  type INativeToolBinding,
+  AgentSpawnReadSchema,
+  type IAgentSpawnRead,
+  type IAgentSpawnRecord,
+} from '../collaboration/identity/index.js';
+
+import {
+  CollaborationRequestSchema,
+  DispatchBlockedSchema,
+  type IDispatchBlocked,
+  type IDispatchCollection,
+  type ICollaborationRequest,
+  type ICollaborationResponse,
+} from '../contracts/collaboration/index.js';
 
 import {
   BrowserActionSchema,
@@ -15,25 +41,19 @@ import {
   type IActionReceipt,
   type IManagedThread,
   type IActionSummary,
+  type INativeApprovalSummary,
   type ILifecycleEvent,
   HqRequestSchema,
   type IActionPlanContext,
-  HandoffFindingsSchema,
-  HandoffPhaseSchema,
-  type IHandoffFindings,
-  type IHandoffPhase,
-  type IHandoffSummary,
+  type IHistoryProvenance,
 } from '../contracts/index.js';
-import {
-  HandoffRecordSchema,
-  HandoffDispatchSchema,
-  HandoffPageRequestSchema,
-  type IHandoffRecord,
-  type IHandoffDispatch,
-  type IHandoffPageRequest,
-} from '../handoffs/index.js';
 import type { IHistoryRequest } from '../sessions/index.js';
+import {
+  EvidenceOriginsRequestSchema,
+  type IEvidenceOriginsRequest,
+} from '../sessions/evidence/index.js';
 import type { IClaudeHistoryRead } from '../providers/claude/history/index.js';
+import { StorageDescriptorSchema, type IStorageDescriptor } from '../storage/index.js';
 
 import {
   PlanWriteIntentSchema,
@@ -51,12 +71,14 @@ import {
   NativeOutcomeSchema,
   NativeObservationSchema,
   ControlPageSchema,
+  ApprovalPageRequestSchema,
   EventPageSchema,
   ApprovalRecordSchema,
   type IAdmission,
   type INativeOutcome,
   type INativeObservation,
   type IControlPage,
+  type IApprovalPageRequest,
   type IEventPage,
   type IApprovalRecord,
   type IAdmissionResult,
@@ -66,6 +88,32 @@ import {
 
 // worker messages are closed, bounded operations rather than arbitrary SQL
 export const StoreCommandSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('agent-identity'), query: AgentIdentityQuerySchema }),
+  z.strictObject({ kind: z.literal('agent-spawn-read'), query: AgentSpawnReadSchema }),
+  z.strictObject({
+    kind: z.literal('collaboration'),
+    request: CollaborationRequestSchema,
+    binding: NativeToolBindingSchema.optional(),
+  }),
+  z.strictObject({ kind: z.literal('collaboration-fanout') }),
+  z.strictObject({ kind: z.literal('dispatch-page'), query: DispatchScanSchema }),
+  z.strictObject({ kind: z.literal('dispatch-job'), taskId: z.uuid(), requestId: z.uuid() }),
+  z.strictObject({
+    kind: z.literal('dispatch-block'),
+    requestId: z.uuid(),
+    selectedActionId: z.uuid(),
+    reason: DispatchBlockedSchema.nullable(),
+  }),
+  z.strictObject({
+    kind: z.literal('dispatch-collect'),
+    taskId: z.uuid(),
+    requestId: z.uuid(),
+    actionId: z.uuid(),
+  }),
+  z.strictObject({ kind: z.literal('evidence-origins'), request: EvidenceOriginsRequestSchema }),
+  z.strictObject({ kind: z.literal('storage-maintenance'), isSnapshot: z.boolean() }),
+  z.strictObject({ kind: z.literal('snapshot-plans'), after: z.string() }),
+  z.strictObject({ kind: z.literal('snapshot-backup'), destination: z.string() }),
   z.strictObject({
     kind: z.literal('browser-read'),
     id: z.uuid(),
@@ -82,20 +130,6 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     operatorId: z.string().min(1).max(256),
     state: BrowserReceiptSchema.shape.state.exclude(['submitted']),
   }),
-  z.strictObject({ kind: z.literal('handoff-read'), id: z.uuid() }),
-  z.strictObject({ kind: z.literal('handoff-prepare'), record: HandoffRecordSchema }),
-  z.strictObject({
-    kind: z.literal('handoff-dispatch-read'),
-    id: z.uuid(),
-    phase: HandoffPhaseSchema,
-  }),
-  z.strictObject({ kind: z.literal('handoff-dispatch-prepare'), dispatch: HandoffDispatchSchema }),
-  z.strictObject({
-    kind: z.literal('handoff-collect'),
-    id: z.uuid(),
-    findings: HandoffFindingsSchema,
-  }),
-  z.strictObject({ kind: z.literal('handoff-list'), page: HandoffPageRequestSchema }),
   z.strictObject({ kind: z.literal('claude-history'), request: HqRequestSchema }),
   z.strictObject({
     kind: z.literal('remember'),
@@ -142,7 +176,17 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     threadId: z.uuid(),
     page: ControlPageSchema,
   }),
+  z.strictObject({
+    kind: z.literal('provider-actions'),
+    provider: ManagedThreadSchema.shape.provider,
+    page: ControlPageSchema,
+  }),
   z.strictObject({ kind: z.literal('events'), page: EventPageSchema }),
+  z.strictObject({
+    kind: z.literal('approvals'),
+    threadId: z.uuid(),
+    page: ApprovalPageRequestSchema,
+  }),
   z.strictObject({ kind: z.literal('admit'), input: AdmissionSchema }),
   z.strictObject({ kind: z.literal('outcome'), input: NativeOutcomeSchema }),
   z.strictObject({ kind: z.literal('observe'), input: NativeObservationSchema }),
@@ -156,7 +200,11 @@ export const StoreRequestSchema = z.strictObject({
   command: StoreCommandSchema,
 });
 export const StoreResponseSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('ready') }),
+  z.object({ kind: z.literal('ready'), storage: StorageDescriptorSchema }),
+  z.object({
+    kind: z.literal('startup-error'),
+    error: z.object({ code: z.string(), message: z.string(), kind: ErrorKindSchema }),
+  }),
   z.object({
     kind: z.literal('result'),
     id: z.number().int(),
@@ -174,7 +222,114 @@ export const StoreWorkerSchema = z.strictObject({
 
 // the worker owns persistence; callers cannot submit arbitrary statements
 export type IStore = {
+  /**
+   * Reads one bounded durable dispatch scan.
+   * @returns Indexed request identities within one high-water boundary.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  dispatchPage(query: IDispatchScan): Promise<IDispatchPage>;
+  /**
+   * Reads a selected intent and current admission evidence.
+   * @returns The selected request, immutable binding and fresh policy/ownership observations.
+   * @throws
+   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  dispatchJob(taskId: string, requestId: string): Promise<IDispatchJob>;
+  /**
+   * Stores a blocked reason only for the selected pending or current action binding.
+   * @returns Completion after committing the observation.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  blockDispatch(
+    requestId: string,
+    selectedActionId: string,
+    reason: IDispatchBlocked | null,
+  ): Promise<void>;
+  /**
+   * Atomically collects saved native output and return delivery.
+   * @returns The immutable collection receipt, or null while evidence is unsettled.
+   * @throws
+   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  collectDispatch(
+    taskId: string,
+    requestId: string,
+    actionId: string,
+  ): Promise<IDispatchCollection | null>;
+  /**
+   * Resolves the controlled native session and its authorized task discovery page.
+   * @returns Current server-derived identity.
+   * @throws
+   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+   * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+   * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  agentIdentity(query: IAgentIdentityQuery): Promise<IAgentIdentity>;
+  /**
+   * Reads one native spawn relationship after current session/task validation.
+   * @returns The retained relationship or null.
+   * @throws
+   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  getAgentSpawn(query: IAgentSpawnRead): Promise<IAgentSpawnRecord | null>;
+  /**
+   * Applies one checked metadata operation in the worker-owned transaction.
+   * @returns A bounded result or original metadata receipt.
+   * @throws
+   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
+   * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+   * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  collaboration(
+    request: ICollaborationRequest,
+    binding?: INativeToolBinding,
+  ): Promise<ICollaborationResponse>;
+  /** Advances one bounded subscriber batch.
+   * @returns Whether durable pending intent was processed.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  recoverCollaborationFanout(): Promise<boolean>;
+  /** Correlates native input identities and hashes with durable host submissions.
+   * @returns Exact historical provenance or null for each selected item.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  getEvidenceOrigins(command: IEvidenceOriginsRequest): Promise<(IHistoryProvenance | null)[]>;
   readonly isAvailable: boolean;
+  storage: IStorageDescriptor;
+  /**
+   * Drains earlier worker commands and checks for unresolved native or document work.
+   * @returns Whether a host maintenance callback can start.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  prepareStorageMaintenance(isSnapshot: boolean): Promise<boolean>;
+  /**
+   * Reads one seek page of registered plan directories while maintenance holds admission.
+   * @returns At most 128 ordered directories.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  snapshotPlans(after: string): Promise<string[]>;
+  /**
+   * Copies the worker's database through SQLite's WAL-aware backup API.
+   * Local backup completion has no metadata-command deadline; maintenance stays held until it settles.
+   * @returns Completion after the backup connection has closed.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  snapshotBackup(destination: string): Promise<void>;
   /**
    * Reads the operator-owned browser receipt.
    * @returns The receipt or null.
@@ -204,46 +359,6 @@ export type IStore = {
     operatorId: string,
     state: 'acknowledged' | 'uncertain',
   ): Promise<IBrowserReceipt | null>;
-  /** Reads a bounded handoff intent.
-   * @returns The selected record, or null.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  getHandoff(id: string): Promise<IHandoffRecord | null>;
-  /** Persists creation intent before native admission.
-   * @returns The first identical intent.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-   */
-  prepareHandoff(record: IHandoffRecord): Promise<IHandoffRecord>;
-  /** Reads a phase's immutable native action.
-   * @returns The saved dispatch, or null.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  getHandoffDispatch(id: string, phase: IHandoffPhase): Promise<IHandoffDispatch | null>;
-  /** Persists explicit delivery before native admission.
-   * @returns The first identical preview's dispatch.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-   */
-  prepareHandoffDispatch(dispatch: IHandoffDispatch): Promise<IHandoffDispatch>;
-  /** Retains one bounded authoritative native message.
-   * @returns The updated handoff.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-   */
-  collectHandoff(id: string, findings: IHandoffFindings): Promise<IHandoffRecord>;
-  /** Reads a seek page from indexed handoff metadata.
-   * @returns One bounded page with continuation state.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  listHandoffs(page: IHandoffPageRequest): Promise<{ data: IHandoffSummary[]; hasMore: boolean }>;
-
   /** Refreshes one selected coordination-file projection.
    * @returns A promise resolved after projection commit.
    * @throws
@@ -324,12 +439,13 @@ export type IStore = {
     after: number;
   }): Promise<{ data: IPlanMilestone[]; hasMore: boolean }>;
   /**
-   * Runs the Claude-owned, version-checked incremental reader in the filesystem worker.
+   * Runs the Claude-owned identity-checked incremental reader in the filesystem worker.
    * @returns One history page or a private indexing marker, without persisting conversation bodies.
    * @throws
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
    * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+   * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
    */
   readClaudeHistory(command: IHistoryRequest): Promise<IClaudeHistoryRead>;
   /**
@@ -408,6 +524,26 @@ export type IStore = {
     page: IControlPage,
   ): Promise<{ data: IActionSummary[]; hasMore: boolean }>;
   /**
+   * Reads indexed global provider actions, including authentication receipts.
+   * @returns One descending seek page without queued input or result bodies.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  listProviderActions(
+    provider: string,
+    page: IControlPage,
+  ): Promise<{ data: IActionSummary[]; hasMore: boolean }>;
+  /**
+   * Reads durable approval metadata with an optional state filter.
+   * @returns One descending seek page without prompt bodies or answers.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  listApprovals(
+    threadId: string,
+    page: IApprovalPageRequest,
+  ): Promise<{ data: INativeApprovalSummary[]; hasMore: boolean }>;
+  /**
    * Replays one thread-scoped metadata page in sequence order.
    * @returns One ascending sequence page and whether more events exist.
    * @throws
@@ -418,6 +554,8 @@ export type IStore = {
    * Atomically records the digest and fences native dispatch.
    * @returns The durable receipt, current thread and the one permitted dispatch identity.
    * @throws
+   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */

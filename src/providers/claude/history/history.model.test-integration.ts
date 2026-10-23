@@ -18,6 +18,85 @@ import { expect, test } from 'vitest';
 
 import { claudeRecord, withClaudeRuntime } from '../../../../scripts/test-support/index.js';
 
+test('native API diagnostics stay out of compacted conversation history and preserve resume eligibility', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request, runtime }) => {
+    const nativeId = randomUUID();
+    const first = claudeRecord(workspaceRoot, nativeId, { text: 'Before compaction' });
+    const boundary = {
+      type: 'system',
+      subtype: 'compact_boundary',
+      uuid: randomUUID(),
+      parentUuid: null,
+      logicalParentUuid: first.uuid,
+      sessionId: nativeId,
+      cwd: workspaceRoot,
+      timestamp: '2026-10-22T00:00:00.000Z',
+      isMeta: true,
+    };
+    const summary = {
+      ...claudeRecord(workspaceRoot, nativeId, {
+        parentUuid: boundary.uuid,
+        text: 'Native compacted summary',
+      }),
+      isCompactSummary: true,
+    };
+    const answer = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: summary.uuid,
+      text: 'After compaction',
+    });
+    await writeFile(
+      transcript(nativeId),
+      [
+        first,
+        {
+          type: 'api-request-blob',
+          sessionId: nativeId,
+          hash: 'native-diagnostic',
+          message: { role: 'user', content: 'PRIVATE API DIAGNOSTIC' },
+        },
+        boundary,
+        summary,
+        answer,
+      ]
+        .map((row) => JSON.stringify(row))
+        .join('\n') + '\n',
+    );
+    const items = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
+    expect(items).toMatchObject({
+      kind: 'items',
+      result: {
+        data: [
+          { nativeId: summary.uuid, text: 'Native compacted summary' },
+          { nativeId: answer.uuid, text: 'After compaction' },
+        ],
+      },
+    });
+    expect(JSON.stringify(items)).not.toContain('PRIVATE API DIAGNOSTIC');
+    const status = await runtime.request({ kind: 'status' });
+    if (status.kind !== 'status') throw new Error('Missing status');
+    const id = randomUUID();
+    await request({
+      kind: 'action',
+      action: {
+        id,
+        runtimeEpoch: status.result.runtimeEpoch,
+        command: {
+          kind: 'thread-adopt',
+          provider: 'claude',
+          nativeId,
+          workspaceRoot,
+          name: 'compacted-session',
+          operatorConfirmation: 'Other controllers are closed.',
+        },
+      },
+    });
+    await expect
+      .poll(() => request({ kind: 'receipt', actionId: id }))
+      .toMatchObject({ kind: 'receipt', result: { delivery: 'acknowledged' } });
+  });
+});
+
 test('empty discovery and byte-limited indexing/pages return honest boundaries', async () => {
   await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
     const empty = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
@@ -66,6 +145,29 @@ test('empty discovery and byte-limited indexing/pages return honest boundaries',
     expect(last.kind === 'items' && last.result.nextCursor).toBeNull();
   });
 });
+
+test.each(['session', 'workspace'])(
+  'native API metadata with a foreign %s cannot bypass history boundaries',
+  async (scenario) => {
+    await withClaudeRuntime(async ({ workspaceRoot, root, transcript, request }) => {
+      const nativeId = randomUUID();
+      const first = claudeRecord(workspaceRoot, nativeId);
+      const metadata = {
+        type: 'api-request-blob',
+        sessionId: scenario === 'session' ? randomUUID() : nativeId,
+        cwd: scenario === 'workspace' ? join(root, 'foreign') : workspaceRoot,
+        message: { role: 'user', content: 'Diagnostic' },
+      };
+      await writeFile(
+        transcript(nativeId),
+        [first, metadata].map((row) => JSON.stringify(row)).join('\n') + '\n',
+      );
+      await expect(
+        request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId }),
+      ).rejects.toThrow('Coding agent is unavailable');
+    });
+  },
+);
 
 test('native files are paged by chain position with truthful unknown execution states and searchable native titles', async () => {
   await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
@@ -265,7 +367,7 @@ test('hidden native records preserve turn grouping and repeated message identiti
     ).toStrictEqual([
       ['prompt', prompt.uuid, 'user-message'],
       ['initial answer', prompt.uuid, 'agent-message'],
-      ['command output', prompt.uuid, 'command'],
+      ['command output', prompt.uuid, 'tool'],
     ]);
     await appendFile(
       transcript(nativeId),
@@ -334,7 +436,11 @@ test.each([
   ['2.1.306', ['2.1.296', '2.1.299']],
   ['2.1.306', ['2.1.306', '2.1.306']],
   ['2.1.306', ['2.1.304', '2.1.306']],
-])('qualified CLI %s reads and pages transcript versions %o', async (cliVersion, versions) => {
+  ['2.1.296', ['2.1.296', '2.1.309']],
+  ['2.1.299', ['2.1.299', '9.0.0']],
+  ['2.1.309', ['2.1.306', '2.1.309']],
+  ['9.0.0', ['2.1.309', '9.0.0']],
+])('compatible CLI %s reads and pages transcript labels %o', async (cliVersion, versions) => {
   await withClaudeRuntime(async ({ workspaceRoot, transcript, request, control }) => {
     await control({ version: cliVersion });
     const nativeId = randomUUID();
@@ -401,7 +507,7 @@ test('history qualification refreshes a rejected projection after runtime restar
     const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'));
     try {
       database
-        .prepare('UPDATE claude_file SET identity = ?, supported = -1 WHERE native_id = ?')
+        .prepare('UPDATE hq_claude_file SET identity = ?, supported = -1 WHERE native_id = ?')
         .run(fileIdentity, nativeId);
     } finally {
       database.close();
@@ -423,40 +529,32 @@ test('history qualification refreshes a rejected projection after runtime restar
   });
 });
 
-test.each(['2.1.296', '2.1.299'])(
-  'qualifying transcript version %s does not qualify that installed CLI version',
-  async (version) => {
-    await withClaudeRuntime(async ({ workspaceRoot, request, control }) => {
-      await control({ version });
-      await expect(request({ kind: 'threads', provider: 'claude', workspaceRoot })).rejects.toThrow(
-        'Coding agent is unavailable',
-      );
-    });
-  },
-);
-
 test.each(['2.1.305', '9.0.0'])(
-  'unqualified file/CLI version %s is unavailable while qualified discoveries remain browsable',
+  'compatible transcript and CLI label %s remains usable alongside other transcript labels',
   async (version) => {
     await withClaudeRuntime(async ({ workspaceRoot, transcript, request, control }) => {
       const supportedId = randomUUID();
-      const unsupportedId = randomUUID();
+      const anotherId = randomUUID();
       await writeFile(
         transcript(supportedId),
         JSON.stringify(claudeRecord(workspaceRoot, supportedId)) + '\n',
       );
       await writeFile(
-        transcript(unsupportedId),
-        JSON.stringify({ ...claudeRecord(workspaceRoot, unsupportedId), version }) + '\n',
+        transcript(anotherId),
+        JSON.stringify({ ...claudeRecord(workspaceRoot, anotherId), version }) + '\n',
       );
       const threads = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
       expect(
         threads.kind === 'threads' &&
-          threads.result.data.find((thread) => thread.nativeId === unsupportedId)?.historyState,
-      ).toBe('unavailable');
-      await expect(
-        request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId: unsupportedId }),
-      ).rejects.toThrow('Coding agent is unavailable');
+          threads.result.data.find((thread) => thread.nativeId === anotherId)?.historyState,
+      ).toBe('available');
+      const another = await request({
+        kind: 'items',
+        provider: 'claude',
+        workspaceRoot,
+        nativeId: anotherId,
+      });
+      expect(another.kind === 'items' && another.result.data.length).toBe(1);
       const valid = await request({
         kind: 'items',
         provider: 'claude',
@@ -468,9 +566,68 @@ test.each(['2.1.305', '9.0.0'])(
     });
     await withClaudeRuntime(async ({ workspaceRoot, request, control }) => {
       await control({ version });
-      await expect(request({ kind: 'threads', provider: 'claude', workspaceRoot })).rejects.toThrow(
-        'Coding agent is unavailable',
+      expect(await request({ kind: 'threads', provider: 'claude', workspaceRoot })).toMatchObject({
+        kind: 'threads',
+        result: { data: [], nextCursor: null },
+      });
+    });
+  },
+);
+
+test('additive fields and unknown ordered content remain explicit without inventing an agent response', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request, control }) => {
+    await control({ version: 'next-development-build' });
+    const nativeId = randomUUID();
+    const question = {
+      ...claudeRecord(workspaceRoot, nativeId),
+      version: undefined,
+      extension: { value: true },
+    };
+    const unknown = {
+      ...claudeRecord(workspaceRoot, nativeId, { parentUuid: question.uuid }),
+      type: 'future-native-content',
+      version: 'next-development-build',
+      message: { role: 'future-role', content: 'Uninterpreted content' },
+    };
+    const answer = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: unknown.uuid,
+      text: 'Known answer',
+    });
+    await writeFile(
+      transcript(nativeId),
+      [question, unknown, answer].map((record) => JSON.stringify(record)).join('\n') + '\n',
+    );
+    const items = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
+    expect(
+      items.kind === 'items' &&
+        items.result.data.map((item) => [item.nativeId, item.kind, item.turnId, item.text]),
+    ).toStrictEqual([
+      [question.uuid, 'user-message', question.uuid, 'Example native message'],
+      [unknown.uuid, 'unsupported', question.uuid, '[Unsupported native content]'],
+      [answer.uuid, 'agent-message', question.uuid, 'Known answer'],
+    ]);
+  });
+});
+
+test.each(['user', 'future-content'])(
+  'content without an ordering identity is unavailable: %s',
+  async (type) => {
+    await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+      const nativeId = randomUUID();
+      const first = claudeRecord(workspaceRoot, nativeId);
+      const unidentifiable = {
+        ...claudeRecord(workspaceRoot, nativeId, { parentUuid: first.uuid }),
+        type,
+        uuid: undefined,
+      };
+      await writeFile(
+        transcript(nativeId),
+        [first, unidentifiable].map((record) => JSON.stringify(record)).join('\n') + '\n',
       );
+      await expect(
+        request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId }),
+      ).rejects.toThrow('Coding agent is unavailable');
     });
   },
 );

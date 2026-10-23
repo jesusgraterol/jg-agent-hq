@@ -15,6 +15,11 @@ describe('canonical source policy', () => {
       'api/README.md',
       'https://github.com/jesusgraterol/jg-agent-hq/blob/main/errors/README.md',
     ],
+    [
+      '../docs/recovery.md#restore',
+      'api/README.md',
+      'https://github.com/jesusgraterol/jg-agent-hq/blob/main/docs/recovery.md#restore',
+    ],
     ['https://example.com/reference', 'README.md', 'https://example.com/reference'],
   ])('resolveDocumentLink(%s, %s) -> %s', (href, source, expected) => {
     expect(resolveDocumentLink(href, source)).toBe(expected);
@@ -26,6 +31,7 @@ describe('canonical source policy', () => {
     'file:///etc/passwd',
     '//example.com',
     '../private.md',
+    'docs/private.md',
     'https://name:secret@example.com',
     'https://example.com/\n',
     '..\\README.md',

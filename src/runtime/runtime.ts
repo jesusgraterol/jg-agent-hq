@@ -1,21 +1,24 @@
 import { join } from 'node:path';
+import { hashValue } from 'jg-crypto';
 import { Exception, extractMessage, isException } from 'jg-exception';
 import { z } from 'zod';
 
 import { HqRequestSchema, type IHqRequestInput, type IHqResponse } from '../contracts/index.js';
 import { createActions, readControl } from '../actions/index.js';
-import { createHandoffs } from '../handoffs/index.js';
+import { createAccounts } from '../accounts/index.js';
+import { createExtensions } from '../extensions/index.js';
+import { createCollaboration } from '../collaboration/index.js';
+import { createDispatch } from '../collaboration/dispatch/index.js';
+import { createAgentTools } from '../agent-tools/index.js';
 import { CONTROL_SOCKET, createIpcServer } from '../ipc/index.js';
-import {
-  createCodexProvider,
-  createClaudeProvider,
-  createClaudeControl,
-  type ICodexProvider,
-} from '../providers/index.js';
+import { createCodexProviderFactory, createClaudeProviderFactory } from '../providers/index.js';
+import { createProviderRegistry } from '../providers/registry/index.js';
 import { readNativeHistory } from '../sessions/index.js';
 import { suggestThreadName } from '../sessions/names/index.js';
 import { createSkills } from '../skills/index.js';
 import { createStore } from '../store/index.js';
+import { createStorage } from '../storage/index.js';
+import { registerSnapshotContext } from '../snapshots/index.js';
 import { createPlans, type IPlanStopJob } from '../plans/index.js';
 
 import {
@@ -32,7 +35,7 @@ import { AgentHqOptionsSchema, type IAgentHq, type IAgentHqOptions } from './typ
 const UnconfirmedCleanupSchema = z.object({ cleanupUnconfirmed: z.literal(true) });
 
 /**
- * Starts one local controller with private IPC, a SQLite worker and the installed native CLI.
+ * Starts one local controller with private IPC, a SQLite worker and lazy native providers.
  * @returns The owned runtime. Client disconnects do not close it.
  * @throws
  * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
@@ -45,9 +48,9 @@ const UnconfirmedCleanupSchema = z.object({ cleanupUnconfirmed: z.literal(true) 
  * - JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE: The HQ runtime owner is unverifiable
  * - JG_AGENT_HQ_RUNTIME_ALREADY_OWNED: The HQ runtime is already owned
  * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
- * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
  * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+ * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
  */
 export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq> => {
   const parsed = AgentHqOptionsSchema.safeParse(options);
@@ -70,16 +73,27 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const stateRoot = await prepareStateRoot(parsed.data.stateRoot);
   const ownership = await claimRuntimeOwner(stateRoot);
   let store: Awaited<ReturnType<typeof createStore>> | undefined;
-  let provider: ICodexProvider | undefined;
+  let registry: ReturnType<typeof createProviderRegistry> | undefined;
   let ipc: Awaited<ReturnType<typeof createIpcServer>> | undefined;
   let actionKey: Uint8Array;
   try {
     const databasePath = await prepareDatabase(stateRoot);
     actionKey = await prepareActionKey(stateRoot, databasePath);
     store = await createStore(databasePath, ownership.owner.nonce, actionKey);
-    provider = await createCodexProvider(codexExtraSkillRoots);
+    registry = createProviderRegistry(
+      [
+        { factory: createCodexProviderFactory(codexExtraSkillRoots), isBuiltIn: true },
+        {
+          factory: createClaudeProviderFactory(store, claudeAdditionalDirectories),
+          isBuiltIn: true,
+        },
+        ...(parsed.data.providerFactories ?? []).map((factory) => ({ factory, isBuiltIn: false })),
+      ],
+      allowedRoots,
+      ownership.owner.nonce,
+    );
   } catch (error) {
-    const cleanup = await Promise.allSettled([provider?.close(), store?.close()]);
+    const cleanup = await Promise.allSettled([registry?.close(), store?.close()]);
     const failed = cleanup.find((result) => result.status === 'rejected');
     if (failed?.status === 'rejected')
       throw new Exception(`The HQ transport failed: ${extractMessage(failed.reason)}`, {
@@ -92,10 +106,9 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     throw error;
   }
   const browser = createBrowserActions(store);
-  const native = provider;
+  const providers = registry;
   const projection = store;
-  const claude = createClaudeProvider(projection);
-  const claudeControl = createClaudeControl(claudeAdditionalDirectories);
+  const storage = createStorage(projection);
   const plans = createPlans(
     coordinationRoot ?? stateRoot,
     allowedRoots,
@@ -103,32 +116,23 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     ownership.owner.nonce,
     parsed.data.parsePlanContract,
   );
-  const skills = createSkills(native, claudeControl, projection, allowedRoots);
+  const skills = createSkills(providers, projection, allowedRoots);
+  const accounts = createAccounts(providers);
+  const extensions = createExtensions(providers, projection, allowedRoots);
   const actions = createActions(
-    native,
-    claudeControl,
-    async (nativeId, workspaceRoot) => {
-      const response = await claude.readHistory({
-        kind: 'thread',
-        provider: 'claude',
-        nativeId,
-        workspaceRoot,
-      });
-      if (response.kind !== 'thread')
-        throw new Exception('The Claude integration failed', {
-          code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-          data: {
-            kind: 'agent-unavailable',
-          },
-        });
-      return response.result;
-    },
+    providers,
     projection,
     allowedRoots,
     ownership.owner.nonce,
     actionKey,
     skills,
     plans,
+    storage.background,
+    () => {
+      skills.invalidate();
+      extensions.invalidate();
+      accounts.invalidate();
+    },
   );
   let resolveClosed: () => void = () => undefined;
   let rejectClosed: (error: unknown) => void = () => undefined;
@@ -150,7 +154,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           kind: 'state-conflict',
         },
       });
-    const task = (async () => {
+    const task = storage.background(async () => {
       let isQuiescent = false;
       try {
         await actions.quiescePlan(job.controls);
@@ -179,15 +183,19 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
         plans.stopFinished(job.phaseActionId);
         revisionJobs.delete(job.phaseActionId);
       }
-    })();
+    });
     revisionJobs.set(job.phaseActionId, task);
   });
   const close = (): Promise<void> =>
     (closing ??= (async () => {
       try {
         await browser.close();
+        const toolCleanup = await Promise.allSettled([agentTools.close()]);
+        await dispatch.close();
+        await collaboration.close();
         await Promise.allSettled([...revisionJobs.values()]);
-        const results = await Promise.allSettled([ipc?.close(), actions.close(), claude.close()]);
+        const results = await Promise.allSettled([ipc?.close(), actions.close()]);
+        results.push(...toolCleanup);
         const storeCleanup = await Promise.allSettled([projection.close()]);
         results.push(...storeCleanup);
         const failure = results.find((result) => result.status === 'rejected');
@@ -198,6 +206,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
             cause: failure.reason,
           });
         await ownership.release();
+        storage.dispose();
         resolveClosed();
       } catch (error) {
         rejectClosed(error);
@@ -205,7 +214,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       }
     })());
 
-  const request = async (input: IHqRequestInput): Promise<IHqResponse> => {
+  const handleRequest = async (input: IHqRequestInput): Promise<IHqResponse> => {
     const result = HqRequestSchema.safeParse(input);
     if (!result.success)
       throw new Exception('The HQ request is invalid', {
@@ -220,6 +229,8 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       });
     const command = result.data;
     switch (command.kind) {
+      case 'agent-tool':
+        return { kind: 'agent-tool', result: await agentTools.handleBridge(command) };
       case 'status':
         return {
           kind: 'status',
@@ -228,36 +239,67 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
             pid: process.pid,
             startedAt: Date.parse(ownership.owner.createdAt),
             store: projection.isAvailable ? 'ready' : 'unavailable',
-            codex: {
-              state: native.isAvailable ? 'ready' : 'unavailable',
-              userAgent: native.userAgent,
-              steering: 'available',
-            },
-            claude: {
-              state:
-                claudeControl.state === 'ready'
-                  ? 'ready'
-                  : claude.state === 'idle'
-                    ? claudeControl.state
-                    : claude.state,
-              version: claude.version ?? claudeControl.version,
-              steering: 'unavailable',
-            },
+            providers: providers.statuses(),
           },
         };
       case 'stop': {
         setImmediate(() => {
-          void close().catch(() => undefined);
+          void storage.background(close).catch(() => undefined);
         });
         return { kind: 'stop', result: { accepted: true, runtimeEpoch: ownership.owner.nonce } };
       }
+      case 'capabilities': {
+        const thread = command.threadId ? await projection.getThread(command.threadId) : undefined;
+        if (command.threadId && (!thread || thread.provider !== command.provider))
+          throw new Exception('The HQ request is invalid', {
+            code: 'JG_AGENT_HQ_REQUEST_INVALID',
+            data: { kind: 'invalid-request' },
+          });
+        if (thread) await resolveWorkspaceTarget(thread.workspaceRoot, allowedRoots);
+        return {
+          kind: 'capabilities',
+          result: await providers.capabilities(command.provider, thread ?? undefined),
+        };
+      }
+      case 'account':
+        return { kind: command.kind, result: await accounts.read(command) };
+      case 'mcp-servers':
+      case 'mcp-tools':
+      case 'mcp-resources':
+        return extensions.read(command);
       case 'usage':
         return {
           kind: 'usage',
-          result: await (command.provider === 'claude' ? claude.readUsage() : native.readUsage()),
+          result: await providers.readUsage(command.provider),
         };
-      case 'handoff':
-        return { kind: 'handoff', result: await handoffs.handle(command.command) };
+      case 'models':
+        return {
+          kind: 'models',
+          result: await (await providers.get(command.provider)).readModels(command),
+        };
+      case 'configuration': {
+        const workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, allowedRoots);
+        const thread = command.threadId ? await projection.getThread(command.threadId) : null;
+        if (
+          command.threadId &&
+          (!thread ||
+            thread.provider !== command.provider ||
+            thread.workspaceRoot !== workspaceRoot ||
+            !thread.nativeId)
+        )
+          throw new Exception('The HQ request is invalid', {
+            code: 'JG_AGENT_HQ_REQUEST_INVALID',
+            data: { kind: 'invalid-request' },
+          });
+        return {
+          kind: 'configuration',
+          result: await (
+            await providers.get(command.provider)
+          ).readConfiguration({ ...command, workspaceRoot }, thread?.nativeId ?? undefined),
+        };
+      }
+      case 'collaboration':
+        return { kind: 'collaboration', result: await collaboration.handle(command) };
       case 'plan':
         return { kind: 'plan', result: await plans.handle(command.command) };
       case 'skills':
@@ -280,77 +322,82 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       case 'managed-threads':
       case 'managed-thread':
       case 'actions':
+      case 'provider-actions':
+      case 'login':
       case 'events':
       case 'approvals':
       case 'live-items':
         return readControl(command, projection, actions, allowedRoots);
       default: {
-        if (command.provider === 'claude') {
-          const workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, allowedRoots);
-          const response = await claude.readHistory({ ...command, workspaceRoot });
-          if (response.kind === 'threads') {
-            const managed = new Map(
-              (
-                await projection.getNativeThreads(
-                  'claude',
-                  response.result.data.map((thread) => thread.nativeId),
-                )
-              ).map((thread) => [thread.nativeId, thread]),
-            );
-            for (const thread of response.result.data) {
-              const control = managed.get(thread.nativeId);
-              if (control) {
-                thread.managedId = control.id;
-                thread.ownership = control.ownership;
-                thread.name = control.name;
-              }
-            }
-          } else if (response.kind === 'thread') {
-            const control = await projection.getThreadByNativeId(
-              'claude',
-              response.result.nativeId,
-            );
-            if (control) {
-              response.result.managedId = control.id;
-              response.result.ownership = control.ownership;
-              response.result.name = control.name;
-            }
-          }
-          if (command.kind === 'items' && response.kind === 'items')
-            actions.live.reconcile(
-              JSON.stringify(['claude', command.nativeId]),
-              response.result.data,
-            );
-          return response;
-        }
-        const response = await readNativeHistory(command, native, projection, allowedRoots);
+        const response = await readNativeHistory(command, providers, projection, allowedRoots);
         if (command.kind === 'items' && response.kind === 'items')
-          actions.live.reconcile(JSON.stringify(['codex', command.nativeId]), response.result.data);
+          actions.live.reconcile(
+            JSON.stringify([command.provider, command.nativeId]),
+            response.result.data,
+          );
         return response;
       }
     }
   };
-  const handoffs = createHandoffs(
+  const request = (input: IHqRequestInput): Promise<IHqResponse> =>
+    storage.run(() => handleRequest(input));
+  const collaboration = createCollaboration(projection, allowedRoots, storage.background);
+  const agentTools = createAgentTools({
+    stateRoot,
+    runtimeEpoch: ownership.owner.nonce,
+    allowedRoots,
+    store: projection,
+    collaboration,
+    actions,
+    run: storage.run,
+    read: (command) => readNativeHistory(command, providers, projection, allowedRoots),
+  });
+  providers.setAgentTools(agentTools.forProvider);
+  const dispatch = createDispatch(
     projection,
     actions,
-    skills,
-    plans,
-    request,
-    allowedRoots,
+    collaboration,
+    storage.background,
     ownership.owner.nonce,
   );
+  collaboration.setWakeHandler(dispatch.wake, dispatch.failure);
+  actions.setChangeHandler(dispatch.wake);
+  dispatch.wake();
   try {
     ipc = await createIpcServer(join(stateRoot, CONTROL_SOCKET), ownership.owner.nonce, request);
   } catch (error) {
     await close();
     throw error;
   }
-  return {
+  const runtime: IAgentHq = {
     stateRoot,
     closed,
     request,
-    close,
-    performBrowserAction: browser.perform,
-    readBrowserAction: browser.read,
+    get storage() {
+      return structuredClone(projection.storage);
+    },
+    withStorageMaintenance: async (operation) => {
+      if (closing)
+        throw new Exception('The HQ runtime is not running', {
+          code: 'JG_AGENT_HQ_RUNTIME_NOT_RUNNING',
+          data: { kind: 'state-conflict' },
+        });
+      return storage.withStorageMaintenance(operation);
+    },
+    close: () => storage.run(close),
+    performBrowserAction: (input, operatorId, execute) =>
+      storage.run(() => browser.perform(input, operatorId, execute)),
+    readBrowserAction: (id, operatorId) => storage.run(() => browser.read(id, operatorId)),
   };
+  registerSnapshotContext({
+    runtime,
+    stateRoot,
+    actionKeyHash: hashValue(actionKey),
+    coordinationRoot: coordinationRoot ?? stateRoot,
+    allowedRoots,
+    store: projection,
+    maintenance: storage.withStorageMaintenance,
+    isClosing: () => Boolean(closing),
+  });
+  return runtime;
 };

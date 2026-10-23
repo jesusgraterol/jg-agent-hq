@@ -41,6 +41,16 @@ const metadataOf = (
 };
 
 /**
+ * Reads the persisted identity independently of an optional consumer metadata projection.
+ * @throws
+ * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
+ */
+export const observePlanId = (source: string): string | null => {
+  const id = metadataOf(parsePlan(source)).id;
+  return typeof id === 'string' && id.trim().length > 0 ? id : null;
+};
+
+/**
  * The default HQ profile keeps unknown contract fields, including the plan identity.
  * @throws
  * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid

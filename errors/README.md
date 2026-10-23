@@ -26,34 +26,57 @@ Recovery never automatically deletes an inactive, unreadable, incomplete or unve
 
 These contracts use the named codes below. An Exception's `data.kind` classifies its safe wire mapping. Native codes, when present in diagnostic metadata, belong to the native protocol and are not HQ error codes. Claude control error responses carry `nativeRejection: true` internally because that protocol supplies no numeric error code. Internal diagnostic causes are never copied into IPC error responses.
 
-| Code                                   | Stable message                                  |
-| -------------------------------------- | ----------------------------------------------- |
-| JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE     | The HQ state directory is unsafe                |
-| JG_AGENT_HQ_STATE_FILE_UNSAFE          | The HQ state file is unsafe                     |
-| JG_AGENT_HQ_RUNTIME_ALREADY_OWNED      | The HQ runtime is already owned                 |
-| JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE | The HQ runtime owner is unverifiable            |
-| JG_AGENT_HQ_REQUEST_INVALID            | The HQ request is invalid                       |
-| JG_AGENT_HQ_TARGET_FORBIDDEN           | The HQ target is outside the allowed workspaces |
-| JG_AGENT_HQ_CURSOR_INVALID             | The HQ cursor does not match this request       |
-| JG_AGENT_HQ_CODEX_FAILED               | The Codex integration failed                    |
-| JG_AGENT_HQ_CLAUDE_FAILED              | The Claude integration failed                   |
-| JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE | The Claude history is unavailable               |
-| JG_AGENT_HQ_TRANSPORT_FAILED           | The HQ transport failed                         |
-| JG_AGENT_HQ_STORE_FAILED               | The HQ store failed                             |
-| JG_AGENT_HQ_RUNTIME_NOT_RUNNING        | The HQ runtime is not running                   |
-| JG_AGENT_HQ_ACTION_CONFLICT            | The HQ action conflicts with its recorded state |
-| JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE     | The HQ action key is unavailable                |
-| JG_AGENT_HQ_SKILL_UNAVAILABLE          | The HQ skill is unavailable                     |
-| JG_AGENT_HQ_PLAN_INVALID               | The HQ plan is invalid                          |
-| JG_AGENT_HQ_PLAN_FAILED                | The HQ plan operation failed                    |
-| JG_AGENT_HQ_HANDOFF_UNAVAILABLE        | The HQ handoff is unavailable                   |
-| JG_AGENT_HQ_HANDOFF_FAILED             | The HQ handoff operation failed                 |
+| Code                                   | Stable message                                                   |
+| -------------------------------------- | ---------------------------------------------------------------- |
+| JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE     | The HQ state directory is unsafe                                 |
+| JG_AGENT_HQ_STATE_FILE_UNSAFE          | The HQ state file is unsafe                                      |
+| JG_AGENT_HQ_RUNTIME_ALREADY_OWNED      | The HQ runtime is already owned                                  |
+| JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE | The HQ runtime owner is unverifiable                             |
+| JG_AGENT_HQ_REQUEST_INVALID            | The HQ request is invalid                                        |
+| JG_AGENT_HQ_TARGET_FORBIDDEN           | The HQ target is outside the allowed workspaces                  |
+| JG_AGENT_HQ_CURSOR_INVALID             | The HQ cursor does not match this request                        |
+| JG_AGENT_HQ_CODEX_FAILED               | The Codex integration failed                                     |
+| JG_AGENT_HQ_CLAUDE_FAILED              | The Claude integration failed                                    |
+| JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE | The Claude history is unavailable                                |
+| JG_AGENT_HQ_TRANSPORT_FAILED           | The HQ transport failed                                          |
+| JG_AGENT_HQ_STORE_FAILED               | The HQ store failed                                              |
+| JG_AGENT_HQ_STORAGE_INVALID            | The HQ storage is invalid                                        |
+| JG_AGENT_HQ_SNAPSHOT_INVALID           | The HQ snapshot is invalid                                       |
+| JG_AGENT_HQ_SNAPSHOT_FAILED            | The HQ snapshot operation failed                                 |
+| JG_AGENT_HQ_PROVIDER_FAILED            | The HQ provider integration failed                               |
+| JG_AGENT_HQ_CAPABILITY_UNAVAILABLE     | The HQ capability is unavailable                                 |
+| JG_AGENT_HQ_RUNTIME_NOT_RUNNING        | The HQ runtime is not running                                    |
+| JG_AGENT_HQ_ACTION_CONFLICT            | The HQ action conflicts with its recorded state                  |
+| JG_AGENT_HQ_COLLABORATION_FORBIDDEN    | The HQ collaboration operation is not authorized                 |
+| JG_AGENT_HQ_COLLABORATION_CONFLICT     | The HQ collaboration operation conflicts with its recorded state |
+| JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE     | The HQ action key is unavailable                                 |
+| JG_AGENT_HQ_SKILL_UNAVAILABLE          | The HQ skill is unavailable                                      |
+| JG_AGENT_HQ_PLAN_INVALID               | The HQ plan is invalid                                           |
+| JG_AGENT_HQ_PLAN_FAILED                | The HQ plan operation failed                                     |
 
-State safety rejects non-private ownership, symlinks and non-regular files. Runtime ownership is never reclaimed automatically. Transport failure includes malformed, oversized or incomplete frames and bounded-request/lifecycle failures. Native history and subscription failures remain unavailable, never successful empty results. Claude control rejects missing or non-idle initialization, invalid native session identities and malformed lifecycle evidence. Failed delivery remains uncertain when no exact native rejection or acknowledgement establishes its outcome.
+State safety rejects non-private ownership, symlinks and non-regular files. ACTION_KEY_UNAVAILABLE also rejects a valid-length key whose fingerprint differs from the database stamp, before opening a writer. Runtime ownership is never reclaimed automatically. Transport failure includes malformed, oversized or incomplete frames and bounded-request/lifecycle failures. Native history and subscription failures remain unavailable, never successful empty results. Claude control rejects missing or non-idle initialization, invalid native session identities and malformed lifecycle evidence. Failed delivery remains uncertain when no exact native rejection or acknowledgement establishes its outcome.
+
+A nonempty SQLite schema requires exactly one matching `hq_schema` stamp. Missing, malformed or mismatched stamps use STORAGE_INVALID with the safe state-conflict classification before HQ changes the database. Read-only validation preserves uncheckpointed WAL state on rejection. Initialization failures roll back the complete HQ schema. Storage maintenance uses ACTION_CONFLICT for concurrent maintenance, calls from admitted work, active native execution or an unresolved plan write. Host callback errors propagate unchanged after admission is released.
+
+Snapshot capture retains prepared document writes but uses ACTION_CONFLICT for active native execution, concurrent maintenance and document contention. SNAPSHOT_INVALID classifies invalid selections or incomplete, corrupt, unsafe or occupied snapshot/recovery paths as invalid-request. SNAPSHOT_FAILED classifies operational backup, copy, worker, lock-release and cleanup failures as operation-failed. Its stable message may carry a private extracted diagnostic suffix. These contracts belong only to trusted Node snapshot exports.
 
 A native or worker startup failure whose cleanup could not be confirmed carries internal `cleanupUnconfirmed: true`. The runtime retains its owner record in that case rather than allowing a new host to assume its resources have stopped.
 
+Third-party provider failures use PROVIDER_FAILED with the agent-unavailable classification; canonical request/access/state and capability errors retain their meaning. CAPABILITY_UNAVAILABLE denotes an operation that cannot be invoked, not uncertain native consumption. Capability and quota observations can instead report unavailable data. Version labels are diagnostic and do not gate admission. Malformed control identity/state or a lifecycle backlog overflow quarantines the affected provider. Other providers remain usable; an unconfirmed cleanup still prevents runtime owner release.
+
+Conflicting confirmed native lineage uses PROVIDER_FAILED. Native model/configuration parsing failures use their provider contract without disabling unrelated controls. Invalid or changed model/configuration catalog continuation uses CURSOR_INVALID. Unsupported startup settings and Codex startup overrides on an already loaded thread use CAPABILITY_UNAVAILABLE; no ignored change is acknowledged. Native archive, compaction and revert retain the existing action conflict and uncertain-delivery contracts.
+
+Account and extension controls reuse ACTION_CONFLICT for live sessions, permission waits, stale login identities and provider-wide changes in progress. Unsupported native controls use CAPABILITY_UNAVAILABLE before dispatch. Invalid or changed MCP continuation uses CURSOR_INVALID. Optional account/catalog observations can be unavailable without disabling unrelated control. Native authentication/reload rejection and uncertain delivery retain their provider/action contracts; sensitive URLs and provider diagnostics are not copied into public errors.
+
+Session discovery and evidence reuse TARGET_FORBIDDEN for workspace denials and CURSOR_INVALID for mismatched queries, changed partial-page content or changed Claude chain revisions. An item whose identities cannot fit the evidence budget uses PROVIDER_FAILED rather than returning a non-progressing page. Missing or unverifiable native history retains its provider's unavailable contract; no raw-file retry bypasses authorization.
+
+Input-file admission reuses REQUEST_INVALID for invalid media, malformed UTF-8 and byte/count limits, and TARGET_FORBIDDEN for root or symlink escapes. A changed or missing content-bound file uses ACTION_CONFLICT before native submission; no input is replayed. Unsupported provider media or live output-schema changes use CAPABILITY_UNAVAILABLE. Schema mismatch, missing final output and result overflow are explicit receipt-result classifications rather than new exception codes. Native rejection and transport uncertainty retain the existing provider/action contracts.
+
+Native form replies reuse REQUEST_INVALID for content outside the exact requested schema or response kind. Stale, expired, cross-thread or already answered request identities use ACTION_CONFLICT. Native writes without matching consumption evidence remain submitted or uncertain; expiry never proves a response was rejected. Unsupported native request variants are denied on their own native channel without granting permission.
+
 Plan validation rejects unsupported framing, duplicate or misplaced milestone IDs, invalid frontmatter boundaries, non-regular artifacts and oversized inputs. Plan operation failures retain safe operation diagnostics inside the trusted host. Document-lock contention uses ACTION_CONFLICT with reason document-locked. Document lock failures use PLAN_FAILED with the observed phase and a truthful not-applied or uncertain outcome. An applied write whose lock release fails keeps its prepared journal payload. A failed ledger acknowledgement is reconciled from durable state; an unavailable observation uses STORE_FAILED and keeps admission closed. Stale revisions, presentation hashes, replay payload conflicts, revoked authority and unresolved writes use the existing action-state conflict contract. Unresolved correspondence, unverified done evidence, live scope changes, stale runtime authority and unproven quiescence also use the action-state conflict contract. Failed native cleanup retains the checkpoint and closes the editing gate. Neither validation nor write recovery can grant native permissions. Whole-plan selection conflicts with a real breakdown, duplicate live implementation ownership, completed contracts and revoked implementation follow-up authority use the same action-state conflict contract. A valid sequence approval request for a plan without a sequence also conflicts.
+
+Agent-tool admission reuses COLLABORATION_FORBIDDEN for an unknown/revoked bridge credential, stale native/runtime/turn binding or insufficient task membership. COLLABORATION_CONFLICT covers changed spawn identities and exhausted spawn capacity. Private credential parsing discards secret-bearing diagnostic causes. Credential setup/cleanup failures use TRANSPORT_FAILED. Native tool results and MCP failures contain only the existing safe public error classification and code. An admitted native spawn retains its durable failed/uncertain receipt; a tool timeout or lost client connection never proves native creation failed.
 
 ## Public error messages
 
@@ -68,8 +91,6 @@ The local client translates a remote failure into an Exception with the named cl
 | `state-conflict`          | JG_AGENT_HQ_CLIENT_STATE_CONFLICT          | State changed. Refresh before continuing. |
 | `agent-unavailable`       | JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE       | Coding agent is unavailable.              |
 | `operation-failed`        | JG_AGENT_HQ_CLIENT_OPERATION_FAILED        | Operation could not be completed.         |
-
-Handoff lookup uses the unavailable contract for an unknown identity. Git attribution failures use the handoff operation contract with private diagnostic causes. Stale previews, changed source contracts, wrong native targets, mismatched replay identities and invalid or overwritten finding references use the existing action-state conflict contract. Delivery outcomes come from the action ledger and do not imply feedback acceptance.
 
 ## Website tooling
 
@@ -91,3 +112,9 @@ These build-time failures retain operation diagnostics and their original causes
 Release checks reject invalid registry metadata, oversized responses, changed contents under an existing version and versions that do not exceed the latest release. Diagnostic suffixes explain the required correction. Failed registry reads never authorize a publish.
 
 Browser host admission reuses the existing invalid-request, action-state conflict and store-failure contracts. Nonce payload/operator changes, stale new epochs, admission capacity and admission after close conflict. A dispatcher error propagates within the trusted host after marking its receipt uncertain; HTTP hosts must map it to the existing seven safe public messages. Startup quarantines submitted host receipts without invoking their handlers.
+
+Directed dispatch uses COLLABORATION_CONFLICT for stale checkpoint/action/lifecycle selections and delegated resolution bypasses. COLLABORATION_FORBIDDEN covers wrong task/action bindings, unauthorized input or resumption and expired selected grants. Report continuation reuses CURSOR_INVALID; unrepresentable response metadata uses REQUEST_INVALID. Invalid native outcomes are retained as explicit request failure reasons with runtime-authored diagnostics rather than thrown success results. Collection storage failures roll back report, reply, request transition and collection receipt together; durable native evidence remains available for recovery. Native delivery uncertainty never causes another automatic send.
+
+Parent delegation reuses COLLABORATION_FORBIDDEN for forged parent links or child scope expansion and COLLABORATION_CONFLICT for stale resumption. Invalid direct-child waits retain an `invalid-child-wait` runtime failure; an attempted completion with unfinished children retains `children-pending`. Neither claim manufactures successful parent completion.
+
+Native skill dispatch reuses SKILL_UNAVAILABLE when the exact catalog selection is missing, disabled, ambiguous or unreadable. Collaboration retains skill-unavailable as a blocked reason and sends no replacement text.

@@ -7,7 +7,7 @@ export const HOME_CONTENT = {
   title: 'Build your own control room for coding agents.',
   headline: ['Build your own', 'control room', 'for coding agents.'],
   description:
-    'Create and control Claude Code and Codex sessions from your application. Send work, follow results and connect agent reviews in your own workspace.',
+    'Run Claude Code and Codex from your application. Let agents coordinate through streams and return exact reports while you follow sessions, permissions and results.',
   visual: {
     label: 'Illustrative workspace',
     workspace: 'reports-workspace',
@@ -38,11 +38,11 @@ export const HOME_CONTENT = {
     {
       id: 'review-handoff',
       number: '02',
-      title: 'Bring in the other agent',
+      title: 'Bring in another agent',
       description:
-        'Preview a cross-provider review, select completed findings and return them to the author.',
-      flow: ['Author', 'Reviewer', 'Selected feedback'],
-      result: 'A traceable review handoff',
+        'Choose any reviewer, receive its exact report and request a separate author assessment.',
+      flow: ['Request', 'Report', 'Assessment'],
+      result: 'An exact report and a separate assessment',
       href: '/examples/#review-handoff',
       linkLabel: 'Read the review walkthrough',
     },
@@ -89,7 +89,7 @@ export const HOME_CONTENT = {
     {
       title: 'jg-agent-hq',
       label: 'Node API + private local IPC',
-      text: 'Control sessions, inspect receipts, coordinate plans and route selected feedback.',
+      text: 'Control native sessions, connect agents through streams and retain reports and plan authority.',
     },
     {
       title: 'Native CLIs',

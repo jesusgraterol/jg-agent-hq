@@ -3,6 +3,8 @@ import Section from 'jg-personal-astro-ui/section';
 import InstallCommand from 'jg-personal-astro-ui/install-command';
 import CodeBlock from 'jg-personal-astro-ui/code-block';
 import TextLink from 'jg-personal-astro-ui/text-link';
+import Step from 'jg-personal-astro-ui/step';
+import Steps from 'jg-personal-astro-ui/steps';
 import { ArrowRight, Layers, Monitor, Terminal } from '@lucide/astro';
 
 import { HOME_CONTENT, CONTROL_EXAMPLE } from '../../content/index.ts';
@@ -33,16 +35,19 @@ const icons = [Monitor, Layers, Terminal];
         >
       </p>
     </div>
-    <ol class="min-w-0 space-y-7">
+    <Steps label="Local setup">
       {
         HOME_CONTENT.setup.map((step, index) => (
-          <li class="min-w-0">
-            <div class="mb-3 flex items-baseline gap-3">
-              <>
-                <span class="font-mono text-xs text-accent">0{index + 1}</span>
-                <h3 class="font-semibold">{step.title}</h3>
-              </>
-            </div>
+          <Step
+            title={step.title}
+            number={`0${index + 1}`}
+          >
+            <h3
+              slot="title"
+              class="font-semibold"
+            >
+              {step.title}
+            </h3>
             <InstallCommand
               command={step.command}
               id={index === 0 ? 'install-command' : `setup-command-${index}`}
@@ -52,10 +57,10 @@ const icons = [Monitor, Layers, Terminal];
               title={step.title}
             />
             <p class="mt-2 text-xs leading-6 text-muted">{step.text}</p>
-          </li>
+          </Step>
         ))
       }
-    </ol>
+    </Steps>
   </div>
 </Section>
 <Section

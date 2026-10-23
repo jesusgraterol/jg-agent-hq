@@ -2,19 +2,22 @@ import { Worker } from 'node:worker_threads';
 import { Exception, extractMessage } from 'jg-exception';
 import { z } from 'zod';
 
+import { AgentIdentitySchema, AgentSpawnRecordSchema } from '../collaboration/identity/index.js';
+
+import { CollaborationResponseSchema } from '../contracts/collaboration/index.js';
+import { DispatchCollectionSchema } from '../contracts/collaboration/index.js';
+import { DispatchPageSchema, DispatchJobSchema } from '../collaboration/dispatch/index.js';
+
 import {
   BrowserReceiptSchema,
   ActionReceiptSchema,
   ActionPlanContextSchema,
   ManagedThreadSchema,
   type IThreadSummary,
+  HistoryProvenanceSchema,
 } from '../contracts/index.js';
-import {
-  HandoffRecordSchema,
-  HandoffDispatchSchema,
-  HandoffPageSchema,
-} from '../handoffs/index.js';
 import { ClaudeHistoryReadSchema } from '../providers/claude/history/index.js';
+import type { IStorageDescriptor } from '../storage/index.js';
 
 import {
   PlanWriteIntentSchema,
@@ -30,6 +33,7 @@ import {
   ActionPageSchema,
   LifecyclePageSchema,
   ApprovalIdentitySchema,
+  ApprovalPageSchema,
 } from './control/index.js';
 import {
   StoreRequestSchema,
@@ -43,6 +47,8 @@ import {
  * @returns A store whose close waits for worker exit.
  * @throws
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+ * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
+ * - JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE: The HQ action key is unavailable
  */
 export const createStore = async (
   databasePath: string,
@@ -71,7 +77,7 @@ export const createStore = async (
     {
       resolve: (result: unknown) => void;
       reject: (error: unknown) => void;
-      timer: ReturnType<typeof setTimeout>;
+      timer: ReturnType<typeof setTimeout> | undefined;
     }
   >();
   let sequence = 0;
@@ -79,6 +85,7 @@ export const createStore = async (
   let closing: Promise<void> | undefined;
   let readyResolve: () => void = () => undefined;
   let readyReject: (error: unknown) => void = () => undefined;
+  let storage: IStorageDescriptor | undefined;
   const ready = new Promise<void>((resolve, reject) => {
     readyResolve = resolve;
     readyReject = reject;
@@ -105,7 +112,18 @@ export const createStore = async (
     }
     const response = result.data;
     if (response.kind === 'ready') {
+      storage = response.storage;
       readyResolve();
+      return;
+    }
+    if (response.kind === 'startup-error') {
+      isAvailable = false;
+      readyReject(
+        new Exception(response.error.message, {
+          code: response.error.code,
+          data: { kind: response.error.kind },
+        }),
+      );
       return;
     }
     const entry = pending.get(response.id);
@@ -178,17 +196,20 @@ export const createStore = async (
         }),
       );
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pending.delete(id);
-        reject(
-          new Exception('The HQ store failed: request deadline exceeded', {
-            code: 'JG_AGENT_HQ_STORE_FAILED',
-            data: {
-              kind: 'operation-failed',
-            },
-          }),
-        );
-      }, 5000);
+      const timer =
+        command.kind === 'snapshot-backup'
+          ? undefined
+          : setTimeout(() => {
+              pending.delete(id);
+              reject(
+                new Exception('The HQ store failed: request deadline exceeded', {
+                  code: 'JG_AGENT_HQ_STORE_FAILED',
+                  data: {
+                    kind: 'operation-failed',
+                  },
+                }),
+              );
+            }, 5000);
       pending.set(id, {
         resolve: (result) => {
           const checked = schema.safeParse(result);
@@ -209,6 +230,31 @@ export const createStore = async (
     });
   };
   return {
+    storage: storage!,
+    dispatchPage: (query) => request({ kind: 'dispatch-page', query }, DispatchPageSchema),
+    dispatchJob: (taskId, requestId) =>
+      request({ kind: 'dispatch-job', taskId, requestId }, DispatchJobSchema),
+    blockDispatch: async (requestId, selectedActionId, reason) => {
+      await request({ kind: 'dispatch-block', requestId, selectedActionId, reason }, z.null());
+    },
+    collectDispatch: (taskId, requestId, actionId) =>
+      request(
+        { kind: 'dispatch-collect', taskId, requestId, actionId },
+        DispatchCollectionSchema.nullable(),
+      ),
+    agentIdentity: (query) => request({ kind: 'agent-identity', query }, AgentIdentitySchema),
+    getAgentSpawn: (query) =>
+      request({ kind: 'agent-spawn-read', query }, AgentSpawnRecordSchema.nullable()),
+    collaboration: (command, binding) =>
+      request({ kind: 'collaboration', request: command, binding }, CollaborationResponseSchema),
+    recoverCollaborationFanout: () => request({ kind: 'collaboration-fanout' }, z.boolean()),
+    prepareStorageMaintenance: (isSnapshot) =>
+      request({ kind: 'storage-maintenance', isSnapshot }, z.boolean()),
+    snapshotPlans: (after) =>
+      request({ kind: 'snapshot-plans', after }, z.array(z.string()).max(128)),
+    snapshotBackup: async (destination) => {
+      await request({ kind: 'snapshot-backup', destination }, z.null());
+    },
     getBrowserAction: (id, operatorId) =>
       request({ kind: 'browser-read', id, operatorId }, BrowserReceiptSchema.nullable()),
     admitBrowserAction: (action, operatorId) =>
@@ -221,17 +267,13 @@ export const createStore = async (
     get isAvailable() {
       return isAvailable;
     },
-    getHandoff: (id) => request({ kind: 'handoff-read', id }, HandoffRecordSchema.nullable()),
-    prepareHandoff: (record) => request({ kind: 'handoff-prepare', record }, HandoffRecordSchema),
-    getHandoffDispatch: (id, phase) =>
-      request({ kind: 'handoff-dispatch-read', id, phase }, HandoffDispatchSchema.nullable()),
-    prepareHandoffDispatch: (dispatch) =>
-      request({ kind: 'handoff-dispatch-prepare', dispatch }, HandoffDispatchSchema),
-    collectHandoff: (id, findings) =>
-      request({ kind: 'handoff-collect', id, findings }, HandoffRecordSchema),
-    listHandoffs: (page) => request({ kind: 'handoff-list', page }, HandoffPageSchema),
     readClaudeHistory: (command) =>
       request({ kind: 'claude-history', request: command }, ClaudeHistoryReadSchema),
+    getEvidenceOrigins: (command) =>
+      request(
+        { kind: 'evidence-origins', request: command },
+        z.array(HistoryProvenanceSchema.nullable()).max(128),
+      ),
     projectPlanRevision: async (projection) => {
       await request({ kind: 'plan-revision-project', projection }, z.null());
     },
@@ -294,6 +336,10 @@ export const createStore = async (
     listThreads: (workspaceRoot, page) =>
       request({ kind: 'threads', workspaceRoot, page }, ManagedThreadPageSchema),
     listActions: (threadId, page) => request({ kind: 'actions', threadId, page }, ActionPageSchema),
+    listProviderActions: (provider, page) =>
+      request({ kind: 'provider-actions', provider, page }, ActionPageSchema),
+    listApprovals: (threadId, page) =>
+      request({ kind: 'approvals', threadId, page }, ApprovalPageSchema),
     listEvents: (page) => request({ kind: 'events', page }, LifecyclePageSchema),
     admit: (input) => request({ kind: 'admit', input }, AdmissionResultSchema),
     applyOutcome: (input) => request({ kind: 'outcome', input }, ActionReceiptSchema.nullable()),

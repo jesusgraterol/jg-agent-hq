@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { NativeElicitationSchema, OutputSchemaSchema } from '../../../contracts/index.js';
+
 // permission-affecting native requests reject unknown fields rather than silently widening a grant
 const PathSchema = z.string().min(1).max(4096);
 const SpecialPathSchema = z.discriminatedUnion('kind', [
@@ -90,8 +92,31 @@ export const QuestionApprovalSchema = z.strictObject({
     .min(1)
     .max(32),
 });
+// standalone elicitations without an exact active turn are deliberately unsupported
+export const ElicitationApprovalSchema = z.discriminatedUnion('mode', [
+  z.strictObject({
+    threadId: PathSchema,
+    turnId: PathSchema,
+    serverName: z.string().min(1).max(256),
+    mode: z.literal('form'),
+    message: z.string().max(8192),
+    requestedSchema: OutputSchemaSchema,
+    _meta: z.json().nullable().optional(),
+  }),
+  z.strictObject({
+    threadId: PathSchema,
+    turnId: PathSchema,
+    serverName: z.string().min(1).max(256),
+    mode: z.literal('url'),
+    message: z.string().max(8192),
+    url: NativeElicitationSchema.shape.url.unwrap(),
+    elicitationId: PathSchema,
+    _meta: z.json().nullable().optional(),
+  }),
+]);
 export type ICodexPrompt =
   | { kind: 'command'; params: z.infer<typeof CommandApprovalSchema> }
   | { kind: 'file-change'; params: z.infer<typeof FileApprovalSchema> }
   | { kind: 'permission'; params: z.infer<typeof PermissionApprovalSchema> }
-  | { kind: 'question'; params: z.infer<typeof QuestionApprovalSchema> };
+  | { kind: 'question'; params: z.infer<typeof QuestionApprovalSchema> }
+  | { kind: 'elicitation'; params: z.infer<typeof ElicitationApprovalSchema> };

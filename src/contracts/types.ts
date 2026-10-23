@@ -1,11 +1,43 @@
 import { z } from 'zod';
 
+import { AgentToolRequestSchema, AgentToolResultSchema } from './agent-tools/index.js';
+
+import { CollaborationRequestSchema, CollaborationResponseSchema } from './collaboration/index.js';
+
+import {
+  EvidenceRequestSchema,
+  SessionDiscoveryRequestSchema,
+  EvidencePageSchema,
+  HistoryKindSchema,
+  HistoryProvenanceSchema,
+} from './evidence/index.js';
+
+import {
+  AccountRequestSchema,
+  AccountObservationSchema,
+  LoginRequestSchema,
+  LoginObservationSchema,
+} from './accounts/index.js';
+import {
+  McpRequestSchema,
+  McpServerPageSchema,
+  McpToolPageSchema,
+  McpResourcePageSchema,
+} from './extensions/index.js';
+
+import {
+  MAX_PROVIDERS,
+  ProviderCapabilitiesSchema,
+  ProviderIdSchema,
+  ProviderStatusSchema,
+} from './providers/index.js';
+
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, PUBLIC_ERROR_MESSAGES } from './constants.js';
 import { SkillIdSchema, SkillPageSchema, SkillPreviewSchema } from './skills/index.js';
 
-import { HandoffCommandSchema, HandoffResultSchema } from './handoffs/index.js';
-
-import { NativeIdSchema } from './identities/index.js';
+import { NativeIdSchema, CursorSchema, NativeLineageSchema } from './identities/index.js';
+import { ProviderModelPageSchema, ProviderModelsRequestSchema } from './models/index.js';
+import { ConfigurationRequestSchema, SessionConfigurationSchema } from './configuration/index.js';
 import { PlanCommandSchema, PlanResultSchema } from './plans/index.js';
 import {
   ActionPlanContextSchema,
@@ -17,23 +49,34 @@ import {
   LifecycleEventSchema,
 } from './actions/index.js';
 
-// opaque native identifiers, bounded independently of provider-specific formats
-const CursorSchema = z.string().min(1).max(16_384);
+// pagination is validated before adapters receive a native continuation
 const PageFields = {
   limit: z.number().int().min(1).max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
   cursor: CursorSchema.optional(),
 };
 const TargetFields = {
-  provider: z.enum(['codex', 'claude']),
+  provider: ProviderIdSchema,
   workspaceRoot: z.string().min(1).max(4096),
   nativeId: NativeIdSchema,
 };
 
 // only implemented operations can be admitted; native RPC is never exposed
 export const HqRequestSchema = z.discriminatedUnion('kind', [
+  AgentToolRequestSchema,
+  CollaborationRequestSchema,
+  EvidenceRequestSchema,
+  SessionDiscoveryRequestSchema,
+  AccountRequestSchema,
+  ...McpRequestSchema.options,
+  ProviderModelsRequestSchema,
+  ConfigurationRequestSchema,
   z.strictObject({ kind: z.literal('status') }),
+  z.strictObject({
+    kind: z.literal('capabilities'),
+    provider: ProviderIdSchema,
+    threadId: z.uuid().optional(),
+  }),
   z.strictObject({ kind: z.literal('plan'), command: PlanCommandSchema }),
-  z.strictObject({ kind: z.literal('handoff'), command: HandoffCommandSchema }),
   z.strictObject({ kind: z.literal('stop') }),
   z.strictObject({
     kind: z.literal('threads'),
@@ -79,12 +122,23 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('suggest-thread-name'), topic: z.string().min(1).max(1024) }),
   z.strictObject({ kind: z.literal('actions'), threadId: z.uuid(), ...PageFields }),
   z.strictObject({
+    kind: z.literal('provider-actions'),
+    provider: ProviderIdSchema,
+    ...PageFields,
+  }),
+  LoginRequestSchema,
+  z.strictObject({
     kind: z.literal('events'),
     threadId: z.uuid(),
     after: z.number().int().nonnegative().default(0),
     limit: PageFields.limit,
   }),
-  z.strictObject({ kind: z.literal('approvals'), threadId: z.uuid() }),
+  z.strictObject({
+    kind: z.literal('approvals'),
+    threadId: z.uuid(),
+    state: NativeApprovalSchema.shape.state.optional(),
+    ...PageFields,
+  }),
   z.strictObject({
     kind: z.literal('live-items'),
     threadId: z.uuid(),
@@ -96,8 +150,9 @@ export type IHqRequestInput = z.input<typeof HqRequestSchema>;
 
 // native discovery is external/read-only until explicitly adopted for control
 export const ThreadSummarySchema = z.object({
-  provider: z.enum(['codex', 'claude']),
+  provider: ProviderIdSchema,
   nativeId: NativeIdSchema,
+  nativeLineage: NativeLineageSchema.nullable(),
   workspaceRoot: z.string(),
   name: z.string().nullable(),
   createdAt: z.number().int(),
@@ -122,7 +177,8 @@ export const HistoryItemSchema = z.object({
   nativeId: NativeIdSchema,
   turnId: NativeIdSchema,
   nativeType: z.string(),
-  kind: z.enum(['user-message', 'agent-message', 'command', 'file-change', 'unsupported']),
+  kind: HistoryKindSchema,
+  provenance: HistoryProvenanceSchema,
   text: z.string(),
   isTruncated: z.boolean(),
 });
@@ -145,7 +201,7 @@ export const UsageWindowSchema = z.object({
   resetsAt: z.number().int().nullable(),
 });
 export const UsageSnapshotSchema = z.object({
-  provider: z.enum(['codex', 'claude']),
+  provider: ProviderIdSchema,
   state: z.enum(['available', 'exhausted', 'stale', 'unavailable']),
   source: z.literal('native'),
   observedAt: z.number().int().nullable(),
@@ -159,24 +215,40 @@ export const RuntimeStatusSchema = z.object({
   pid: z.number().int().positive(),
   startedAt: z.number().int(),
   store: z.enum(['ready', 'unavailable']),
-  codex: z.object({
-    state: z.enum(['ready', 'unavailable']),
-    userAgent: z.string(),
-    steering: z.literal('available'),
-  }),
-  claude: z.object({
-    state: z.enum(['idle', 'ready', 'unavailable']),
-    version: z.string().nullable(),
-    steering: z.literal('unavailable'),
-  }),
+  providers: z.array(ProviderStatusSchema).max(MAX_PROVIDERS),
 });
 export type IRuntimeStatus = z.infer<typeof RuntimeStatusSchema>;
 const PageResultFields = { nextCursor: CursorSchema.nullable(), source: z.literal('native') };
 export const HqResponseSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('agent-tool'), result: AgentToolResultSchema }),
+  z.object({ kind: z.literal('session-evidence'), result: EvidencePageSchema }),
+  z.object({
+    kind: z.literal('sessions'),
+    result: z.object({
+      data: z.array(ThreadSummarySchema.extend({ isNameTruncated: z.boolean() })).max(128),
+      nextCursor: CursorSchema.nullable(),
+      source: z.literal('native'),
+    }),
+  }),
+  z.object({ kind: z.literal('account'), result: AccountObservationSchema }),
+  z.object({ kind: z.literal('login'), result: LoginObservationSchema }),
+  z.object({
+    kind: z.literal('provider-actions'),
+    result: z.object({
+      data: z.array(ActionSummarySchema).max(128),
+      nextCursor: z.string().nullable(),
+    }),
+  }),
+  z.object({ kind: z.literal('mcp-servers'), result: McpServerPageSchema }),
+  z.object({ kind: z.literal('mcp-tools'), result: McpToolPageSchema }),
+  z.object({ kind: z.literal('mcp-resources'), result: McpResourcePageSchema }),
+  z.object({ kind: z.literal('configuration'), result: SessionConfigurationSchema }),
+  z.object({ kind: z.literal('models'), result: ProviderModelPageSchema }),
   z.object({ kind: z.literal('thread-plan'), result: ActionPlanContextSchema.nullable() }),
   z.object({ kind: z.literal('status'), result: RuntimeStatusSchema }),
+  z.object({ kind: z.literal('capabilities'), result: ProviderCapabilitiesSchema }),
   z.object({ kind: z.literal('plan'), result: PlanResultSchema }),
-  z.object({ kind: z.literal('handoff'), result: HandoffResultSchema }),
+  z.object({ kind: z.literal('collaboration'), result: CollaborationResponseSchema }),
   z.object({
     kind: z.literal('stop'),
     result: z.object({ accepted: z.literal(true), runtimeEpoch: z.uuid() }),
@@ -233,7 +305,13 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
       hasMore: z.boolean(),
     }),
   }),
-  z.object({ kind: z.literal('approvals'), result: z.array(NativeApprovalSchema).max(32) }),
+  z.object({
+    kind: z.literal('approvals'),
+    result: z.object({
+      data: z.array(NativeApprovalSchema).max(MAX_PAGE_SIZE),
+      nextCursor: CursorSchema.nullable(),
+    }),
+  }),
   z.object({ kind: z.literal('live-items'), result: LiveItemsSchema }),
 ]);
 export type IHqResponse = z.infer<typeof HqResponseSchema>;

@@ -9,8 +9,10 @@ import {
   type ISkill,
   type ISkillPage,
   type ISkillPreview,
+  type IProviderId,
 } from '../contracts/index.js';
-import type { ICodexProvider, IProviderSkills, createClaudeControl } from '../providers/index.js';
+import type { IProviderSkills } from '../providers/index.js';
+import type { createProviderRegistry, IBoundAgentProvider } from '../providers/registry/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 import { decodeHistoryCursor, encodeHistoryCursor } from '../sessions/index.js';
 import type { IStore } from '../store/index.js';
@@ -24,7 +26,7 @@ const digest = (input: object): string =>
 
 /** Produces an exact invocation from native metadata without loading the skill content. */
 const toSkillPreview = (
-  provider: 'codex' | 'claude',
+  formatSkill: IBoundAgentProvider['formatSkill'],
   skill: ISkill | undefined,
   skillArguments: string,
 ): ISkillPreview => {
@@ -33,7 +35,7 @@ const toSkillPreview = (
   return {
     state: 'ready',
     skill,
-    text: `${provider === 'codex' ? '$' : '/'}${skill.name}${skillArguments ? ` ${skillArguments}` : ''}`,
+    text: formatSkill(skill, skillArguments),
   };
 };
 
@@ -42,14 +44,17 @@ const toSkillPreview = (
  * @returns Thread-scoped discovery, exact previews and explicit input preparation.
  */
 export const createSkills = (
-  codex: ICodexProvider,
-  claude: ReturnType<typeof createClaudeControl>,
+  registry: ReturnType<typeof createProviderRegistry>,
   store: IStore,
   roots: string[],
 ) => {
   const pending = new Map<
     string,
-    Promise<{ provider: 'codex' | 'claude'; inventory: IProviderSkills }>
+    Promise<{
+      provider: IProviderId;
+      inventory: IProviderSkills;
+      formatSkill: IBoundAgentProvider['formatSkill'];
+    }>
   >();
   /**
    * Coalesces a native metadata read and enforces the catalog budget before paging.
@@ -72,17 +77,18 @@ export const createSkills = (
     let operation = pending.get(threadId);
     if (!operation) {
       if (pending.size >= 32) return null;
-      operation = (async () => ({
-        provider: thread.provider,
-        inventory:
-          thread.provider === 'codex'
-            ? await codex.readSkills(thread.workspaceRoot)
-            : await claude.readSkills(thread.nativeId!),
-      }))();
+      operation = (async () => {
+        const adapter = await registry.get(thread.provider);
+        return {
+          provider: thread.provider,
+          inventory: await adapter.readSkills(thread.nativeId!, thread.workspaceRoot),
+          formatSkill: adapter.formatSkill,
+        };
+      })();
       pending.set(threadId, operation);
     }
     try {
-      const { provider, inventory } = await operation;
+      const { provider, inventory, formatSkill } = await operation;
       const skills: ISkill[] = inventory.skills.map((skill) =>
         SkillSchema.parse({ ...skill, id: digest([provider, skill.name, skill.path]) }),
       );
@@ -94,6 +100,7 @@ export const createSkills = (
         return null;
       return {
         provider,
+        formatSkill,
         skills,
         unavailableCount: inventory.unavailableCount,
         observedAt: inventory.observedAt,
@@ -105,10 +112,16 @@ export const createSkills = (
     }
   };
   return {
+    /** Stops new reads joining an observation started before a native change. */
+    invalidate(): void {
+      pending.clear();
+    },
     /** Resolves one unambiguous native name from a single bounded inventory read.
      * @returns An exact preview, or an explicit missing/disabled/unavailable state.
      * @throws
      * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+     * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
      * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
     async previewName(
@@ -121,7 +134,7 @@ export const createSkills = (
       const matches = result.skills.filter((skill) => skill.name === name);
       if (matches.length > 1 || (!matches.length && result.unavailableCount))
         return { state: 'unavailable', skill: null, text: null };
-      return toSkillPreview(result.provider, matches[0], skillArguments);
+      return toSkillPreview(result.formatSkill, matches[0], skillArguments);
     },
     /**
      * Pages the native inventory with a content revision guard; an inventory change invalidates continuation.
@@ -195,6 +208,8 @@ export const createSkills = (
      * @returns Ready, missing, disabled or unavailable state; never an inferred workflow.
      * @throws
      * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+     * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
      * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
     async preview(
@@ -205,7 +220,7 @@ export const createSkills = (
       const result = await scan(threadId);
       if (!result) return { state: 'unavailable', skill: null, text: null };
       const skill = result.skills.find((skill) => skill.id === skillId);
-      return toSkillPreview(result.provider, skill, skillArguments);
+      return toSkillPreview(result.formatSkill, skill, skillArguments);
     },
     /**
      * Prepares one explicitly selected input while leaving skill contents and permissions native.
@@ -213,14 +228,19 @@ export const createSkills = (
      * @throws
      * - JG_AGENT_HQ_SKILL_UNAVAILABLE: The HQ skill is unavailable
      * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+     * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
      * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
     async prepare(
       threadId: string,
-      input: IMessageInput,
+      input: IMessageInput | { kind: 'skill-name'; name: string; arguments: string },
     ): Promise<{ text: string; skill: INativeSkillInput | null }> {
       if (input.kind === 'text') return { text: input.text, skill: null };
-      const preview = await this.preview(threadId, input.skillId, input.arguments);
+      const preview =
+        input.kind === 'skill-name'
+          ? await this.previewName(threadId, input.name, input.arguments)
+          : await this.preview(threadId, input.skillId, input.arguments);
       if (preview.state !== 'ready' || !preview.skill || !preview.text)
         throw new Exception('The HQ skill is unavailable', {
           code: 'JG_AGENT_HQ_SKILL_UNAVAILABLE',
