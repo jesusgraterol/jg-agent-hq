@@ -6,6 +6,8 @@ import { z } from 'zod';
 import {
   LifecycleEventSchema,
   PreparedInputSchema,
+  NativeApprovalSummarySchema,
+  type INativeApprovalSummary,
   type IActionReceipt,
   type IActionSummary,
   type IManagedThread,
@@ -31,6 +33,7 @@ import {
   type IAdmission,
   type IAdmissionResult,
   type IControlPage,
+  type IApprovalPageRequest,
   type IEventPage,
   type INativeOutcome,
   type INativeObservation,
@@ -183,6 +186,44 @@ export class ControlModel {
       data: rows
         .slice(0, page.limit)
         .map((row) => toActionSummary(ActionMetadataSchema.parse(row))),
+      hasMore: rows.length > page.limit,
+    };
+  }
+
+  /** Reads indexed approval history without sensitive native request or response content. */
+  public listApprovals(
+    threadId: string,
+    page: IApprovalPageRequest,
+  ): { data: INativeApprovalSummary[]; hasMore: boolean } {
+    const seek = page.position
+      ? 'AND (hq_native_approval.created_at, hq_native_approval.id) < (?, ?)'
+      : '';
+    const state = page.state ? 'AND state = ?' : '';
+    const rows = this.__database
+      .prepare(
+        `SELECT id, thread_id, native_turn_id, runtime_epoch, kind, state, reply_action_id, is_blocking, created_at, updated_at FROM hq_native_approval WHERE thread_id = ? ${state} ${seek} ORDER BY hq_native_approval.created_at DESC, hq_native_approval.id DESC LIMIT ?`,
+      )
+      .all(
+        threadId,
+        ...(page.state ? [page.state] : []),
+        ...(page.position ? [page.position.createdAt, page.position.id] : []),
+        page.limit + 1,
+      );
+    return {
+      data: rows.slice(0, page.limit).map((row) =>
+        NativeApprovalSummarySchema.parse({
+          id: row.id,
+          threadId: row.thread_id,
+          nativeTurnId: row.native_turn_id,
+          runtimeEpoch: row.runtime_epoch,
+          kind: row.kind,
+          state: row.state,
+          replyActionId: row.reply_action_id,
+          isBlocking: row.is_blocking === 1,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        }),
+      ),
       hasMore: rows.length > page.limit,
     };
   }
@@ -792,9 +833,9 @@ export class ControlModel {
         return null;
       const existing = this.__database
         .prepare(
-          'SELECT id, thread_id, native_turn_id, digest, state FROM hq_native_approval WHERE runtime_epoch = ? AND native_request_id = ?',
+          'SELECT id, thread_id, native_turn_id, digest, state FROM hq_native_approval WHERE runtime_epoch = ? AND thread_id = ? AND native_request_id = ?',
         )
-        .get(this.__epoch, approval.requestId);
+        .get(this.__epoch, thread.id, approval.requestId);
       if (existing) {
         if (
           existing.thread_id !== thread.id ||

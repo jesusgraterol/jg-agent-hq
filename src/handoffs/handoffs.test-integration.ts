@@ -204,7 +204,10 @@ test.each(['codex', 'claude'] as const)(
         kind: 'approvals',
         threadId: api.source.threadId!,
       });
-      expect(approvals).toStrictEqual({ kind: 'approvals', result: [] });
+      expect(approvals).toStrictEqual({
+        kind: 'approvals',
+        result: { data: [], nextCursor: null },
+      });
     });
   },
 );
@@ -381,11 +384,16 @@ test.each([
         await api.submit({ kind: 'queue-send', queuedActionId: receipt.id });
       } else {
         const approvals = await until(
-          () => fixture.request({ kind: 'approvals', threadId: api.source.threadId! }),
-          (result) => result.kind === 'approvals' && result.result.length === 1,
+          () =>
+            fixture.request({
+              kind: 'approvals',
+              state: 'pending',
+              threadId: api.source.threadId!,
+            }),
+          (result) => result.kind === 'approvals' && result.result.data.length === 1,
         );
         if (approvals.kind !== 'approvals') throw new Error('Expected native approval');
-        const approval = approvals.result[0];
+        const approval = approvals.result.data[0];
         expect(approval.state).toBe('pending');
         await expect(
           api.submit({
@@ -505,8 +513,9 @@ test('busy author keeps feedback queued and never receives a native permission r
     });
     await api.settled(busy.id);
     await until(
-      () => fixture.request({ kind: 'approvals', threadId: api.source.threadId! }),
-      (result) => result.kind === 'approvals' && result.result.length === 1,
+      () =>
+        fixture.request({ kind: 'approvals', state: 'pending', threadId: api.source.threadId! }),
+      (result) => result.kind === 'approvals' && result.result.data.length === 1,
     );
     const queued = await api.send('feedback');
     expect(queued.feedback.delivery).toBe('queued');
@@ -515,11 +524,15 @@ test('busy author keeps feedback queued and never receives a native permission r
       .split('\n')
       .map((line) => JSON.parse(line));
     expect(calls.filter((call) => call.method === 'turn/start')).toHaveLength(2);
-    const approvals = await fixture.request({ kind: 'approvals', threadId: api.source.threadId! });
-    expect(approvals.kind === 'approvals' && approvals.result[0]?.state).toBe('pending');
+    const approvals = await fixture.request({
+      kind: 'approvals',
+      state: 'pending',
+      threadId: api.source.threadId!,
+    });
+    expect(approvals.kind === 'approvals' && approvals.result.data[0]?.state).toBe('pending');
     if (approvals.kind !== 'approvals') throw new Error('Missing approvals');
     await api.control({ completeOnReply: true });
-    const pending = approvals.result[0]!;
+    const pending = approvals.result.data[0]!;
     await api.submit({
       kind: 'native-reply',
       threadId: api.source.threadId!,

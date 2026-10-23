@@ -125,7 +125,7 @@ else {
       const item = {id:'live-'+turnSequence,type:'agentMessage',text:''};
       notify('item/started',{threadId:thread.id,turnId:turn.id,item});
       notify('item/agentMessage/delta',{threadId:thread.id,turnId:turn.id,itemId:item.id,delta:'Live response'});
-      if (control.prompt) process.stdout.write(JSON.stringify({id:'native-approval-'+turnSequence,method:control.prompt.method,params:{threadId:thread.id,turnId:turn.id,itemId:'tool-'+turnSequence,...control.prompt.params}})+'\n');
+      if (control.prompt) process.stdout.write(JSON.stringify({id:'native-approval-'+turnSequence,method:control.prompt.method,params:{threadId:thread.id,turnId:turn.id,...(control.prompt.method==='mcpServer/elicitation/request'?{}:{itemId:'tool-'+turnSequence}),...control.prompt.params}})+'\n');
       if (control.loseOutput) { process.stdout.end();return; }
       const acknowledge = () => respond(request.id,{turn});
       if (control.lateTurnAck) setTimeout(acknowledge,31_000); else acknowledge();

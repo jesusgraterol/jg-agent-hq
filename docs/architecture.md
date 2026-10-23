@@ -14,6 +14,8 @@ File input admission records canonical references and hashes rather than embeddi
 
 Complete final results are separate from the bounded live/history presentation. The adapter validates requested structured output and records exact bounded values with native completion in the action ledger. Selected receipts retrieve them after restart; paged action reads select metadata only. Tool output remains in native history. Output buffers are limited to the current controlled turn, and completion or confirmed control release discards them. Claude output schemas require an idle process restart; Codex applies them per turn.
 
+Native request bodies stay in the controller’s bounded live prompt map. SQLite keeps approval identity, exact turn/runtime correlation, state and reply-action identity; indexed seek queries return durable metadata with optional live presentation. Restart or loss of the native connection expires pending requests. Pipe writes do not establish response consumption, and unanswered delivery uncertainty never triggers a resend. Plan authority and native permission responses remain independent.
+
 ## Storage
 
 One SQLite worker owns HQ persistence. The complete definition, including provider history indexes, is src/store/schema.sql. Fresh initialization creates the schema and its singleton hq_schema hash in one transaction. Reopening validates that stamp through a read-only connection before opening a writer. This preserves rejected database bytes and their WAL instead of triggering SQLite's close-time checkpoint. Application-owned objects are outside this stamp. HQ does not modify user_version or convert persisted state between schema definitions; use a fresh development state root after an HQ schema change.

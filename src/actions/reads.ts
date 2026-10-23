@@ -132,8 +132,21 @@ export const readControl = async (
         limit: command.limit,
       }),
     };
-  if (command.kind === 'approvals')
-    return { kind: 'approvals', result: actions.approvals(thread.id) };
+  if (command.kind === 'approvals') {
+    const { cursor, ...filters } = command;
+    const page = await store.listApprovals(thread.id, {
+      limit: command.limit,
+      position: readPosition(cursor, filters),
+      ...(command.state ? { state: command.state } : {}),
+    });
+    return {
+      kind: 'approvals',
+      result: {
+        data: page.data.map(actions.approvalPresentation),
+        nextCursor: nextPageCursor(page, filters),
+      },
+    };
+  }
   return {
     kind: 'live-items',
     result: thread.nativeId

@@ -95,19 +95,20 @@ CREATE TABLE hq_native_approval (
   runtime_epoch TEXT NOT NULL,
   native_request_id TEXT NOT NULL,
   digest TEXT NOT NULL CHECK (length(digest) = 64),
-  kind TEXT NOT NULL CHECK (kind IN ('command', 'file-change', 'permission', 'question')),
+  kind TEXT NOT NULL CHECK (kind IN ('command', 'file-change', 'permission', 'question', 'elicitation')),
   is_blocking INTEGER NOT NULL CHECK (is_blocking IN (0, 1)),
   state TEXT NOT NULL CHECK (state IN ('pending', 'answered', 'expired')),
   reply_action_id TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   CONSTRAINT hq_pk_na__id PRIMARY KEY (id),
-  CONSTRAINT hq_uq_na__runtime_epoch_native_request_id UNIQUE (runtime_epoch, native_request_id),
+  CONSTRAINT hq_uq_na__runtime_epoch_thread_id_native_request_id UNIQUE (runtime_epoch, thread_id, native_request_id),
   CONSTRAINT hq_fk_na__thread_id FOREIGN KEY (thread_id) REFERENCES hq_thread(id),
   CONSTRAINT hq_fk_na__reply_action_id FOREIGN KEY (reply_action_id) REFERENCES hq_action(id)
 ) STRICT;
 
-CREATE INDEX hq_idx_na__thread_id_state ON hq_native_approval (thread_id, state);
+CREATE INDEX hq_idx_na__thread_id_state_created_at_id_desc ON hq_native_approval (thread_id, state, created_at DESC, id DESC);
+CREATE INDEX hq_idx_na__thread_id_created_at_id_desc ON hq_native_approval (thread_id, created_at DESC, id DESC);
 CREATE INDEX hq_idx_na__runtime_epoch_pending ON hq_native_approval (runtime_epoch) WHERE state = 'pending';
 
 CREATE TABLE hq_event (

@@ -38,5 +38,8 @@ export type IClaudeSession = {
   input?: IClaudeInput;
   apiMessageId?: string;
   previews: Map<number, { id: string; type: string }>;
-  requests: Map<string, { toolId: string; scopedId: string }>;
+  requests: Map<
+    string,
+    { toolId: string | null; scopedId: string; fingerprint: string; isWritten: boolean }
+  >;
 };

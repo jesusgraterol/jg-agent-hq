@@ -136,8 +136,10 @@ export const createPlanAdmission = (
           command.kind === 'thread-archive' ||
           command.kind === 'queue-cancel' ||
           (command.kind === 'native-reply' &&
-            command.response.kind !== 'answers' &&
-            ['decline', 'cancel'].includes(command.response.decision));
+            (command.response.kind === 'elicitation'
+              ? ['decline', 'cancel'].includes(command.response.action)
+              : command.response.kind !== 'answers' &&
+                ['decline', 'cancel'].includes(command.response.decision)));
         if (safe && !action.plan && !action.expectedPlan) return store.admit({ action, prepared });
         const source = action.plan
           ? await store.getPlanOperation(

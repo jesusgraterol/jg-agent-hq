@@ -612,6 +612,263 @@ test('steering stays bound to its active turn, while interrupt acknowledgement k
   }
 });
 
+test('approval state survives answer resolution and runtime restart without retaining prompt bodies', async () => {
+  const fixture = await setup();
+  let restarted: IAgentHq | undefined;
+  try {
+    const { thread } = await fixture.create('durable-approval');
+    await fixture.control({
+      prompt: {
+        method: 'item/commandExecution/requestApproval',
+        params: {
+          startedAtMs: Date.now(),
+          command: 'echo private-prompt-marker',
+          cwd: fixture.workspaceRoot,
+        },
+      },
+    });
+    await fixture.submit(
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Check native permission' },
+      }),
+    );
+    await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.state === 'waiting-approval',
+    );
+    const pending = await fixture.request({ kind: 'approvals', threadId: thread.id });
+    if (pending.kind !== 'approvals') throw new Error('Wrong response');
+    expect(pending.result).toMatchObject({ data: [{ state: 'pending' }], nextCursor: null });
+    const approval = pending.result.data[0]!;
+    expect(approval.presentation?.detail).toContain('private-prompt-marker');
+    const reply = await fixture.submit(
+      fixture.envelope({
+        kind: 'native-reply',
+        threadId: thread.id,
+        expectedTurnId: approval.nativeTurnId,
+        approvalId: approval.id,
+        response: { kind: 'decision', decision: 'decline' },
+      }),
+    );
+    await fixture.until(
+      () => fixture.receipt(reply.id),
+      (entry) => entry.delivery === 'acknowledged',
+    );
+    const answered = await fixture.request({ kind: 'approvals', threadId: thread.id });
+    expect(answered).toMatchObject({
+      result: {
+        data: [{ id: approval.id, state: 'answered', replyActionId: reply.id, presentation: null }],
+      },
+    });
+    await fixture.runtime.close();
+    restarted = await createAgentHq({
+      stateRoot: fixture.stateRoot,
+      allowedRoots: [fixture.workspaceRoot],
+    });
+    expect(await restarted.request({ kind: 'approvals', threadId: thread.id })).toStrictEqual(
+      answered,
+    );
+    const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
+    try {
+      expect(
+        JSON.stringify(database.prepare('SELECT * FROM hq_native_approval').all()),
+      ).not.toContain('private-prompt-marker');
+    } finally {
+      database.close();
+    }
+  } finally {
+    await restarted?.close();
+    await fixture.close();
+  }
+});
+
+test('approval history uses indexed, query-bound seek pages and expires requests from another runtime', async () => {
+  const fixture = await setup();
+  let restarted: IAgentHq | undefined;
+  try {
+    const { thread } = await fixture.create('approval-pages');
+    await fixture.runtime.close();
+    const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
+    const ids = Array.from(
+      { length: 4 },
+      (_, index) => `00000000-0000-4000-8000-00000000000${index + 1}`,
+    );
+    try {
+      const insert = database.prepare(
+        "INSERT INTO hq_native_approval (id, thread_id, native_turn_id, runtime_epoch, native_request_id, digest, kind, is_blocking, state, created_at, updated_at) VALUES (?, ?, 'fixture-turn', ?, ?, ?, 'question', 1, ?, 100, 100)",
+      );
+      for (const [index, id] of ids.entries())
+        insert.run(
+          id,
+          thread.id,
+          thread.runtimeEpoch!,
+          id,
+          '0'.repeat(64),
+          index === 0 ? 'pending' : index === 1 ? 'expired' : 'answered',
+        );
+      for (const state of [false, true]) {
+        const plan = database
+          .prepare(
+            `EXPLAIN QUERY PLAN SELECT id FROM hq_native_approval WHERE thread_id = ? ${state ? "AND state = 'answered'" : ''} AND (created_at, id) < (100, ?) ORDER BY created_at DESC, id DESC LIMIT 3`,
+          )
+          .all(thread.id, ids[3]!);
+        expect(JSON.stringify(plan)).toContain(
+          state
+            ? 'hq_idx_na__thread_id_state_created_at_id_desc'
+            : 'hq_idx_na__thread_id_created_at_id_desc',
+        );
+        expect(JSON.stringify(plan)).not.toContain('TEMP B-TREE');
+      }
+    } finally {
+      database.close();
+    }
+    restarted = await createAgentHq({
+      stateRoot: fixture.stateRoot,
+      allowedRoots: [fixture.workspaceRoot],
+    });
+    const read = async (cursor?: string, state?: 'answered' | 'expired') => {
+      const response = await restarted!.request({
+        kind: 'approvals',
+        threadId: thread.id,
+        limit: 2,
+        ...(cursor ? { cursor } : {}),
+        ...(state ? { state } : {}),
+      });
+      if (response.kind !== 'approvals') throw new Error('Wrong response');
+      return response.result;
+    };
+    const first = await read();
+    expect(first.data.map((row) => row.id)).toStrictEqual([ids[3], ids[2]]);
+    expect(first.nextCursor).toBeTypeOf('string');
+    const final = await read(first.nextCursor!);
+    expect(final.data.map((row) => [row.id, row.state, row.presentation])).toStrictEqual([
+      [ids[1], 'expired', null],
+      [ids[0], 'expired', null],
+    ]);
+    expect(final.nextCursor).toBeNull();
+    expect((await read(undefined, 'answered')).data.map((row) => row.id)).toStrictEqual([
+      ids[3],
+      ids[2],
+    ]);
+    expect((await read(undefined, 'expired')).data).toHaveLength(2);
+    await expectToRejectCode(read(first.nextCursor!, 'answered'), 'JG_AGENT_HQ_CURSOR_INVALID');
+    await expectToRejectCode(read('invalid-cursor'), 'JG_AGENT_HQ_CURSOR_INVALID');
+    const status = await restarted.request({ kind: 'status' });
+    if (status.kind !== 'status') throw new Error('Wrong response');
+    await expectToRejectCode(
+      restarted.request({
+        kind: 'action',
+        action: {
+          id: randomUUID(),
+          runtimeEpoch: status.result.runtimeEpoch,
+          command: {
+            kind: 'native-reply',
+            threadId: thread.id,
+            expectedTurnId: 'fixture-turn',
+            approvalId: ids[0]!,
+            response: { kind: 'answers', answers: { choice: ['blue'] } },
+          },
+        },
+      }),
+      'JG_AGENT_HQ_ACTION_CONFLICT',
+    );
+  } finally {
+    await restarted?.close();
+    await fixture.close();
+  }
+});
+
+test.each(['form', 'url'] as const)(
+  'Codex %s elicitation validates the exact request and stores only resolution metadata',
+  async (mode) => {
+    const fixture = await setup();
+    try {
+      const { thread } = await fixture.create('elicit-' + mode);
+      await fixture.control({
+        prompt: {
+          method: 'mcpServer/elicitation/request',
+          params: {
+            mode,
+            serverName: 'fixture',
+            message: 'Provide a bounded example',
+            _meta: null,
+            ...(mode === 'form'
+              ? {
+                  requestedSchema: {
+                    type: 'object',
+                    properties: { color: { type: 'string', enum: ['blue'] } },
+                    required: ['color'],
+                    additionalProperties: false,
+                  },
+                }
+              : { url: 'https://example.com/authorize', elicitationId: 'native-elicit' }),
+          },
+        },
+      });
+      await fixture.submit(
+        fixture.envelope({
+          kind: 'message',
+          threadId: thread.id,
+          input: { kind: 'text', text: 'Check elicitation' },
+        }),
+      );
+      await fixture.until(
+        () => fixture.thread(thread.id),
+        (entry) => entry.state === 'waiting-approval',
+      );
+      const response = await fixture.request({ kind: 'approvals', threadId: thread.id });
+      if (response.kind !== 'approvals') throw new Error('Wrong response');
+      const approval = response.result.data[0]!;
+      expect(approval.presentation?.elicitation).toMatchObject({ mode, serverName: 'fixture' });
+      const invalidContents: Record<string, string | boolean>[] = [
+        { color: 'red' },
+        { color: 'blue', unexpected: true },
+      ];
+      for (const content of invalidContents) {
+        await expectToRejectCode(
+          fixture.submit(
+            fixture.envelope({
+              kind: 'native-reply',
+              threadId: thread.id,
+              expectedTurnId: approval.nativeTurnId,
+              approvalId: approval.id,
+              response: { kind: 'elicitation', action: 'accept', content },
+            }),
+          ),
+          'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
+        );
+      }
+      const content = mode === 'form' ? { color: 'blue' } : null;
+      const reply = await fixture.submit(
+        fixture.envelope({
+          kind: 'native-reply',
+          threadId: thread.id,
+          expectedTurnId: approval.nativeTurnId,
+          approvalId: approval.id,
+          response: { kind: 'elicitation', action: 'accept', content },
+        }),
+      );
+      await fixture.until(
+        () => fixture.receipt(reply.id),
+        (entry) => entry.delivery === 'acknowledged',
+      );
+      expect(
+        JSON.parse((await readFile(join(fixture.root, 'replies.jsonl'), 'utf8')).trim()),
+      ).toStrictEqual({
+        id: 'native-approval-1',
+        result: { action: 'accept', content, _meta: null },
+      });
+      expect(await fixture.request({ kind: 'approvals', threadId: thread.id })).toMatchObject({
+        result: { data: [{ state: 'answered', replyActionId: reply.id, presentation: null }] },
+      });
+    } finally {
+      await fixture.close();
+    }
+  },
+);
+
 test('queued text cannot answer native questions; secret answers are absent from the durable ledger', async () => {
   const fixture = await setup();
   try {
@@ -656,18 +913,18 @@ test('queued text cannot answer native questions; secret answers are absent from
     expect(queued).toMatchObject({ delivery: 'queued', nativeTurnId: null, completion: null });
     const prompts = await fixture.request({ kind: 'approvals', threadId: thread.id });
     if (prompts.kind !== 'approvals') throw new Error('wrong response');
-    expect(prompts.result).toHaveLength(1);
+    expect(prompts.result.data).toHaveLength(1);
     const answer = fixture.envelope({
       kind: 'native-reply',
       threadId: thread.id,
       expectedTurnId: active.activeTurnId!,
-      approvalId: prompts.result[0]!.id,
+      approvalId: prompts.result.data[0]!.id,
       response: { kind: 'answers', answers: { choice: ['fictional-answer-for-the-test'] } },
     });
     await fixture.control({ replyResolutionDelay: 500 });
     const reply = await fixture.submit(answer);
     expect(await fixture.request({ kind: 'approvals', threadId: thread.id })).toMatchObject({
-      result: [{ replyActionId: reply.id, state: 'pending' }],
+      result: { data: [{ replyActionId: reply.id, state: 'pending' }] },
     });
     await fixture.until(
       () => fixture.receipt(reply.id),
@@ -737,9 +994,9 @@ test.each(['command', 'file-change'] as const)(
       );
       const response = await fixture.request({ kind: 'approvals', threadId: thread.id });
       if (response.kind !== 'approvals') throw new Error('wrong response');
-      const approval = response.result[0]!;
+      const approval = response.result.data[0]!;
       expect(approval.kind).toBe(kind);
-      expect(approval.decisions).toStrictEqual(
+      expect(approval.presentation!.decisions).toStrictEqual(
         kind === 'command'
           ? ['decline', 'cancel']
           : ['accept', 'acceptForSession', 'decline', 'cancel'],
@@ -1054,7 +1311,7 @@ test('unknown permission fields fail closed; supported permission replies grant 
     );
     expect(await fixture.request({ kind: 'approvals', threadId: first.id })).toStrictEqual({
       kind: 'approvals',
-      result: [],
+      result: { data: [], nextCursor: null },
     });
     const second = (await fixture.create('known-permission')).thread;
     const permissions = {
@@ -1080,8 +1337,8 @@ test('unknown permission fields fail closed; supported permission replies grant 
     );
     const result = await fixture.request({ kind: 'approvals', threadId: second.id });
     if (result.kind !== 'approvals') throw new Error('wrong response');
-    const approval = result.result[0]!;
-    expect(JSON.parse(approval.detail).permissions).toStrictEqual(permissions);
+    const approval = result.result.data[0]!;
+    expect(JSON.parse(approval.presentation!.detail).permissions).toStrictEqual(permissions);
     await expectToRejectCode(
       fixture.submit(
         fixture.envelope({

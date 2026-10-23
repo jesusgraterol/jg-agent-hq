@@ -8,6 +8,7 @@ import type {
   IActionReceipt,
   IManagedThread,
   INativeApproval,
+  INativeApprovalSummary,
   IPreparedInput,
   IPlanRevisionWorkflow,
 } from '../contracts/index.js';
@@ -41,7 +42,7 @@ export const createActions = (
   plans: ReturnType<typeof createPlans>,
   runBackground: (operation: () => Promise<void>) => Promise<void>,
 ) => {
-  const prompts = new Map<string, { native: INativePrompt; presentation: INativeApproval }>();
+  const prompts = new Map<string, { native: INativePrompt; threadId: string }>();
   const controlled = new Map<string, { provider: IManagedThread['provider']; nativeId: string }>();
   const key = (provider: IManagedThread['provider'], nativeId: string) =>
     JSON.stringify([provider, nativeId]);
@@ -538,15 +539,7 @@ export const createActions = (
         if (prompts.has(recorded.id)) return;
         prompts.set(recorded.id, {
           native: prompt,
-          presentation: {
-            id: recorded.id,
-            threadId: recorded.thread.id,
-            nativeTurnId: prompt.nativeTurnId,
-            runtimeEpoch: epoch,
-            state: 'pending',
-            replyActionId: null,
-            ...prompt.presentation,
-          },
+          threadId: recorded.thread.id,
         });
       });
     },
@@ -734,8 +727,8 @@ export const createActions = (
       const prompt = prompts.get(command.approvalId);
       if (
         !prompt ||
-        prompt.presentation.threadId !== command.threadId ||
-        prompt.presentation.nativeTurnId !== command.expectedTurnId
+        prompt.threadId !== command.threadId ||
+        prompt.native.nativeTurnId !== command.expectedTurnId
       )
         conflict();
       prompt.native.validate(command.response);
@@ -753,14 +746,6 @@ export const createActions = (
       prepared.input = input;
     }
     const admitted = await plans.admitNative(action, prepared);
-    if (
-      admitted.isNew &&
-      admitted.receipt.delivery === 'submitted' &&
-      command.kind === 'native-reply'
-    ) {
-      const prompt = prompts.get(command.approvalId);
-      if (prompt) prompt.presentation.replyActionId = admitted.receipt.id;
-    }
     if (admitted.isNew && admitted.dispatchActionId && admitted.thread) {
       const receipt =
         admitted.dispatchActionId === admitted.receipt.id
@@ -889,11 +874,18 @@ export const createActions = (
         admissions.delete(admission);
       }
     },
-    /** Reads only current in-memory prompts for the selected managed thread. */
-    approvals(threadId: string): INativeApproval[] {
-      return [...prompts.values()]
-        .filter((prompt) => prompt.presentation.threadId === threadId)
-        .map((prompt) => structuredClone(prompt.presentation));
+    /** Attaches sensitive presentation only to the exact current native request. */
+    approvalPresentation(approval: INativeApprovalSummary): INativeApproval {
+      const prompt = prompts.get(approval.id);
+      const current =
+        approval.state === 'pending' &&
+        approval.runtimeEpoch === epoch &&
+        prompt?.threadId === approval.threadId &&
+        prompt.native.nativeTurnId === approval.nativeTurnId;
+      return {
+        ...approval,
+        presentation: current ? structuredClone(prompt.native.presentation) : null,
+      };
     },
     /**
      * Quiesces the selected managed cohort without stopping unrelated controllers.

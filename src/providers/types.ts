@@ -4,7 +4,7 @@ import { SkillSchema, ThreadSummarySchema } from '../contracts/index.js';
 import type {
   IActionCommand,
   IManagedThread,
-  INativeApproval,
+  IApprovalPresentation,
   ISkill,
   IHqResponse,
   IProviderId,
@@ -221,10 +221,7 @@ export type INativePrompt = {
   nativeTurnId: string;
   requestId: string;
   fingerprint: string;
-  presentation: Pick<
-    INativeApproval,
-    'kind' | 'title' | 'detail' | 'decisions' | 'questions' | 'isBlocking'
-  >;
+  presentation: IApprovalPresentation;
   /**
    * Validates a reply against the exact displayed native request.
    * @returns The native response payload without widening the requested scope.
@@ -237,6 +234,7 @@ export type INativePrompt = {
    * @returns Confirmation of the write, which does not prove native consumption.
    * @throws
    * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+   * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
    */
   reply(response: unknown): Promise<void>;
   /**
@@ -244,6 +242,7 @@ export type INativePrompt = {
    * @returns Confirmation that the denial was written.
    * @throws
    * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+   * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
    */
   reject(): Promise<void>;
 };

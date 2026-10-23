@@ -31,6 +31,7 @@ import {
   ActionPageSchema,
   LifecyclePageSchema,
   ApprovalIdentitySchema,
+  ApprovalPageSchema,
 } from './control/index.js';
 import {
   StoreRequestSchema,
@@ -310,6 +311,8 @@ export const createStore = async (
     listThreads: (workspaceRoot, page) =>
       request({ kind: 'threads', workspaceRoot, page }, ManagedThreadPageSchema),
     listActions: (threadId, page) => request({ kind: 'actions', threadId, page }, ActionPageSchema),
+    listApprovals: (threadId, page) =>
+      request({ kind: 'approvals', threadId, page }, ApprovalPageSchema),
     listEvents: (page) => request({ kind: 'events', page }, LifecyclePageSchema),
     admit: (input) => request({ kind: 'admit', input }, AdmissionResultSchema),
     applyOutcome: (input) => request({ kind: 'outcome', input }, ActionReceiptSchema.nullable()),

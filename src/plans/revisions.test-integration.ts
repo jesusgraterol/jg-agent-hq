@@ -1514,13 +1514,13 @@ test('planning permits only the selected native skill and canonical finalization
     );
     const prompts = await fixture.runtime.request({ kind: 'approvals', threadId: target.id });
     if (prompts.kind !== 'approvals') throw new Error('Missing native permission');
-    expect(prompts.result).toHaveLength(1);
+    expect(prompts.result.data).toHaveLength(1);
     const activeTurn = (await session.thread(target.id)).activeTurnId!;
     const reply = await session.submit({
       kind: 'native-reply',
       threadId: target.id,
       expectedTurnId: activeTurn,
-      approvalId: prompts.result[0]!.id,
+      approvalId: prompts.result.data[0]!.id,
       response: { kind: 'decision', decision: 'accept' },
     });
     await session.until(

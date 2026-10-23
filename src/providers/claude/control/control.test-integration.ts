@@ -82,9 +82,9 @@ const actions = async (fixture: IClaudeFixture) => {
           },
       );
   const approvals = async (threadId: string) => {
-    const response = await fixture.request({ kind: 'approvals', threadId });
+    const response = await fixture.request({ kind: 'approvals', threadId, state: 'pending' });
     if (response.kind !== 'approvals') throw new Error('Missing approvals');
-    return response.result;
+    return response.result.data;
   };
   const message = async (threadId: string, text = 'Please inspect this example') => {
     const action = envelope({ kind: 'message', threadId, input: { kind: 'text', text: text } });
@@ -325,7 +325,10 @@ test('Claude permissions preserve native input and cannot grant a session-wide a
       () => api.approvals(thread.id),
       (rows) => rows.length === 1,
     );
-    expect(prompt).toMatchObject({ kind: 'permission', decisions: ['accept', 'decline'] });
+    expect(prompt).toMatchObject({
+      kind: 'permission',
+      presentation: { decisions: ['accept', 'decline'] },
+    });
     await expectToRejectCode(
       api.submit(
         api.envelope({
@@ -564,7 +567,7 @@ test.each([false, true])(
         () => api.approvals(thread.id),
         (rows) => rows.length === 1,
       );
-      expect(prompt!.questions[0]!.allowsMultiple).toBe(multiSelect);
+      expect(prompt!.presentation!.questions[0]!.allowsMultiple).toBe(multiSelect);
       const answer = api.envelope({
         kind: 'native-reply',
         threadId: thread.id,
@@ -588,17 +591,128 @@ test.each([false, true])(
   },
 );
 
+test.each(['form', 'url'] as const)(
+  'Claude %s elicitation requires explicit input and never invents a native acknowledgement',
+  async (mode) => {
+    await withClaudeRuntime(async (fixture) => {
+      const api = await actions(fixture),
+        { thread } = await api.create();
+      await fixture.control({
+        prompt: 'permission',
+        elicitation: {
+          subtype: 'elicitation',
+          mcp_server_name: 'fixture',
+          mode,
+          message: 'Choose a color',
+          ...(mode === 'form'
+            ? {
+                requested_schema: {
+                  type: 'object',
+                  properties: { color: { type: 'string', enum: ['blue'] } },
+                  required: ['color'],
+                  additionalProperties: false,
+                },
+              }
+            : { url: 'https://example.com/authorize', elicitation_id: 'native-elicit' }),
+        },
+      });
+      await api.message(thread.id);
+      const [prompt] = await api.until(
+        () => api.approvals(thread.id),
+        (rows) => rows.length === 1,
+      );
+      expect(prompt!.presentation?.elicitation).toMatchObject({ mode, serverName: 'fixture' });
+      await expectToRejectCode(
+        api.submit(
+          api.envelope({
+            kind: 'native-reply',
+            threadId: thread.id,
+            expectedTurnId: prompt!.nativeTurnId,
+            approvalId: prompt!.id,
+            response: { kind: 'decision', decision: 'accept' },
+          }),
+        ),
+        'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
+      );
+      const content = mode === 'form' ? { color: 'blue' } : null;
+      const reply = api.envelope({
+        kind: 'native-reply',
+        threadId: thread.id,
+        expectedTurnId: prompt!.nativeTurnId,
+        approvalId: prompt!.id,
+        response: { kind: 'elicitation', action: 'accept', content },
+      });
+      await api.submit(reply);
+      await api.until(
+        () => api.receipt(reply.id),
+        (entry) => entry.delivery === 'uncertain',
+      );
+      expect(
+        (await api.calls())
+          .filter((call) => call.type === 'control_response')
+          .map((call) => call.response?.response),
+      ).toStrictEqual([{ action: 'accept', content }]);
+      const history = await fixture.request({ kind: 'approvals', threadId: thread.id });
+      expect(history).toMatchObject({
+        result: { data: [{ state: 'expired', replyActionId: reply.id, presentation: null }] },
+      });
+      await api.submit(reply);
+      expect((await api.calls()).filter((call) => call.type === 'control_response')).toHaveLength(
+        1,
+      );
+    });
+  },
+);
+
+test.each([
+  { requires_user_interaction: true },
+  { unknown_permission_policy: true },
+  { subtype: 'unknown-request' },
+])(
+  'Claude does not turn unsupported native permission metadata %j into approval',
+  async (permissionMetadata) => {
+    await withClaudeRuntime(async (fixture) => {
+      const api = await actions(fixture),
+        { thread } = await api.create();
+      await fixture.control({ prompt: 'permission', permissionMetadata });
+      await api.message(thread.id);
+      await api.until(
+        () => api.calls(),
+        (calls) => calls.some((call) => call.type === 'control_response'),
+      );
+      expect(await api.approvals(thread.id)).toStrictEqual([]);
+      expect(
+        (await api.calls()).find((call) => call.type === 'control_response')?.response,
+      ).toMatchObject({ subtype: 'error', error: 'Unsupported request' });
+    });
+  },
+);
+
 test('Claude permission acceptance copies only the displayed native input', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture),
       { thread } = await api.create();
-    await fixture.control({ prompt: 'permission' });
+    await fixture.control({
+      prompt: 'permission',
+      permissionMetadata: {
+        server_policy_ask_only: false,
+        decision_reason_type: 'rule',
+        decision_reason_rule_source: 'localSettings',
+      },
+    });
     const input = await api.message(thread.id),
       accepted = await api.settled(input.id);
     const [prompt] = await api.until(
       () => api.approvals(thread.id),
       (rows) => rows.length === 1,
     );
+    expect((await api.calls()).filter((call) => call.type === 'control_response')).toStrictEqual(
+      [],
+    );
+    expect(JSON.parse(prompt!.presentation!.detail)).toMatchObject({
+      server_policy_ask_only: false,
+      decision_reason_rule_source: 'localSettings',
+    });
     const reply = api.envelope({
       kind: 'native-reply',
       threadId: thread.id,
@@ -780,7 +894,12 @@ test('Claude displays the complete native permission scope before allowing it', 
       (rows) => rows.length === 1,
     );
     const command = 'echo ' + 'x'.repeat(16384) + ' visible-end';
-    expect(JSON.parse(prompt!.detail)).toStrictEqual({ command });
+    expect(JSON.parse(prompt!.presentation!.detail)).toStrictEqual({
+      subtype: 'can_use_tool',
+      tool_name: 'Bash',
+      tool_use_id: 'tool-request',
+      input: { command },
+    });
     const reply = api.envelope({
       kind: 'native-reply',
       threadId: thread.id,

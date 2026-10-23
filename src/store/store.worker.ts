@@ -166,6 +166,9 @@ const startWorker = async (): Promise<void> => {
           case 'events':
             result = controls.listEvents(command.page);
             break;
+          case 'approvals':
+            result = controls.listApprovals(command.threadId, command.page);
+            break;
           case 'admit':
             result = controls.admit(command.input);
             break;

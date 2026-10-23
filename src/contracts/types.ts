@@ -99,7 +99,12 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     after: z.number().int().nonnegative().default(0),
     limit: PageFields.limit,
   }),
-  z.strictObject({ kind: z.literal('approvals'), threadId: z.uuid() }),
+  z.strictObject({
+    kind: z.literal('approvals'),
+    threadId: z.uuid(),
+    state: NativeApprovalSchema.shape.state.optional(),
+    ...PageFields,
+  }),
   z.strictObject({
     kind: z.literal('live-items'),
     threadId: z.uuid(),
@@ -243,7 +248,13 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
       hasMore: z.boolean(),
     }),
   }),
-  z.object({ kind: z.literal('approvals'), result: z.array(NativeApprovalSchema).max(32) }),
+  z.object({
+    kind: z.literal('approvals'),
+    result: z.object({
+      data: z.array(NativeApprovalSchema).max(MAX_PAGE_SIZE),
+      nextCursor: CursorSchema.nullable(),
+    }),
+  }),
   z.object({ kind: z.literal('live-items'), result: LiveItemsSchema }),
 ]);
 export type IHqResponse = z.infer<typeof HqResponseSchema>;

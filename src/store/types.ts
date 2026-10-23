@@ -15,6 +15,7 @@ import {
   type IActionReceipt,
   type IManagedThread,
   type IActionSummary,
+  type INativeApprovalSummary,
   type ILifecycleEvent,
   HqRequestSchema,
   type IActionPlanContext,
@@ -52,12 +53,14 @@ import {
   NativeOutcomeSchema,
   NativeObservationSchema,
   ControlPageSchema,
+  ApprovalPageRequestSchema,
   EventPageSchema,
   ApprovalRecordSchema,
   type IAdmission,
   type INativeOutcome,
   type INativeObservation,
   type IControlPage,
+  type IApprovalPageRequest,
   type IEventPage,
   type IApprovalRecord,
   type IAdmissionResult,
@@ -145,6 +148,11 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     page: ControlPageSchema,
   }),
   z.strictObject({ kind: z.literal('events'), page: EventPageSchema }),
+  z.strictObject({
+    kind: z.literal('approvals'),
+    threadId: z.uuid(),
+    page: ApprovalPageRequestSchema,
+  }),
   z.strictObject({ kind: z.literal('admit'), input: AdmissionSchema }),
   z.strictObject({ kind: z.literal('outcome'), input: NativeOutcomeSchema }),
   z.strictObject({ kind: z.literal('observe'), input: NativeObservationSchema }),
@@ -421,6 +429,16 @@ export type IStore = {
     threadId: string,
     page: IControlPage,
   ): Promise<{ data: IActionSummary[]; hasMore: boolean }>;
+  /**
+   * Reads durable approval metadata with an optional state filter.
+   * @returns One descending seek page without prompt bodies or answers.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  listApprovals(
+    threadId: string,
+    page: IApprovalPageRequest,
+  ): Promise<{ data: INativeApprovalSummary[]; hasMore: boolean }>;
   /**
    * Replays one thread-scoped metadata page in sequence order.
    * @returns One ascending sequence page and whether more events exist.

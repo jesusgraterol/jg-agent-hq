@@ -79,7 +79,7 @@ export const startClaudeControl = () => {
      const uuid=randomUUID();out({type:'assistant',uuid,message:{role:'assistant',content:[{type:'tool_use',id:'tool-request',name:tool,input:toolInput}]}});
      record(uuid,'assistant',[{type:'tool_use',id:'tool-request',name:tool,input:toolInput}],leaf);leaf=uuid;
      out({type:'stream_event',event:{type:'message_delta',delta:{stop_reason:'tool_use',stop_sequence:null}}});
-     out({type:'control_request',request_id:'native-request',request:{subtype:'can_use_tool',tool_name:tool,tool_use_id:'tool-request',input:toolInput}});
+     out({type:'control_request',request_id:'native-request',request:settings.elicitation??{subtype:'can_use_tool',tool_name:tool,tool_use_id:'tool-request',input:toolInput,...settings.permissionMetadata}});
      if(settings.doublePrompt)out({type:'control_request',request_id:'other-request',request:{subtype:'can_use_tool',tool_name:tool,tool_use_id:'other-tool',input:toolInput}});
     }else if(!settings.holdTurn)complete();
    };

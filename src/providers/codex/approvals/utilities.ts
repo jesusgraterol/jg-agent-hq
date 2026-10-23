@@ -1,12 +1,14 @@
 import { Exception } from 'jg-exception';
 
-import type { IActionCommand, INativeApproval } from '../../../contracts/index.js';
+import type { IActionCommand, IApprovalPresentation } from '../../../contracts/index.js';
+import { presentElicitation, validateElicitation } from '../../elicitation/index.js';
 
 import {
   CommandApprovalSchema,
   FileApprovalSchema,
   PermissionApprovalSchema,
   QuestionApprovalSchema,
+  ElicitationApprovalSchema,
   type ICodexPrompt,
 } from './types.js';
 
@@ -39,54 +41,66 @@ export const parseCodexPrompt = (method: string, params: unknown): ICodexPrompt 
         return null;
       return { kind: 'question', params: parsed.data };
     }
+    case 'mcpServer/elicitation/request': {
+      const parsed = ElicitationApprovalSchema.safeParse(params);
+      return parsed.success ? { kind: 'elicitation', params: parsed.data } : null;
+    }
     default:
       return null;
   }
 };
 
 /** Exposes the complete request scope without persisting prompt bodies or answers. */
-export const toApprovalPresentation = (
-  prompt: ICodexPrompt,
-): Pick<
-  INativeApproval,
-  'kind' | 'title' | 'detail' | 'questions' | 'isBlocking' | 'decisions'
-> => ({
-  kind: prompt.kind,
-  title:
-    prompt.kind === 'question'
-      ? 'Codex needs your input'
-      : prompt.kind === 'command'
-        ? prompt.params.kind === 'writeStdin'
-          ? 'Codex requests terminal input'
-          : 'Codex requests command approval'
+export const toApprovalPresentation = (prompt: ICodexPrompt): IApprovalPresentation => {
+  if (prompt.kind === 'elicitation') {
+    const request = prompt.params;
+    return presentElicitation({
+      mode: request.mode,
+      serverName: request.serverName,
+      message: request.message,
+      requestedSchema: request.mode === 'form' ? request.requestedSchema : null,
+      url: request.mode === 'url' ? request.url : null,
+      elicitationId: request.mode === 'url' ? request.elicitationId : null,
+    });
+  }
+  return {
+    kind: prompt.kind,
+    title:
+      prompt.kind === 'question'
+        ? 'Codex needs your input'
+        : prompt.kind === 'command'
+          ? prompt.params.kind === 'writeStdin'
+            ? 'Codex requests terminal input'
+            : 'Codex requests command approval'
+          : prompt.kind === 'file-change'
+            ? 'Codex requests file changes'
+            : 'Codex requests additional permissions',
+    detail: JSON.stringify(prompt.params, null, 2),
+    decisions:
+      prompt.kind === 'command'
+        ? (['accept', 'acceptForSession', 'decline', 'cancel'] as const).filter(
+            (decision) =>
+              !prompt.params.availableDecisions ||
+              prompt.params.availableDecisions.includes(decision),
+          )
         : prompt.kind === 'file-change'
-          ? 'Codex requests file changes'
-          : 'Codex requests additional permissions',
-  detail: JSON.stringify(prompt.params, null, 2),
-  decisions:
-    prompt.kind === 'command'
-      ? (['accept', 'acceptForSession', 'decline', 'cancel'] as const).filter(
-          (decision) =>
-            !prompt.params.availableDecisions ||
-            prompt.params.availableDecisions.includes(decision),
-        )
-      : prompt.kind === 'file-change'
-        ? ['accept', 'acceptForSession', 'decline', 'cancel']
+          ? ['accept', 'acceptForSession', 'decline', 'cancel']
+          : [],
+    isBlocking: prompt.kind === 'question' ? prompt.params.isBlocking : true,
+    questions:
+      prompt.kind === 'question'
+        ? prompt.params.questions.map((question) => ({
+            id: question.id,
+            header: question.header,
+            question: question.question,
+            isSecret: question.isSecret,
+            isOther: question.isOther,
+            allowsMultiple: false,
+            options: question.options ?? null,
+          }))
         : [],
-  isBlocking: prompt.kind === 'question' ? prompt.params.isBlocking : true,
-  questions:
-    prompt.kind === 'question'
-      ? prompt.params.questions.map((question) => ({
-          id: question.id,
-          header: question.header,
-          question: question.question,
-          isSecret: question.isSecret,
-          isOther: question.isOther,
-          allowsMultiple: false,
-          options: question.options ?? null,
-        }))
-      : [],
-});
+  };
+};
 
 /**
  * Restricts replies to the exact displayed request, including native decision choices.
@@ -94,6 +108,11 @@ export const toApprovalPresentation = (
  * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
  */
 export const buildCodexReply = (prompt: ICodexPrompt, response: IReply): unknown => {
+  if (prompt.kind === 'elicitation')
+    return {
+      ...validateElicitation(toApprovalPresentation(prompt).elicitation!, response),
+      _meta: null,
+    };
   const invalid = (): never => {
     throw new Exception('The HQ request is invalid', {
       code: 'JG_AGENT_HQ_REQUEST_INVALID',

@@ -9,6 +9,7 @@ import {
   ActionSummarySchema,
   ManagedThreadSchema,
   NativeApprovalSchema,
+  NativeApprovalSummarySchema,
   LifecycleEventSchema,
   NativeLineageSchema,
 } from '../../contracts/index.js';
@@ -186,6 +187,10 @@ export const ControlPageSchema = z.strictObject({
   position: z.strictObject({ createdAt: z.number().int(), id: z.uuid() }).nullable(),
 });
 export type IControlPage = z.infer<typeof ControlPageSchema>;
+export const ApprovalPageRequestSchema = ControlPageSchema.extend({
+  state: NativeApprovalSummarySchema.shape.state.optional(),
+});
+export type IApprovalPageRequest = z.infer<typeof ApprovalPageRequestSchema>;
 export const EventPageSchema = z.strictObject({
   limit: z.number().int().min(1).max(128),
   after: z.number().int().nonnegative(),
@@ -212,6 +217,10 @@ export const ManagedThreadPageSchema = z.object({
 });
 export const ActionPageSchema = z.object({
   data: z.array(ActionSummarySchema).max(128),
+  hasMore: z.boolean(),
+});
+export const ApprovalPageSchema = z.object({
+  data: z.array(NativeApprovalSummarySchema).max(128),
   hasMore: z.boolean(),
 });
 export const LifecyclePageSchema = z.object({

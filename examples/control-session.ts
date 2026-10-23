@@ -74,7 +74,7 @@ export const controlSession = async (input: {
   const receipt = await acknowledged(input.actionIds.message);
   const [liveItems, approvals, usage] = await Promise.all([
     requestAgentHq(stateRoot, { kind: 'live-items', threadId }),
-    requestAgentHq(stateRoot, { kind: 'approvals', threadId }),
+    requestAgentHq(stateRoot, { kind: 'approvals', threadId, state: 'pending' }),
     requestAgentHq(stateRoot, { kind: 'usage', provider: input.provider }),
   ]);
   if (liveItems.kind !== 'live-items' || approvals.kind !== 'approvals' || usage.kind !== 'usage')
@@ -83,7 +83,7 @@ export const controlSession = async (input: {
     thread,
     receipt,
     liveItems: liveItems.result,
-    approvals: approvals.result,
+    approvals: approvals.result.data,
     usage: usage.result,
   };
 };

@@ -9,6 +9,8 @@ export {
   DispatchSchema,
   ObservationResultSchema,
   ControlPageSchema,
+  ApprovalPageRequestSchema,
+  ApprovalPageSchema,
   EventPageSchema,
   ApprovalRecordSchema,
   ManagedThreadPageSchema,
@@ -25,6 +27,7 @@ export type {
   IDispatch,
   IObservationResult,
   IControlPage,
+  IApprovalPageRequest,
   IEventPage,
   IApprovalRecord,
 } from './types.js';

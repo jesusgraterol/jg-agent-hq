@@ -246,7 +246,13 @@ export const receiveClaudeMessage = (
       input.id,
       session.scope,
       request.request_id,
-      session.connection.write,
+      async (message) => {
+        const pending = session.requests.get(request.request_id);
+        if (session.input !== input || !pending || pending.isWritten) unavailable();
+        pending.isWritten = true;
+        await session.connection!.write(message);
+        // elicitation control replies have no tool_result acknowledgement on this native protocol
+      },
     );
     if (!parsed || session.requests.size >= 32) {
       void session.connection
@@ -261,9 +267,16 @@ export const receiveClaudeMessage = (
         .catch(() => events?.unavailable(session.id));
       return;
     }
+    const existing = session.requests.get(request.request_id);
+    if (existing) {
+      if (existing.fingerprint !== parsed.prompt.fingerprint) unavailable();
+      return;
+    }
     session.requests.set(request.request_id, {
       toolId: parsed.toolId,
       scopedId: parsed.prompt.requestId,
+      fingerprint: parsed.prompt.fingerprint,
+      isWritten: false,
     });
     events?.prompt(parsed.prompt);
   } else if (frame.type === 'control_cancel_request') {

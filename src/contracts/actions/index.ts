@@ -7,6 +7,9 @@ export {
   ActionSummarySchema,
   ManagedThreadSchema,
   NativeApprovalSchema,
+  NativeApprovalSummarySchema,
+  ApprovalPresentationSchema,
+  NativeElicitationSchema,
   LifecycleEventSchema,
 } from './types.js';
 export type {
@@ -17,6 +20,9 @@ export type {
   IActionSummary,
   IManagedThread,
   INativeApproval,
+  INativeApprovalSummary,
+  IApprovalPresentation,
+  INativeElicitation,
   ILifecycleEvent,
 } from './types.js';
 

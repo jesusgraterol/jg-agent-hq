@@ -8,7 +8,7 @@ import { MessageInputSchema, NativeSkillInputSchema } from '../skills/index.js';
 import { NativeIdSchema, NativeLineageSchema } from '../identities/index.js';
 import { PlanRevisionSchema } from '../plans/index.js';
 import { BoundInputFileSchema, MAX_INPUT_FILES } from '../inputs/index.js';
-import { TurnResultSchema } from '../results/index.js';
+import { TurnResultSchema, OutputSchemaSchema } from '../results/index.js';
 
 // queue payloads preserve the exact native selection, content hashes and turn options
 export const PreparedInputSchema = z.object({
@@ -111,6 +111,13 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
             ),
           ),
       }),
+      z
+        .strictObject({
+          kind: z.literal('elicitation'),
+          action: z.enum(['accept', 'decline', 'cancel']),
+          content: z.record(z.string(), z.json()).nullable(),
+        })
+        .refine((reply) => new TextEncoder().encode(JSON.stringify(reply)).length <= 32_768),
     ]),
   }),
 ]);
@@ -211,32 +218,78 @@ export const ManagedThreadSchema = z.object({
 });
 export type IManagedThread = z.infer<typeof ManagedThreadSchema>;
 
-// prompts are kept in memory; durable approval records retain identities and response digests
-export const NativeApprovalSchema = z.object({
+// sensitive native presentation exists only while its owning live request is available
+export const NativeElicitationSchema = z
+  .object({
+    mode: z.enum(['form', 'url']),
+    serverName: z.string().min(1).max(256),
+    message: z.string().max(8192),
+    requestedSchema: OutputSchemaSchema.nullable(),
+    url: z
+      .url({ protocol: /^https?$/ })
+      .max(8192)
+      .refine((value) => {
+        const url = new URL(value);
+        return !url.username && !url.password;
+      })
+      .nullable(),
+    elicitationId: z.string().min(1).max(4096).nullable(),
+  })
+  .refine((request) =>
+    request.mode === 'form'
+      ? request.requestedSchema?.type === 'object' &&
+        request.url === null &&
+        request.elicitationId === null
+      : request.requestedSchema === null && request.url !== null && request.elicitationId !== null,
+  );
+export type INativeElicitation = z.infer<typeof NativeElicitationSchema>;
+
+// prompt strings are untrusted display content, never HTML or terminal escape instructions
+export const ApprovalPresentationSchema = z
+  .object({
+    kind: z.enum(['command', 'file-change', 'permission', 'question', 'elicitation']),
+    isBlocking: z.boolean(),
+    title: z.string(),
+    detail: z.string(),
+    decisions: z.array(z.enum(['accept', 'acceptForSession', 'decline', 'cancel'])).max(4),
+    questions: z
+      .array(
+        z.object({
+          id: z.string(),
+          header: z.string(),
+          question: z.string(),
+          isSecret: z.boolean(),
+          isOther: z.boolean(),
+          allowsMultiple: z.boolean(),
+          options: z.array(z.object({ label: z.string(), description: z.string() })).nullable(),
+        }),
+      )
+      .max(32),
+    elicitation: NativeElicitationSchema.optional(),
+  })
+  .refine(
+    (presentation) =>
+      new TextEncoder().encode(JSON.stringify(presentation)).length <= 131_072 &&
+      (presentation.kind === 'elicitation') === (presentation.elicitation !== undefined),
+  );
+export type IApprovalPresentation = z.infer<typeof ApprovalPresentationSchema>;
+
+// durable metadata remains queryable after resolution without retaining prompt bodies or answers
+export const NativeApprovalSummarySchema = z.object({
   id: z.uuid(),
   threadId: ThreadIdSchema,
   nativeTurnId: NativeIdSchema,
   runtimeEpoch: z.uuid(),
-  kind: z.enum(['command', 'file-change', 'permission', 'question']),
+  kind: ApprovalPresentationSchema.shape.kind,
   state: z.enum(['pending', 'answered', 'expired']),
   replyActionId: z.uuid().nullable(),
   isBlocking: z.boolean(),
-  title: z.string(),
-  detail: z.string(),
-  decisions: z.array(z.enum(['accept', 'acceptForSession', 'decline', 'cancel'])).max(4),
-  questions: z
-    .array(
-      z.object({
-        id: z.string(),
-        header: z.string(),
-        question: z.string(),
-        isSecret: z.boolean(),
-        isOther: z.boolean(),
-        allowsMultiple: z.boolean(),
-        options: z.array(z.object({ label: z.string(), description: z.string() })).nullable(),
-      }),
-    )
-    .max(32),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+});
+export type INativeApprovalSummary = z.infer<typeof NativeApprovalSummarySchema>;
+export const NativeApprovalSchema = NativeApprovalSummarySchema.extend({
+  presentation: ApprovalPresentationSchema.nullable(),
 });
 export type INativeApproval = z.infer<typeof NativeApprovalSchema>;
 

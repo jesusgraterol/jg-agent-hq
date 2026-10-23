@@ -5,7 +5,7 @@ import { z } from 'zod';
 import {
   HistoryItemSchema,
   MAX_PROVIDERS,
-  NativeApprovalSchema,
+  ApprovalPresentationSchema,
   ProviderCapabilitySetSchema,
   ProviderIdSchema,
   ProviderStatusSchema,
@@ -54,14 +54,6 @@ type IProviderEntry = {
 };
 
 const CleanupSchema = z.object({ cleanupUnconfirmed: z.literal(true) });
-const PromptPresentationSchema = NativeApprovalSchema.pick({
-  kind: true,
-  title: true,
-  detail: true,
-  decisions: true,
-  questions: true,
-  isBlocking: true,
-});
 
 /** Returns an explicit observation when no usable capability descriptor could be obtained. */
 const unavailableCapabilities = (): IProviderCapabilitySet => {
@@ -225,7 +217,7 @@ export const createProviderRegistry = (
           if (Buffer.byteLength(prompt.fingerprint) > MAX_FRAME_BYTES) rejectProviderResponse();
           const normalized = {
             ...prompt,
-            presentation: PromptPresentationSchema.parse(prompt.presentation),
+            presentation: ApprovalPresentationSchema.parse(prompt.presentation),
             validate(response: Parameters<typeof prompt.validate>[0]) {
               try {
                 return prompt.validate(response);
