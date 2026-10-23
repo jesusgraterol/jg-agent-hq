@@ -24,6 +24,7 @@ import {
 } from '../../contracts/index.js';
 import { NativeIdSchema } from '../../contracts/identities/index.js';
 import { MAX_FRAME_BYTES } from '../../ipc/index.js';
+import { nativeProvenance } from '../../sessions/evidence/index.js';
 import { ApprovalRecordSchema } from '../../store/control/index.js';
 import {
   ProviderMcpServerPageSchema,
@@ -203,10 +204,19 @@ export const createProviderRegistry = (
         }),
       item: (nativeId, item, complete, replacedIds) =>
         deliver(() => {
+          const normalized = HistoryItemSchema.parse(item);
+          const observed = normalized.provenance;
+          normalized.provenance = nativeProvenance(normalized.kind, observed.nativeInputId);
+          if (observed.origin === 'system' && observed.source === 'native-kind')
+            normalized.provenance = {
+              ...normalized.provenance,
+              origin: 'system',
+              source: 'native-kind',
+            };
           handlers?.item(
             provider,
             NativeIdSchema.parse(nativeId),
-            HistoryItemSchema.parse(item),
+            normalized,
             z.boolean().parse(complete),
             replacedIds === undefined
               ? undefined

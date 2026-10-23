@@ -20,6 +20,10 @@ Complete final results are separate from the bounded live/history presentation. 
 
 Native request bodies stay in the controller’s bounded live prompt map. SQLite keeps approval identity, exact turn/runtime correlation, state and reply-action identity; indexed seek queries return durable metadata with optional live presentation. Restart or loss of the native connection expires pending requests. Pipe writes do not establish response consumption, and unanswered delivery uncertainty never triggers a resend. Plan authority and native permission responses remain independent.
 
+Bounded session evidence uses the native history boundary and rechecks workspace authorization per read. Exact references bind normalized UTF-8 text to provider, session, turn, item and hash. A partial-page continuation validates its content digest before returning another body fragment. Source pages stay bounded; no transcript body cache is kept. Claude's worker seeks current-chain UUID/kind/offset indexes and rereads only selected records after incremental indexing.
+
+Input provenance joins exact acknowledged native input identities and text fingerprints with action records. Authenticated host text additionally matches its browser admission's selected thread and fingerprint. HQ saves hashes rather than another copy of ordinary input. Native user roles and quoted feedback remain unknown unless that correlation succeeds. Every historical item has an untrusted content boundary and grants no authority.
+
 ## Storage
 
 One SQLite worker owns HQ persistence. The complete definition, including provider history indexes, is src/store/schema.sql. Fresh initialization creates the schema and its singleton hq_schema hash in one transaction. Reopening validates that stamp through a read-only connection before opening a writer. This preserves rejected database bytes and their WAL instead of triggering SQLite's close-time checkpoint. Application-owned objects are outside this stamp. HQ does not modify user_version or convert persisted state between schema definitions; use a fresh development state root after an HQ schema change.

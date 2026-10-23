@@ -5,7 +5,7 @@ import { z } from 'zod';
 const ContinuationSchema = z.strictObject({
   version: z.literal(1),
   filterHash: z.string().regex(/^[a-f0-9]{64}$/),
-  nativeCursor: z.string().min(1).max(8192),
+  nativeCursor: z.string().min(1).max(12_000),
 });
 
 // request schemas produce deterministic key ordering before filters are hashed

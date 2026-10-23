@@ -70,6 +70,7 @@ CREATE TABLE hq_action (
   related_action_id TEXT,
   queued_input TEXT,
   result TEXT,
+  input_sha256 TEXT CHECK (input_sha256 IS NULL OR length(input_sha256) = 64),
   plan_context TEXT,
   queue_ready INTEGER NOT NULL DEFAULT 0 CHECK (queue_ready IN (0, 1)),
   requested_name TEXT,
@@ -87,6 +88,7 @@ CREATE INDEX hq_idx_a__provider_epoch_pending_control ON hq_action (provider, ru
 CREATE INDEX hq_idx_a__thread_id_created_at_id_desc ON hq_action (thread_id, created_at DESC, id DESC);
 CREATE INDEX hq_idx_a__thread_id_delivery_created_at_id ON hq_action (thread_id, delivery, created_at, id);
 CREATE INDEX hq_idx_a__native_turn_id ON hq_action (native_turn_id);
+CREATE INDEX hq_idx_a__thread_turn_input ON hq_action (thread_id, native_turn_id, input_sha256) WHERE input_sha256 IS NOT NULL;
 CREATE INDEX hq_idx_a__runtime_epoch_delivery ON hq_action (runtime_epoch, delivery);
 CREATE INDEX hq_idx_a__runtime_epoch_submitted ON hq_action (runtime_epoch) WHERE delivery = 'submitted';
 CREATE INDEX hq_idx_a__requested_name_delivery ON hq_action (requested_name, delivery);
@@ -211,11 +213,14 @@ CREATE TABLE hq_browser_action (
   id TEXT CONSTRAINT hq_pk_ba__id PRIMARY KEY,
   operator_id TEXT NOT NULL,
   digest TEXT NOT NULL CHECK (length(digest) = 64),
+  native_thread_id TEXT,
+  native_input_sha256 TEXT CHECK (native_input_sha256 IS NULL OR length(native_input_sha256) = 64),
   receipt TEXT NOT NULL CHECK (json_valid(receipt))
 ) STRICT;
 
 CREATE INDEX hq_idx_ba__submitted_epoch ON hq_browser_action (json_extract(receipt, '$.runtimeEpoch'))
 WHERE json_extract(receipt, '$.state') = 'submitted';
+CREATE UNIQUE INDEX hq_uidx_ba__native_action ON hq_browser_action (json_extract(receipt, '$.nativeActionId'));
 
 CREATE TABLE hq_claude_file (
   workspace_root TEXT NOT NULL, native_id TEXT NOT NULL, identity TEXT NOT NULL,
@@ -230,6 +235,7 @@ CREATE TABLE hq_claude_entry (
   workspace_root TEXT NOT NULL, native_id TEXT NOT NULL, uuid TEXT NOT NULL,
   parent_uuid TEXT, turn_id TEXT NOT NULL, byte_offset INTEGER NOT NULL, byte_length INTEGER NOT NULL,
   created_at INTEGER NOT NULL, is_visible INTEGER NOT NULL,
+  item_kind TEXT NOT NULL CHECK (item_kind IN ('user-message','agent-message','command','tool','file-change','unsupported')),
   is_current INTEGER NOT NULL, turn_start_offset INTEGER, anchor_id TEXT,
   CONSTRAINT hq_pk_ce__workspace_root_native_id_uuid PRIMARY KEY (workspace_root, native_id, uuid),
   CONSTRAINT hq_fk_ce__workspace_root_native_id FOREIGN KEY (workspace_root, native_id)
@@ -242,3 +248,9 @@ ON hq_claude_entry(workspace_root, native_id, turn_id, byte_offset) WHERE is_cur
 CREATE INDEX hq_idx_ce__workspace_native_turn_start_current
 ON hq_claude_entry(workspace_root, native_id, byte_offset)
 WHERE is_current = 1 AND is_visible = 1 AND byte_offset = turn_start_offset;
+CREATE INDEX hq_idx_ce__workspace_native_kind_offset_current
+ON hq_claude_entry(workspace_root, native_id, item_kind, byte_offset)
+WHERE is_current = 1 AND is_visible = 1;
+CREATE INDEX hq_idx_ce__workspace_native_turn_kind_offset_current
+ON hq_claude_entry(workspace_root, native_id, turn_id, item_kind, byte_offset)
+WHERE is_current = 1 AND is_visible = 1;

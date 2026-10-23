@@ -212,7 +212,12 @@ else {
     if (method === 'thread/turns/list') { respond(request.id,{ data: [{ id: 'turn-a',status: 'completed',startedAt: 1_700_000_000,completedAt: 1_700_000_001 }],nextCursor: null });return; }
     if (method === 'thread/items/list') {
       const text = control.largeItem ? 'a'.repeat(1_048_576) : 'Hello from the native history';
-      respond(request.id,{ data: control.awaitingFlush ? [] : control.items ?? [{ turnId: 'turn-a',item: { id: 'item-a',type: 'agentMessage',text } }],nextCursor: null });return;
+      let selected = control.awaitingFlush ? [] : control.items ?? [{ turnId: 'turn-a',item: { id: 'item-a',type: 'agentMessage',text } }];
+      if(params.turnId)selected=selected.filter(entry=>entry.turnId===params.turnId);
+      if(params.sortDirection==='desc')selected=[...selected].reverse();
+      const after=params.cursor?selected.findIndex(entry=>entry.item.id===params.cursor)+1:0;
+      const batch=selected.slice(after,after+params.limit);
+      respond(request.id,{data:batch,nextCursor:after+batch.length<selected.length?batch.at(-1).item.id:null});return;
     }
     if (method === 'account/rateLimits/read') {
       if (control.accountChangedDuringRead) process.stdout.write(JSON.stringify({ method: 'account/updated', params: {} })+'\n');

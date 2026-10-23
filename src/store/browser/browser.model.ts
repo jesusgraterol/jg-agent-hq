@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { Exception } from 'jg-exception';
 import { z } from 'zod';
@@ -68,11 +68,27 @@ export class BrowserModel {
       updatedAt: now,
       native: null,
     };
+    const native = action.command.kind === 'native' ? action.command.action.command : null;
+    const nativeText =
+      native?.kind === 'steer'
+        ? native.text
+        : native &&
+            (native.kind === 'message' || native.kind === 'queue') &&
+            native.input.kind === 'text'
+          ? native.input.text
+          : null;
     this.__database
       .prepare(
-        'INSERT INTO hq_browser_action (id, operator_id, digest, receipt) VALUES (?, ?, ?, ?)',
+        'INSERT INTO hq_browser_action (id, operator_id, digest, receipt, native_thread_id, native_input_sha256) VALUES (?, ?, ?, ?, ?, ?)',
       )
-      .run(action.id, operatorId, digest, JSON.stringify(receipt));
+      .run(
+        action.id,
+        operatorId,
+        digest,
+        JSON.stringify(receipt),
+        native && 'threadId' in native ? native.threadId : null,
+        nativeText === null ? null : createHash('sha256').update(nativeText).digest('hex'),
+      );
     return { receipt, isNew: true };
   }
 

@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest';
 
 import { LiveItems } from './index.js';
+import { nativeProvenance } from '../../sessions/evidence/index.js';
 
 const item = {
   nativeId: 'item',
@@ -9,6 +10,7 @@ const item = {
   nativeType: 'agentMessage',
   text: 'hello',
   isTruncated: false,
+  provenance: nativeProvenance('agent-message'),
 };
 
 test('unchanged live reads avoid copying bodies; append, completion, reconciliation and eviction invalidate the revision', () => {
@@ -38,4 +40,27 @@ test('unchanged live reads avoid copying bodies; append, completion, reconciliat
   for (let index = 0; index < 32; index++) live.open(`other-${index}`);
   expect(live.read('thread', flushed.revision).unchanged).toBe(false);
   expect(live.read('thread').hasGap).toBe(true);
+});
+
+test('host provenance enrichment does not keep an already persisted native body awaiting flush', () => {
+  const live = new LiveItems();
+  const input = {
+    ...item,
+    kind: 'user-message' as const,
+    nativeType: 'userMessage',
+    provenance: nativeProvenance('user-message', 'native-input'),
+  };
+  live.open('thread');
+  live.put('thread', input, true);
+  live.reconcile('thread', [
+    {
+      ...input,
+      provenance: {
+        ...input.provenance,
+        source: 'host-action',
+        actionId: '00000000-0000-4000-8000-000000000001',
+      },
+    },
+  ]);
+  expect(live.read('thread').data).toStrictEqual([]);
 });

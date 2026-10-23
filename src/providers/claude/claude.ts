@@ -182,6 +182,7 @@ export const createClaudeProvider = (store: IStore) => {
      * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
      * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+     * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
      */
     async readHistory(command: IHistoryRequest): Promise<IHqResponse> {
       const deadline = Date.now() + 30_000;

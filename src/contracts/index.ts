@@ -296,3 +296,16 @@ export type {
   IMcpToolPage,
   IMcpResourcePage,
 } from './extensions/index.js';
+// bounded historical evidence
+export {
+  EvidenceRequestSchema,
+  EvidencePageSchema,
+  EvidenceItemSchema,
+  HistoryProvenanceSchema,
+} from './evidence/index.js';
+export type {
+  IEvidenceRequest,
+  IEvidencePage,
+  IEvidenceItem,
+  IHistoryProvenance,
+} from './evidence/index.js';

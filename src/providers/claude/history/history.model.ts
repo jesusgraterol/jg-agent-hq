@@ -8,12 +8,19 @@ import {
   HqResponseSchema,
   type IHqRequest,
   type IThreadSummary,
+  type IEvidenceRequest,
+  type IEvidencePage,
 } from '../../../contracts/index.js';
 import {
   decodeHistoryCursor,
   encodeHistoryCursor,
   type IHistoryRequest,
 } from '../../../sessions/index.js';
+import {
+  evidencePosition,
+  buildEvidencePage,
+  EVIDENCE_SOURCE_PAGE_SIZE,
+} from '../../../sessions/evidence/index.js';
 
 import {
   EntryRowSchema,
@@ -33,7 +40,7 @@ import {
 } from './utilities.js';
 
 // identifies the path and record interpretation used by persisted projection entries
-const HISTORY_PROJECTION_VERSION = 2;
+const HISTORY_PROJECTION_VERSION = 3;
 const MAX_RECORD_BYTES = 1_048_576;
 const MAX_REFRESH_BYTES = 4_194_304;
 const CHAIN = `WITH RECURSIVE current_chain AS (
@@ -67,13 +74,15 @@ export class ClaudeHistoryModel {
    * @throws
    * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
    * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+   * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
    */
   public read(command: IHqRequest): IClaudeHistoryRead {
     if (
       (command.kind !== 'threads' &&
         command.kind !== 'thread' &&
         command.kind !== 'turns' &&
-        command.kind !== 'items') ||
+        command.kind !== 'items' &&
+        command.kind !== 'session-evidence') ||
       command.provider !== 'claude'
     )
       throw new Exception('The Claude history is unavailable', {
@@ -104,7 +113,9 @@ export class ClaudeHistoryModel {
     const root = command.workspaceRoot;
     const { cursor, ...filters } =
       command.kind === 'thread' ? { ...command, cursor: undefined } : command;
-    const continuation = decodeHistoryCursor(cursor, filters);
+    const continuation =
+      command.kind === 'session-evidence' ? undefined : decodeHistoryCursor(cursor, filters);
+    if (command.kind === 'session-evidence') evidencePosition(command);
     let directory: string;
     try {
       directory = projectDirectory(root);
@@ -168,6 +179,8 @@ export class ClaudeHistoryModel {
     const row = this.__file(root, command.nativeId);
     if (!row || row.supported !== 1 || row.workspace_state !== 'matching') this.__unavailable();
     if (command.kind === 'thread') return { kind: 'thread', result: this.__summary(row) };
+    if (command.kind === 'session-evidence')
+      return { kind: 'session-evidence', result: this.__evidence(command, row, directory) };
     const seek = continuation ? this.__parseCursor(EntrySeekSchema, continuation) : undefined;
     if (seek && seek.revision !== row.revision)
       throw new Exception('The HQ cursor does not match this request', {
@@ -285,6 +298,80 @@ export class ClaudeHistoryModel {
       managedId: null,
       historyState: row.supported === 1 ? 'available' : 'unavailable',
     };
+  }
+
+  private __evidence(command: IEvidenceRequest, row: IFileRow, directory: string): IEvidencePage {
+    const position = evidencePosition(command);
+    const seek = position.sourceCursor
+      ? this.__parseCursor(EntrySeekSchema, position.sourceCursor)
+      : undefined;
+    if (seek && seek.revision !== row.revision)
+      throw new Exception('The HQ cursor does not match this request', {
+        code: 'JG_AGENT_HQ_CURSOR_INVALID',
+        data: { kind: 'invalid-request' },
+      });
+    const kinds = command.kinds === undefined ? [undefined] : [...new Set(command.kinds)];
+    const entries = kinds
+      .flatMap((kind) =>
+        this.__database
+          .prepare(
+            `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM hq_claude_entry
+      WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND byte_offset < ?
+      ${command.turnId === undefined ? '' : 'AND turn_id = ?'}
+      ${command.nativeItemId === undefined ? '' : 'AND uuid = ?'}
+      ${kind === undefined ? '' : 'AND item_kind = ?'}
+      ORDER BY byte_offset DESC LIMIT ?`,
+          )
+          .all(
+            command.workspaceRoot,
+            command.nativeId,
+            seek?.offset ?? Number.MAX_SAFE_INTEGER,
+            ...(command.turnId === undefined ? [] : [command.turnId]),
+            ...(command.nativeItemId === undefined ? [] : [command.nativeItemId]),
+            ...(kind === undefined ? [] : [kind]),
+            EVIDENCE_SOURCE_PAGE_SIZE + 1,
+          )
+          .map((entry) => EntryRowSchema.parse(entry)),
+      )
+      .sort((left, right) => right.byte_offset - left.byte_offset)
+      .slice(0, EVIDENCE_SOURCE_PAGE_SIZE + 1);
+    const fd = openTranscript(directory, command.nativeId);
+    const items = [];
+    let readBytes = 0;
+    let lastOffset = 0;
+    try {
+      if (this.__identity(fd) !== row.identity || fstatSync(fd).size < row.file_size)
+        this.__unavailable();
+      for (const entry of entries.slice(0, EVIDENCE_SOURCE_PAGE_SIZE)) {
+        if (readBytes + entry.byte_length > MAX_REFRESH_BYTES) break;
+        const bytes = Buffer.alloc(entry.byte_length);
+        if (readSync(fd, bytes, 0, bytes.length, entry.byte_offset) !== bytes.length)
+          this.__unavailable();
+        const record = RecordSchema.parse(
+          JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
+        );
+        if (
+          record.uuid !== entry.uuid ||
+          (record.parentUuid ?? null) !== entry.parent_uuid ||
+          record.sessionId !== command.nativeId ||
+          !isClaudeWorkspaceCwd(record.cwd, command.workspaceRoot)
+        )
+          this.__unavailable();
+        items.push(toClaudeItem(record, entry.turn_id, true));
+        lastOffset = entry.byte_offset;
+        readBytes += entry.byte_length;
+      }
+      return buildEvidencePage(
+        command,
+        position,
+        items,
+        entries.length > items.length
+          ? JSON.stringify({ revision: row.revision, offset: lastOffset })
+          : null,
+      );
+    } finally {
+      closeSync(fd);
+    }
   }
 
   private __parseCursor<T>(schema: z.ZodType<T>, text: string): T {
@@ -591,12 +678,12 @@ export class ClaudeHistoryModel {
     this.__database
       .prepare(
         `INSERT INTO hq_claude_entry (workspace_root, native_id, uuid, parent_uuid, turn_id, byte_offset,
-          byte_length, created_at, is_visible, is_current, turn_start_offset, anchor_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          byte_length, created_at, is_visible, is_current, turn_start_offset, anchor_id, item_kind)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(workspace_root, native_id, uuid) DO UPDATE SET parent_uuid = excluded.parent_uuid,
       turn_id = excluded.turn_id, byte_offset = excluded.byte_offset, byte_length = excluded.byte_length,
       created_at = excluded.created_at, is_visible = excluded.is_visible, is_current = excluded.is_current,
-      turn_start_offset = excluded.turn_start_offset, anchor_id = excluded.anchor_id`,
+      turn_start_offset = excluded.turn_start_offset, anchor_id = excluded.anchor_id, item_kind = excluded.item_kind`,
       )
       .run(
         root,
@@ -611,6 +698,7 @@ export class ClaudeHistoryModel {
         visible ? 1 : 0,
         turnStart,
         anchorId,
+        visible ? toClaudeItem(record, turnId).kind : 'unsupported',
       );
     if (visible) {
       if (!isAppend && !isSameLeaf)

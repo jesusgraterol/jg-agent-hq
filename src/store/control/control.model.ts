@@ -1,4 +1,4 @@
-import { createHmac, createSecretKey, randomUUID, type KeyObject } from 'node:crypto';
+import { createHash, createHmac, createSecretKey, randomUUID, type KeyObject } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { Exception } from 'jg-exception';
 import { z } from 'zod';
@@ -12,7 +12,9 @@ import {
   type IActionSummary,
   type IManagedThread,
   type ILifecycleEvent,
+  type IHistoryProvenance,
 } from '../../contracts/index.js';
+import type { IEvidenceOriginsRequest } from '../../sessions/evidence/index.js';
 import { getErrorKind } from '../../errors/index.js';
 import { suffixThreadName } from '../../sessions/names/index.js';
 import type { PlansModel } from '../plans/index.js';
@@ -94,6 +96,39 @@ export class ControlModel {
   public getAction(id: string): IActionReceipt | null {
     const action = this.__action(id);
     return action ? toActionReceipt(action) : null;
+  }
+
+  /** Resolves exact native input identities and content hashes; native roles grant no identity. */
+  public getEvidenceOrigins(command: IEvidenceOriginsRequest): (IHistoryProvenance | null)[] {
+    const query = this.__database
+      .prepare(`SELECT a.id, EXISTS(SELECT 1 FROM hq_browser_action b WHERE json_extract(b.receipt, '$.nativeActionId') = a.id AND b.native_thread_id = a.thread_id AND b.native_input_sha256 = a.input_sha256) AS authenticated
+      FROM hq_action a JOIN hq_thread t ON t.id = a.thread_id
+      WHERE t.provider = ? AND t.native_id = ? AND a.native_turn_id = ? AND a.input_sha256 = ?
+      AND a.delivery = 'acknowledged' AND (a.native_request_id = ? OR a.native_turn_id = ?)
+      ORDER BY a.id LIMIT 2`);
+    return command.items.map((item) => {
+      if (item.nativeInputId === null) return null;
+      const rows = query.all(
+        command.provider,
+        command.nativeId,
+        item.turnId,
+        item.sha256,
+        item.nativeInputId,
+        item.nativeInputId,
+      );
+      if (rows.length !== 1) return null;
+      const row = z
+        .object({ id: z.uuid(), authenticated: z.number().int().min(0).max(1) })
+        .parse(rows[0]);
+      return {
+        origin: row.authenticated === 1 ? 'operator' : 'unknown',
+        source: row.authenticated === 1 ? 'authenticated-host-action' : 'host-action',
+        actionId: row.id,
+        nativeInputId: item.nativeInputId,
+        contentBoundary: 'untrusted',
+        grantsAuthority: false,
+      };
+    });
   }
 
   /** Returns one control record by immutable identity. */
@@ -309,6 +344,11 @@ export class ControlModel {
         this.__database
           .prepare('UPDATE hq_action SET thread_id = ?, provider = ? WHERE id = ?')
           .run(targetId, this.__thread(targetId)!.provider, action.id);
+      const inputText = command.kind === 'steer' ? command.text : prepared.input?.text;
+      if (inputText !== undefined && ['message', 'queue', 'steer'].includes(command.kind))
+        this.__database
+          .prepare('UPDATE hq_action SET input_sha256 = ? WHERE id = ?')
+          .run(createHash('sha256').update(inputText).digest('hex'), action.id);
       this.__database.exec('SAVEPOINT admission');
       let dispatchActionId: string | null = action.id;
       try {

@@ -14,6 +14,7 @@ import {
 
 import type { INativeItem, INativeThread, INativeTurn, INativeUsage } from './types.js';
 import { parseNative } from './validations.js';
+import { nativeProvenance } from '../../sessions/evidence/index.js';
 
 /** Preserves exact native tree identities independently of managed-agent relationships. */
 export const toNativeLineage = (thread: INativeThread): INativeLineage => ({
@@ -79,7 +80,7 @@ const ChangesSchema = z.object({
  * @throws
  * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
  */
-export const toHistoryItem = ({ turnId, item }: INativeItem): IHistoryItem => {
+export const toHistoryItem = ({ turnId, item }: INativeItem, fullBody = false): IHistoryItem => {
   let kind: IHistoryItem['kind'] = 'unsupported';
   let text = '';
   switch (item.type) {
@@ -124,7 +125,7 @@ export const toHistoryItem = ({ turnId, item }: INativeItem): IHistoryItem => {
         .join('\n');
       break;
   }
-  let end = Math.min(text.length, 65_536);
+  let end = fullBody ? text.length : Math.min(text.length, 65_536);
   const last = text.charCodeAt(end - 1);
   if (end < text.length && last >= 0xd800 && last <= 0xdbff) end -= 1;
   return parseNative(HistoryItemSchema, {
@@ -132,6 +133,13 @@ export const toHistoryItem = ({ turnId, item }: INativeItem): IHistoryItem => {
     turnId,
     nativeType: item.type,
     kind,
+    provenance:
+      item.type === 'contextCompaction'
+        ? { ...nativeProvenance(kind), origin: 'system', source: 'native-kind' }
+        : nativeProvenance(
+            kind,
+            kind === 'user-message' && typeof item.clientId === 'string' ? item.clientId : null,
+          ),
     text: text.slice(0, end),
     isTruncated: end < text.length,
   });

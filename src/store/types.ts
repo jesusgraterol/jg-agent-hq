@@ -21,6 +21,7 @@ import {
   type IActionPlanContext,
   HandoffFindingsSchema,
   HandoffPhaseSchema,
+  type IHistoryProvenance,
   type IHandoffFindings,
   type IHandoffPhase,
   type IHandoffSummary,
@@ -34,6 +35,10 @@ import {
   type IHandoffPageRequest,
 } from '../handoffs/index.js';
 import type { IHistoryRequest } from '../sessions/index.js';
+import {
+  EvidenceOriginsRequestSchema,
+  type IEvidenceOriginsRequest,
+} from '../sessions/evidence/index.js';
 import type { IClaudeHistoryRead } from '../providers/claude/history/index.js';
 import { StorageDescriptorSchema, type IStorageDescriptor } from '../storage/index.js';
 
@@ -70,6 +75,7 @@ import {
 
 // worker messages are closed, bounded operations rather than arbitrary SQL
 export const StoreCommandSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('evidence-origins'), request: EvidenceOriginsRequestSchema }),
   z.strictObject({ kind: z.literal('storage-maintenance') }),
   z.strictObject({
     kind: z.literal('browser-read'),
@@ -193,6 +199,12 @@ export const StoreWorkerSchema = z.strictObject({
 
 // the worker owns persistence; callers cannot submit arbitrary statements
 export type IStore = {
+  /** Correlates native input identities and hashes with durable host submissions.
+   * @returns Exact historical provenance or null for each selected item.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  getEvidenceOrigins(command: IEvidenceOriginsRequest): Promise<(IHistoryProvenance | null)[]>;
   readonly isAvailable: boolean;
   storage: IStorageDescriptor;
   /**
@@ -351,12 +363,13 @@ export type IStore = {
     after: number;
   }): Promise<{ data: IPlanMilestone[]; hasMore: boolean }>;
   /**
-   * Runs the Claude-owned, version-checked incremental reader in the filesystem worker.
+   * Runs the Claude-owned identity-checked incremental reader in the filesystem worker.
    * @returns One history page or a private indexing marker, without persisting conversation bodies.
    * @throws
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
    * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+   * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
    */
   readClaudeHistory(command: IHistoryRequest): Promise<IClaudeHistoryRead>;
   /**

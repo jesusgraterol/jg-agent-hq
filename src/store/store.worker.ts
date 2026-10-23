@@ -59,6 +59,9 @@ const startWorker = async (): Promise<void> => {
         }
         let result: unknown = null;
         switch (command.kind) {
+          case 'evidence-origins':
+            result = controls.getEvidenceOrigins(command.request);
+            break;
           case 'storage-maintenance': {
             const activeThread = database
               .prepare(

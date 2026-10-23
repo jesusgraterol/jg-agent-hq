@@ -8,6 +8,7 @@ import {
   ActionPlanContextSchema,
   ManagedThreadSchema,
   type IThreadSummary,
+  HistoryProvenanceSchema,
 } from '../contracts/index.js';
 import {
   HandoffRecordSchema,
@@ -249,6 +250,11 @@ export const createStore = async (
     listHandoffs: (page) => request({ kind: 'handoff-list', page }, HandoffPageSchema),
     readClaudeHistory: (command) =>
       request({ kind: 'claude-history', request: command }, ClaudeHistoryReadSchema),
+    getEvidenceOrigins: (command) =>
+      request(
+        { kind: 'evidence-origins', request: command },
+        z.array(HistoryProvenanceSchema.nullable()).max(128),
+      ),
     projectPlanRevision: async (projection) => {
       await request({ kind: 'plan-revision-project', projection }, z.null());
     },

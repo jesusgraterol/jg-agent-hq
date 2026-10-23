@@ -1,6 +1,13 @@
 import { z } from 'zod';
 
 import {
+  EvidenceRequestSchema,
+  EvidencePageSchema,
+  HistoryKindSchema,
+  HistoryProvenanceSchema,
+} from './evidence/index.js';
+
+import {
   AccountRequestSchema,
   AccountObservationSchema,
   LoginRequestSchema,
@@ -52,6 +59,14 @@ const TargetFields = {
 
 // only implemented operations can be admitted; native RPC is never exposed
 export const HqRequestSchema = z.discriminatedUnion('kind', [
+  EvidenceRequestSchema,
+  z.strictObject({
+    kind: z.literal('sessions'),
+    provider: TargetFields.provider,
+    workspaceRoot: TargetFields.workspaceRoot,
+    search: z.string().max(1024).optional(),
+    ...PageFields,
+  }),
   AccountRequestSchema,
   ...McpRequestSchema.options,
   ProviderModelsRequestSchema,
@@ -164,7 +179,8 @@ export const HistoryItemSchema = z.object({
   nativeId: NativeIdSchema,
   turnId: NativeIdSchema,
   nativeType: z.string(),
-  kind: z.enum(['user-message', 'agent-message', 'command', 'tool', 'file-change', 'unsupported']),
+  kind: HistoryKindSchema,
+  provenance: HistoryProvenanceSchema,
   text: z.string(),
   isTruncated: z.boolean(),
 });
@@ -206,6 +222,15 @@ export const RuntimeStatusSchema = z.object({
 export type IRuntimeStatus = z.infer<typeof RuntimeStatusSchema>;
 const PageResultFields = { nextCursor: CursorSchema.nullable(), source: z.literal('native') };
 export const HqResponseSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('session-evidence'), result: EvidencePageSchema }),
+  z.object({
+    kind: z.literal('sessions'),
+    result: z.object({
+      data: z.array(ThreadSummarySchema.extend({ isNameTruncated: z.boolean() })).max(128),
+      nextCursor: CursorSchema.nullable(),
+      source: z.literal('native'),
+    }),
+  }),
   z.object({ kind: z.literal('account'), result: AccountObservationSchema }),
   z.object({ kind: z.literal('login'), result: LoginObservationSchema }),
   z.object({

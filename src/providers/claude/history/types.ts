@@ -51,6 +51,7 @@ export const RecordSchema = z.object({
   timestamp: z.string().optional(),
   isSidechain: z.boolean().optional(),
   isMeta: z.boolean().optional(),
+  isCompactSummary: z.boolean().optional(),
   customTitle: z.string().max(4096).optional(),
   message: z.object({ role: z.string(), content: z.unknown() }).optional(),
 });

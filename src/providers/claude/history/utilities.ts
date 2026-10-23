@@ -5,6 +5,7 @@ import { Exception, hasErrorCode } from 'jg-exception';
 import { z } from 'zod';
 
 import type { IHistoryItem } from '../../../contracts/index.js';
+import { nativeProvenance } from '../../../sessions/evidence/index.js';
 
 import type { IRecord } from './types.js';
 
@@ -117,7 +118,7 @@ const BlockSchema = z.object({
  * @throws
  * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
  */
-export const toClaudeItem = (record: IRecord, turnId: string): IHistoryItem => {
+export const toClaudeItem = (record: IRecord, turnId: string, fullBody = false): IHistoryItem => {
   if (!record.uuid)
     throw new Exception('The Claude history is unavailable', {
       code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
@@ -131,6 +132,7 @@ export const toClaudeItem = (record: IRecord, turnId: string): IHistoryItem => {
       turnId,
       nativeType: record.type,
       kind: 'unsupported',
+      provenance: nativeProvenance('unsupported'),
       text: '[Unsupported native content]',
       isTruncated: false,
     };
@@ -160,12 +162,22 @@ export const toClaudeItem = (record: IRecord, turnId: string): IHistoryItem => {
       })
       .join('\n');
   }
-  let end = Math.min(text.length, 65_536);
+  let end = fullBody ? text.length : Math.min(text.length, 65_536);
   if (end < text.length && /[\uD800-\uDBFF]/.test(text.charAt(end - 1))) end -= 1;
   return {
     nativeId: record.uuid,
     turnId,
     nativeType: isToolResult ? 'tool-result' : record.type,
+    provenance: record.isCompactSummary
+      ? { ...nativeProvenance('unsupported'), origin: 'system', source: 'native-kind' }
+      : nativeProvenance(
+          isToolResult || hasToolUse
+            ? 'tool'
+            : record.type === 'user'
+              ? 'user-message'
+              : 'agent-message',
+          record.type === 'user' && !isToolResult ? record.uuid : null,
+        ),
     kind:
       isToolResult || hasToolUse
         ? 'tool'

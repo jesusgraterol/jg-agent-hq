@@ -138,6 +138,7 @@ export type ICodexProvider = {
     limit: number,
     cursor?: string,
     turnId?: string,
+    evidence?: boolean,
   ): Promise<INativePage<IHistoryItem>>;
   readUsage(): Promise<IUsageSnapshot>;
   /**

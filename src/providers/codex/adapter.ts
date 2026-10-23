@@ -13,6 +13,11 @@ import {
 import { resolveWorkspaceTarget } from '../../runtime/state/index.js';
 import { decodeHistoryCursor, encodeHistoryCursor } from '../../sessions/index.js';
 import type { IHistoryRequest } from '../../sessions/index.js';
+import {
+  buildEvidencePage,
+  evidencePosition,
+  EVIDENCE_SOURCE_PAGE_SIZE,
+} from '../../sessions/evidence/index.js';
 
 import {
   PROVIDER_INPUT_SCHEMA,
@@ -42,6 +47,7 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
         });
     };
     const readHistory = async (command: IHistoryRequest) => {
+      const position = command.kind === 'session-evidence' ? evidencePosition(command) : undefined;
       const { cursor, ...filters } = {
         ...command,
         cursor: 'cursor' in command ? command.cursor : undefined,
@@ -74,6 +80,19 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
       await verifyRoot(thread.workspaceRoot, command.workspaceRoot);
       thread.workspaceRoot = command.workspaceRoot;
       if (command.kind === 'thread') return { kind: 'thread' as const, result: thread };
+      if (command.kind === 'session-evidence') {
+        const page = await native.listItems(
+          command.nativeId,
+          EVIDENCE_SOURCE_PAGE_SIZE,
+          position!.sourceCursor,
+          command.turnId,
+          true,
+        );
+        return {
+          kind: 'session-evidence' as const,
+          result: buildEvidencePage(command, position!, page.data, page.nextCursor),
+        };
+      }
       const nativeCursor = decodeHistoryCursor(cursor, filters);
       if (command.kind === 'turns') {
         const page = await native.listTurns(command.nativeId, command.limit, nativeCursor);

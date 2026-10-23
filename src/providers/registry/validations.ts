@@ -133,8 +133,27 @@ export const validateProviderHistory = (
       response.result.nativeId !== command.nativeId
     )
       rejectProviderResponse();
-  } else if (response.kind === 'turns' || response.kind === 'items') {
+  } else if (
+    response.kind === 'turns' ||
+    response.kind === 'items' ||
+    response.kind === 'session-evidence'
+  ) {
     if (!('limit' in command) || response.result.data.length > command.limit)
+      rejectProviderResponse();
+    if (
+      response.kind === 'session-evidence' &&
+      (command.kind !== 'session-evidence' ||
+        Buffer.byteLength(JSON.stringify(response)) > 65_536 ||
+        response.result.data.some(
+          (item) =>
+            item.reference.provider !== provider ||
+            item.reference.nativeId !== command.nativeId ||
+            (command.turnId !== undefined && item.reference.turnId !== command.turnId) ||
+            (command.nativeItemId !== undefined &&
+              item.reference.itemId !== command.nativeItemId) ||
+            (command.kinds !== undefined && !command.kinds.includes(item.kind)),
+        ))
+    )
       rejectProviderResponse();
   } else rejectProviderResponse();
   return response;

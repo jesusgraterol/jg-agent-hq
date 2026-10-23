@@ -127,7 +127,13 @@ export class LiveItems {
     for (const item of persisted) {
       const key = JSON.stringify([item.turnId, item.nativeId]);
       const entry = thread.items.get(key);
-      if (entry?.isComplete && JSON.stringify(entry.item) === JSON.stringify(item)) {
+      if (
+        entry?.isComplete &&
+        entry.item.nativeType === item.nativeType &&
+        entry.item.kind === item.kind &&
+        entry.item.text === item.text &&
+        entry.item.isTruncated === item.isTruncated
+      ) {
         this.__bytes -= entry.bytes;
         thread.items.delete(key);
         thread.revision = ++this.__revision;

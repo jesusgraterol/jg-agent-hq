@@ -346,7 +346,7 @@ export const createCodexProvider = async (
         });
       return { data: page.data.map(toTurnSummary), nextCursor: page.nextCursor };
     },
-    async listItems(nativeId, limit, cursor, turnId) {
+    async listItems(nativeId, limit, cursor, turnId, evidence = false) {
       const page = parseNative(
         NativeItemPageSchema,
         await connection.request('thread/items/list', {
@@ -354,7 +354,7 @@ export const createCodexProvider = async (
           turnId,
           limit,
           cursor,
-          sortDirection: 'asc',
+          sortDirection: evidence ? 'desc' : 'asc',
         }),
       );
       if (page.data.length > limit)
@@ -364,7 +364,10 @@ export const createCodexProvider = async (
             kind: 'agent-unavailable',
           },
         });
-      return { data: page.data.map(toHistoryItem), nextCursor: page.nextCursor };
+      return {
+        data: page.data.map((item) => toHistoryItem(item, evidence)),
+        nextCursor: page.nextCursor,
+      };
     },
     readUsage,
     async readSkills(workspaceRoot) {
@@ -463,6 +466,7 @@ export const createCodexProvider = async (
           'turn/start',
           {
             threadId: nativeId,
+            clientUserMessageId: requestId,
             ...settings,
             ...(outputSchema ? { outputSchema } : {}),
             input: [
@@ -490,7 +494,12 @@ export const createCodexProvider = async (
         z.object({ turnId: z.literal(expectedTurnId) }),
         await connection.request(
           'turn/steer',
-          { threadId: nativeId, expectedTurnId, input: [{ type: 'text', text }] },
+          {
+            threadId: nativeId,
+            expectedTurnId,
+            clientUserMessageId: requestId,
+            input: [{ type: 'text', text }],
+          },
           requestId,
         ),
       );

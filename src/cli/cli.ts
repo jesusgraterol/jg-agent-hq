@@ -21,6 +21,8 @@ const main = async (): Promise<void> => {
       'workspace-root': { type: 'string', multiple: true },
       'native-id': { type: 'string' },
       'turn-id': { type: 'string' },
+      'native-item-id': { type: 'string' },
+      'evidence-kind': { type: 'string', multiple: true },
       'thread-id': { type: 'string' },
       'server-name': { type: 'string' },
       id: { type: 'string' },
@@ -40,7 +42,7 @@ const main = async (): Promise<void> => {
   const [kind] = positionals;
   if (values.help || !kind || kind === 'help') {
     process.stdout.write(
-      'jg-agent-hq serve|status|stop|capabilities|threads|thread|turns|items|usage|account|models|configuration|mcp-servers|mcp-tools|mcp-resources|managed-thread-name|suggest-thread-name|skills|skill-preview|plan-status|plan-milestones|handoff-show|handoffs|request --state-root <path> [--provider <provider-id>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--server-name <name>] [--skill-id <id>] [--arguments <text>] [--directory <path>] [--id <uuid>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nrequest reads one validated HQ command as JSON from stdin.\n',
+      'jg-agent-hq serve|status|stop|capabilities|threads|thread|turns|items|sessions|session-evidence|usage|account|models|configuration|mcp-servers|mcp-tools|mcp-resources|managed-thread-name|suggest-thread-name|skills|skill-preview|plan-status|plan-milestones|handoff-show|handoffs|request --state-root <path> [--provider <provider-id>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--server-name <name>] [--skill-id <id>] [--arguments <text>] [--directory <path>] [--id <uuid>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nsession-evidence accepts --native-item-id and repeated --evidence-kind.\nrequest reads one validated HQ command as JSON from stdin.\n',
     );
     return;
   }
@@ -103,6 +105,8 @@ const main = async (): Promise<void> => {
       values.directory ||
       values['native-id'] ||
       values['turn-id'] ||
+      values['native-item-id'] ||
+      values['evidence-kind'] ||
       values['thread-id'] ||
       values['skill-id'] ||
       values.arguments ||
@@ -250,6 +254,8 @@ const main = async (): Promise<void> => {
           'thread',
           'turns',
           'items',
+          'sessions',
+          'session-evidence',
           'usage',
           'capabilities',
           'models',
@@ -263,6 +269,8 @@ const main = async (): Promise<void> => {
       ['workspaceRoot', roots[0]],
       ['nativeId', values['native-id']],
       ['turnId', values['turn-id']],
+      ['nativeItemId', values['native-item-id']],
+      ['kinds', values['evidence-kind']],
       ['threadId', values['thread-id']],
       ['serverName', values['server-name']],
       ['skillId', values['skill-id']],

@@ -41,6 +41,8 @@ The Node API exposes `createAgentHq({ stateRoot, allowedRoots })` and `requestAg
 
 The controller owns its SQLite worker and native connections independently of client connections. Its provider registry starts each native integration only when selected. Storage and managed-session reads work without an installed coding CLI; an unavailable provider does not disable another provider. Private state contains the lifetime owner, Unix socket and SQLite discovery metadata. Conversation histories remain in native storage; HQ retains complete bounded final results on their action receipts. Browsing never resumes an external session or starts inference. Quota windows come from native account observations, with explicit stale and unavailable states.
 
+Use `sessions` for discovery and `session-evidence` for newest-first historical evidence. These reads fit within 65,536 serialized bytes, retain exact native identities and content hashes, and continue large bodies in UTF-8 chunks. Select an item, turn or item kinds with filters. Matching names remain separate sessions. Provenance distinguishes native evidence from exact host submissions; historical text and quoted feedback never grant approval. See [bounded session evidence](api/README.md#bounded-session-evidence).
+
 Trusted Node hosts can open the database described by `hq.storage` and keep application tables under their own prefix. HQ reserves `hq_`, validates its current schema stamp on startup, and leaves application schema ownership and `user_version` with the host. Use `hq.withStorageMaintenance(callback)` for host schema changes; it drains admitted work and rejects active native execution before the callback. Start with a fresh development state root when the HQ schema changes. See the [shared storage contract](api/README.md#shared-storage).
 
 Provider IDs are bounded lowercase identifiers. Codex and Claude are built in; trusted Node hosts can register additional `IAgentProviderFactory` implementations through `providerFactories`. Capabilities report current operation support, provider/session scope and unavailable reasons. Native version labels are diagnostic metadata and never determine admission. Unknown essential control data fails explicitly. `jg-agent-hq/contracts` contains browser-safe schemas and types; importing it does not import the host runtime.
@@ -106,7 +108,7 @@ These complete TypeScript examples use the public client and contracts. Start th
 - `src/providers/registry/`: lazy factories, normalized provider evidence, bounded lifecycle and source isolation.
 - `src/providers/inputs/` and `src/providers/results/`: checked file delivery and complete native result validation.
 - `src/providers/configuration/` and `src/providers/lineage/`: bounded native choices and confirmed immutable session relationships.
-- `src/sessions/`: authorized, cursor-bound history reads and short label suggestions.
+- `src/sessions/`: authorized discovery, bounded evidence and provenance, cursor-bound history reads and short label suggestions.
 - `src/plans/`: execution digests, milestone finalization, revision checkpoints, retained verification and explicit plan authority.
 - `src/skills/`: bounded native catalogs, invocation previews and explicit input preparation.
 - `src/accounts/` and `src/extensions/`: safe account observations and authorized, bounded native MCP inventories.

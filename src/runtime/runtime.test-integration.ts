@@ -234,6 +234,14 @@ test('authorized native history is re-read after a delayed flush and large frame
         kind: 'agent-message',
         text: 'a'.repeat(65_536),
         isTruncated: true,
+        provenance: {
+          origin: 'agent',
+          source: 'native-kind',
+          nativeInputId: null,
+          actionId: null,
+          contentBoundary: 'untrusted',
+          grantsAuthority: false,
+        },
       },
     ]);
     const calls = CallsSchema.parse(
