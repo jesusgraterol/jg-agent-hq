@@ -1,12 +1,17 @@
 import type {
   ICollaborationRequest,
   ICollaborationResponse,
+  ICollaborationStatus,
 } from '../contracts/collaboration/index.js';
 import type { INativeToolBinding } from './identity/index.js';
 
 // background batches participate individually in the runtime's maintenance admission
 export type ICollaborationBackground = <T>(operation: () => Promise<T>) => Promise<T>;
 export type ICollaboration = {
+  /** Attaches the one runtime-owned dispatch wakeup and its observable recovery failure. */
+  setWakeHandler(handler: () => void, failure: () => ICollaborationStatus['dispatchFailure']): void;
+  /** Recovers committed delivery fan-out without sending native input. */
+  recover(): void;
   /**
    * Applies trusted host metadata operations after canonical workspace admission.
    * @returns A bounded result or durable metadata receipt.

@@ -71,9 +71,9 @@ Use `skills --thread-id <id> --state-root <directory>` to browse the controlled 
 
 Use `jg-agent-hq request --state-root <directory>` with a closed HQ command on stdin for action and control reads. The [API reference](api/README.md) describes action envelopes, receipts and reconnect reads.
 
-Trusted hosts can create collaboration tasks, add managed agents from any provider, and coordinate them through durable streams. Streams contain small indexed messages and optional directed or claimable requests. Subscription, reading, acknowledgement, assignment and completion are separate records. Metadata operations retain replay receipts and recover notification fan-out after restart. They do not submit native input. Hosts issue exact task-scoped skill grants; role labels and message text grant no authority. See [task collaboration](api/README.md#task-collaboration).
+Trusted hosts can create collaboration tasks, add managed agents from any provider, and coordinate them through durable streams. Streams contain small indexed messages and optional directed or claimable requests. Subscription, reading, acknowledgement, assignment and completion are separate records. Metadata operations retain replay receipts and recover notification fan-out after restart. Directed requests can run through the existing native action ledger when the host enables automatic dispatch or explicitly selects a request. Information, reads and acknowledgements do not start turns. HQ stores exact bounded outcome reports independently of native histories. Hosts issue exact task-scoped skill grants; role labels and message text grant no authority. See [task collaboration](api/README.md#task-collaboration).
 
-Controlled agents use `hq_identity` to recover their stable managed ID, task memberships, permissions and pending inbox counts. Codex uses experimental native dynamic tools; Claude uses a private session-specific stdio MCP bridge. Both use the same closed operations for streams, requests, session evidence and authorized managed spawning. Children can use either provider and inherit equal or narrower task permissions. The host sets a finite cumulative spawn budget. Native subagents share their owning HQ session identity. See [agent tools](api/README.md#agent-tools).
+Controlled agents use `hq_identity` to recover their stable managed ID, task memberships, permissions and pending inbox counts. Codex uses experimental native dynamic tools; Claude uses a private session-specific stdio MCP bridge. Both use the same closed operations for streams, verified invocation context, requests, report chunks, session evidence and authorized managed spawning. Children can use either provider and inherit equal or narrower task permissions. The host sets a finite cumulative spawn budget. Native subagents share their owning HQ session identity. See [agent tools](api/README.md#agent-tools).
 
 ## Plan coordination
 
@@ -117,7 +117,7 @@ These complete TypeScript examples use the public client and contracts. Start th
 - `src/skills/`: bounded native catalogs, invocation previews and explicit input preparation.
 - `src/accounts/` and `src/extensions/`: safe account observations and authorized, bounded native MCP inventories.
 - `src/handoffs/`: explicit cross-provider challenges, selected native findings and author assessment links.
-- `src/collaboration/`: host-owned tasks, stream metadata and scoped skill-grant admission.
+- `src/collaboration/`: host-owned tasks, streams, scoped skill-grant admission and event-driven directed request dispatch.
 - `src/collaboration/identity/` and `src/agent-tools/`: native-bound identity, private bridge credentials, shared agent tools and the stdio MCP entry.
 - `src/actions/`: durable action dispatch, native input routing and bounded live presentation.
 - `src/store/`: SQLite discovery metadata, collaboration streams and the action/control ledger in one worker.

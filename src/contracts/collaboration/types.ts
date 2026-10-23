@@ -4,6 +4,8 @@ import { CursorSchema, NativeIdSchema } from '../identities/index.js';
 import { ProviderIdSchema } from '../providers/index.js';
 import { PlanRevisionSchema } from '../plans/index.js';
 
+import { ReportReadSchema, ReportSummarySchema } from './reports/index.js';
+
 // fixed public budgets for durable collaboration content and responses
 export const COLLABORATION_LIMITS = {
   summaryBytes: 1024,
@@ -45,6 +47,43 @@ export const CollaborationActorSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('agent'), agentId: UuidSchema }),
 ]);
 export type ICollaborationActor = z.infer<typeof CollaborationActorSchema>;
+// runtime diagnostics identify their source without impersonating an operator or assignee
+export const MessageAuthorSchema = z.union([
+  CollaborationActorSchema,
+  z.object({ kind: z.literal('runtime') }),
+]);
+export type IMessageAuthor = z.infer<typeof MessageAuthorSchema>;
+
+// dispatch failures describe known terminal evidence; uncertainty remains an unresolved binding
+export const DispatchFailureSchema = z.enum([
+  'delivery-failed',
+  'native-failed',
+  'missing-response',
+  'invalid-response',
+  'wrong-request',
+  'capture-too-large',
+  'report-too-large',
+  'report-invalid-utf8',
+  'pause-not-authorized',
+]);
+export type IDispatchFailure = z.infer<typeof DispatchFailureSchema>;
+export const DispatchBlockedSchema = z.enum([
+  'automatic-dispatch-disabled',
+  'busy',
+  'native-approval',
+  'provider-unavailable',
+  'ownership-uncertain',
+  'agent-paused',
+  'task-paused',
+  'grant-invalid',
+  'plan-stale',
+  'plan-authorization-required',
+  'capacity',
+  'turn-limit',
+  'native-uncertain',
+  'action-conflict',
+]);
+export type IDispatchBlocked = z.infer<typeof DispatchBlockedSchema>;
 
 // roles are labels; these explicit capabilities and scopes establish admission
 export const CollaborationEffectSchema = z.enum([
@@ -190,6 +229,7 @@ export const CollaborationTaskSchema = z.object({
   policy: TaskPolicySchema,
   policyRevision: RevisionSchema,
   spawnCount: z.number().int().nonnegative(),
+  automaticTurnCount: z.number().int().nonnegative(),
   state: CollaborationLifecycleSchema,
   lifecycleRevision: RevisionSchema,
   createdAt: TimeSchema,
@@ -236,13 +276,16 @@ export const MessageSummarySchema = z.object({
   sequence: z.number().int().positive(),
   taskId: UuidSchema,
   streamId: UuidSchema,
-  author: CollaborationActorSchema,
+  author: MessageAuthorSchema,
   kind: z.enum(['information', 'request', 'reply', 'status']),
   summary: utf8Text(1024),
   bodyBytes: z.number().int().min(0).max(8192),
   referenceCount: z.number().int().min(0).max(16),
   replyToMessageId: UuidSchema.nullable(),
   createdAt: TimeSchema,
+  reportMatch: z
+    .object({ reportId: UuidSchema, sha256: HashSchema, excerpt: utf8Text(1024) })
+    .optional(),
 });
 export type IMessageSummary = z.infer<typeof MessageSummarySchema>;
 export const MessageReadSchema = z.object({
@@ -273,6 +316,16 @@ export const CollaborationRequestRecordSchema = z.object({
     'canceled',
   ]),
   currentActionId: UuidSchema.nullable(),
+  pendingActionId: UuidSchema.nullable(),
+  pendingInputMessageId: UuidSchema.nullable(),
+  manualDispatchId: UuidSchema.nullable(),
+  lastActionId: UuidSchema.nullable(),
+  lastReportId: UuidSchema.nullable(),
+  dispatchCount: z.number().int().nonnegative(),
+  requiredAuthority: z.enum(['requester', 'operator']).nullable(),
+  pauseAgentRevision: RevisionSchema.nullable(),
+  dispatchBlockedReason: DispatchBlockedSchema.nullable(),
+  failureReason: DispatchFailureSchema.nullable(),
   outcome: z.enum(['completed', 'failed']).nullable(),
   resultReferences: z.array(ArtifactReferenceSchema).max(16),
   createdAt: TimeSchema,
@@ -454,6 +507,49 @@ export const CollaborationCommandSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({ kind: z.literal('request-claim'), ...OperationFields, requestId: UuidSchema }),
   z.strictObject({
+    kind: z.literal('request-dispatch'),
+    ...OperationFields,
+    requestId: UuidSchema,
+  }),
+  z.strictObject({
+    kind: z.literal('request-input'),
+    ...OperationFields,
+    requestId: UuidSchema,
+    expectedActionId: UuidSchema,
+    body: utf8Text(8192),
+  }),
+  z.strictObject({
+    kind: z.literal('request-resume'),
+    ...OperationFields,
+    requestId: UuidSchema,
+    expectedActionId: UuidSchema,
+    expectedAgentRevision: RevisionSchema,
+    expectedTaskRevision: RevisionSchema,
+    body: utf8Text(8192),
+  }),
+  z.strictObject({
+    kind: z.literal('request-authorize'),
+    ...OperationFields,
+    requestId: UuidSchema,
+    expectedActionId: UuidSchema.nullable(),
+    grantId: UuidSchema.nullable(),
+    grantRevision: RevisionSchema.nullable(),
+    plan: CollaborationPlanSchema.nullable(),
+  }),
+  z.strictObject({
+    kind: z.literal('request-collect'),
+    ...OperationFields,
+    requestId: UuidSchema,
+    actionId: UuidSchema,
+  }),
+  z.strictObject({ kind: z.literal('invocation-read'), ...TaskFields }),
+  z.strictObject({
+    kind: z.literal('report-read'),
+    ...TaskFields,
+    reportId: UuidSchema,
+    cursor: CursorSchema.optional(),
+  }),
+  z.strictObject({
     kind: z.literal('request-resolve'),
     ...OperationFields,
     requestId: UuidSchema,
@@ -522,6 +618,30 @@ export const RequestSummarySchema = CollaborationRequestRecordSchema.omit({
 });
 export type IRequestSummary = z.infer<typeof RequestSummarySchema>;
 
+// invocation authority is the selected request scope, never the grant's unused capabilities
+export const InvocationSchema = z.object({
+  taskId: UuidSchema,
+  agentId: UuidSchema,
+  request: CollaborationRequestRecordSchema,
+  actionId: UuidSchema,
+  nativeTurnId: NativeIdSchema.nullable(),
+  grant: z
+    .object({ id: UuidSchema, revision: RevisionSchema, issuerOperatorRef: utf8Text(256) })
+    .nullable(),
+  input: z.object({ messageId: UuidSchema, author: CollaborationActorSchema }).nullable(),
+});
+export type IInvocation = z.infer<typeof InvocationSchema>;
+export const DispatchCollectionSchema = z.object({
+  actionId: UuidSchema,
+  requestId: UuidSchema,
+  recoveryActionId: UuidSchema.nullable(),
+  report: ReportSummarySchema.nullable(),
+  reply: MessageSummarySchema,
+  state: CollaborationRequestRecordSchema.shape.state,
+  failureReason: DispatchFailureSchema.nullable(),
+});
+export type IDispatchCollection = z.infer<typeof DispatchCollectionSchema>;
+
 const PageResultFields = { nextCursor: CursorSchema.nullable() };
 const CountSchema = z.object({ count: z.number().int().min(0).max(128), hasMore: z.boolean() });
 export const CollaborationStatusSchema = z.object({
@@ -534,6 +654,7 @@ export const CollaborationStatusSchema = z.object({
   unacknowledgedDeliveries: CountSchema,
   pendingFanout: CountSchema,
   fanoutFailure: z.enum(['JG_AGENT_HQ_STORE_FAILED']).nullable(),
+  dispatchFailure: z.enum(['JG_AGENT_HQ_STORE_FAILED', 'recovery-failed']).nullable(),
 });
 export type ICollaborationStatus = z.infer<typeof CollaborationStatusSchema>;
 
@@ -576,6 +697,9 @@ export const CollaborationResultSchema = z.discriminatedUnion('kind', [
   }),
   z.object({ kind: z.literal('message'), result: MessageReadSchema }),
   z.object({ kind: z.literal('request'), request: CollaborationRequestRecordSchema }),
+  z.object({ kind: z.literal('invocation'), invocation: InvocationSchema.nullable() }),
+  z.object({ kind: z.literal('report'), result: ReportReadSchema }),
+  z.object({ kind: z.literal('collection'), collection: DispatchCollectionSchema.nullable() }),
   z.object({
     kind: z.literal('requests'),
     data: z.array(RequestSummarySchema).max(128),

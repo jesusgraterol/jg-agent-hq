@@ -4,6 +4,7 @@ import { isEqual } from 'jg-utilities';
 import { z } from 'zod';
 
 import type { IProviderAgentTools } from '../../../agent-tools/index.js';
+import { DISPATCH_OUTPUT_SCHEMA } from '../../../contracts/collaboration/index.js';
 
 import type {
   IConfigurationRequest,
@@ -97,7 +98,7 @@ export const createClaudeControl = (
     };
   };
   /**
-   * Checks the process-bound output format without restarting a controlled session.
+   * Checks native format selection; the HQ envelope can be installed at an idle restart.
    * @throws
    * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
    * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
@@ -105,7 +106,8 @@ export const createClaudeControl = (
   const validateInput = (nativeId: string, settings: ITurnSettings): void => {
     if (
       settings.outputSchema &&
-      !isEqual(settings.outputSchema, get(nativeId).settings.outputSchema)
+      !isEqual(settings.outputSchema, get(nativeId).settings.outputSchema) &&
+      !isEqual(settings.outputSchema, DISPATCH_OUTPUT_SCHEMA)
     )
       capabilityUnavailable();
   };
@@ -141,6 +143,7 @@ export const createClaudeControl = (
       settings: { ...settings },
       scope: randomUUID(),
       isClosing: false,
+      hasInput: isResume || forkSourceNativeId !== undefined,
       opening: Promise.resolve(),
       previews: new Map(),
       requests: new Map(),
@@ -441,6 +444,9 @@ export const createClaudeControl = (
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
      * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
+     * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+     * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
+     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
      */
     async startTurn(
       requestId: string,
@@ -450,11 +456,31 @@ export const createClaudeControl = (
       signal?: AbortSignal,
       files: IProviderInputFile[] = [],
     ): Promise<{ id: string }> {
-      const session = get(nativeId);
+      let session = get(nativeId);
       validateInput(nativeId, settings);
       if (signal?.aborted) unavailable();
       if (session.input) conflict();
-      if (settings.model || settings.effort)
+      if (
+        settings.outputSchema &&
+        isEqual(settings.outputSchema, DISPATCH_OUTPUT_SCHEMA) &&
+        !isEqual(session.settings.outputSchema, DISPATCH_OUTPUT_SCHEMA)
+      ) {
+        if (
+          session.requests.size ||
+          [...extensionRequests.values()].some((request) => request.nativeId === nativeId)
+        )
+          conflict();
+        const selected = { ...session.settings, outputSchema: DISPATCH_OUTPUT_SCHEMA };
+        const workspaceRoot = session.workspaceRoot;
+        const hasInput = session.hasInput;
+        session.isClosing = true;
+        await session.connection!.close();
+        await session.agentBridge?.release();
+        sessions.delete(nativeId);
+        await open(nativeId, workspaceRoot, hasInput, undefined, selected, signal);
+        session = get(nativeId);
+      }
+      if (settings.model || settings.effort) {
         await session.connection!.requestControl({
           subtype: 'apply_flag_settings',
           settings: {
@@ -462,6 +488,9 @@ export const createClaudeControl = (
             ...(settings.effort ? { effortLevel: settings.effort } : {}),
           },
         });
+        if (settings.model) session.settings.model = settings.model;
+        if (settings.effort) session.settings.effort = settings.effort;
+      }
       if (signal?.aborted || session.isClosing || !session.connection?.isAvailable) unavailable();
       if (session.input) conflict();
       return new Promise((resolve, reject) => {
@@ -484,10 +513,14 @@ export const createClaudeControl = (
           hasInterruptionMarker: false,
           finalText: null,
           isOutputOversized: false,
+          isOrdinaryEnvelope:
+            settings.outputSchema === undefined &&
+            isEqual(session.settings.outputSchema, DISPATCH_OUTPUT_SCHEMA),
           resolve,
           reject,
           timer,
         };
+        session.hasInput = true;
         void session
           .connection!.write({
             type: 'user',

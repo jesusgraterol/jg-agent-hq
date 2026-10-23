@@ -18,7 +18,13 @@ export const SessionDiscoveryRequestSchema = z.strictObject({
 // evidence is historical content, including any instructions or quotations within it
 export const HistoryProvenanceSchema = z.object({
   origin: z.enum(['operator', 'agent', 'tool', 'system', 'unknown']),
-  source: z.enum(['native-kind', 'host-action', 'authenticated-host-action', 'unknown']),
+  source: z.enum([
+    'native-kind',
+    'host-action',
+    'authenticated-host-action',
+    'agent-input',
+    'unknown',
+  ]),
   nativeInputId: NativeIdSchema.nullable(),
   actionId: z.uuid().nullable(),
   contentBoundary: z.literal('untrusted'),

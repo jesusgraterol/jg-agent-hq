@@ -14,6 +14,7 @@ import { collaborationForbidden } from '../../collaboration/grants/index.js';
 import { decodeHistoryCursor, encodeHistoryCursor } from '../../sessions/index.js';
 
 import { readGrant, readMember, readRequest, readStream, readSubscription } from './authority.js';
+import { searchMessages } from './search.js';
 import {
   TASK_METADATA_COLUMNS,
   AGENT_METADATA_COLUMNS,
@@ -32,6 +33,7 @@ import {
   toMessageSummary,
   toRequestSummary,
   toDelivery,
+  toContentText,
 } from './transformers.js';
 import { collaborationPage, readCollaborationPosition } from './utilities.js';
 import type { ICollaborationContext } from './types.js';
@@ -167,7 +169,7 @@ const messageRead = (
   const references = z
     .array(ArtifactReferenceSchema)
     .parse(JSON.parse(z.string().parse(row.artifact_references)));
-  const body = encoded === undefined ? z.string().parse(row.body) : '';
+  const body = encoded === undefined ? toContentText(row.body) : '';
   const make = (selected: typeof references, nextCursor: string | null): ICollaborationResult => ({
     kind: 'message',
     result: {
@@ -297,28 +299,15 @@ export const queryCollaboration = (
         toStream,
       );
     }
-    case 'messages-list':
-    case 'messages-search': {
+    case 'messages-search':
+      return searchMessages(database, context, command);
+    case 'messages-list': {
       if (command.streamId !== undefined) readStream(database, task.id, command.streamId);
       const parameters: SQLInputValue[] = [task.id];
       let filter = '';
       if (command.streamId !== undefined) {
         filter += ' AND m.stream_id = ?';
         parameters.push(command.streamId);
-      }
-      if (command.kind === 'messages-search') {
-        const literal = `"${command.query.replaceAll('"', '""')}"`;
-        const match = `task_token : "${task.id.replaceAll('-', '')}"${command.streamId ? ` AND stream_token : "${command.streamId.replaceAll('-', '')}"` : ''} AND {summary body} : ${literal}`;
-        parameters.unshift(match);
-        return pageRows(
-          database,
-          actor,
-          command,
-          // FTS drives the ordered seek; an ordinary join may scan/sort the entire task first.
-          `SELECT ${MESSAGE_METADATA_COLUMNS} FROM hq_message_search CROSS JOIN hq_message m WHERE m.sequence = hq_message_search.rowid AND hq_message_search MATCH ? AND m.task_id = ? ${filter} AND hq_message_search.rowid <= ? AND hq_message_search.rowid < ? ORDER BY hq_message_search.rowid DESC LIMIT ?`,
-          parameters,
-          toMessageSummary,
-        );
       }
       return pageRows(
         database,
@@ -441,6 +430,7 @@ export const queryCollaboration = (
             [task.id],
           ),
           fanoutFailure: null,
+          dispatchFailure: null,
         },
       };
     }

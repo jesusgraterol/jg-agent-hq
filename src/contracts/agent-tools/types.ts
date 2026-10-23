@@ -49,6 +49,18 @@ export type IAgentSpawnArguments = z.infer<typeof AgentSpawnArgumentsSchema>;
 export const AgentToolCallSchema = z.discriminatedUnion('name', [
   z.strictObject({ name: z.literal('hq_identity'), arguments: AgentIdentityArgumentsSchema }),
   z.strictObject({
+    name: z.literal('hq_invocation_read'),
+    arguments: collaborationArguments('invocation-read'),
+  }),
+  z.strictObject({
+    name: z.literal('hq_report_read'),
+    arguments: collaborationArguments('report-read'),
+  }),
+  z.strictObject({
+    name: z.literal('hq_request_input'),
+    arguments: collaborationArguments('request-input'),
+  }),
+  z.strictObject({
     name: z.literal('hq_agents_list'),
     arguments: collaborationArguments('agents-list'),
   }),

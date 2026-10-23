@@ -2,6 +2,11 @@
 export {
   COLLABORATION_LIMITS,
   CollaborationActorSchema,
+  MessageAuthorSchema,
+  DispatchFailureSchema,
+  DispatchBlockedSchema,
+  InvocationSchema,
+  DispatchCollectionSchema,
   CollaborationEffectSchema,
   AgentPermissionsSchema,
   TaskPolicySchema,
@@ -33,6 +38,11 @@ export {
 } from './types.js';
 export type {
   ICollaborationActor,
+  IMessageAuthor,
+  IDispatchFailure,
+  IDispatchBlocked,
+  IInvocation,
+  IDispatchCollection,
   IAgentPermissions,
   ITaskPolicy,
   ICollaborationPlan,
@@ -56,3 +66,13 @@ export type {
   ICollaborationOperation,
   ICollaborationResponse,
 } from './types.js';
+
+// delegated response and exact report contracts
+export {
+  MAX_REPORT_BYTES,
+  DispatchResponseSchema,
+  DISPATCH_OUTPUT_SCHEMA,
+  ReportSummarySchema,
+  ReportReadSchema,
+} from './reports/index.js';
+export type { IDispatchResponse, IReportSummary, IReportRead } from './reports/index.js';

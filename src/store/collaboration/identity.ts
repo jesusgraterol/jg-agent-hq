@@ -81,13 +81,10 @@ export const readAgentIdentity = (
       });
     }
   }
-  const columns = TASK_METADATA_COLUMNS.split(', ')
-    .map((column) => `t.${column}`)
-    .join(', ');
   const rows = database
     .prepare(
-      `SELECT ${columns}, a.sequence AS membership_sequence FROM hq_task_agent a
-    JOIN hq_collaboration_task t ON t.id = a.task_id WHERE a.agent_id = ? AND a.is_revoked = 0
+      `SELECT ${TASK_METADATA_COLUMNS}, a.sequence AS membership_sequence FROM hq_task_agent a
+    JOIN hq_collaboration_task ON hq_collaboration_task.id = a.task_id WHERE a.agent_id = ? AND a.is_revoked = 0
     AND a.sequence <= ? AND a.sequence < ? ORDER BY a.sequence DESC LIMIT ?`,
     )
     .all(
@@ -96,8 +93,14 @@ export const readAgentIdentity = (
       position?.sequence ?? Number.MAX_SAFE_INTEGER,
       query.limit + 1,
     );
+  const active = database
+    .prepare(
+      'SELECT id, task_id, current_action_id, dispatch_blocked_reason FROM hq_request WHERE assignee_agent_id = ? AND current_action_id IS NOT NULL',
+    )
+    .get(native.agentId);
   const taskId =
     query.taskId ??
+    (active ? z.uuid().parse(active.task_id) : undefined) ??
     (position === undefined && rows.length === 1 ? z.uuid().parse(rows[0]!.id) : undefined);
   const context =
     taskId === undefined
@@ -127,6 +130,17 @@ export const readAgentIdentity = (
                 .get(native.agentId, task.id)?.purpose ?? null,
             ),
     permissions: member !== null && task !== null ? effectivePermissions(member, task) : null,
+    invocation:
+      active && taskId === active.task_id
+        ? {
+            requestId: z.uuid().parse(active.id),
+            actionId: z.uuid().parse(active.current_action_id),
+            taskId: z.uuid().parse(active.task_id),
+            blockedReason: AgentIdentitySchema.shape.invocation
+              .unwrap()
+              .shape.blockedReason.parse(active.dispatch_blocked_reason),
+          }
+        : null,
     tasks: [],
     nextCursor: null,
   };

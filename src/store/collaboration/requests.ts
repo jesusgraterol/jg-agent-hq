@@ -83,7 +83,7 @@ export const mutateRequest = (
   if (
     request.state === 'resolved' ||
     request.state === 'canceled' ||
-    request.currentActionId !== null
+    (request.currentActionId !== null && command.kind !== 'request-cancel')
   )
     return collaborationConflict();
   const actorId = context.actor.kind === 'agent' ? context.actor.agentId : null;
@@ -111,7 +111,7 @@ export const mutateRequest = (
       authorizeRecipient(database, context, request.specification, actorId, true);
       database
         .prepare(
-          "UPDATE hq_request SET assignee_agent_id = ?, state = 'claimed', updated_at = ? WHERE id = ?",
+          "UPDATE hq_request SET assignee_agent_id = ?, state = 'claimed', pending_action_id = coalesce(pending_action_id, id), updated_at = ? WHERE id = ?",
         )
         .run(actorId, now, request.id);
       ensureDelivery(database, request.taskId, request.id, request.sequence, actorId);
@@ -119,19 +119,25 @@ export const mutateRequest = (
     }
     case 'request-resolve':
       if (context.actor.kind !== 'host' && !isAssignee) return collaborationForbidden();
-      if (request.state !== 'claimed' || request.assigneeAgentId === null)
+      if (
+        request.state !== 'claimed' ||
+        request.assigneeAgentId === null ||
+        request.dispatchCount !== 0
+      )
         return collaborationConflict();
       // A revoked grant prevents new execution, but must not conceal already obtained evidence.
       database
         .prepare(
-          "UPDATE hq_request SET state = 'resolved', outcome = ?, result_references = ?, updated_at = ? WHERE id = ?",
+          "UPDATE hq_request SET state = 'resolved', outcome = ?, result_references = ?, pending_action_id = NULL, manual_dispatch_id = NULL, updated_at = ? WHERE id = ?",
         )
         .run(command.outcome, JSON.stringify(command.references), now, request.id);
       break;
     case 'request-cancel':
       if (!isRequester && !isAssignee) return collaborationForbidden();
       database
-        .prepare("UPDATE hq_request SET state = 'canceled', updated_at = ? WHERE id = ?")
+        .prepare(
+          "UPDATE hq_request SET state = 'canceled', pending_action_id = NULL, manual_dispatch_id = NULL, updated_at = ? WHERE id = ?",
+        )
         .run(now, request.id);
       break;
     case 'request-reassign': {
@@ -146,9 +152,9 @@ export const mutateRequest = (
       authorizeRecipient(database, context, specification, command.targetAgentId, false);
       database
         .prepare(
-          "UPDATE hq_request SET specification = ?, target_agent_id = ?, is_claimable = 0, assignee_agent_id = NULL, state = 'open', updated_at = ? WHERE id = ?",
+          "UPDATE hq_request SET specification = ?, target_agent_id = ?, is_claimable = 0, assignee_agent_id = NULL, state = 'open', pending_action_id = ?, pending_input_message_id = NULL, manual_dispatch_id = NULL, required_authority = NULL, pause_agent_revision = NULL, dispatch_blocked_reason = NULL, failure_reason = NULL, updated_at = ? WHERE id = ?",
         )
-        .run(JSON.stringify(specification), command.targetAgentId, now, request.id);
+        .run(JSON.stringify(specification), command.targetAgentId, command.id, now, request.id);
       ensureDelivery(database, request.taskId, request.id, request.sequence, command.targetAgentId);
       break;
     }

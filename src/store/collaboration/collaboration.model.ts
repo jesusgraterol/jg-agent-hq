@@ -28,6 +28,12 @@ import { listTasks, queryCollaboration } from './queries.js';
 import { assertCollaborationBudget } from './utilities.js';
 import { readAgentIdentity, readNativeAgent } from './identity.js';
 import { readAgentSpawn } from './spawn.js';
+import { mutateCheckpoint, readInvocation } from './invocation.js';
+import { collectDispatch } from './outcomes.js';
+import { readReport } from './reports.js';
+import { scanDispatch, readDispatchJob } from './dispatch.js';
+import type { IDispatchScan } from '../../collaboration/dispatch/index.js';
+import type { IDispatchBlocked } from '../../contracts/collaboration/index.js';
 
 /** Owns short collaboration transactions and exact metadata-operation replay in the SQLite worker. */
 export class CollaborationModel {
@@ -68,6 +74,41 @@ export class CollaborationModel {
     );
   }
 
+  /** Reads a bounded durable recovery page without loading native results. */
+  public dispatchPage(query: IDispatchScan) {
+    return this.__transaction(() => scanDispatch(this.__database, query), true);
+  }
+
+  /** Resolves one dispatch intent against current membership, policy and native ownership. */
+  public dispatchJob(taskId: string, requestId: string) {
+    return this.__transaction(
+      () => readDispatchJob(this.__database, taskId, requestId, this.__runtimeEpoch),
+      true,
+    );
+  }
+
+  /** Stores a visible blocked reason only while the selected pending intent still matches. */
+  public blockDispatch(
+    requestId: string,
+    selectedActionId: string,
+    reason: IDispatchBlocked | null,
+  ): void {
+    this.__transaction(() =>
+      this.__database
+        .prepare(
+          'UPDATE hq_request SET dispatch_blocked_reason = ? WHERE id = ? AND (pending_action_id = ? OR current_action_id = ?) AND dispatch_blocked_reason IS NOT ?',
+        )
+        .run(reason, requestId, selectedActionId, selectedActionId, reason),
+    );
+  }
+
+  /** Collects saved terminal evidence without asking an agent to publish or classify its report. */
+  public collectDispatch(taskId: string, requestId: string, actionId: string) {
+    return this.__transaction(() =>
+      collectDispatch(this.__database, taskId, requestId, actionId, this.__runtimeEpoch),
+    );
+  }
+
   /**
    * Applies one authorized metadata command, committing its result and delivery intent atomically.
    * @returns The selected record or original committed operation receipt.
@@ -93,6 +134,25 @@ export class CollaborationModel {
         const taskId = command.kind === 'task-create' ? command.id : command.taskId;
         const context =
           command.kind === 'task-create' ? null : taskAccess(this.__database, actor, taskId);
+        if (actor.kind === 'agent' && context !== null && command.kind !== 'status') {
+          const invocation = readInvocation(this.__database, context);
+          if (invocation !== null && !invocation.request.specification.effects.includes('read'))
+            return collaborationForbidden();
+          // Parent-linked publication is introduced together with its complete wait protocol.
+          if (invocation !== null && command.kind === 'message-publish' && command.request !== null)
+            return collaborationForbidden();
+          if (
+            invocation !== null &&
+            [
+              'request-claim',
+              'request-resolve',
+              'request-input',
+              'request-reassign',
+              'request-cancel',
+            ].includes(command.kind)
+          )
+            return collaborationForbidden();
+        }
         if (command.kind === 'operation-read')
           return {
             kind: 'operation',
@@ -100,7 +160,15 @@ export class CollaborationModel {
           };
         if (!('id' in command)) {
           if (context === null) return collaborationForbidden();
-          const result = queryCollaboration(this.__database, context, command);
+          const result =
+            command.kind === 'invocation-read'
+              ? {
+                  kind: 'invocation' as const,
+                  invocation: readInvocation(this.__database, context),
+                }
+              : command.kind === 'report-read'
+                ? readReport(this.__database, context, command)
+                : queryCollaboration(this.__database, context, command);
           assertCollaborationBudget(result);
           return result;
         }
@@ -145,6 +213,25 @@ export class CollaborationModel {
             case 'request-cancel':
             case 'request-reassign':
               result = mutateRequest(this.__database, context, command);
+              break;
+            case 'request-dispatch':
+            case 'request-input':
+            case 'request-resume':
+            case 'request-authorize':
+              result = mutateCheckpoint(this.__database, context, command);
+              break;
+            case 'request-collect':
+              requireHost(context);
+              result = {
+                kind: 'collection',
+                collection: collectDispatch(
+                  this.__database,
+                  taskId,
+                  command.requestId,
+                  command.actionId,
+                  this.__runtimeEpoch,
+                ),
+              };
               break;
             case 'fanout-recover':
               requireHost(context);

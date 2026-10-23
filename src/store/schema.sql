@@ -72,6 +72,8 @@ CREATE TABLE hq_action (
   result TEXT,
   input_sha256 TEXT CHECK (input_sha256 IS NULL OR length(input_sha256) = 64),
   plan_context TEXT,
+  collaboration_context TEXT CHECK (collaboration_context IS NULL OR json_valid(collaboration_context)),
+  collaboration_collection TEXT CHECK (collaboration_collection IS NULL OR json_valid(collaboration_collection)),
   queue_ready INTEGER NOT NULL DEFAULT 0 CHECK (queue_ready IN (0, 1)),
   requested_name TEXT,
   created_at INTEGER NOT NULL,
@@ -265,6 +267,7 @@ CREATE TABLE hq_collaboration_task (
   policy TEXT NOT NULL CHECK (json_valid(policy)),
   policy_revision INTEGER NOT NULL CHECK (policy_revision > 0),
   spawn_count INTEGER NOT NULL DEFAULT 0 CHECK (spawn_count >= 0),
+  automatic_turn_count INTEGER NOT NULL DEFAULT 0 CHECK (automatic_turn_count >= 0),
   state TEXT NOT NULL CHECK (state IN ('active','paused','stopped')),
   lifecycle_revision INTEGER NOT NULL CHECK (lifecycle_revision > 0),
   created_at INTEGER NOT NULL
@@ -398,6 +401,16 @@ CREATE TABLE hq_request (
   is_claimable INTEGER NOT NULL CHECK (is_claimable IN (0,1)),
   state TEXT NOT NULL CHECK (state IN ('open','claimed','waiting-children','waiting-input','interrupted','resolved','canceled')),
   current_action_id TEXT REFERENCES hq_action(id),
+  pending_action_id TEXT,
+  pending_input_message_id TEXT REFERENCES hq_message(id),
+  manual_dispatch_id TEXT,
+  last_action_id TEXT REFERENCES hq_action(id),
+  last_report_id TEXT,
+  dispatch_count INTEGER NOT NULL DEFAULT 0 CHECK (dispatch_count >= 0),
+  required_authority TEXT CHECK (required_authority IS NULL OR required_authority IN ('requester','operator')),
+  pause_agent_revision INTEGER,
+  dispatch_blocked_reason TEXT,
+  failure_reason TEXT,
   grant_id TEXT,
   grant_revision INTEGER,
   skill_name TEXT,
@@ -424,6 +437,45 @@ CREATE INDEX hq_idx_r__assignee_state ON hq_request(task_id, assignee_agent_id, 
 CREATE INDEX hq_idx_r__target_state ON hq_request(task_id, target_agent_id, state, sequence);
 CREATE INDEX hq_idx_r__assignee_sequence ON hq_request(task_id, assignee_agent_id, sequence);
 CREATE INDEX hq_idx_r__target_sequence ON hq_request(task_id, target_agent_id, sequence);
+CREATE UNIQUE INDEX hq_uidx_r__assignee_active ON hq_request(assignee_agent_id) WHERE current_action_id IS NOT NULL;
+CREATE INDEX hq_idx_r__dispatch_sequence ON hq_request(sequence) WHERE current_action_id IS NOT NULL OR pending_action_id IS NOT NULL;
+CREATE INDEX hq_idx_r__task_active ON hq_request(task_id, sequence) WHERE current_action_id IS NOT NULL;
+
+CREATE TABLE hq_report (
+  id TEXT NOT NULL PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  action_id TEXT NOT NULL UNIQUE REFERENCES hq_action(id),
+  reply_message_id TEXT NOT NULL UNIQUE,
+  sequence INTEGER NOT NULL UNIQUE,
+  stream_id TEXT NOT NULL,
+  task_token TEXT GENERATED ALWAYS AS (replace(task_id, '-', '')) STORED,
+  stream_token TEXT GENERATED ALWAYS AS (replace(stream_id, '-', '')) STORED,
+  author_agent_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  native_id TEXT NOT NULL,
+  native_turn_id TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK (outcome IN ('completed','needs-input','paused','failed')),
+  payload BLOB NOT NULL CHECK (length(payload) <= 1048576),
+  byte_count INTEGER GENERATED ALWAYS AS (length(payload)) STORED,
+  sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+  created_at INTEGER NOT NULL,
+  CONSTRAINT hq_fk_re__request FOREIGN KEY (task_id, request_id) REFERENCES hq_message(task_id, id),
+  CONSTRAINT hq_fk_re__reply FOREIGN KEY (task_id, reply_message_id, sequence) REFERENCES hq_message(task_id, id, sequence),
+  CONSTRAINT hq_fk_re__author FOREIGN KEY (task_id, author_agent_id) REFERENCES hq_task_agent(task_id, agent_id)
+) STRICT;
+CREATE INDEX hq_idx_re__task_sequence ON hq_report(task_id, sequence);
+CREATE TRIGGER hq_trg_re__immutable BEFORE UPDATE ON hq_report
+BEGIN SELECT RAISE(ABORT, 'HQ reports are immutable'); END;
+CREATE VIRTUAL TABLE hq_report_search USING fts5(task_token, stream_token, payload, content='hq_report', content_rowid='sequence');
+CREATE TRIGGER hq_trg_re__search_insert AFTER INSERT ON hq_report
+BEGIN
+  INSERT INTO hq_report_search(rowid, task_token, stream_token, payload) VALUES (new.sequence, new.task_token, new.stream_token, CAST(new.payload AS TEXT));
+END;
+CREATE TRIGGER hq_trg_re__search_delete AFTER DELETE ON hq_report
+BEGIN
+  INSERT INTO hq_report_search(hq_report_search, rowid, task_token, stream_token, payload) VALUES ('delete', old.sequence, old.task_token, old.stream_token, CAST(old.payload AS TEXT));
+END;
 
 CREATE TABLE hq_delivery (
   sequence INTEGER PRIMARY KEY AUTOINCREMENT,

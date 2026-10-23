@@ -9,6 +9,8 @@ export const startClaudeControl = () => {
  const root=process.env.JG_HQ_FIXTURE_DIRECTORY;
  const args=process.argv.slice(2);
  const flag=name=>args.includes(name)?args[args.indexOf(name)+1]:undefined;
+ const startupControls=JSON.parse(readFileSync(join(root,'claude-control.json'),'utf8'));
+ if(startupControls.rejectDialectReference&&flag('--json-schema')&&JSON.parse(flag('--json-schema')).$schema){process.exitCode=1;return;}
  let model=flag('--model')??'model-0000',effort=flag('--effort')??'native-effort';
  const id=args[args.indexOf(args.includes('--session-id')?'--session-id':'--resume')+1];
  const directory=join(process.env.CLAUDE_CONFIG_DIR,'projects',process.cwd().replace(/[^a-zA-Z0-9]/g,'-'));

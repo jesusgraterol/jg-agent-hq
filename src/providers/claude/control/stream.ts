@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { RecordSchema, toClaudeItem } from '../history/index.js';
 import { MAX_RESULT_BYTES, type ITurnUsage } from '../../../contracts/index.js';
 import { toTurnResult } from '../../results/index.js';
+import { DispatchResponseSchema } from '../../../contracts/collaboration/index.js';
 
 import type { IClaudeControlEvents, IClaudeSession } from './types.js';
 import { createClaudePrompt } from './permissions.js';
@@ -222,6 +223,20 @@ export const receiveClaudeMessage = (
       input.requestId.endsWith(':compact') ? undefined : session.settings.outputSchema,
       usage,
     );
+    if (input.isOrdinaryEnvelope && captured.isComplete && captured.failure === null) {
+      const envelope = DispatchResponseSchema.safeParse(captured.structuredOutput);
+      if (envelope.success && envelope.data.requestId === null) {
+        captured.format = 'text';
+        captured.text = envelope.data.report;
+        captured.structuredOutput = null;
+      } else {
+        captured.state = 'failed';
+        captured.failure = 'invalid-structured-output';
+        captured.isComplete = false;
+        captured.text = null;
+        captured.structuredOutput = null;
+      }
+    }
     if (input.isOutputOversized) {
       captured.state = 'failed';
       captured.failure = 'result-too-large';

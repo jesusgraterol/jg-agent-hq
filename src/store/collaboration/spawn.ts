@@ -7,11 +7,16 @@ import {
   type IAgentSpawnRead,
   type IAgentSpawnRecord,
 } from '../../collaboration/identity/index.js';
-import { collaborationConflict, collaborationForbidden } from '../../collaboration/grants/index.js';
+import {
+  collaborationConflict,
+  collaborationForbidden,
+  assertScopesAllowed,
+} from '../../collaboration/grants/index.js';
 
 import { readNativeAgent } from './identity.js';
 import { effectivePermissions, requireActiveAgent, taskAccess } from './authority.js';
 import type { ICollaborationContext } from './types.js';
+import { readInvocation } from './invocation.js';
 
 /**
  * Rechecks the session and task before returning an exact spawn relationship.
@@ -109,6 +114,21 @@ export const reserveAgentChild = (
 ): void => {
   const parent = requireActiveAgent(context);
   const permissions = effectivePermissions(parent, context.task);
+  const invocation = readInvocation(database, context);
+  if (invocation !== null) {
+    assertScopesAllowed(
+      [{ workspaceRoot, pathPrefixes: [''] }],
+      invocation.request.specification.scopes,
+    );
+    permissions.effects = permissions.effects.filter((effect) =>
+      invocation.request.specification.effects.includes(effect),
+    );
+    permissions.workspaceRoots = permissions.workspaceRoots.filter((root) =>
+      invocation.request.specification.scopes.some(
+        (scope) => scope.workspaceRoot === root && scope.pathPrefixes.includes(''),
+      ),
+    );
+  }
   const command = action.command;
   if (
     command.kind !== 'thread-create' ||

@@ -10,6 +10,7 @@ import {
   TaskSummarySchema,
   MessageSummarySchema,
   CollaborationEffectSchema,
+  DispatchBlockedSchema,
 } from '../../contracts/collaboration/index.js';
 
 // only the owning provider connection or verified private bridge supplies this proof
@@ -47,6 +48,14 @@ export const AgentIdentitySchema = z.object({
   membership: TaskAgentSummarySchema.nullable(),
   purpose: MessageSummarySchema.shape.summary.nullable(),
   permissions: EffectivePermissionsSchema.nullable(),
+  invocation: z
+    .object({
+      requestId: z.uuid(),
+      actionId: z.uuid(),
+      taskId: z.uuid(),
+      blockedReason: DispatchBlockedSchema.nullable(),
+    })
+    .nullable(),
   tasks: z.array(TaskSummarySchema).max(128),
   nextCursor: CursorSchema.nullable(),
 });

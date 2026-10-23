@@ -164,7 +164,10 @@ test('the installed SDK serves the closed shared catalog and session-derived Cla
           ),
         })
         .parse(await bridge.request('tools/list'));
-      expect(tools.tools).toHaveLength(18);
+      expect(tools.tools).toHaveLength(21);
+      expect(tools.tools.map((tool) => tool.name)).toEqual(
+        expect.arrayContaining(['hq_invocation_read', 'hq_report_read', 'hq_request_input']),
+      );
       expect(tools.tools.map((tool) => tool.name)).toContain('hq_agent_spawn');
       for (const tool of tools.tools)
         expect(

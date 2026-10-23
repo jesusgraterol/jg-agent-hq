@@ -8,7 +8,10 @@ import {
   recordAgentSpawn,
   reserveAgentChild,
   readAgentSpawn,
+  prepareDispatch,
+  reserveDispatch,
 } from '../collaboration/index.js';
+import { DispatchContextSchema } from '../../collaboration/dispatch/index.js';
 import { collaborationConflict, collaborationForbidden } from '../../collaboration/grants/index.js';
 
 import {
@@ -109,7 +112,7 @@ export class ControlModel {
   /** Resolves exact native input identities and content hashes; native roles grant no identity. */
   public getEvidenceOrigins(command: IEvidenceOriginsRequest): (IHistoryProvenance | null)[] {
     const query = this.__database
-      .prepare(`SELECT a.id, EXISTS(SELECT 1 FROM hq_browser_action b WHERE json_extract(b.receipt, '$.nativeActionId') = a.id AND b.native_thread_id = a.thread_id AND b.native_input_sha256 = a.input_sha256) AS authenticated
+      .prepare(`SELECT a.id, a.collaboration_context IS NOT NULL AS agent_input, EXISTS(SELECT 1 FROM hq_browser_action b WHERE json_extract(b.receipt, '$.nativeActionId') = a.id AND b.native_thread_id = a.thread_id AND b.native_input_sha256 = a.input_sha256) AS authenticated
       FROM hq_action a JOIN hq_thread t ON t.id = a.thread_id
       WHERE t.provider = ? AND t.native_id = ? AND a.native_turn_id = ? AND a.input_sha256 = ?
       AND a.delivery = 'acknowledged' AND (a.native_request_id = ? OR a.native_turn_id = ?)
@@ -126,11 +129,20 @@ export class ControlModel {
       );
       if (rows.length !== 1) return null;
       const row = z
-        .object({ id: z.uuid(), authenticated: z.number().int().min(0).max(1) })
+        .object({
+          id: z.uuid(),
+          authenticated: z.number().int().min(0).max(1),
+          agent_input: z.number().int().min(0).max(1),
+        })
         .parse(rows[0]);
       return {
-        origin: row.authenticated === 1 ? 'operator' : 'unknown',
-        source: row.authenticated === 1 ? 'authenticated-host-action' : 'host-action',
+        origin: row.agent_input === 1 ? 'agent' : row.authenticated === 1 ? 'operator' : 'unknown',
+        source:
+          row.agent_input === 1
+            ? 'agent-input'
+            : row.authenticated === 1
+              ? 'authenticated-host-action'
+              : 'host-action',
         actionId: row.id,
         nativeInputId: item.nativeInputId,
         contentBoundary: 'untrusted',
@@ -316,6 +328,22 @@ export class ControlModel {
         .digest('hex');
       const existing = this.__action(action.id);
       if (existing) {
+        if (prepared.collaboration) {
+          const selected = this.__database
+            .prepare('SELECT collaboration_context FROM hq_action WHERE id = ?')
+            .get(action.id);
+          if (selected?.collaboration_context === null || selected === undefined)
+            return collaborationConflict();
+          const context = DispatchContextSchema.parse(
+            JSON.parse(z.string().parse(selected.collaboration_context)),
+          );
+          if (
+            context.taskId !== prepared.collaboration.taskId ||
+            context.requestId !== prepared.collaboration.requestId ||
+            context.pendingActionId !== action.id
+          )
+            return collaborationConflict();
+        }
         if (
           prepared.agentSpawn &&
           !readAgentSpawn(
@@ -339,6 +367,19 @@ export class ControlModel {
         };
       }
       if (action.runtimeEpoch !== this.__epoch) this.__conflict();
+      const collaborationContext = prepared.collaboration
+        ? action.command.kind === 'message'
+          ? prepareDispatch(
+              this.__database,
+              prepared.collaboration,
+              action.id,
+              action.command.threadId,
+              this.__epoch,
+            )
+          : collaborationForbidden()
+        : null;
+      if (collaborationContext && prepared.input?.text !== collaborationContext.packet)
+        return collaborationConflict();
       const now = Date.now();
       const command = action.command;
       const expectedTurn = 'expectedTurnId' in command ? command.expectedTurnId : null;
@@ -380,6 +421,7 @@ export class ControlModel {
           .run(createHash('sha256').update(inputText).digest('hex'), action.id);
       if (prepared.agentSpawn && spawnContext)
         recordAgentSpawn(this.__database, action.id, prepared.agentSpawn, spawnContext);
+      if (collaborationContext) reserveDispatch(this.__database, collaborationContext, action.id);
       this.__database.exec('SAVEPOINT admission');
       let dispatchActionId: string | null = action.id;
       try {
@@ -678,6 +720,7 @@ export class ControlModel {
                 break;
               case 'message':
                 this.__requireIdle(thread);
+                if (!collaborationContext && this.__hasActiveDispatch(thread.id)) this.__conflict();
                 this.__beginTurn(action.id, threadId);
                 break;
               case 'queue':
@@ -691,6 +734,7 @@ export class ControlModel {
                 break;
               case 'queue-send':
                 this.__requireIdle(thread);
+                if (this.__hasActiveDispatch(thread.id)) this.__conflict();
                 this.__beginTurn(queued!.id, threadId);
                 this.__database
                   .prepare("UPDATE hq_action SET delivery = 'acknowledged' WHERE id = ?")
@@ -741,7 +785,15 @@ export class ControlModel {
         if (prepared.planContext) {
           const selected = this.__action(action.id)!.thread_id;
           if (!selected) this.__conflict();
-          if (command.kind !== 'thread-fork')
+          if (
+            command.kind !== 'thread-fork' &&
+            !(
+              collaborationContext &&
+              !collaborationContext.specification.effects.some((effect) =>
+                ['planning-write', 'workspace-write', 'commit', 'push'].includes(effect),
+              )
+            )
+          )
             this.__plans.bindThread(selected, prepared.planContext);
           this.__database
             .prepare('UPDATE hq_action SET plan_context = ? WHERE id = ?')
@@ -887,6 +939,7 @@ export class ControlModel {
             "UPDATE hq_action SET delivery = 'acknowledged', native_turn_id = ?, completion = ?, failure = NULL, queued_input = NULL, updated_at = ? WHERE id = ?",
           )
           .run(nativeTurnId, completion, now, action.id);
+        if (outcome.kind === 'turn-accepted') this.__deliverDispatch(action.id, now);
         if (ownsThread) {
           if (outcome.kind === 'archived' || outcome.kind === 'unarchived') {
             this.__database
@@ -977,6 +1030,7 @@ export class ControlModel {
       const thread = this.__thread(threadId);
       if (
         !thread ||
+        this.__hasActiveDispatch(threadId) ||
         thread.ownership !== 'managed' ||
         thread.runtime_epoch !== this.__epoch ||
         thread.active_turn_id ||
@@ -1299,7 +1353,8 @@ export class ControlModel {
           current.ownership === 'managed' &&
           current.state === 'completed' &&
           current.active_turn_id === null &&
-          current.pending_action_id === null,
+          current.pending_action_id === null &&
+          !this.__hasActiveDispatch(current.id),
       };
     });
   }
@@ -1418,6 +1473,38 @@ export class ControlModel {
         "SELECT id FROM hq_action WHERE provider = ? AND runtime_epoch = ? AND id != ? AND kind IN ('account-login','account-logout','mcp-reload') AND delivery IN ('submitted','uncertain','acknowledged') AND completion IS NULL LIMIT 1",
       )
       .get(provider, this.__epoch, exceptId);
+  }
+
+  private __hasActiveDispatch(threadId: string): boolean {
+    return (
+      this.__database
+        .prepare(
+          'SELECT 1 FROM hq_request WHERE assignee_agent_id = ? AND current_action_id IS NOT NULL LIMIT 1',
+        )
+        .get(threadId) !== undefined
+    );
+  }
+
+  private __deliverDispatch(actionId: string, now: number): void {
+    const saved = this.__database
+      .prepare('SELECT collaboration_context FROM hq_action WHERE id = ?')
+      .get(actionId);
+    if (!saved || saved.collaboration_context === null) return;
+    const context = DispatchContextSchema.parse(
+      JSON.parse(z.string().parse(saved.collaboration_context)),
+    );
+    this.__database
+      .prepare(
+        'UPDATE hq_delivery SET native_action_id = ?, delivered_at = ? WHERE task_id = ? AND recipient_agent_id = ? AND message_id IN (?, ?) AND delivered_at IS NULL',
+      )
+      .run(
+        actionId,
+        now,
+        context.taskId,
+        context.agentId,
+        context.requestId,
+        context.inputMessageId,
+      );
   }
 
   private __requireIdle(thread: IThreadRow): void {

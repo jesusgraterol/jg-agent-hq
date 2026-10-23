@@ -5,6 +5,8 @@ import { z } from 'zod';
 import { AgentIdentitySchema, AgentSpawnRecordSchema } from '../collaboration/identity/index.js';
 
 import { CollaborationResponseSchema } from '../contracts/collaboration/index.js';
+import { DispatchCollectionSchema } from '../contracts/collaboration/index.js';
+import { DispatchPageSchema, DispatchJobSchema } from '../collaboration/dispatch/index.js';
 
 import {
   BrowserReceiptSchema,
@@ -230,6 +232,17 @@ export const createStore = async (
   };
   return {
     storage: storage!,
+    dispatchPage: (query) => request({ kind: 'dispatch-page', query }, DispatchPageSchema),
+    dispatchJob: (taskId, requestId) =>
+      request({ kind: 'dispatch-job', taskId, requestId }, DispatchJobSchema),
+    blockDispatch: async (requestId, selectedActionId, reason) => {
+      await request({ kind: 'dispatch-block', requestId, selectedActionId, reason }, z.null());
+    },
+    collectDispatch: (taskId, requestId, actionId) =>
+      request(
+        { kind: 'dispatch-collect', taskId, requestId, actionId },
+        DispatchCollectionSchema.nullable(),
+      ),
     agentIdentity: (query) => request({ kind: 'agent-identity', query }, AgentIdentitySchema),
     getAgentSpawn: (query) =>
       request({ kind: 'agent-spawn-read', query }, AgentSpawnRecordSchema.nullable()),

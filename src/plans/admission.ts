@@ -8,6 +8,7 @@ import type { IAdmission } from '../store/control/index.js';
 
 import { canExecutePlanUnit, describePlan } from './authority.js';
 import { isSamePlanRevision } from './utilities.js';
+import { observePlanId } from './documents.js';
 import type {
   IPlanArtifacts,
   IApplyPlanIntent,
@@ -101,6 +102,58 @@ export const createPlanAdmission = (
   };
   return {
     /**
+     * Rechecks a dispatched request's exact plan immediately before native submission.
+     * @returns Completion after the short document/metadata locks have released.
+     * @throws
+     * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+     * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
+     * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+     * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
+     * - JG_AGENT_HQ_PLAN_FAILED: The HQ plan operation failed
+     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+     * - JG_AGENT_HQ_LOCK_INVALID_ARGUMENTS: The HQ lock acquisition arguments are invalid
+     * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
+     * - JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID: The HQ runtime directory must be a real directory
+     * - JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS: The HQ runtime directory must be private and owned by the current user
+     * - JG_AGENT_HQ_LOCK_FILE_INVALID: The HQ lock must be a regular file
+     * - JG_AGENT_HQ_LOCK_FILE_PERMISSIONS: The HQ lock must be private and owned by the current user
+     * - JG_AGENT_HQ_LOCK_OWNER_OVERSIZED: The HQ lock owner exceeds the supported size
+     * - JG_AGENT_HQ_LOCK_OWNER_UNREADABLE: The HQ lock owner could not be read. Inspect .runtime/hq.lock
+     * - JG_AGENT_HQ_LOCK_OWNER_INCOMPLETE: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
+     * - JG_AGENT_HQ_LOCK_OWNER_INACTIVE: The HQ lock has an inactive owner
+     * - JG_AGENT_HQ_LOCK_OWNER_UNVERIFIABLE: The HQ lock owner could not be verified
+     * - JG_AGENT_HQ_LOCK_TIMEOUT: Timed out waiting for the HQ lock
+     * - JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED: HQ lock ownership changed before release
+     */
+    async validateDispatch(taskId: string, requestId: string, actionId: string): Promise<void> {
+      const job = await store.dispatchJob(taskId, requestId);
+      if (job.request.currentActionId !== actionId || !job.context) conflict();
+      const selected = job.context!.specification;
+      if (selected.plan === null) return;
+      const target = selected.plan;
+      await withHqLock(coordinationRoot, 'plan-dispatch-check', () =>
+        withDocuments(target.directory, async (apply) => {
+          const current = await readPlan(target.directory, apply);
+          if (
+            observePlanId(current.plan) !== target.planId ||
+            !isSamePlanRevision(current.revision, target.revision) ||
+            (await store.getPendingPlanOperationId(target.directory))
+          )
+            conflict();
+          if (
+            selected.effects.some((effect) =>
+              ['planning-write', 'workspace-write', 'commit', 'push'].includes(effect),
+            )
+          ) {
+            const receipt = await store.getAction(actionId);
+            if (!receipt?.planContext?.scope) conflict();
+            await scopeContext(receipt!.planContext!.scope!, apply);
+          }
+        }),
+      );
+    },
+    /**
      * Validates guided scope and admits under the same short lock as revision gate closure.
      * @returns The existing action owner's receipt and dispatch identity.
      * @throws
@@ -132,6 +185,71 @@ export const createPlanAdmission = (
           'queuedActionId' in command ? await store.getAction(command.queuedActionId) : null;
         const threadId = 'threadId' in command ? command.threadId : queued?.threadId;
         const binding = threadId ? await store.getThreadPlan(threadId) : null;
+        if (prepared.collaboration) {
+          const job = await store.dispatchJob(
+            prepared.collaboration.taskId,
+            prepared.collaboration.requestId,
+          );
+          if (job.request.pendingActionId !== action.id || job.blockedReason !== null) conflict();
+          const selected = job.request.specification;
+          const isAssessment = !selected.effects.some((effect) =>
+            ['planning-write', 'workspace-write', 'commit', 'push'].includes(effect),
+          );
+          if (isAssessment) {
+            if (action.plan || action.expectedPlan) conflict();
+            if (selected.plan === null) return store.admit({ action, prepared });
+            const target = selected.plan;
+            return withDocuments(target.directory, async (apply) => {
+              const current = await readPlan(target.directory, apply);
+              if (
+                observePlanId(current.plan) !== target.planId ||
+                !isSamePlanRevision(current.revision, target.revision) ||
+                (await store.getPendingPlanOperationId(target.directory))
+              )
+                conflict();
+              prepared.planContext = {
+                directory: target.directory,
+                scope: null,
+                observedRevision: current.revision,
+              };
+              return store.admit({ action, prepared });
+            });
+          }
+          if (selected.plan === null) {
+            if (binding !== null) conflict();
+          } else {
+            const target = selected.plan;
+            if (
+              !binding?.scope ||
+              binding.directory !== target.directory ||
+              !isSamePlanRevision(binding.observedRevision, target.revision)
+            )
+              conflict();
+            if (
+              binding!.scope!.kind === 'execution' &&
+              (binding!.scope!.milestoneId === null
+                ? target.milestoneIds.length !== 0
+                : target.milestoneIds.length !== 1 ||
+                  target.milestoneIds[0] !== binding!.scope!.milestoneId)
+            )
+              conflict();
+            if (
+              selected.effects.some((effect) =>
+                ['workspace-write', 'commit', 'push'].includes(effect),
+              ) &&
+              binding!.scope!.kind !== 'execution'
+            )
+              conflict();
+            await withDocuments(target.directory, async (apply) => {
+              const current = await readPlan(target.directory, apply);
+              if (
+                observePlanId(current.plan) !== target.planId ||
+                !isSamePlanRevision(current.revision, target.revision)
+              )
+                conflict();
+            });
+          }
+        }
         const safe =
           command.kind === 'interrupt' ||
           command.kind === 'thread-close' ||

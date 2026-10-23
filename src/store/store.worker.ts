@@ -61,6 +61,26 @@ const startWorker = async (): Promise<void> => {
         }
         let result: unknown = null;
         switch (command.kind) {
+          case 'dispatch-page':
+            result = collaboration.dispatchPage(command.query);
+            break;
+          case 'dispatch-job':
+            result = collaboration.dispatchJob(command.taskId, command.requestId);
+            break;
+          case 'dispatch-block':
+            collaboration.blockDispatch(
+              command.requestId,
+              command.selectedActionId,
+              command.reason,
+            );
+            break;
+          case 'dispatch-collect':
+            result = collaboration.collectDispatch(
+              command.taskId,
+              command.requestId,
+              command.actionId,
+            );
+            break;
           case 'agent-identity':
             result = collaboration.identity(command.query);
             break;

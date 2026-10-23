@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type {
   ICollaborationCommand,
   ICollaborationResult,
+  IMessageAuthor,
 } from '../../contracts/collaboration/index.js';
 import {
   assertRequestAuthority,
@@ -91,6 +92,53 @@ export const fanoutBatch = (database: DatabaseSync): boolean => {
   return true;
 };
 
+/** Inserts transport-owned immutable content, including results collected after revocation. */
+export const insertMessage = (
+  database: DatabaseSync,
+  taskId: string,
+  author: IMessageAuthor,
+  command: Pick<
+    Extract<ICollaborationCommand, { kind: 'message-publish' }>,
+    'id' | 'streamId' | 'messageKind' | 'summary' | 'body' | 'references' | 'replyToMessageId'
+  >,
+) => {
+  const through = z
+    .number()
+    .parse(
+      database
+        .prepare(
+          'SELECT coalesce(max(sequence), 0) AS boundary FROM hq_subscription WHERE stream_id = ? AND is_active = 1 AND notify = 1',
+        )
+        .get(command.streamId)?.boundary,
+    );
+  const now = Date.now();
+  database
+    .prepare(
+      `INSERT INTO hq_message (id, task_id, stream_id, author, author_agent_id, kind, summary, body, artifact_references, reply_to_message_id, fanout_through_sequence, fanout_complete, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      command.id,
+      taskId,
+      command.streamId,
+      JSON.stringify(author),
+      author.kind === 'agent' ? author.agentId : null,
+      command.messageKind,
+      command.summary,
+      command.body,
+      JSON.stringify(command.references),
+      command.replyToMessageId,
+      through,
+      Number(through === 0),
+      now,
+    );
+  return toMessageSummary(
+    database
+      .prepare(`SELECT ${MESSAGE_METADATA_COLUMNS} FROM hq_message m WHERE m.id = ?`)
+      .get(command.id),
+  );
+};
+
 /**
  * Publishes immutable bounded content and root-request metadata with its initial delivery intent.
  * @returns Metadata only; no native action is dispatched.
@@ -147,46 +195,13 @@ export const publishMessage = (
     if (specification.returnStreamId !== undefined)
       readStream(database, context.task.id, specification.returnStreamId);
   }
-  const through = z
-    .number()
-    .parse(
-      database
-        .prepare(
-          'SELECT coalesce(max(sequence), 0) AS boundary FROM hq_subscription WHERE stream_id = ? AND is_active = 1 AND notify = 1',
-        )
-        .get(stream.id)?.boundary,
-    );
   const now = Date.now();
-  database
-    .prepare(
-      `INSERT INTO hq_message (id, task_id, stream_id, author, author_agent_id, kind, summary, body, artifact_references, reply_to_message_id, fanout_through_sequence, fanout_complete, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      command.id,
-      context.task.id,
-      stream.id,
-      JSON.stringify(context.actor),
-      context.actor.kind === 'agent' ? context.actor.agentId : null,
-      command.messageKind,
-      command.summary,
-      command.body,
-      JSON.stringify(command.references),
-      command.replyToMessageId,
-      through,
-      Number(through === 0),
-      now,
-    );
-  const message = toMessageSummary(
-    database
-      .prepare(`SELECT ${MESSAGE_METADATA_COLUMNS} FROM hq_message m WHERE m.id = ?`)
-      .get(command.id),
-  );
+  const message = insertMessage(database, context.task.id, context.actor, command);
   if (specification !== null) {
     database
       .prepare(
-        `INSERT INTO hq_request (id, sequence, task_id, stream_id, specification, target_agent_id, is_claimable, state, grant_id, grant_revision, skill_name, skill_mode, result_references, return_stream_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, '[]', ?, ?, ?)`,
+        `INSERT INTO hq_request (id, sequence, task_id, stream_id, specification, target_agent_id, is_claimable, state, grant_id, grant_revision, skill_name, skill_mode, result_references, return_stream_id, pending_action_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, '[]', ?, ?, ?, ?)`,
       )
       .run(
         command.id,
@@ -201,6 +216,7 @@ export const publishMessage = (
         specification.skill?.name ?? null,
         specification.skill?.mode ?? null,
         specification.returnStreamId ?? stream.id,
+        specification.claimable ? null : command.id,
         now,
         now,
       );

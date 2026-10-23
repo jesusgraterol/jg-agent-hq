@@ -4,6 +4,7 @@ import type {
   IArtifactReference,
   ICollaborationRequest,
   IPathScope,
+  ICollaborationStatus,
 } from '../contracts/collaboration/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 import type { IStore } from '../store/index.js';
@@ -23,6 +24,8 @@ export const createCollaboration = (
   let isClosed = false;
   let loop: Promise<void> | undefined;
   let failure: 'JG_AGENT_HQ_STORE_FAILED' | null = null;
+  let wake = (): void => {};
+  let dispatchFailure = (): ICollaborationStatus['dispatchFailure'] => null;
 
   const recover = (): void => {
     if (isClosed || loop) return;
@@ -98,12 +101,32 @@ export const createCollaboration = (
       recover();
     }
     if (command.kind === 'message-publish' || command.kind === 'subscription-set') recover();
-    if (response.kind === 'status') response.status.fanoutFailure = failure;
+    if (
+      'id' in command &&
+      ![
+        'message-ack',
+        'subscription-advance',
+        'stream-create',
+        'stream-archive',
+        'subscription-set',
+      ].includes(command.kind) &&
+      (command.kind !== 'message-publish' || command.request !== null)
+    )
+      wake();
+    if (response.kind === 'status') {
+      response.status.fanoutFailure = failure;
+      response.status.dispatchFailure = dispatchFailure();
+    }
     return response;
   };
   recover();
   return {
     handle,
+    recover,
+    setWakeHandler: (handler, getFailure) => {
+      wake = handler;
+      dispatchFailure = getFailure;
+    },
     close: async () => {
       isClosed = true;
       await loop;

@@ -27,13 +27,18 @@ import {
 const RowSchema = z.record(z.string(), z.unknown());
 const jsonColumn = (input: unknown): unknown => JSON.parse(z.string().parse(input));
 
+/** Decodes selected content bytes without a NUL-terminated SQLite TEXT conversion. */
+export const toContentText = (input: unknown): string =>
+  new TextDecoder('utf-8', { fatal: true }).decode(z.instanceof(Uint8Array).parse(input));
+
 const taskFields = (row: Record<string, unknown>) => ({
   id: row.id,
   workspaceRoot: row.workspace_root,
   title: row.title,
-  ownerOperatorRef: row.owner_operator_ref,
+  ownerOperatorRef: toContentText(row.owner_operator_ref),
   policyRevision: row.policy_revision,
   spawnCount: row.spawn_count,
+  automaticTurnCount: row.automatic_turn_count,
   state: row.state,
   lifecycleRevision: row.lifecycle_revision,
   createdAt: row.created_at,
@@ -79,7 +84,7 @@ export const toTaskAgentSummary = (input: unknown) =>
 const grantFields = (row: Record<string, unknown>) => ({
   id: row.id,
   taskId: row.task_id,
-  issuerOperatorRef: row.issuer_operator_ref,
+  issuerOperatorRef: toContentText(row.issuer_operator_ref),
   revision: row.revision,
   revokedAt: row.revoked_at,
   createdAt: row.created_at,
@@ -142,7 +147,7 @@ export const toMessageSummary = (input: unknown): IMessageSummary => {
     streamId: row.stream_id,
     author: jsonColumn(row.author),
     kind: row.kind,
-    summary: row.summary,
+    summary: toContentText(row.summary),
     bodyBytes: row.body_bytes,
     referenceCount: row.reference_count,
     replyToMessageId: row.reply_to_message_id,
@@ -159,6 +164,16 @@ const requestFields = (row: Record<string, unknown>) => ({
   assigneeAgentId: row.assignee_agent_id,
   state: row.state,
   currentActionId: row.current_action_id,
+  pendingActionId: row.pending_action_id,
+  pendingInputMessageId: row.pending_input_message_id,
+  manualDispatchId: row.manual_dispatch_id,
+  lastActionId: row.last_action_id,
+  lastReportId: row.last_report_id,
+  dispatchCount: row.dispatch_count,
+  requiredAuthority: row.required_authority,
+  pauseAgentRevision: row.pause_agent_revision,
+  dispatchBlockedReason: row.dispatch_blocked_reason,
+  failureReason: row.failure_reason,
   outcome: row.outcome,
   createdAt: row.created_at,
   updatedAt: row.updated_at,

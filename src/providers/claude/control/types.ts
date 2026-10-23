@@ -23,6 +23,7 @@ export type IClaudeInput = {
   hasInterruptionMarker: boolean;
   finalText: string | null;
   isOutputOversized: boolean;
+  isOrdinaryEnvelope: boolean;
   resolve(turn: { id: string }): void;
   reject(error: unknown): void;
   timer: ReturnType<typeof setTimeout>;
@@ -33,6 +34,7 @@ export type IClaudeSession = {
   settings: ISessionSettings;
   scope: string;
   isClosing: boolean;
+  hasInput: boolean;
   connection?: Awaited<ReturnType<typeof import('../rpc.js').createClaudeRpc>>;
   agentBridge?: IAgentMcpLease;
   opening: Promise<void>;

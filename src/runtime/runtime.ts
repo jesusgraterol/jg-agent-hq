@@ -8,6 +8,7 @@ import { createAccounts } from '../accounts/index.js';
 import { createExtensions } from '../extensions/index.js';
 import { createHandoffs } from '../handoffs/index.js';
 import { createCollaboration } from '../collaboration/index.js';
+import { createDispatch } from '../collaboration/dispatch/index.js';
 import { createAgentTools } from '../agent-tools/index.js';
 import { CONTROL_SOCKET, createIpcServer } from '../ipc/index.js';
 import { createCodexProviderFactory, createClaudeProviderFactory } from '../providers/index.js';
@@ -189,6 +190,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       try {
         await browser.close();
         const toolCleanup = await Promise.allSettled([agentTools.close()]);
+        await dispatch.close();
         await collaboration.close();
         await Promise.allSettled([...revisionJobs.values()]);
         const results = await Promise.allSettled([ipc?.close(), actions.close()]);
@@ -352,6 +354,16 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     read: (command) => readNativeHistory(command, providers, projection, allowedRoots),
   });
   providers.setAgentTools(agentTools.forProvider);
+  const dispatch = createDispatch(
+    projection,
+    actions,
+    collaboration,
+    storage.background,
+    ownership.owner.nonce,
+  );
+  collaboration.setWakeHandler(dispatch.wake, dispatch.failure);
+  actions.setChangeHandler(dispatch.wake);
+  dispatch.wake();
   const handoffs = createHandoffs(
     projection,
     actions,

@@ -13,7 +13,11 @@ import {
   createAgentCredentials,
   type INativeToolBinding,
 } from '../collaboration/identity/index.js';
-import { collaborationForbidden, collaborationConflict } from '../collaboration/grants/index.js';
+import {
+  collaborationForbidden,
+  collaborationConflict,
+  assertScopesAllowed,
+} from '../collaboration/grants/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 import { suggestThreadName } from '../sessions/names/index.js';
 
@@ -68,6 +72,16 @@ export const createAgentTools = (options: IAgentToolsOptions): IAgentTools => {
     }
     if (!identity.selectedTask || !identity.membership || !identity.permissions)
       return collaborationForbidden();
+    const currentInvocation = await options.collaboration.handle(
+      {
+        kind: 'collaboration',
+        actor: { kind: 'agent', agentId: identity.agentId },
+        command: { kind: 'invocation-read', taskId: identity.selectedTask.id },
+      },
+      binding,
+    );
+    const invocation =
+      currentInvocation.kind === 'invocation' ? currentInvocation.invocation : null;
     if (call.name === 'hq_sessions_list' || call.name === 'hq_session_evidence_read') {
       const workspaceRoot = await resolveWorkspaceTarget(
         call.arguments.workspaceRoot,
@@ -79,6 +93,11 @@ export const createAgentTools = (options: IAgentToolsOptions): IAgentTools => {
         !identity.permissions.workspaceRoots.includes(workspaceRoot)
       )
         return collaborationForbidden();
+      if (invocation !== null)
+        assertScopesAllowed(
+          [{ workspaceRoot, pathPrefixes: [''] }],
+          invocation.request.specification.scopes,
+        );
       signal.throwIfAborted();
       if (call.name === 'hq_sessions_list') {
         const { taskId: _taskId, ...query } = call.arguments;
@@ -92,6 +111,11 @@ export const createAgentTools = (options: IAgentToolsOptions): IAgentTools => {
     if (call.name === 'hq_agent_spawn') {
       const args = call.arguments;
       const workspaceRoot = await resolveWorkspaceTarget(args.workspaceRoot, options.allowedRoots);
+      if (invocation !== null)
+        assertScopesAllowed(
+          [{ workspaceRoot, pathPrefixes: [''] }],
+          invocation.request.specification.scopes,
+        );
       const commandDigest = hashValue(JSON.stringify({ ...args, workspaceRoot }));
       const query = { binding, taskId: args.taskId, actionId: args.id, commandDigest };
       const existing = await options.store.getAgentSpawn(query);
@@ -123,7 +147,7 @@ export const createAgentTools = (options: IAgentToolsOptions): IAgentTools => {
             name: suggestThreadName(`${args.provider} ${args.purpose}`),
           },
         },
-        { binding, taskId: args.taskId, purpose: args.purpose, commandDigest },
+        { agentSpawn: { binding, taskId: args.taskId, purpose: args.purpose, commandDigest } },
       );
       return agentToolResult(
         { taskId: args.taskId, agentId: receipt.threadId, receipt },

@@ -1,4 +1,10 @@
 import { z } from 'zod';
+import {
+  DispatchScanSchema,
+  type IDispatchScan,
+  type IDispatchPage,
+  type IDispatchJob,
+} from '../collaboration/dispatch/index.js';
 
 import {
   AgentIdentityQuerySchema,
@@ -13,6 +19,9 @@ import {
 
 import {
   CollaborationRequestSchema,
+  DispatchBlockedSchema,
+  type IDispatchBlocked,
+  type IDispatchCollection,
   type ICollaborationRequest,
   type ICollaborationResponse,
 } from '../contracts/collaboration/index.js';
@@ -100,6 +109,20 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     binding: NativeToolBindingSchema.optional(),
   }),
   z.strictObject({ kind: z.literal('collaboration-fanout') }),
+  z.strictObject({ kind: z.literal('dispatch-page'), query: DispatchScanSchema }),
+  z.strictObject({ kind: z.literal('dispatch-job'), taskId: z.uuid(), requestId: z.uuid() }),
+  z.strictObject({
+    kind: z.literal('dispatch-block'),
+    requestId: z.uuid(),
+    selectedActionId: z.uuid(),
+    reason: DispatchBlockedSchema.nullable(),
+  }),
+  z.strictObject({
+    kind: z.literal('dispatch-collect'),
+    taskId: z.uuid(),
+    requestId: z.uuid(),
+    actionId: z.uuid(),
+  }),
   z.strictObject({ kind: z.literal('evidence-origins'), request: EvidenceOriginsRequestSchema }),
   z.strictObject({ kind: z.literal('storage-maintenance') }),
   z.strictObject({
@@ -224,6 +247,45 @@ export const StoreWorkerSchema = z.strictObject({
 
 // the worker owns persistence; callers cannot submit arbitrary statements
 export type IStore = {
+  /**
+   * Reads one bounded durable dispatch scan.
+   * @returns Indexed request identities within one high-water boundary.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  dispatchPage(query: IDispatchScan): Promise<IDispatchPage>;
+  /**
+   * Reads a selected intent and current admission evidence.
+   * @returns The selected request, immutable binding and fresh policy/ownership observations.
+   * @throws
+   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  dispatchJob(taskId: string, requestId: string): Promise<IDispatchJob>;
+  /**
+   * Stores a blocked reason only for the selected pending or current action binding.
+   * @returns Completion after committing the observation.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  blockDispatch(
+    requestId: string,
+    selectedActionId: string,
+    reason: IDispatchBlocked | null,
+  ): Promise<void>;
+  /**
+   * Atomically collects saved native output and return delivery.
+   * @returns The immutable collection receipt, or null while evidence is unsettled.
+   * @throws
+   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  collectDispatch(
+    taskId: string,
+    requestId: string,
+    actionId: string,
+  ): Promise<IDispatchCollection | null>;
   /**
    * Resolves the controlled native session and its authorized task discovery page.
    * @returns Current server-derived identity.

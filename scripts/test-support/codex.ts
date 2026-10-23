@@ -48,7 +48,7 @@ else {
       appendFileSync(join(directory,'replies.jsonl'),JSON.stringify(request)+'\n');
       if(toolCalls.has(request.id)) {
         const {threadId,turnId}=toolCalls.get(request.id);toolCalls.delete(request.id);
-        notify('item/completed',{threadId,turnId,item:{id:'tool-result-'+turnId,type:'agentMessage',text:JSON.stringify(request.result??request.error)}});
+        notify('item/completed',{threadId,turnId,item:{id:'tool-result-'+turnId,type:'agentMessage',text:JSON.stringify(control.structuredOutput??request.result??request.error)}});
         complete(threadId);return;
       }
       const threadId = control.promptThread || [...managed.keys()].at(-1);
