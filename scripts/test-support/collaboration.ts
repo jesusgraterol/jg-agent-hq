@@ -55,11 +55,15 @@ export const withCollaboration = async (
       if (response.kind !== 'action' || response.result.threadId === null)
         throw new Error('Missing managed thread');
       agentIds.push(response.result.threadId);
+      // cold native processes use the runtime's 30-second acknowledgement budget
       await expect
-        .poll(async () => {
-          const receipt = await native.request({ kind: 'receipt', actionId: response.result.id });
-          return receipt.kind === 'receipt' ? receipt.result?.delivery : null;
-        })
+        .poll(
+          async () => {
+            const receipt = await native.request({ kind: 'receipt', actionId: response.result.id });
+            return receipt.kind === 'receipt' ? receipt.result?.delivery : null;
+          },
+          { timeout: 30_000 },
+        )
         .toBe('acknowledged');
     }
     const host: ICollaborationActor = { kind: 'host', operatorRef: 'fixture-owner' };
