@@ -9,10 +9,18 @@ import {
   type IThreadSummary,
   type ITurnSummary,
   type IUsageSnapshot,
+  type INativeLineage,
 } from '../../contracts/index.js';
 
 import type { INativeItem, INativeThread, INativeTurn, INativeUsage } from './types.js';
 import { parseNative } from './validations.js';
+
+/** Preserves exact native tree identities independently of managed-agent relationships. */
+export const toNativeLineage = (thread: INativeThread): INativeLineage => ({
+  sessionId: thread.sessionId ?? null,
+  parentThreadId: thread.parentThreadId ?? null,
+  forkedFromId: thread.forkedFromId ?? null,
+});
 
 /**
  * Converts native seconds to the public millisecond-based metadata contract.
@@ -23,6 +31,7 @@ export const toThreadSummary = (thread: INativeThread): IThreadSummary =>
   parseNative(ThreadSummarySchema, {
     provider: 'codex',
     nativeId: thread.id,
+    nativeLineage: toNativeLineage(thread),
     workspaceRoot: thread.cwd,
     name: thread.name ?? null,
     createdAt: thread.createdAt * 1000,

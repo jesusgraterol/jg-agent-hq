@@ -41,6 +41,13 @@ export class LiveItems {
     }
   }
 
+  /** Clears a reverted presentation and requires a fresh native history read. */
+  public reset(nativeId: string): void {
+    this.__remove(nativeId);
+    this.open(nativeId);
+    this.markGap(nativeId);
+  }
+
   /** Marks missing native stream evidence without discarding the surviving presentation. */
   public markGap(nativeId: string): void {
     const thread = this.__threads.get(nativeId);

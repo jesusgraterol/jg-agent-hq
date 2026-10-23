@@ -52,13 +52,14 @@ export const withClaudeRuntime = async (
           if (!hasErrorCode(cause, 'ENOENT')) throw cause;
         }
         let children: string[] = [];
-        try {
-          children = (await readFile(join(root, 'claude-pids.jsonl'), 'utf8'))
-            .trim()
-            .split('\n')
-            .filter(Boolean);
-        } catch (cause) {
-          if (!hasErrorCode(cause, 'ENOENT')) throw cause;
+        for (const filename of ['claude-pids.jsonl', 'claude-read-pids.jsonl']) {
+          try {
+            children.push(
+              ...(await readFile(join(root, filename), 'utf8')).trim().split('\n').filter(Boolean),
+            );
+          } catch (cause) {
+            if (!hasErrorCode(cause, 'ENOENT')) throw cause;
+          }
         }
         for (const line of children)
           for (const pid of Object.values(z.record(z.string(), z.number()).parse(JSON.parse(line))))

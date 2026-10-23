@@ -1,5 +1,6 @@
 import {
   NativeSkillInputSchema,
+  NativeLineageSchema,
   ActionPlanContextSchema,
   type IActionReceipt,
   type IActionSummary,
@@ -13,6 +14,12 @@ export const toManagedThread = (thread: IThreadRow): IManagedThread => ({
   id: thread.id,
   provider: thread.provider,
   nativeId: thread.native_id,
+  forkedFromThreadId: thread.fork_source_thread_id,
+  isArchived: thread.is_archived === 1,
+  nativeLineage:
+    thread.native_lineage === null
+      ? null
+      : NativeLineageSchema.parse(JSON.parse(thread.native_lineage)),
   name: thread.name,
   workspaceRoot: thread.workspace_root,
   ownership: thread.ownership,

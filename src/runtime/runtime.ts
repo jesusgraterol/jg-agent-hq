@@ -247,6 +247,32 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           kind: 'usage',
           result: await providers.readUsage(command.provider),
         };
+      case 'models':
+        return {
+          kind: 'models',
+          result: await (await providers.get(command.provider)).readModels(command),
+        };
+      case 'configuration': {
+        const workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, allowedRoots);
+        const thread = command.threadId ? await projection.getThread(command.threadId) : null;
+        if (
+          command.threadId &&
+          (!thread ||
+            thread.provider !== command.provider ||
+            thread.workspaceRoot !== workspaceRoot ||
+            !thread.nativeId)
+        )
+          throw new Exception('The HQ request is invalid', {
+            code: 'JG_AGENT_HQ_REQUEST_INVALID',
+            data: { kind: 'invalid-request' },
+          });
+        return {
+          kind: 'configuration',
+          result: await (
+            await providers.get(command.provider)
+          ).readConfiguration({ ...command, workspaceRoot }, thread?.nativeId ?? undefined),
+        };
+      }
       case 'handoff':
         return { kind: 'handoff', result: await handoffs.handle(command.command) };
       case 'plan':

@@ -9,6 +9,8 @@ import {
   ProviderCapabilitySetSchema,
   ProviderIdSchema,
   ProviderStatusSchema,
+  ProviderModelPageSchema,
+  SessionConfigurationSchema,
   UsageSnapshotSchema,
   type IManagedThread,
   type IProviderCapabilities,
@@ -81,6 +83,13 @@ const unavailableCapabilities = (): IProviderCapabilitySet => {
       history: unavailable,
       usage: unavailable,
       skills: unavailable,
+      models: unavailable,
+      fork: unavailable,
+      archive: unavailable,
+      unarchive: unavailable,
+      compact: unavailable,
+      revert: unavailable,
+      configuration: unavailable,
     },
     inputSchema: null,
     configurationSchema: null,
@@ -244,8 +253,8 @@ export const createProviderRegistry = (
         }),
       outcome: (input, thread) =>
         deliver(() => {
-          const outcome = parseProviderOutcome(input);
           const metadata = thread === undefined ? undefined : ProviderThreadSchema.parse(thread);
+          const outcome = parseProviderOutcome(input, metadata?.nativeLineage);
           if (outcome.kind === 'created' || outcome.kind === 'resumed') {
             if (
               !metadata ||
@@ -255,6 +264,12 @@ export const createProviderRegistry = (
             )
               rejectProviderResponse();
           }
+          if (
+            (outcome.kind === 'reverted' && (!metadata || metadata.nativeState !== 'idle')) ||
+            (outcome.kind === 'unarchived' &&
+              (!metadata || !['idle', 'notLoaded'].includes(metadata.nativeState)))
+          )
+            rejectProviderResponse();
           handlers?.outcome(provider, outcome, metadata);
         }),
       unavailable: (nativeId) =>
@@ -349,6 +364,58 @@ export const createProviderRegistry = (
             invoke(async (call) =>
               validateProviderHistory(await adapter.readHistory(command, call), command, provider),
             ),
+          readModels: (command) =>
+            invoke(async (call) => {
+              const page = ProviderModelPageSchema.parse(await adapter.readModels(command, call));
+              if (page.provider !== provider || page.data.length > command.limit)
+                rejectProviderResponse();
+              return page;
+            }),
+          forkThread: (requestId, nativeId, workspaceRoot) =>
+            invokeControl(async (call) => {
+              const parsed = ProviderThreadSchema.parse(
+                await adapter.forkThread(requestId, nativeId, workspaceRoot, call),
+              );
+              if (
+                parsed.nativeState !== 'idle' ||
+                parsed.nativeId === nativeId ||
+                parsed.nativeLineage?.forkedFromId !== nativeId
+              ) {
+                quarantine(
+                  entry,
+                  new Exception('The HQ provider integration failed', {
+                    code: 'JG_AGENT_HQ_PROVIDER_FAILED',
+                    data: { kind: 'agent-unavailable' },
+                  }),
+                );
+                throw entry.failure;
+              }
+              return parsed;
+            }),
+          archiveThread: (requestId, nativeId) =>
+            invokeControl((call) => adapter.archiveThread(requestId, nativeId, call)),
+          unarchiveThread: (requestId, nativeId) =>
+            invokeControl(async (call) => {
+              const thread = ProviderThreadSchema.refine(
+                (thread) =>
+                  thread.nativeId === nativeId &&
+                  ['idle', 'notLoaded'].includes(thread.nativeState),
+              ).parse(await adapter.unarchiveThread(requestId, nativeId, call));
+              return thread;
+            }),
+          revertThread: (requestId, nativeId, beforeTurnId) =>
+            invokeControl(async (call) => {
+              const thread = ProviderThreadSchema.refine(
+                (thread) => thread.nativeId === nativeId && thread.nativeState === 'idle',
+              ).parse(await adapter.revertThread(requestId, nativeId, beforeTurnId, call));
+              return thread;
+            }),
+          compactThread: (requestId, nativeId) =>
+            invokeControl(async (call) =>
+              z
+                .object({ id: NativeIdSchema.nullable() })
+                .parse(await adapter.compactThread(requestId, nativeId, call)),
+            ),
           inspectThread: (nativeId, workspaceRoot) =>
             invokeControl(async (call) => {
               const result = ProviderInspectionSchema.parse(
@@ -364,6 +431,20 @@ export const createProviderRegistry = (
                 );
                 throw entry.failure;
               }
+              return result;
+            }),
+          readConfiguration: (command, nativeId) =>
+            invoke(async (call) => {
+              const result = SessionConfigurationSchema.parse(
+                await adapter.readConfiguration(command, nativeId, call),
+              );
+              if (
+                result.provider !== provider ||
+                result.nativeId !== (nativeId ?? null) ||
+                result.workingDirectory !== command.workspaceRoot ||
+                (result.choices !== null && result.choices.length > command.limit)
+              )
+                rejectProviderResponse();
               return result;
             }),
           readUsage: () =>
@@ -385,10 +466,10 @@ export const createProviderRegistry = (
               throw normalizeProviderError(cause, entry.registration.isBuiltIn);
             }
           },
-          startThread: (requestId, workspaceRoot) =>
+          startThread: (requestId, workspaceRoot, settings) =>
             invokeControl(async (call) => {
               const parsed = ProviderThreadSchema.safeParse(
-                await adapter.startThread(requestId, workspaceRoot, call),
+                await adapter.startThread(requestId, workspaceRoot, settings, call),
               );
               if (!parsed.success || parsed.data.nativeState !== 'idle') {
                 quarantine(
@@ -404,10 +485,17 @@ export const createProviderRegistry = (
               }
               return parsed.data;
             }),
-          resumeThread: (requestId, nativeId, workspaceRoot, name) =>
+          resumeThread: (requestId, nativeId, workspaceRoot, name, settings) =>
             invokeControl(async (call) => {
               const parsed = ProviderThreadSchema.safeParse(
-                await adapter.resumeThread(requestId, nativeId, workspaceRoot, name, call),
+                await adapter.resumeThread(
+                  requestId,
+                  nativeId,
+                  workspaceRoot,
+                  name,
+                  settings,
+                  call,
+                ),
               );
               if (
                 !parsed.success ||
@@ -429,11 +517,11 @@ export const createProviderRegistry = (
             }),
           nameThread: (requestId, nativeId, name) =>
             invokeControl((call) => adapter.nameThread(requestId, nativeId, name, call)),
-          startTurn: (requestId, nativeId, text, skill) =>
+          startTurn: (requestId, nativeId, text, skill, settings) =>
             invokeControl(async (call) =>
               z
                 .object({ id: NativeIdSchema })
-                .parse(await adapter.startTurn(requestId, nativeId, text, skill, call)),
+                .parse(await adapter.startTurn(requestId, nativeId, text, skill, settings, call)),
             ),
           steer: (requestId, nativeId, expectedTurnId, text) =>
             invokeControl(async (call) =>

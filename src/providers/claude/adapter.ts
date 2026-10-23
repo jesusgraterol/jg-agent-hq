@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { Exception } from 'jg-exception';
+import { z } from 'zod';
 
-import type { IProviderCapabilitySet } from '../../contracts/index.js';
+import {
+  SessionSettingsSchema,
+  TurnSettingsSchema,
+  type IProviderCapabilitySet,
+} from '../../contracts/index.js';
 import type { IStore } from '../../store/index.js';
 
 import {
@@ -43,6 +48,19 @@ export const createClaudeProviderFactory = (
       },
       async readCapabilities(nativeId): Promise<IProviderCapabilitySet> {
         await reader.ensureReady();
+        let models: IProviderCapabilitySet['operations']['models'] = SUPPORTED_PROVIDER_OPERATION;
+        try {
+          await reader.readModels({ kind: 'models', provider: 'claude', limit: 1 });
+        } catch {
+          models = {
+            state: 'unavailable',
+            changeMode: null,
+            reason: {
+              code: 'native-model-catalog-unavailable',
+              message: 'The native model catalog is unavailable.',
+            },
+          };
+        }
         let skills: IProviderCapabilitySet['operations']['skills'] = SUPPORTED_PROVIDER_OPERATION;
         if (nativeId) {
           try {
@@ -78,13 +96,78 @@ export const createClaudeProviderFactory = (
             },
             history: SUPPORTED_PROVIDER_OPERATION,
             usage: SUPPORTED_PROVIDER_OPERATION,
+            models,
+            fork: SUPPORTED_PROVIDER_OPERATION,
+            compact: SUPPORTED_PROVIDER_OPERATION,
+            configuration: SUPPORTED_PROVIDER_OPERATION,
+            archive: {
+              state: 'unsupported',
+              changeMode: null,
+              reason: {
+                code: 'native-control-unsupported',
+                message: 'The structured Claude interface has no native archive operation.',
+              },
+            },
+            unarchive: {
+              state: 'unsupported',
+              changeMode: null,
+              reason: {
+                code: 'native-control-unsupported',
+                message: 'The structured Claude interface has no native unarchive operation.',
+              },
+            },
+            revert: {
+              state: 'unsupported',
+              changeMode: null,
+              reason: {
+                code: 'native-control-unsupported',
+                message:
+                  'The structured Claude interface has no supported conversation-revert control.',
+              },
+            },
             skills,
           },
           inputSchema: PROVIDER_INPUT_SCHEMA,
-          configurationSchema: null,
+          configurationSchema: {
+            session: z.json().parse(z.toJSONSchema(SessionSettingsSchema.omit({ sandbox: true }))),
+            turn: z.json().parse(z.toJSONSchema(TurnSettingsSchema)),
+            sessionChangeMode: 'idle-restart',
+            turnChangeMode: 'live',
+            permissionModes: [
+              'default',
+              'acceptEdits',
+              'auto',
+              'bypassPermissions',
+              'dontAsk',
+              'plan',
+            ],
+          },
         };
       },
       readHistory: (command) => reader.readHistory(command),
+      readModels: (command) => reader.readModels(command),
+      readConfiguration: (command, nativeId, call) =>
+        nativeId
+          ? control.readConfiguration(command, nativeId)
+          : reader.readConfiguration(command, call.signal),
+      archiveThread: async () => capabilityUnavailable(),
+      unarchiveThread: async () => capabilityUnavailable(),
+      revertThread: async () => capabilityUnavailable(),
+      compactThread: (requestId, nativeId, call) =>
+        control.startTurn(requestId, nativeId, '/compact', {}, call.signal),
+      async forkThread(requestId, nativeId, workspaceRoot, call) {
+        const result = await control.forkThread(requestId, nativeId, workspaceRoot, call.signal);
+        return {
+          nativeId: result.id,
+          workspaceRoot: result.cwd,
+          nativeState: result.status.type,
+          nativeLineage: {
+            sessionId: result.id,
+            parentThreadId: null,
+            forkedFromId: result.forkedFromId,
+          },
+        };
+      },
       async inspectThread(nativeId, workspaceRoot) {
         const response = await reader.readHistory({
           kind: 'thread',
@@ -104,16 +187,34 @@ export const createClaudeProviderFactory = (
       readSkills: (nativeId) => control.readSkills(nativeId),
       formatSkill: (skill, argumentsText) =>
         `/${skill.name}${argumentsText ? ` ${argumentsText}` : ''}`,
-      async startThread(requestId, workspaceRoot) {
-        const result = await control.startThread(requestId, workspaceRoot);
-        return { nativeId: result.id, workspaceRoot: result.cwd, nativeState: result.status.type };
+      async startThread(requestId, workspaceRoot, settings, call) {
+        const result = await control.startThread(requestId, workspaceRoot, settings, call.signal);
+        return {
+          nativeId: result.id,
+          workspaceRoot: result.cwd,
+          nativeState: result.status.type,
+          nativeLineage: { sessionId: result.id, parentThreadId: null, forkedFromId: null },
+        };
       },
-      async resumeThread(requestId, nativeId, workspaceRoot, name) {
-        const result = await control.resumeThread(requestId, nativeId, workspaceRoot, name);
-        return { nativeId: result.id, workspaceRoot: result.cwd, nativeState: result.status.type };
+      async resumeThread(requestId, nativeId, workspaceRoot, name, settings, call) {
+        const result = await control.resumeThread(
+          requestId,
+          nativeId,
+          workspaceRoot,
+          name,
+          settings,
+          call.signal,
+        );
+        return {
+          nativeId: result.id,
+          workspaceRoot: result.cwd,
+          nativeState: result.status.type,
+          nativeLineage: { sessionId: result.id, parentThreadId: null, forkedFromId: null },
+        };
       },
       nameThread: (requestId, nativeId, name) => control.nameThread(requestId, nativeId, name),
-      startTurn: (requestId, nativeId, text) => control.startTurn(requestId, nativeId, text),
+      startTurn: (requestId, nativeId, text, _skill, settings, call) =>
+        control.startTurn(requestId, nativeId, text, settings, call.signal),
       steer: async () => capabilityUnavailable(),
       interrupt: (requestId, nativeId, nativeTurnId) =>
         control.interrupt(requestId, nativeId, nativeTurnId),

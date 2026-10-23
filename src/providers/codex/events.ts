@@ -1,24 +1,26 @@
 import { z } from 'zod';
 
 import { NativeIdSchema } from '../../contracts/identities/index.js';
-import type { INativeOutcome } from '../../store/control/index.js';
-import type { IAgentProviderEvents, IProviderThread } from '../index.js';
+import type { IAgentProviderOutcome, IAgentProviderEvents, IProviderThread } from '../index.js';
 
 import type { ICodexEvents, ICodexProvider, INativeThread } from './types.js';
 import { NativeItemSchema, NativeThreadSchema, NativeTurnSchema } from './types.js';
 import { parseNative } from './validations.js';
-import { toHistoryItem } from './transformers.js';
+import { toHistoryItem, toNativeLineage } from './transformers.js';
 import { buildCodexReply, parseCodexPrompt, toApprovalPresentation } from './approvals/index.js';
 
 const TargetSchema = z.object({ threadId: NativeIdSchema, turnId: NativeIdSchema });
 const DeltaSchema = TargetSchema.extend({ itemId: NativeIdSchema, delta: z.string() });
 const PhaseIdSchema = z
   .string()
-  .regex(/^[a-f0-9-]{36}:(create|resume|name|turn|steer|interrupt|clean|close)$/);
+  .regex(
+    /^[a-f0-9-]{36}:(create|fork|resume|name|turn|steer|interrupt|clean|close|archive|unarchive|revert|compact)$/,
+  );
 
 /** @returns Exact native session metadata normalized to the common control boundary. */
 export const toProviderThread = (thread: INativeThread): IProviderThread => ({
   nativeId: thread.id,
+  nativeLineage: toNativeLineage(thread),
   workspaceRoot: thread.cwd,
   nativeState: thread.status.type,
 });
@@ -101,29 +103,40 @@ export const createCodexEvents = (
   },
   lateResponse(requestId, result, error) {
     if (!PhaseIdSchema.safeParse(requestId).success) return;
-    const actionId = requestId.slice(0, 36);
-    let outcome: INativeOutcome;
+    let outcome: IAgentProviderOutcome;
     let thread: IProviderThread | undefined;
-    if (error !== undefined)
-      outcome = { kind: 'failed', actionId, requestId, failure: 'agent-unavailable' };
-    else if (requestId.endsWith(':create') || requestId.endsWith(':resume')) {
+    if (error !== undefined) outcome = { kind: 'failed', requestId, failure: 'agent-unavailable' };
+    else if (
+      requestId.endsWith(':create') ||
+      requestId.endsWith(':fork') ||
+      requestId.endsWith(':resume')
+    ) {
       thread = toProviderThread(
         parseNative(z.object({ thread: NativeThreadSchema }), result).thread,
       );
-      outcome = requestId.endsWith(':create')
-        ? { kind: 'created', actionId, requestId, nativeId: thread.nativeId }
-        : { kind: 'resumed', actionId, requestId, nativeState: thread.nativeState };
+      outcome =
+        requestId.endsWith(':create') || requestId.endsWith(':fork')
+          ? { kind: 'created', requestId, nativeId: thread.nativeId }
+          : { kind: 'resumed', requestId, nativeState: thread.nativeState };
+    } else if (requestId.endsWith(':unarchive') || requestId.endsWith(':revert')) {
+      thread = toProviderThread(
+        parseNative(z.object({ thread: NativeThreadSchema }), result).thread,
+      );
+      outcome = { kind: requestId.endsWith(':unarchive') ? 'unarchived' : 'reverted', requestId };
+    } else if (requestId.endsWith(':archive') || requestId.endsWith(':compact')) {
+      parseNative(z.object({}), result);
+      outcome = requestId.endsWith(':archive')
+        ? { kind: 'archived', requestId }
+        : { kind: 'compaction-accepted', requestId, nativeTurnId: null };
     } else if (requestId.endsWith(':turn'))
       outcome = {
         kind: 'turn-accepted',
-        actionId,
         requestId,
         nativeTurnId: parseNative(z.object({ turn: NativeTurnSchema }), result).turn.id,
       };
     else if (requestId.endsWith(':steer'))
       outcome = {
         kind: 'steer-accepted',
-        actionId,
         requestId,
         nativeTurnId: parseNative(z.object({ turnId: NativeIdSchema }), result).turnId,
       };
@@ -139,7 +152,6 @@ export const createCodexEvents = (
           : requestId.endsWith(':interrupt')
             ? 'interrupt-accepted'
             : 'cleaned',
-        actionId,
         requestId,
       };
     } else {
@@ -147,7 +159,7 @@ export const createCodexEvents = (
         z.object({ status: z.enum(['unsubscribed', 'notSubscribed', 'notLoaded']) }),
         result,
       );
-      outcome = { kind: 'closed', actionId, requestId };
+      outcome = { kind: 'closed', requestId };
     }
     events.outcome(outcome, thread);
   },

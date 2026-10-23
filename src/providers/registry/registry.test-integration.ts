@@ -7,6 +7,7 @@ import {
   createAgentHq,
   type IAgentProviderContext,
   type IAgentProviderFactory,
+  type IAgentProvider,
   type IProviderCapabilitySet,
 } from 'jg-agent-hq';
 import {
@@ -60,6 +61,13 @@ const createFixtureProvider = () => {
       history: supported,
       usage: supported,
       skills: supported,
+      models: supported,
+      fork: supported,
+      archive: supported,
+      unarchive: supported,
+      compact: supported,
+      revert: supported,
+      configuration: supported,
     },
     inputSchema: z.record(z.string(), z.json()).parse(z.toJSONSchema(MessageInputSchema)),
     configurationSchema: null,
@@ -69,7 +77,7 @@ const createFixtureProvider = () => {
     async create(owner) {
       context = owner;
       creations += 1;
-      return {
+      const adapter: IAgentProvider = {
         get state() {
           return isClosed ? 'unavailable' : 'ready';
         },
@@ -79,6 +87,33 @@ const createFixtureProvider = () => {
           return !isClosed;
         },
         readCapabilities: async () => capabilities,
+        readConfiguration: async (command, nativeId) => ({
+          provider: factory.id,
+          nativeId: nativeId ?? null,
+          workingDirectory: command.workspaceRoot,
+          effective: {
+            model: null,
+            effort: null,
+            nativeAgent: null,
+            nativeProfile: null,
+            permissionMode: null,
+            sandbox: null,
+            systemInstructions: null,
+            developerInstructions: null,
+          },
+          instructionSources: { data: [], isComplete: false },
+          choices: [],
+          nextCursor: null,
+          source: 'native',
+          observedAt: Date.now(),
+        }),
+        readModels: async (command) => ({
+          provider: factory.id,
+          source: 'native',
+          observedAt: Date.now(),
+          data: [],
+          nextCursor: null,
+        }),
         async readHistory(command) {
           if (command.kind === 'threads')
             return {
@@ -139,6 +174,7 @@ const createFixtureProvider = () => {
           threads.set(nativeId, {
             provider: factory.id,
             nativeId,
+            nativeLineage: { sessionId: nativeId, parentThreadId: null, forkedFromId: null },
             workspaceRoot,
             name: null,
             createdAt: 1_900_000_000_000,
@@ -152,11 +188,56 @@ const createFixtureProvider = () => {
             pendingCreation = { requestId, nativeId, workspaceRoot };
             throw new TypeError('The native create acknowledgement was interrupted');
           }
-          return { nativeId, workspaceRoot, nativeState: shouldReturnActive ? 'active' : 'idle' };
+          return {
+            nativeId,
+            workspaceRoot,
+            nativeState: shouldReturnActive ? 'active' : 'idle',
+            nativeLineage: { sessionId: nativeId, parentThreadId: null, forkedFromId: null },
+          };
         },
+        async forkThread(requestId, sourceNativeId, workspaceRoot, call) {
+          requireThread(sourceNativeId);
+          let created;
+          try {
+            created = await adapter.startThread(requestId, workspaceRoot, {}, call);
+          } catch (cause) {
+            if (pendingCreation?.requestId === requestId)
+              requireThread(pendingCreation.nativeId).nativeLineage = {
+                sessionId: pendingCreation.nativeId,
+                parentThreadId: null,
+                forkedFromId: sourceNativeId,
+              };
+            throw cause;
+          }
+          const nativeLineage = {
+            sessionId: created.nativeId,
+            parentThreadId: null,
+            forkedFromId: sourceNativeId,
+          };
+          requireThread(created.nativeId).nativeLineage = nativeLineage;
+          return { ...created, nativeLineage };
+        },
+        async archiveThread(_requestId, nativeId) {
+          requireThread(nativeId).nativeState = 'notLoaded';
+        },
+        async unarchiveThread(_requestId, nativeId) {
+          const thread = requireThread(nativeId);
+          return { ...thread, nativeState: 'notLoaded' };
+        },
+        async revertThread(_requestId, nativeId) {
+          const thread = requireThread(nativeId);
+          return { ...thread, nativeState: 'idle' };
+        },
+        compactThread: (requestId, nativeId, call) =>
+          adapter.startTurn(requestId, nativeId, '/compact', null, {}, call),
         async resumeThread(_requestId, nativeId, workspaceRoot) {
           requireThread(nativeId).nativeState = 'idle';
-          return { nativeId, workspaceRoot, nativeState: 'idle' };
+          return {
+            nativeId,
+            workspaceRoot,
+            nativeState: 'idle',
+            nativeLineage: { sessionId: nativeId, parentThreadId: null, forkedFromId: null },
+          };
         },
         async nameThread(_requestId, nativeId, name) {
           names += 1;
@@ -245,6 +326,7 @@ const createFixtureProvider = () => {
           isClosed = true;
         },
       };
+      return adapter;
     },
   };
   return {
@@ -294,6 +376,7 @@ const createFixtureProvider = () => {
       };
       context.events.outcome(outcome, {
         nativeId: pendingCreation.nativeId,
+        nativeLineage: threads.get(pendingCreation.nativeId)!.nativeLineage,
         workspaceRoot: pendingCreation.workspaceRoot,
         nativeState: 'idle',
       });
@@ -628,6 +711,74 @@ test('late additive acknowledgements use the exact issued request and continue c
     { providerFactories: [provider.factory] },
   );
   expect(provider.names).toBe(1);
+});
+
+test('a late fork result keeps the exact child and source without replay or inherited authority', async () => {
+  const provider = createFixtureProvider();
+  await withClaudeRuntime(
+    async ({ runtime, workspaceRoot }) => {
+      const status = await runtime.request({ kind: 'status' });
+      if (status.kind !== 'status') throw new Error('Missing runtime');
+      const sourceId = randomUUID();
+      const source = await runtime.request({
+        kind: 'action',
+        action: {
+          id: sourceId,
+          runtimeEpoch: status.result.runtimeEpoch,
+          command: {
+            kind: 'thread-create',
+            provider: provider.factory.id,
+            workspaceRoot,
+            name: 'fork-parent',
+          },
+        },
+      });
+      if (source.kind !== 'action' || !source.result.threadId) throw new Error('Missing source');
+      await expect
+        .poll(() => runtime.request({ kind: 'receipt', actionId: sourceId }))
+        .toMatchObject({ kind: 'receipt', result: { delivery: 'acknowledged' } });
+      const parent = await runtime.request({
+        kind: 'managed-thread',
+        threadId: source.result.threadId,
+      });
+      if (parent.kind !== 'managed-thread' || !parent.result) throw new Error('Missing parent');
+      provider.deferCreation();
+      const action = {
+        id: randomUUID(),
+        runtimeEpoch: status.result.runtimeEpoch,
+        command: { kind: 'thread-fork' as const, threadId: parent.result.id, name: 'late-fork' },
+      };
+      const child = await runtime.request({ kind: 'action', action });
+      if (child.kind !== 'action' || !child.result.threadId) throw new Error('Missing child');
+      await expect
+        .poll(() => runtime.request({ kind: 'receipt', actionId: action.id }))
+        .toMatchObject({ kind: 'receipt', result: { delivery: 'uncertain' } });
+      const childId = child.result.threadId;
+      expect(await runtime.request({ kind: 'managed-thread', threadId: childId })).toMatchObject({
+        kind: 'managed-thread',
+        result: { nativeId: null, forkedFromThreadId: parent.result.id },
+      });
+      provider.completeCreation();
+      await expect
+        .poll(() => runtime.request({ kind: 'receipt', actionId: action.id }))
+        .toMatchObject({ kind: 'receipt', result: { delivery: 'acknowledged' } });
+      provider.completeCreation();
+      expect(await runtime.request({ kind: 'action', action })).toMatchObject({
+        kind: 'action',
+        result: { threadId: childId, delivery: 'acknowledged' },
+      });
+      expect(await runtime.request({ kind: 'managed-thread', threadId: childId })).toMatchObject({
+        kind: 'managed-thread',
+        result: { state: 'idle', nativeLineage: { forkedFromId: parent.result.nativeId } },
+      });
+      expect(await runtime.request({ kind: 'thread-plan', threadId: childId })).toStrictEqual({
+        kind: 'thread-plan',
+        result: null,
+      });
+      expect(provider.names).toBe(2);
+    },
+    { providerFactories: [provider.factory] },
+  );
 });
 
 test('an acknowledgement for the wrong native phase cannot settle the action', async () => {

@@ -12,7 +12,8 @@ import type {
   IPlanRevisionWorkflow,
 } from '../contracts/index.js';
 import { getErrorKind } from '../errors/index.js';
-import type { INativePrompt } from '../providers/index.js';
+import type { INativePrompt, IProviderThread } from '../providers/index.js';
+import { retainNativeLineage } from '../providers/index.js';
 import { capabilityUnavailable, type createProviderRegistry } from '../providers/registry/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 import type { createSkills } from '../skills/index.js';
@@ -179,6 +180,7 @@ export const createActions = (
       if (
         getErrorKind(error) === 'agent-unavailable' ||
         getErrorKind(error) === 'access-denied' ||
+        getErrorKind(error) === 'state-conflict' ||
         (isException(error) && error.code === 'JG_AGENT_HQ_TRANSPORT_FAILED')
       )
         failProvider(provider, error);
@@ -189,6 +191,36 @@ export const createActions = (
   const validateRoot = async (thread: IManagedThread): Promise<void> => {
     if ((await resolveWorkspaceTarget(thread.workspaceRoot, roots)) !== thread.workspaceRoot)
       conflict();
+  };
+
+  /**
+   * Verifies native workspace and lineage before binding them to a managed identity.
+   * @returns The verified metadata with confirmed lineage retained.
+   * @throws
+   * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+   * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  const verifyThread = async (
+    thread: IManagedThread,
+    native: IProviderThread,
+  ): Promise<IProviderThread> => {
+    try {
+      if ((await resolveWorkspaceTarget(native.workspaceRoot, roots)) !== thread.workspaceRoot)
+        agentUnavailable();
+      const existing = await store.getThreadByNativeId(thread.provider, native.nativeId);
+      if (existing && existing.id !== thread.id) agentUnavailable();
+      const nativeLineage = retainNativeLineage(thread.nativeLineage, native.nativeLineage);
+      if (thread.forkedFromThreadId) {
+        const source = await store.getThread(thread.forkedFromThreadId);
+        if (!source?.nativeId || nativeLineage?.forkedFromId !== source.nativeId)
+          agentUnavailable();
+      }
+      return { ...native, nativeLineage };
+    } catch (cause) {
+      registry.quarantine(thread.provider, cause);
+      throw cause;
+    }
   };
 
   /** Lets the worker claim one ready entry atomically without locking a turn’s lifetime. */
@@ -210,7 +242,7 @@ export const createActions = (
     const receipt = await store.applyOutcome(outcome);
     if (!receipt?.threadId) return receipt;
     const thread = await store.getThread(receipt.threadId);
-    if (thread?.nativeId && outcome.kind === 'closed') {
+    if (thread?.nativeId && (outcome.kind === 'closed' || outcome.kind === 'archived')) {
       controlled.delete(key(thread.provider, thread.nativeId));
     }
     if (thread?.state === 'completed') advanceQueue(thread.id, thread.provider);
@@ -231,6 +263,9 @@ export const createActions = (
     } else if (requestId.endsWith(':close')) {
       await (await registry.get(thread.provider)).releaseThread(requestId, thread.nativeId);
       await apply({ kind: 'closed', actionId: receipt.id, requestId });
+    } else if (requestId.endsWith(':archive')) {
+      await (await registry.get(thread.provider)).archiveThread(requestId, thread.nativeId);
+      await apply({ kind: 'archived', actionId: receipt.id, requestId });
     }
   };
 
@@ -278,45 +313,89 @@ export const createActions = (
       if (command.kind === 'native-reply' && !prompt) conflict();
       const reply =
         command.kind === 'native-reply' ? prompt!.native.validate(command.response) : undefined;
+      const source =
+        requestId.endsWith(':fork') && thread.forkedFromThreadId
+          ? await store.getThread(thread.forkedFromThreadId)
+          : null;
+      if (requestId.endsWith(':fork') && !source?.nativeId) conflict();
       hasDispatched = true;
-      if (requestId.endsWith(':create')) {
-        const created = await control.startThread(requestId, thread.workspaceRoot);
+      if (requestId.endsWith(':create') || requestId.endsWith(':fork')) {
+        const created = await verifyThread(
+          thread,
+          requestId.endsWith(':fork')
+            ? await control.forkThread(requestId, source!.nativeId!, thread.workspaceRoot)
+            : await control.startThread(
+                requestId,
+                thread.workspaceRoot,
+                command.kind === 'thread-create' ? (command.settings ?? {}) : {},
+              ),
+        );
         // bind the exact response before attempting the second, independently receipted native phase
         own(thread.provider, created.nativeId);
-        if ((await resolveWorkspaceTarget(created.workspaceRoot, roots)) !== thread.workspaceRoot)
-          agentUnavailable();
         receipt = (await apply({
           kind: 'created',
           actionId: receipt.id,
           requestId,
           nativeId: created.nativeId,
+          nativeLineage: created.nativeLineage,
         }))!;
         thread = (await store.getThread(thread.id))!;
         await continuePhases(receipt, thread);
       } else if (requestId.endsWith(':resume')) {
         if (!nativeId) conflict();
         own(thread.provider, nativeId);
-        const resumed = await control.resumeThread(
-          requestId,
-          nativeId,
-          thread.workspaceRoot,
-          thread.name,
+        const resumed = await verifyThread(
+          thread,
+          await control.resumeThread(
+            requestId,
+            nativeId,
+            thread.workspaceRoot,
+            thread.name,
+            command.kind === 'thread-resume' ? (command.settings ?? {}) : {},
+          ),
         );
-        if ((await resolveWorkspaceTarget(resumed.workspaceRoot, roots)) !== thread.workspaceRoot)
-          agentUnavailable();
         await apply({
           kind: 'resumed',
           actionId: receipt.id,
           requestId,
           nativeState: resumed.nativeState,
+          nativeLineage: resumed.nativeLineage,
         });
       } else if (requestId.endsWith(':name')) {
         if (!nativeId || command.kind !== 'thread-rename') conflict();
         await control.nameThread(requestId, nativeId, command.name);
         await apply({ kind: 'renamed', actionId: receipt.id, requestId });
+      } else if (requestId.endsWith(':unarchive')) {
+        if (!nativeId) conflict();
+        await verifyThread(thread, await control.unarchiveThread(requestId, nativeId));
+        await apply({ kind: 'unarchived', actionId: receipt.id, requestId });
+      } else if (requestId.endsWith(':revert')) {
+        if (!nativeId || command.kind !== 'thread-revert') conflict();
+        await verifyThread(
+          thread,
+          await control.revertThread(requestId, nativeId, command.beforeTurnId),
+        );
+        live.reset(key(thread.provider, nativeId));
+        await apply({ kind: 'reverted', actionId: receipt.id, requestId });
+      } else if (requestId.endsWith(':compact')) {
+        if (!nativeId) conflict();
+        live.reset(key(thread.provider, nativeId));
+        const turn = await control.compactThread(requestId, nativeId);
+        await apply({
+          kind: 'compaction-accepted',
+          actionId: receipt.id,
+          requestId,
+          nativeTurnId: turn.id,
+        });
       } else if (requestId.endsWith(':turn')) {
         if (!nativeId || !input) conflict();
-        const turn = await control.startTurn(requestId, nativeId, input.text, input.skill);
+        const turn = await control.startTurn(
+          requestId,
+          nativeId,
+          input.text,
+          input.skill,
+          command.kind === 'message' ? (command.settings ?? {}) : {},
+        );
         await apply({
           kind: 'turn-accepted',
           actionId: receipt.id,
@@ -475,18 +554,23 @@ export const createActions = (
           return;
         const thread = await store.getThread(receipt.threadId);
         if (!thread || thread.provider !== provider) return;
-        if (nativeThread) {
-          if (
-            (await resolveWorkspaceTarget(nativeThread.workspaceRoot, roots)) !==
-              thread.workspaceRoot ||
-            (outcome.kind === 'resumed' && nativeThread.nativeId !== thread.nativeId)
-          ) {
-            runNativeOwned(provider, thread.nativeId ?? undefined, async () => agentUnavailable());
-            return;
-          }
-          if (outcome.kind === 'created') own(provider, nativeThread.nativeId);
+        let verifiedOutcome = outcome;
+        if (
+          nativeThread &&
+          (outcome.kind === 'created' ||
+            outcome.kind === 'resumed' ||
+            outcome.kind === 'reverted' ||
+            outcome.kind === 'unarchived')
+        ) {
+          if (outcome.kind !== 'created' && nativeThread.nativeId !== thread.nativeId)
+            agentUnavailable();
+          const verified = await verifyThread(thread, nativeThread);
+          if (outcome.kind === 'created' || outcome.kind === 'resumed')
+            verifiedOutcome = { ...outcome, nativeLineage: verified.nativeLineage };
+          if (outcome.kind === 'created') own(provider, verified.nativeId);
+          if (outcome.kind === 'reverted') live.reset(key(provider, verified.nativeId));
         }
-        const updated = await apply(outcome);
+        const updated = await apply(verifiedOutcome);
         if (updated && (outcome.kind === 'created' || outcome.kind === 'cleaned'))
           runNativeOwned(
             provider,
@@ -573,8 +657,37 @@ export const createActions = (
       );
       if (capabilities.operations.steer.state !== 'supported') capabilityUnavailable();
     }
+    if (
+      command.kind === 'thread-archive' ||
+      command.kind === 'thread-unarchive' ||
+      command.kind === 'thread-compact' ||
+      command.kind === 'thread-revert'
+    ) {
+      const capabilities = await control.readCapabilities(
+        (await store.getThread(command.threadId))?.nativeId ?? undefined,
+      );
+      const operation =
+        command.kind === 'thread-archive'
+          ? 'archive'
+          : command.kind === 'thread-unarchive'
+            ? 'unarchive'
+            : command.kind === 'thread-compact'
+              ? 'compact'
+              : 'revert';
+      if (capabilities.operations[operation].state !== 'supported') capabilityUnavailable();
+    }
     if (command.kind === 'thread-create' || command.kind === 'thread-adopt')
       prepared.workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, roots);
+    if (command.kind === 'thread-fork') {
+      const source = await store.getThread(command.threadId);
+      if (!source?.nativeId) conflict();
+      const capabilities = await control.readCapabilities(source.nativeId);
+      if (capabilities.operations.fork.state !== 'supported') capabilityUnavailable();
+      const inspected = await control.inspectThread(source.nativeId, source.workspaceRoot);
+      const workspaceRoot = await resolveWorkspaceTarget(inspected.thread.workspaceRoot, roots);
+      if (workspaceRoot !== source.workspaceRoot) conflict();
+      prepared.workspaceRoot = workspaceRoot;
+    }
     if (command.kind === 'thread-adopt') {
       const target = await control.inspectThread(command.nativeId, prepared.workspaceRoot!);
       if (

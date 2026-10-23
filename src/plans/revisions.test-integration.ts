@@ -654,6 +654,60 @@ const native = async (fixture: IClaudeFixture) => {
 };
 
 test.each(['codex', 'claude'] as const)(
+  'forking a plan-bound %s session does not copy execution authority',
+  async (provider) => {
+    await withClaudeRuntime(async (fixture) => {
+      const plan = await setup(fixture, null);
+      const session = await native(fixture);
+      const source = await session.create(provider, 'bound-fork-source');
+      const current = await plan.status();
+      const authorization = operator();
+      await plan.send({
+        kind: 'authorize',
+        target: plan.target,
+        expected: current.revision,
+        action: authorization,
+        mode: 'auto',
+        milestoneIds: [],
+      });
+      const scope = {
+        kind: 'execution' as const,
+        authorizationId: authorization.id,
+        milestoneId: null,
+        mode: 'auto' as const,
+        revision: current.revision,
+      };
+      const message = await session.submit(
+        {
+          kind: 'message',
+          threadId: source.id,
+          input: { kind: 'text', text: 'Assess the authorized work.' },
+        },
+        scope,
+      );
+      await expect
+        .poll(() => session.receipt(message.id))
+        .toMatchObject({ delivery: 'acknowledged', completion: 'completed' });
+      expect(
+        await fixture.runtime.request({ kind: 'thread-plan', threadId: source.id }),
+      ).toMatchObject({ kind: 'thread-plan', result: { scope } });
+      const fork = await session.submit({
+        kind: 'thread-fork',
+        threadId: source.id,
+        name: 'unbound-fork',
+      });
+      await expect.poll(() => session.receipt(fork.id)).toMatchObject({ delivery: 'acknowledged' });
+      expect(
+        await fixture.runtime.request({ kind: 'thread-plan', threadId: fork.threadId! }),
+      ).toStrictEqual({ kind: 'thread-plan', result: null });
+      expect(
+        await fixture.runtime.request({ kind: 'thread-plan', threadId: source.id }),
+      ).toMatchObject({ kind: 'thread-plan', result: { scope } });
+    });
+  },
+);
+
+test.each(['codex', 'claude'] as const)(
   'whole-plan %s input keeps one owner and preserves authority on ordinary follow-ups',
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {

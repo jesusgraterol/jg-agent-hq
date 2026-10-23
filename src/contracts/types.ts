@@ -12,7 +12,9 @@ import { SkillIdSchema, SkillPageSchema, SkillPreviewSchema } from './skills/ind
 
 import { HandoffCommandSchema, HandoffResultSchema } from './handoffs/index.js';
 
-import { NativeIdSchema } from './identities/index.js';
+import { NativeIdSchema, CursorSchema, NativeLineageSchema } from './identities/index.js';
+import { ProviderModelPageSchema, ProviderModelsRequestSchema } from './models/index.js';
+import { ConfigurationRequestSchema, SessionConfigurationSchema } from './configuration/index.js';
 import { PlanCommandSchema, PlanResultSchema } from './plans/index.js';
 import {
   ActionPlanContextSchema,
@@ -24,8 +26,7 @@ import {
   LifecycleEventSchema,
 } from './actions/index.js';
 
-// opaque native identifiers, bounded independently of provider-specific formats
-const CursorSchema = z.string().min(1).max(16_384);
+// pagination is validated before adapters receive a native continuation
 const PageFields = {
   limit: z.number().int().min(1).max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
   cursor: CursorSchema.optional(),
@@ -38,6 +39,8 @@ const TargetFields = {
 
 // only implemented operations can be admitted; native RPC is never exposed
 export const HqRequestSchema = z.discriminatedUnion('kind', [
+  ProviderModelsRequestSchema,
+  ConfigurationRequestSchema,
   z.strictObject({ kind: z.literal('status') }),
   z.strictObject({
     kind: z.literal('capabilities'),
@@ -110,6 +113,7 @@ export type IHqRequestInput = z.input<typeof HqRequestSchema>;
 export const ThreadSummarySchema = z.object({
   provider: ProviderIdSchema,
   nativeId: NativeIdSchema,
+  nativeLineage: NativeLineageSchema.nullable(),
   workspaceRoot: z.string(),
   name: z.string().nullable(),
   createdAt: z.number().int(),
@@ -176,6 +180,8 @@ export const RuntimeStatusSchema = z.object({
 export type IRuntimeStatus = z.infer<typeof RuntimeStatusSchema>;
 const PageResultFields = { nextCursor: CursorSchema.nullable(), source: z.literal('native') };
 export const HqResponseSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('configuration'), result: SessionConfigurationSchema }),
+  z.object({ kind: z.literal('models'), result: ProviderModelPageSchema }),
   z.object({ kind: z.literal('thread-plan'), result: ActionPlanContextSchema.nullable() }),
   z.object({ kind: z.literal('status'), result: RuntimeStatusSchema }),
   z.object({ kind: z.literal('capabilities'), result: ProviderCapabilitiesSchema }),

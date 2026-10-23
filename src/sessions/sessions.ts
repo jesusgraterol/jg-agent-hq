@@ -1,6 +1,7 @@
 import { Exception } from 'jg-exception';
 
 import { HqResponseSchema, type IHqResponse } from '../contracts/index.js';
+import { retainNativeLineage } from '../providers/index.js';
 import type { createProviderRegistry } from '../providers/registry/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 import type { IStore } from '../store/index.js';
@@ -65,6 +66,7 @@ export const readNativeHistory = async (
         thread.ownership = control.ownership;
         thread.managedId = control.id;
         thread.name = control.name;
+        thread.nativeLineage = retainNativeLineage(control.nativeLineage, thread.nativeLineage);
       }
     }
     await projection.remember(

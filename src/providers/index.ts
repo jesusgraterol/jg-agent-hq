@@ -1,4 +1,5 @@
 // transport
+export { retainNativeLineage } from './lineage/index.js';
 export type {
   IProviderProcess,
   INativePrompt,

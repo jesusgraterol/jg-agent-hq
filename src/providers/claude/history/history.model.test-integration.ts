@@ -18,6 +18,85 @@ import { expect, test } from 'vitest';
 
 import { claudeRecord, withClaudeRuntime } from '../../../../scripts/test-support/index.js';
 
+test('native API diagnostics stay out of compacted conversation history and preserve resume eligibility', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request, runtime }) => {
+    const nativeId = randomUUID();
+    const first = claudeRecord(workspaceRoot, nativeId, { text: 'Before compaction' });
+    const boundary = {
+      type: 'system',
+      subtype: 'compact_boundary',
+      uuid: randomUUID(),
+      parentUuid: null,
+      logicalParentUuid: first.uuid,
+      sessionId: nativeId,
+      cwd: workspaceRoot,
+      timestamp: '2026-10-22T00:00:00.000Z',
+      isMeta: true,
+    };
+    const summary = {
+      ...claudeRecord(workspaceRoot, nativeId, {
+        parentUuid: boundary.uuid,
+        text: 'Native compacted summary',
+      }),
+      isCompactSummary: true,
+    };
+    const answer = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: summary.uuid,
+      text: 'After compaction',
+    });
+    await writeFile(
+      transcript(nativeId),
+      [
+        first,
+        {
+          type: 'api-request-blob',
+          sessionId: nativeId,
+          hash: 'native-diagnostic',
+          message: { role: 'user', content: 'PRIVATE API DIAGNOSTIC' },
+        },
+        boundary,
+        summary,
+        answer,
+      ]
+        .map((row) => JSON.stringify(row))
+        .join('\n') + '\n',
+    );
+    const items = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
+    expect(items).toMatchObject({
+      kind: 'items',
+      result: {
+        data: [
+          { nativeId: summary.uuid, text: 'Native compacted summary' },
+          { nativeId: answer.uuid, text: 'After compaction' },
+        ],
+      },
+    });
+    expect(JSON.stringify(items)).not.toContain('PRIVATE API DIAGNOSTIC');
+    const status = await runtime.request({ kind: 'status' });
+    if (status.kind !== 'status') throw new Error('Missing status');
+    const id = randomUUID();
+    await request({
+      kind: 'action',
+      action: {
+        id,
+        runtimeEpoch: status.result.runtimeEpoch,
+        command: {
+          kind: 'thread-adopt',
+          provider: 'claude',
+          nativeId,
+          workspaceRoot,
+          name: 'compacted-session',
+          operatorConfirmation: 'Other controllers are closed.',
+        },
+      },
+    });
+    await expect
+      .poll(() => request({ kind: 'receipt', actionId: id }))
+      .toMatchObject({ kind: 'receipt', result: { delivery: 'acknowledged' } });
+  });
+});
+
 test('empty discovery and byte-limited indexing/pages return honest boundaries', async () => {
   await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
     const empty = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
@@ -66,6 +145,29 @@ test('empty discovery and byte-limited indexing/pages return honest boundaries',
     expect(last.kind === 'items' && last.result.nextCursor).toBeNull();
   });
 });
+
+test.each(['session', 'workspace'])(
+  'native API metadata with a foreign %s cannot bypass history boundaries',
+  async (scenario) => {
+    await withClaudeRuntime(async ({ workspaceRoot, root, transcript, request }) => {
+      const nativeId = randomUUID();
+      const first = claudeRecord(workspaceRoot, nativeId);
+      const metadata = {
+        type: 'api-request-blob',
+        sessionId: scenario === 'session' ? randomUUID() : nativeId,
+        cwd: scenario === 'workspace' ? join(root, 'foreign') : workspaceRoot,
+        message: { role: 'user', content: 'Diagnostic' },
+      };
+      await writeFile(
+        transcript(nativeId),
+        [first, metadata].map((row) => JSON.stringify(row)).join('\n') + '\n',
+      );
+      await expect(
+        request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId }),
+      ).rejects.toThrow('Coding agent is unavailable');
+    });
+  },
+);
 
 test('native files are paged by chain position with truthful unknown execution states and searchable native titles', async () => {
   await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {

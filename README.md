@@ -49,6 +49,10 @@ Use `--provider claude` for Claude history and usage; the default is `codex`. Cl
 
 Explicit actions create, name, adopt, resume and close threads; send idle messages; steer an exact running turn; queue the next message; interrupt; and answer native questions or permissions. Actions have stable UUIDs and durable receipts. Repeating the same request returns its receipt; changing that UUID's payload conflicts. A lost acknowledgement stays uncertain until the exact native response arrives or the operator makes an explicit recovery choice. HQ never resends uncertain input.
 
+Actions also fork native history into a distinct session, compact idle sessions, and use native archive/unarchive and history revert where supported. Forks retain exact native lineage and receive no plan execution authority from their source. Unarchive leaves a session inactive until explicitly resumed. Revert changes conversation history; it does not undo files. Claude exposes compaction and fork, with archive and conversation revert reported as unsupported.
+
+Use `models --provider <id>` for native model and effort choices, and `configuration --provider <id> --workspace-root <path> [--thread-id <id>]` for known effective settings and paged native agent/profile metadata. Creation and explicit resume accept typed startup settings; messages can select a model and effort for the next turn. Startup instructions, native Claude agents and permission settings require an idle session restart. Capability schemas describe supported selections and change modes. Unknown settings remain explicit, and native configuration files stay with each CLI. See the [configuration contract](api/README.md#native-configuration).
+
 Native execution settings, instructions, skills and tool permissions remain with each CLI. Claude uses an owned structured process per controlled session and reports immediate steering as unavailable. Plan approval grants no native tool permission. Close other CLI controllers before confirming adoption, resume or recovery. HQ coordinates sessions sharing one state directory; it cannot lock independently running native CLIs. Integrating browser hosts can use durable host-action admission and operator-scoped reconciliation through the programmatic API; see the [browser host contract](api/README.md#browser-host-integration). The standalone CLI advertises only commands it implements.
 
 Durable state includes `action.key`, which must stay private and accompany its SQLite database. Queued undelivered text is saved; ordinary message bodies and question answers are not.
@@ -94,6 +98,7 @@ These complete TypeScript examples use the public client and contracts. Start th
 - `src/providers/codex/`: native history and account protocol.
 - `src/providers/claude/`: native structured control and usage, plus the identity-validated, worker-owned local history reader.
 - `src/providers/registry/`: lazy factories, normalized provider evidence, bounded lifecycle and source isolation.
+- `src/providers/configuration/` and `src/providers/lineage/`: bounded native choices and confirmed immutable session relationships.
 - `src/sessions/`: authorized, cursor-bound history reads and short label suggestions.
 - `src/plans/`: execution digests, milestone finalization, revision checkpoints, retained verification and explicit plan authority.
 - `src/skills/`: bounded native catalogs, invocation previews and explicit input preparation.

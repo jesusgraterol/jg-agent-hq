@@ -12,6 +12,12 @@ import type {
   IHistoryItem,
   IUsageSnapshot,
   INativeSkillInput,
+  IProviderModelsRequest,
+  IProviderModelPage,
+  ISessionSettings,
+  ITurnSettings,
+  IConfigurationRequest,
+  ISessionConfiguration,
 } from '../contracts/index.js';
 import type { IHistoryRequest } from '../sessions/index.js';
 import type { INativeObservation, INativeOutcome } from '../store/control/index.js';
@@ -19,6 +25,7 @@ import type { INativeObservation, INativeOutcome } from '../store/control/index.
 // control acknowledgements retain exact identities without interpreting unknown execution states
 export const ProviderThreadSchema = ThreadSummarySchema.pick({
   nativeId: true,
+  nativeLineage: true,
   workspaceRoot: true,
 }).extend({ nativeState: z.enum(['notLoaded', 'idle', 'systemError', 'active']) });
 export type IProviderThread = z.infer<typeof ProviderThreadSchema>;
@@ -35,7 +42,7 @@ export type IProviderCall = { signal: AbortSignal };
 // adapters echo the opaque request identity; the runtime derives its own action identity
 export type IAgentProviderOutcome = INativeOutcome extends infer TOutcome
   ? TOutcome extends unknown
-    ? Omit<TOutcome, 'actionId'>
+    ? Omit<TOutcome, 'actionId' | 'nativeLineage'>
     : never
   : never;
 
@@ -80,6 +87,42 @@ export type IAgentProvider = {
     nativeId: string | undefined,
     call: IProviderCall,
   ): Promise<IProviderCapabilitySet>;
+  /** @returns One bounded native model catalog page with query-bound continuation. */
+  readModels(command: IProviderModelsRequest, call: IProviderCall): Promise<IProviderModelPage>;
+  /** @returns Known native settings and one bounded agent/profile choice page. */
+  readConfiguration(
+    command: IConfigurationRequest,
+    nativeId: string | undefined,
+    call: IProviderCall,
+  ): Promise<ISessionConfiguration>;
+  /** @returns An idle native fork with the exact source recorded in native lineage. */
+  forkThread(
+    requestId: string,
+    nativeId: string,
+    workspaceRoot: string,
+    call: IProviderCall,
+  ): Promise<IProviderThread>;
+  /** @returns Native archive acknowledgement; the session becomes inactive. */
+  archiveThread(requestId: string, nativeId: string, call: IProviderCall): Promise<void>;
+  /** @returns The exact unarchived session, without assuming control or starting inference. */
+  unarchiveThread(
+    requestId: string,
+    nativeId: string,
+    call: IProviderCall,
+  ): Promise<IProviderThread>;
+  /** @returns Compaction admission; a null turn ID is correlated from native lifecycle events. */
+  compactThread(
+    requestId: string,
+    nativeId: string,
+    call: IProviderCall,
+  ): Promise<{ id: string | null }>;
+  /** @returns Native history-revert acknowledgement, which does not revert filesystem changes. */
+  revertThread(
+    requestId: string,
+    nativeId: string,
+    beforeTurnId: string,
+    call: IProviderCall,
+  ): Promise<IProviderThread>;
   /** @returns One authorized, bounded native history response with query-bound continuation. */
   readHistory(command: IHistoryRequest, call: IProviderCall): Promise<IHqResponse>;
   /** @returns Verified native metadata and explicit eligibility for adoption or reattachment. */
@@ -102,6 +145,7 @@ export type IAgentProvider = {
   startThread(
     requestId: string,
     workspaceRoot: string,
+    settings: ISessionSettings,
     call: IProviderCall,
   ): Promise<IProviderThread>;
   /** @returns The exact resumed native session identity and workspace. */
@@ -110,6 +154,7 @@ export type IAgentProvider = {
     nativeId: string,
     workspaceRoot: string,
     name: string,
+    settings: ISessionSettings,
     call: IProviderCall,
   ): Promise<IProviderThread>;
   /** @returns Native acknowledgement of the selected session's name change. */
@@ -120,6 +165,7 @@ export type IAgentProvider = {
     nativeId: string,
     text: string,
     skill: INativeSkillInput | null,
+    settings: ITurnSettings,
     call: IProviderCall,
   ): Promise<{ id: string }>;
   /** @returns The acknowledged active turn identity, without creating a new turn. */

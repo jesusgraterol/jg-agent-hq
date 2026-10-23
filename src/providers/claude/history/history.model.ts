@@ -20,6 +20,7 @@ import {
   EntrySeekSchema,
   FileRowSchema,
   RecordSchema,
+  ApiRequestMetadataSchema,
   SeekSchema,
   type IFileRow,
   type IClaudeHistoryRead,
@@ -32,7 +33,7 @@ import {
 } from './utilities.js';
 
 // identifies the path and record interpretation used by persisted projection entries
-const HISTORY_PROJECTION_VERSION = 1;
+const HISTORY_PROJECTION_VERSION = 2;
 const MAX_RECORD_BYTES = 1_048_576;
 const MAX_REFRESH_BYTES = 4_194_304;
 const CHAIN = `WITH RECURSIVE current_chain AS (
@@ -279,6 +280,7 @@ export class ClaudeHistoryModel {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       nativeState: 'unknown',
+      nativeLineage: { sessionId: row.native_id, parentThreadId: null, forkedFromId: null },
       ownership: 'external',
       managedId: null,
       historyState: row.supported === 1 ? 'available' : 'unavailable',
@@ -498,9 +500,17 @@ export class ClaudeHistoryModel {
     bytes: Buffer,
     offset: number,
   ): void {
-    const record = RecordSchema.parse(
-      JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
-    );
+    const input: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+    const metadata = ApiRequestMetadataSchema.safeParse(input);
+    if (metadata.success) {
+      if (
+        metadata.data.sessionId !== nativeId ||
+        (metadata.data.cwd !== undefined && !isClaudeWorkspaceCwd(metadata.data.cwd, root))
+      )
+        this.__unavailable();
+      return;
+    }
+    const record = RecordSchema.parse(input);
     if (record.cwd !== undefined) {
       if (!isClaudeWorkspaceCwd(record.cwd, root) || record.sessionId !== nativeId) {
         row.workspace_state = 'foreign';

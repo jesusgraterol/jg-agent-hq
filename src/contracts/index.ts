@@ -51,6 +51,18 @@ export type {
   IIpcResponse,
 } from './types.js';
 
+// native identities
+export { NativeLineageSchema } from './identities/index.js';
+export type { INativeLineage } from './identities/index.js';
+
+// native model discovery
+export {
+  ProviderModelSchema,
+  ProviderModelsRequestSchema,
+  ProviderModelPageSchema,
+} from './models/index.js';
+export type { IProviderModel, IProviderModelsRequest, IProviderModelPage } from './models/index.js';
+
 // managed control and durable delivery
 export {
   ActionCommandSchema,
@@ -187,6 +199,22 @@ export {
   BrowserReceiptSchema,
 } from './browser/index.js';
 export type { IBrowserAction, IBrowserReceipt } from './browser/index.js';
+
+// native session configuration
+export {
+  TurnSettingsSchema,
+  SessionSettingsSchema,
+  ConfigurationRequestSchema,
+  ConfigurationChoiceSchema,
+  SessionConfigurationSchema,
+} from './configuration/index.js';
+export type {
+  ITurnSettings,
+  ISessionSettings,
+  IConfigurationRequest,
+  IConfigurationChoice,
+  ISessionConfiguration,
+} from './configuration/index.js';
 
 // host read models
 export {

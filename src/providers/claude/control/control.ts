@@ -2,6 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { Exception, isException } from 'jg-exception';
 import { z } from 'zod';
 
+import type {
+  IConfigurationRequest,
+  ISessionSettings,
+  ITurnSettings,
+} from '../../../contracts/index.js';
+import { toClaudeConfiguration } from '../configuration/index.js';
+
 import { createClaudeRpc } from '../rpc.js';
 
 import type { IClaudeControlEvents, IClaudeSession } from './types.js';
@@ -41,9 +48,17 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
    * @throws
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+   * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
    * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
    */
-  const open = async (nativeId: string, workspaceRoot: string, isResume: boolean) => {
+  const open = async (
+    nativeId: string,
+    workspaceRoot: string,
+    isResume: boolean,
+    forkSourceNativeId?: string,
+    settings: ISessionSettings = {},
+    signal?: AbortSignal,
+  ) => {
     if (
       isClosing ||
       sessions.has(nativeId) ||
@@ -54,6 +69,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     const session: IClaudeSession = {
       id: nativeId,
       workspaceRoot,
+      settings: { ...settings },
       scope: randomUUID(),
       isClosing: false,
       opening: Promise.resolve(),
@@ -83,25 +99,26 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
           workspaceRoot,
           additionalDirectories,
           isResume,
+          settings,
+          ...(forkSourceNativeId ? { forkSourceNativeId } : {}),
           receive: (raw) => receiveClaudeMessage(session, raw, events),
           lateResponse(id, result, error) {
             if (!/^[a-f0-9-]{36}:(name|interrupt)$/.test(id)) return;
-            const actionId = id.slice(0, 36);
             if (error !== undefined)
               events?.outcome({
                 kind: 'failed',
-                actionId,
                 requestId: id,
                 failure: 'agent-unavailable',
               });
             else
               events?.outcome({
                 kind: id.endsWith(':name') ? 'renamed' : 'interrupt-accepted',
-                actionId,
                 requestId: id,
               });
           },
         },
+        undefined,
+        signal,
       );
       session.connection = connection;
       if (connection.initialization.session_state !== 'idle') {
@@ -154,10 +171,35 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
      * @throws
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
      * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
      */
-    async startThread(_requestId: string, workspaceRoot: string) {
-      return open(randomUUID(), workspaceRoot, false);
+    async startThread(
+      _requestId: string,
+      workspaceRoot: string,
+      settings: ISessionSettings = {},
+      signal?: AbortSignal,
+    ) {
+      return open(randomUUID(), workspaceRoot, false, undefined, settings, signal);
+    },
+    /**
+     * Uses native resume/fork flags while keeping the source session untouched.
+     * @returns The independently verified native fork and its source.
+     * @throws
+     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+     */
+    async forkThread(
+      _requestId: string,
+      sourceNativeId: string,
+      workspaceRoot: string,
+      signal?: AbortSignal,
+    ) {
+      return {
+        ...(await open(randomUUID(), workspaceRoot, true, sourceNativeId, {}, signal)),
+        forkedFromId: sourceNativeId,
+      };
     },
     /**
      * Loads a confirmed handoff and verifies its native session identity.
@@ -165,10 +207,19 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
      * @throws
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
      * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
      */
-    async resumeThread(_requestId: string, nativeId: string, workspaceRoot: string, name: string) {
-      const result = await open(nativeId, workspaceRoot, true);
+    async resumeThread(
+      _requestId: string,
+      nativeId: string,
+      workspaceRoot: string,
+      name: string,
+      settings: ISessionSettings = {},
+      signal?: AbortSignal,
+    ) {
+      const result = await open(nativeId, workspaceRoot, true, undefined, settings, signal);
+      if (signal?.aborted) unavailable();
       // the native session-id fence verifies the exact resumed conversation before control is granted
       await get(nativeId).connection!.requestControl({
         subtype: 'rename_session',
@@ -190,6 +241,25 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       return skills;
     },
     /**
+     * Reads settings from the exact owned native process rather than a global configuration file.
+     * @returns Known native fields and a bounded agent inventory page.
+     * @throws
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+     */
+    async readConfiguration(command: IConfigurationRequest, nativeId: string) {
+      const session = get(nativeId);
+      const connection = session.connection!;
+      return toClaudeConfiguration(
+        await connection.requestControl({ subtype: 'get_settings' }),
+        connection.initialization.agents,
+        connection.initialization.current_permission_mode,
+        nativeId,
+        session.settings,
+        command,
+      );
+    },
+    /**
      * Names only the native session selected by the admitted action.
      * @returns Native acknowledgement of the name change.
      * @throws
@@ -208,8 +278,25 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
      */
-    async startTurn(requestId: string, nativeId: string, text: string): Promise<{ id: string }> {
+    async startTurn(
+      requestId: string,
+      nativeId: string,
+      text: string,
+      settings: ITurnSettings = {},
+      signal?: AbortSignal,
+    ): Promise<{ id: string }> {
       const session = get(nativeId);
+      if (signal?.aborted) unavailable();
+      if (session.input) conflict();
+      if (Object.keys(settings).length)
+        await session.connection!.requestControl({
+          subtype: 'apply_flag_settings',
+          settings: {
+            ...(settings.model ? { model: settings.model } : {}),
+            ...(settings.effort ? { effortLevel: settings.effort } : {}),
+          },
+        });
+      if (signal?.aborted || session.isClosing || !session.connection?.isAvailable) unavailable();
       if (session.input) conflict();
       return new Promise((resolve, reject) => {
         const id = randomUUID();

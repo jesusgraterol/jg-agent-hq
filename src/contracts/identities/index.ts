@@ -1,2 +1,3 @@
 // native identifiers
-export { NativeIdSchema } from './types.js';
+export { NativeIdSchema, CursorSchema, NativeLineageSchema } from './types.js';
+export type { INativeLineage } from './types.js';

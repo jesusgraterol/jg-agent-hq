@@ -59,8 +59,7 @@ const acknowledge = (session: IClaudeSession, events: IClaudeControlEvents | und
   clearTimeout(input.timer);
   input.resolve({ id: input.id });
   events?.outcome({
-    kind: 'turn-accepted',
-    actionId: input.requestId.slice(0, 36),
+    kind: input.requestId.endsWith(':compact') ? 'compaction-accepted' : 'turn-accepted',
     requestId: input.requestId,
     nativeTurnId: input.id,
   });

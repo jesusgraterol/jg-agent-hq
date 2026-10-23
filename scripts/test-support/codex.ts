@@ -61,6 +61,12 @@ else {
     }
     const { method,params = {} } = request;
     if (control.emit) for (const event of control.emit) notify(event.method,event.params);
+    if (method === 'model/list') {
+      const choices = Array.from({length:control.modelCount??4},(_,index)=>({id:'model-'+String(index).padStart(4,'0'),model:'model-'+String(index).padStart(4,'0'),displayName:'Native model '+index,description:control.modelRevision?'Updated choice':'Native model choice',supportedReasoningEfforts:[{reasoningEffort:control.modelEffort??'native-effort'}],defaultReasoningEffort:control.modelEffort??'native-effort',isDefault:index===0}));
+      if(control.modelsMalformed)choices[0].id='';
+      const offset=params.cursor?Number(params.cursor.split(':')[1]):0;
+      respond(request.id,{data:choices.slice(offset,offset+params.limit),nextCursor:offset+params.limit<choices.length?'models:'+String(offset+params.limit):null});return;
+    }
     if (method === 'skills/extraRoots/set') {respond(request.id,{});return;}
     if (method === 'skills/list') {
       if(control.releaseThreadId)complete(control.releaseThreadId);
@@ -72,16 +78,35 @@ else {
       respond(request.id,{data:[{cwd:control.wrongSkillRoot??params.cwds[0],skills,errors:control.skillErrors?[{}]:[]}]});return;
     }
     if (method === 'thread/start') {
-      const thread = { ...threads[0],id:'native-'+(++threadSequence),cwd:params.cwd,name:null,status:{type:'idle'},activeTurn:null };
+      const nativeId='native-'+(++threadSequence);
+      const thread = { ...threads[0],id:nativeId,sessionId:'session-for-'+nativeId,parentThreadId:null,forkedFromId:null,cwd:params.cwd,name:null,status:{type:'idle'},activeTurn:null };
+      thread.model=params.model??'model-0000';thread.reasoningEffort=params.config?.model_reasoning_effort??'native-effort';
       managed.set(thread.id,thread);
-      respond(request.id,{thread});return;
+      respond(request.id,{thread,model:thread.model,reasoningEffort:thread.reasoningEffort,approvalPolicy:params.approvalPolicy??'on-request',sandbox:{type:params.sandbox??'read-only'},instructionSources:[]});return;
+    }
+    if (method === 'thread/fork') {
+      if(control.rejectFork){process.stdout.write(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic fork rejection'}})+'\n');return;}
+      const source=managed.get(params.threadId)||{...threads[0],id:params.threadId};
+      const nativeId='native-'+(++threadSequence);
+      const thread={...source,id:nativeId,sessionId:'session-for-'+nativeId,forkedFromId:control.wrongForkSource??params.threadId,parentThreadId:null,status:{type:'idle'},activeTurn:null};
+      managed.set(nativeId,thread);respond(request.id,{thread});return;
     }
     if (method === 'thread/resume') {
       const thread = managed.get(params.threadId) || { ...threads[0],id:params.threadId,activeTurn:null };
-      thread.status = {type:'idle'}; managed.set(thread.id,thread);
-      respond(request.id,{thread});return;
+      thread.status = {type:'idle'};thread.model=params.model??thread.model;thread.reasoningEffort=params.config?.model_reasoning_effort??thread.reasoningEffort; managed.set(thread.id,thread);
+      respond(request.id,{thread,model:thread.model,reasoningEffort:thread.reasoningEffort,approvalPolicy:params.approvalPolicy??'on-request',sandbox:{type:params.sandbox??'read-only'},instructionSources:[]});return;
     }
     if (method === 'thread/name/set') { managed.get(params.threadId).name=params.name;respond(request.id,{});return; }
+    if (method === 'thread/archive') { const thread=managed.get(params.threadId);thread.isArchived=true;thread.status={type:'notLoaded'};respond(request.id,{});return; }
+    if (method === 'thread/unarchive') { const thread=managed.get(params.threadId);thread.isArchived=false;thread.status={type:'notLoaded'};respond(request.id,{thread});return; }
+    if (method === 'thread/revert') { const thread=managed.get(params.threadId);respond(request.id,{thread});return; }
+    if (method === 'thread/compact/start') {
+      const thread=managed.get(params.threadId);const turn={id:'compact-'+(++turnSequence),status:'inProgress'};thread.activeTurn=turn.id;
+      const started=()=>notify('turn/started',{threadId:thread.id,turn});
+      if(control.compactAckFirst){respond(request.id,{});setImmediate(()=>{started();complete(thread.id);});}
+      else {started();if(!control.holdTurn)complete(thread.id);respond(request.id,{});}
+      return;
+    }
     if (method === 'turn/start') {
       const skill = params.input?.find(item => item.type === 'skill')?.name;
       const documents = control.planningSources?.[skill];
@@ -93,6 +118,7 @@ else {
       }
       if (control.rejectTurn) { process.stdout.write(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic input rejection'}})+'\n');return; }
       const thread = managed.get(params.threadId);
+      thread.model=params.model??thread.model;thread.reasoningEffort=params.effort??thread.reasoningEffort;
       const turn = {id:'native-turn-'+(++turnSequence),status:'inProgress'};
       thread.activeTurn=turn.id;
       notify('turn/started',{threadId:thread.id,turn});
@@ -143,7 +169,11 @@ else {
       const batch = selected.slice(after,after+params.limit);
       respond(request.id,{ data: control.wrongRoot ? batch.map((thread) => ({ ...thread,cwd: control.wrongRoot })) : batch, nextCursor: control.invalidCursor ? 'x'.repeat(8193) : after+batch.length < selected.length ? batch.at(-1).id : null });return;
     }
-    if (method === 'thread/read') { respond(request.id,{ thread: { ...threads[0],...managed.get(params.threadId),id: params.threadId,cwd: control.wrongRoot || workspaceRoot } });return; }
+    if (method === 'config/read') {
+      const profiles=Object.fromEntries(Array.from({length:control.profileCount??4},(_,index)=>['profile-'+String(index).padStart(4,'0'),{description:control.configRevision?'Updated profile':'Native profile',model:'model-0000'}]));
+      respond(request.id,{config:control.configMalformed?{model:42}:{model:'model-0000',model_reasoning_effort:'native-effort',profile:null,profiles,agents:{max_threads:4,explore:{description:'Read native code',model:'model-0000'}},approval_policy:'on-request',sandbox_mode:'read-only',secret:'must-not-leak'}});return;
+    }
+    if (method === 'thread/read') { respond(request.id,{ thread: { ...threads[0],...managed.get(params.threadId),...(control.unavailableSettings?{model:null,reasoningEffort:null}:{}),id: params.threadId,cwd: control.wrongRoot || workspaceRoot } });return; }
     if (method === 'thread/turns/list') { respond(request.id,{ data: [{ id: 'turn-a',status: 'completed',startedAt: 1_700_000_000,completedAt: 1_700_000_001 }],nextCursor: null });return; }
     if (method === 'thread/items/list') {
       const text = control.largeItem ? 'a'.repeat(1_048_576) : 'Hello from the native history';

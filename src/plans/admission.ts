@@ -133,6 +133,7 @@ export const createPlanAdmission = (
         const safe =
           command.kind === 'interrupt' ||
           command.kind === 'thread-close' ||
+          command.kind === 'thread-archive' ||
           command.kind === 'queue-cancel' ||
           (command.kind === 'native-reply' &&
             command.response.kind !== 'answers' &&

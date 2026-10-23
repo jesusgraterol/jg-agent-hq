@@ -1,10 +1,11 @@
 import { z } from 'zod';
 
 import { ProviderIdSchema } from '../providers/index.js';
+import { SessionSettingsSchema, TurnSettingsSchema } from '../configuration/index.js';
 
 import { MessageInputSchema, NativeSkillInputSchema } from '../skills/index.js';
 
-import { NativeIdSchema } from '../identities/index.js';
+import { NativeIdSchema, NativeLineageSchema } from '../identities/index.js';
 import { PlanRevisionSchema } from '../plans/index.js';
 
 // explicit local intent; native RPC methods and arbitrary configuration are never accepted
@@ -19,6 +20,7 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
     provider: ProviderIdSchema,
     workspaceRoot: z.string().min(1).max(4096),
     name: NameSchema,
+    settings: SessionSettingsSchema.optional(),
   }),
   z.strictObject({
     kind: z.literal('thread-adopt'),
@@ -32,8 +34,18 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
     kind: z.literal('thread-resume'),
     threadId: ThreadIdSchema,
     operatorConfirmation: z.string().trim().min(1).max(1024),
+    settings: SessionSettingsSchema.optional(),
   }),
   z.strictObject({ kind: z.literal('thread-close'), threadId: ThreadIdSchema }),
+  z.strictObject({ kind: z.literal('thread-fork'), threadId: ThreadIdSchema, name: NameSchema }),
+  z.strictObject({ kind: z.literal('thread-archive'), threadId: ThreadIdSchema }),
+  z.strictObject({ kind: z.literal('thread-unarchive'), threadId: ThreadIdSchema }),
+  z.strictObject({ kind: z.literal('thread-compact'), threadId: ThreadIdSchema }),
+  z.strictObject({
+    kind: z.literal('thread-revert'),
+    threadId: ThreadIdSchema,
+    beforeTurnId: NativeIdSchema,
+  }),
   z.strictObject({
     kind: z.literal('thread-recover'),
     threadId: ThreadIdSchema,
@@ -49,6 +61,7 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
     kind: z.literal('message'),
     threadId: ThreadIdSchema,
     input: MessageInputSchema,
+    settings: TurnSettingsSchema.optional(),
   }),
   z.strictObject({ kind: z.literal('steer'), ...ActiveTargetFields, text: TextSchema }),
   z.strictObject({ kind: z.literal('queue'), ...ActiveTargetFields, input: MessageInputSchema }),
@@ -155,6 +168,9 @@ export const ManagedThreadSchema = z.object({
   id: ThreadIdSchema,
   provider: ProviderIdSchema,
   nativeId: NativeIdSchema.nullable(),
+  nativeLineage: NativeLineageSchema.nullable(),
+  forkedFromThreadId: ThreadIdSchema.nullable(),
+  isArchived: z.boolean(),
   name: NameSchema,
   workspaceRoot: z.string(),
   ownership: z.enum(['managed', 'uncertain']),

@@ -17,7 +17,11 @@ import type {
 import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
-import { installCodexFixture, writeFixtureControl } from '../../scripts/test-support/index.js';
+import {
+  installCodexFixture,
+  writeFixtureControl,
+  withClaudeRuntime,
+} from '../../scripts/test-support/index.js';
 
 const setup = async () => {
   const root = await mkdtemp(join(tmpdir(), 'jg-hq-actions-'));
@@ -118,6 +122,348 @@ const setup = async () => {
     throw error;
   }
 };
+
+test.each(['codex', 'claude'])(
+  'native lineage for %s survives runtime restart without opening another native connection',
+  async (provider) => {
+    await withClaudeRuntime(async ({ runtime, stateRoot, workspaceRoot, root }) => {
+      const status = await runtime.request({ kind: 'status' });
+      if (status.kind !== 'status') throw new Error('Missing runtime');
+      const id = randomUUID();
+      const created = await runtime.request({
+        kind: 'action',
+        action: {
+          id,
+          runtimeEpoch: status.result.runtimeEpoch,
+          command: { kind: 'thread-create', provider, workspaceRoot, name: 'lineage-durability' },
+        },
+      });
+      if (created.kind !== 'action') throw new Error('Missing action');
+      await expect
+        .poll(() => runtime.request({ kind: 'receipt', actionId: id }))
+        .toMatchObject({ kind: 'receipt', result: { delivery: 'acknowledged' } });
+      const thread = await runtime.request({
+        kind: 'managed-thread',
+        threadId: created.result.threadId!,
+      });
+      if (thread.kind !== 'managed-thread' || !thread.result) throw new Error('Missing thread');
+      expect(thread.result.nativeLineage).toStrictEqual({
+        sessionId: provider === 'codex' ? 'session-for-native-1' : thread.result.nativeId,
+        parentThreadId: null,
+        forkedFromId: null,
+      });
+      await runtime.close();
+      const callsBefore = await readFile(join(root, 'calls.jsonl'), 'utf8');
+      const reopened = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
+      try {
+        expect(
+          await reopened.request({ kind: 'managed-thread', threadId: thread.result.id }),
+        ).toMatchObject({
+          kind: 'managed-thread',
+          result: {
+            id: thread.result.id,
+            nativeId: thread.result.nativeId,
+            nativeLineage: thread.result.nativeLineage,
+          },
+        });
+        expect(await readFile(join(root, 'calls.jsonl'), 'utf8')).toBe(callsBefore);
+      } finally {
+        await reopened.close();
+      }
+    });
+  },
+);
+
+test.each(['codex', 'claude'])(
+  'forking %s preserves native lineage, source identity and replay safety',
+  async (provider) => {
+    await withClaudeRuntime(async ({ runtime, request, workspaceRoot, root }) => {
+      const status = await runtime.request({ kind: 'status' });
+      if (status.kind !== 'status') throw new Error('Missing runtime');
+      const submit = (id: string, command: IActionCommand) =>
+        request({
+          kind: 'action',
+          action: { id, runtimeEpoch: status.result.runtimeEpoch, command },
+        });
+      const createId = randomUUID();
+      const source = await submit(createId, {
+        kind: 'thread-create',
+        provider,
+        workspaceRoot,
+        name: 'fork-source',
+      });
+      if (source.kind !== 'action' || !source.result.threadId) throw new Error('Missing source');
+      await expect
+        .poll(() => request({ kind: 'receipt', actionId: createId }))
+        .toMatchObject({ kind: 'receipt', result: { delivery: 'acknowledged' } });
+      const messageId = randomUUID();
+      await submit(messageId, {
+        kind: 'message',
+        threadId: source.result.threadId,
+        input: { kind: 'text', text: 'Explore the source task' },
+      });
+      await expect
+        .poll(() => request({ kind: 'receipt', actionId: messageId }))
+        .toMatchObject({
+          kind: 'receipt',
+          result: { delivery: 'acknowledged', completion: 'completed' },
+        });
+      const parent = await request({ kind: 'managed-thread', threadId: source.result.threadId });
+      if (parent.kind !== 'managed-thread' || !parent.result) throw new Error('Missing parent');
+      const forkId = randomUUID();
+      const command: IActionCommand = {
+        kind: 'thread-fork',
+        threadId: parent.result.id,
+        name: 'fork-child',
+      };
+      const fork = await submit(forkId, command);
+      if (fork.kind !== 'action' || !fork.result.threadId) throw new Error('Missing fork');
+      await expect
+        .poll(() => request({ kind: 'receipt', actionId: forkId }))
+        .toMatchObject({ kind: 'receipt', result: { delivery: 'acknowledged' } });
+      const child = await request({ kind: 'managed-thread', threadId: fork.result.threadId });
+      expect(child).toMatchObject({
+        kind: 'managed-thread',
+        result: {
+          forkedFromThreadId: parent.result.id,
+          state: 'idle',
+          nativeLineage: { forkedFromId: parent.result.nativeId },
+        },
+      });
+      if (child.kind !== 'managed-thread' || !child.result) throw new Error('Missing child');
+      expect(child.result.nativeId).not.toBe(parent.result.nativeId);
+      expect(child.result.id).not.toBe(parent.result.id);
+      expect(
+        await request({
+          kind: 'thread',
+          provider,
+          nativeId: child.result.nativeId!,
+          workspaceRoot,
+        }),
+      ).toMatchObject({ kind: 'thread', result: { nativeLineage: child.result.nativeLineage } });
+      expect(await submit(forkId, command)).toMatchObject({
+        kind: 'action',
+        result: { threadId: child.result.id, delivery: 'acknowledged' },
+      });
+      expect(await request({ kind: 'thread-plan', threadId: child.result.id })).toStrictEqual({
+        kind: 'thread-plan',
+        result: null,
+      });
+      expect(await request({ kind: 'managed-thread', threadId: parent.result.id })).toMatchObject({
+        kind: 'managed-thread',
+        result: { nativeId: parent.result.nativeId, state: 'completed' },
+      });
+      const calls = (
+        await readFile(
+          join(root, provider === 'codex' ? 'calls.jsonl' : 'claude-calls.jsonl'),
+          'utf8',
+        )
+      )
+        .trim()
+        .split('\n')
+        .map((line) =>
+          z
+            .object({
+              method: z.string().optional(),
+              type: z.string().optional(),
+              params: z
+                .object({ threadId: z.string().optional(), excludeTurns: z.boolean().optional() })
+                .optional(),
+            })
+            .parse(JSON.parse(line)),
+        );
+      expect(
+        calls.filter((call) =>
+          provider === 'codex' ? call.method === 'turn/start' : call.type === 'user',
+        ),
+      ).toHaveLength(1);
+      if (provider === 'codex')
+        expect(calls.filter((call) => call.method === 'thread/fork')).toStrictEqual([
+          {
+            method: 'thread/fork',
+            params: { threadId: parent.result.nativeId, excludeTurns: true },
+          },
+        ]);
+      else {
+        const starts = (await readFile(join(root, 'claude-starts.jsonl'), 'utf8'))
+          .trim()
+          .split('\n')
+          .map((line) => z.object({ args: z.array(z.string()) }).parse(JSON.parse(line)));
+        expect(starts.filter((start) => start.args.includes('--fork-session'))).toHaveLength(1);
+        expect(
+          await request({
+            kind: 'items',
+            provider,
+            nativeId: child.result.nativeId!,
+            workspaceRoot,
+          }),
+        ).toMatchObject({
+          kind: 'items',
+          result: {
+            data: expect.arrayContaining([
+              expect.objectContaining({ kind: 'user-message', text: 'Explore the source task' }),
+            ]),
+          },
+        });
+      }
+    });
+  },
+);
+
+test.each(['rejectFork', 'wrongForkSource'])(
+  'fork %s preserves uncertainty and never replays an admitted intent',
+  async (scenario) => {
+    const fixture = await setup();
+    try {
+      const { thread } = await fixture.create('fork-failure');
+      await fixture.control({
+        [scenario]: scenario === 'wrongForkSource' ? 'another-native-thread' : true,
+      });
+      const action = fixture.envelope({
+        kind: 'thread-fork',
+        threadId: thread.id,
+        name: 'fork-child',
+      });
+      const admitted = await fixture.submit(action);
+      await expect
+        .poll(() => fixture.receipt(action.id))
+        .toMatchObject({ delivery: scenario === 'rejectFork' ? 'failed' : 'uncertain' });
+      await fixture.submit(action);
+      expect((await fixture.calls()).filter((call) => call.method === 'thread/fork')).toHaveLength(
+        1,
+      );
+      expect(await fixture.thread(admitted.threadId!)).toMatchObject({
+        nativeId: null,
+        forkedFromThreadId: thread.id,
+      });
+      if (scenario === 'wrongForkSource')
+        await expect
+          .poll(() => fixture.thread(thread.id))
+          .toMatchObject({ ownership: 'uncertain', state: 'unknown' });
+      else
+        expect(await fixture.thread(thread.id)).toMatchObject({
+          ownership: 'managed',
+          state: 'idle',
+        });
+    } finally {
+      await fixture.close();
+    }
+  },
+);
+
+test('native archive, unarchive and revert retain identities and never resume implicitly', async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('lifecycle');
+    const message = fixture.envelope({
+      kind: 'message',
+      threadId: thread.id,
+      input: { kind: 'text', text: 'Prepare history' },
+    });
+    await fixture.submit(message);
+    await expect
+      .poll(() => fixture.receipt(message.id))
+      .toMatchObject({ delivery: 'acknowledged', completion: 'completed' });
+    const beforeTurnId = (await fixture.receipt(message.id)).nativeTurnId!;
+    const revert = fixture.envelope({ kind: 'thread-revert', threadId: thread.id, beforeTurnId });
+    await fixture.submit(revert);
+    await expect.poll(() => fixture.receipt(revert.id)).toMatchObject({ delivery: 'acknowledged' });
+    expect(await fixture.request({ kind: 'live-items', threadId: thread.id })).toMatchObject({
+      kind: 'live-items',
+      result: { data: [], hasGap: true },
+    });
+    const archive = fixture.envelope({ kind: 'thread-archive', threadId: thread.id });
+    await fixture.submit(archive);
+    await expect
+      .poll(() => fixture.thread(thread.id))
+      .toMatchObject({
+        nativeId: thread.nativeId,
+        state: 'inactive',
+        runtimeEpoch: null,
+        isArchived: true,
+      });
+    const resume = fixture.envelope({
+      kind: 'thread-resume',
+      threadId: thread.id,
+      operatorConfirmation: 'Native controller closed',
+    });
+    expect(await fixture.submit(resume)).toMatchObject({
+      delivery: 'failed',
+      failure: 'state-conflict',
+    });
+    const unarchive = fixture.envelope({ kind: 'thread-unarchive', threadId: thread.id });
+    await fixture.submit(unarchive);
+    await expect
+      .poll(() => fixture.receipt(unarchive.id))
+      .toMatchObject({ delivery: 'acknowledged' });
+    expect(await fixture.thread(thread.id)).toMatchObject({
+      nativeId: thread.nativeId,
+      state: 'inactive',
+      runtimeEpoch: null,
+      isArchived: false,
+    });
+    expect(await fixture.submit(unarchive)).toMatchObject({ delivery: 'acknowledged' });
+    const calls = await fixture.calls();
+    expect(calls.filter((call) => call.method === 'thread/unarchive')).toHaveLength(1);
+    expect(calls.filter((call) => call.method === 'thread/resume')).toHaveLength(0);
+    expect(calls.find((call) => call.method === 'thread/revert')).toStrictEqual({
+      method: 'thread/revert',
+      params: { threadId: thread.nativeId, beforeTurnId },
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test.each([false, true])(
+  'native compaction correlates its turn when acknowledgement arrives first: %s',
+  async (compactAckFirst) => {
+    const fixture = await setup();
+    try {
+      const { thread } = await fixture.create('compact');
+      const message = fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Before compaction' },
+      });
+      await fixture.submit(message);
+      await expect
+        .poll(() => fixture.receipt(message.id))
+        .toMatchObject({ completion: 'completed' });
+      expect(await fixture.request({ kind: 'live-items', threadId: thread.id })).toMatchObject({
+        kind: 'live-items',
+        result: { data: [{ text: 'Live response' }] },
+      });
+      await fixture.control({ compactAckFirst });
+      const action = fixture.envelope({ kind: 'thread-compact', threadId: thread.id });
+      await fixture.submit(action);
+      await expect
+        .poll(() => fixture.receipt(action.id))
+        .toMatchObject({
+          delivery: 'acknowledged',
+          completion: 'completed',
+          nativeTurnId: expect.stringMatching(/^compact-/),
+        });
+      expect(await fixture.thread(thread.id)).toMatchObject({
+        state: 'completed',
+        activeTurnId: null,
+      });
+      expect(await fixture.request({ kind: 'live-items', threadId: thread.id })).toMatchObject({
+        kind: 'live-items',
+        result: { data: [], hasGap: true },
+      });
+      expect(await fixture.submit(action)).toMatchObject({
+        delivery: 'acknowledged',
+        completion: 'completed',
+      });
+      expect(
+        (await fixture.calls()).filter((call) => call.method === 'thread/compact/start'),
+      ).toHaveLength(1);
+    } finally {
+      await fixture.close();
+    }
+  },
+);
 
 test('atomic admission deduplicates UUIDs, suffixes names and rejects competing new turns', async () => {
   const fixture = await setup();

@@ -2,13 +2,21 @@ import { Exception, isException } from 'jg-exception';
 import { scheduler } from 'node:timers/promises';
 import { z } from 'zod';
 
-import type { IHqResponse, IUsageSnapshot } from '../../contracts/index.js';
+import type {
+  IHqResponse,
+  IUsageSnapshot,
+  IProviderModelsRequest,
+  IProviderModelPage,
+  IConfigurationRequest,
+} from '../../contracts/index.js';
 import type { IStore } from '../../store/index.js';
 import type { IHistoryRequest } from '../../sessions/index.js';
 
 import { createClaudeRpc } from './rpc.js';
 import { ClaudeUsageSchema } from './types.js';
 import { toClaudeUsageSnapshot } from './transformers.js';
+import { readClaudeModels } from './models/index.js';
+import { toClaudeConfiguration } from './configuration/index.js';
 
 /**
  * Lazily connects read-only Claude capabilities; Codex needs no Claude installation.
@@ -17,6 +25,7 @@ import { toClaudeUsageSnapshot } from './transformers.js';
 export const createClaudeProvider = (store: IStore) => {
   let connection: Awaited<ReturnType<typeof createClaudeRpc>> | undefined;
   let opening: Promise<Awaited<ReturnType<typeof createClaudeRpc>>> | undefined;
+  const configurationReads = new Set<Promise<Awaited<ReturnType<typeof createClaudeRpc>>>>();
   let isClosing = false;
   let generation = 0;
   let refresh: Promise<IUsageSnapshot> | undefined;
@@ -58,6 +67,62 @@ export const createClaudeProvider = (store: IStore) => {
      */
     async ensureReady(): Promise<void> {
       await open();
+    },
+    /**
+     * Reads current native model choices without a user prompt.
+     * @returns A bounded page whose continuation is tied to the observed inventory.
+     * @throws
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+     * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+     */
+    async readModels(command: IProviderModelsRequest): Promise<IProviderModelPage> {
+      const native = await open();
+      return readClaudeModels(await native.requestControl({ subtype: 'list_models' }), command);
+    },
+    /**
+     * Opens a workspace-scoped read lane without a user prompt or model turn.
+     * @returns Known effective native fields; the lane is closed before returning.
+     * @throws
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+     */
+    async readConfiguration(command: IConfigurationRequest, signal?: AbortSignal) {
+      if (isClosing || configurationReads.size >= 4)
+        throw new Exception('The Claude integration failed', {
+          code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+          data: { kind: 'agent-unavailable' },
+        });
+      const starting = createClaudeRpc(() => {}, undefined, command.workspaceRoot, signal);
+      configurationReads.add(starting);
+      let native: Awaited<ReturnType<typeof createClaudeRpc>> | undefined;
+      let hasUnconfirmedStartup = false;
+      try {
+        native = await starting;
+        if (isClosing)
+          throw new Exception('The Claude integration failed', {
+            code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+            data: { kind: 'agent-unavailable' },
+          });
+        return toClaudeConfiguration(
+          await native.requestControl({ subtype: 'get_settings' }),
+          native.initialization.agents,
+          native.initialization.current_permission_mode,
+          undefined,
+          {},
+          command,
+        );
+      } catch (cause) {
+        hasUnconfirmedStartup =
+          !native &&
+          isException(cause) &&
+          z.object({ cleanupUnconfirmed: z.literal(true) }).safeParse(cause.data).success;
+        throw cause;
+      } finally {
+        if (native) await native.close();
+        if (!hasUnconfirmedStartup) configurationReads.delete(starting);
+      }
     },
     get version() {
       return connection?.version ?? null;
@@ -133,19 +198,24 @@ export const createClaudeProvider = (store: IStore) => {
      */
     async close(): Promise<void> {
       isClosing = true;
-      if (opening) {
-        try {
-          await opening;
-        } catch (cause) {
-          if (
-            isException(cause) &&
-            z.object({ cleanupUnconfirmed: z.literal(true) }).safeParse(cause.data).success
-          )
-            throw cause;
-          return;
-        }
-      }
-      await connection?.close();
+      const results = await Promise.allSettled(
+        [...(opening ? [opening] : []), ...configurationReads].map(async (starting) => {
+          let native: Awaited<ReturnType<typeof createClaudeRpc>>;
+          try {
+            native = await starting;
+          } catch (cause) {
+            if (
+              isException(cause) &&
+              z.object({ cleanupUnconfirmed: z.literal(true) }).safeParse(cause.data).success
+            )
+              throw cause;
+            return;
+          }
+          await native.close();
+        }),
+      );
+      const failed = results.find((result) => result.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
     },
   };
 };

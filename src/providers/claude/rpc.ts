@@ -1,9 +1,11 @@
 import { Exception, extractMessage } from 'jg-exception';
 import { z } from 'zod';
 
+import type { ISessionSettings } from '../../contracts/index.js';
 import { createProviderProcess } from '../index.js';
 
 import { ClaudeInitializeSchema } from './types.js';
+import { toClaudeSessionFlags } from './configuration/index.js';
 
 const EnvelopeSchema = z.object({
   type: z.string(),
@@ -23,6 +25,7 @@ const EnvelopeSchema = z.object({
  * @returns An owned control connection; normal CLI configuration remains enabled.
  * @throws
  * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+ * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
  */
 export const createClaudeRpc = async (
   invalidate: (reason: 'account' | 'limits' | 'unavailable') => void,
@@ -31,9 +34,13 @@ export const createClaudeRpc = async (
     workspaceRoot: string;
     additionalDirectories: string[];
     isResume: boolean;
+    forkSourceNativeId?: string;
+    settings?: ISessionSettings;
     receive(message: unknown): void;
     lateResponse(id: string, result: unknown, error: unknown): void;
   },
+  workspaceRoot?: string,
+  signal?: AbortSignal,
 ) => {
   let sequence = 0;
   const late = new Set<string>();
@@ -73,9 +80,17 @@ export const createClaudeRpc = async (
             '--permission-prompt-tool=stdio',
             '--replay-user-messages',
             '--include-partial-messages',
-            control.isResume ? '--resume' : '--session-id',
-            control.nativeId,
+            ...(control.forkSourceNativeId
+              ? [
+                  '--resume',
+                  control.forkSourceNativeId,
+                  '--fork-session',
+                  '--session-id',
+                  control.nativeId,
+                ]
+              : [control.isResume ? '--resume' : '--session-id', control.nativeId]),
             ...control.additionalDirectories.flatMap((directory) => ['--add-dir', directory]),
+            ...toClaudeSessionFlags(control.settings ?? {}),
           ]
         : []),
     ],
@@ -140,7 +155,7 @@ export const createClaudeRpc = async (
       else if (envelope.type === 'rate_limit_event') invalidate('limits');
     },
     fail,
-    control?.workspaceRoot,
+    control?.workspaceRoot ?? workspaceRoot,
   );
   /**
    * Matches one native control acknowledgement and retains bounded late-response identity.
@@ -210,7 +225,25 @@ export const createClaudeRpc = async (
         });
     });
   };
+  let cancellationCleanup: Promise<void> | undefined;
+  const cancel = (): void => {
+    fail(
+      new Exception('The Claude integration failed', {
+        code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+        data: { kind: 'agent-unavailable' },
+      }),
+    );
+    cancellationCleanup ??= transport.close();
+    // the owning close/catch awaits this same cleanup and preserves an unconfirmed exit
+    void cancellationCleanup.catch(() => undefined);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
   try {
+    if (signal?.aborted)
+      throw new Exception('The Claude integration failed', {
+        code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+        data: { kind: 'agent-unavailable' },
+      });
     const initialized = ClaudeInitializeSchema.safeParse(await request({ subtype: 'initialize' }));
     if (!initialized.success)
       throw new Exception('The Claude integration failed', {
@@ -241,17 +274,19 @@ export const createClaudeRpc = async (
        * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
        */
       async close(): Promise<void> {
+        signal?.removeEventListener('abort', cancel);
         fail(
           new Exception('The Claude integration failed: connection closed', {
             code: 'JG_AGENT_HQ_CLAUDE_FAILED',
           }),
         );
-        await transport.close();
+        await (cancellationCleanup ?? transport.close());
       },
     };
   } catch (cause) {
+    signal?.removeEventListener('abort', cancel);
     try {
-      await transport.close();
+      await (cancellationCleanup ?? transport.close());
     } catch (cleanup) {
       throw new Exception(`The Claude integration failed: ${extractMessage(cleanup)}`, {
         code: 'JG_AGENT_HQ_CLAUDE_FAILED',

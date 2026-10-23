@@ -25,6 +25,14 @@ export const FileRowSchema = z.object({
   workspace_state: z.enum(['unknown', 'matching', 'foreign']),
 });
 export type IFileRow = z.infer<typeof FileRowSchema>;
+// native API diagnostics have no conversation position and must never become history items
+export const ApiRequestMetadataSchema = z.object({
+  type: z.literal('api-request-blob'),
+  sessionId: z.uuid(),
+  uuid: z.never().optional(),
+  parentUuid: z.never().optional(),
+  cwd: z.string().optional(),
+});
 export const EntryRowSchema = z.object({
   uuid: z.string(),
   parent_uuid: z.string().nullable(),

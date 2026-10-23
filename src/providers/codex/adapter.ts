@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { Exception } from 'jg-exception';
+import { z } from 'zod';
 
-import type { IProviderCapabilitySet } from '../../contracts/index.js';
+import {
+  SessionSettingsSchema,
+  TurnSettingsSchema,
+  type IProviderCapabilitySet,
+} from '../../contracts/index.js';
 import { resolveWorkspaceTarget } from '../../runtime/state/index.js';
 import { decodeHistoryCursor, encodeHistoryCursor } from '../../sessions/index.js';
 import type { IHistoryRequest } from '../../sessions/index.js';
@@ -108,6 +113,19 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
             code: 'JG_AGENT_HQ_CODEX_FAILED',
             data: { kind: 'agent-unavailable' },
           });
+        let models: IProviderCapabilitySet['operations']['models'] = SUPPORTED_PROVIDER_OPERATION;
+        try {
+          await native.readModels(1);
+        } catch {
+          models = {
+            state: 'unavailable',
+            changeMode: null,
+            reason: {
+              code: 'native-model-catalog-unavailable',
+              message: 'The native model catalog is unavailable.',
+            },
+          };
+        }
         return {
           operations: {
             create: SUPPORTED_PROVIDER_OPERATION,
@@ -121,12 +139,60 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
             history: SUPPORTED_PROVIDER_OPERATION,
             usage: SUPPORTED_PROVIDER_OPERATION,
             skills: SUPPORTED_PROVIDER_OPERATION,
+            models,
+            fork: SUPPORTED_PROVIDER_OPERATION,
+            archive: SUPPORTED_PROVIDER_OPERATION,
+            unarchive: SUPPORTED_PROVIDER_OPERATION,
+            compact: SUPPORTED_PROVIDER_OPERATION,
+            revert: SUPPORTED_PROVIDER_OPERATION,
+            configuration: SUPPORTED_PROVIDER_OPERATION,
           },
           inputSchema: PROVIDER_INPUT_SCHEMA,
-          configurationSchema: null,
+          configurationSchema: {
+            session: z
+              .json()
+              .parse(z.toJSONSchema(SessionSettingsSchema.omit({ nativeAgent: true }))),
+            turn: z.json().parse(z.toJSONSchema(TurnSettingsSchema)),
+            sessionChangeMode: 'idle-restart',
+            turnChangeMode: 'live',
+            permissionModes: ['untrusted', 'on-request', 'never'],
+            sandboxModes: ['read-only', 'workspace-write', 'danger-full-access'],
+          },
         };
       },
       readHistory,
+      readConfiguration: (command, nativeId, call) =>
+        native.readConfiguration(command, nativeId, call.signal),
+      forkThread: async (requestId, nativeId) =>
+        toProviderThread(await native.forkThread(requestId, nativeId)),
+      async archiveThread(requestId, nativeId, call) {
+        await native.verifyTerminalsClosed(nativeId);
+        if (call.signal.aborted)
+          throw new Exception('The Codex integration failed', {
+            code: 'JG_AGENT_HQ_CODEX_FAILED',
+            data: { kind: 'agent-unavailable' },
+          });
+        await native.archiveThread(requestId, nativeId);
+      },
+      unarchiveThread: async (requestId, nativeId) =>
+        toProviderThread(await native.unarchiveThread(requestId, nativeId)),
+      revertThread: async (requestId, nativeId, beforeTurnId) =>
+        toProviderThread(await native.revertThread(requestId, nativeId, beforeTurnId)),
+      async compactThread(requestId, nativeId) {
+        await native.compactThread(requestId, nativeId);
+        return { id: null };
+      },
+      async readModels(command) {
+        const { cursor, ...filters } = command;
+        const page = await native.readModels(command.limit, decodeHistoryCursor(cursor, filters));
+        return {
+          provider: 'codex',
+          source: 'native',
+          observedAt: Date.now(),
+          data: page.data,
+          nextCursor: encodeHistoryCursor(page.nextCursor, filters),
+        };
+      },
       async inspectThread(nativeId, workspaceRoot) {
         const thread = await native.readThread(nativeId);
         await verifyRoot(thread.workspaceRoot, workspaceRoot);
@@ -140,13 +206,13 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
       readSkills: (_nativeId, workspaceRoot) => native.readSkills(workspaceRoot),
       formatSkill: (skill, argumentsText) =>
         `$${skill.name}${argumentsText ? ` ${argumentsText}` : ''}`,
-      startThread: async (requestId, workspaceRoot) =>
-        toProviderThread(await native.startThread(requestId, workspaceRoot)),
-      resumeThread: async (requestId, nativeId) =>
-        toProviderThread(await native.resumeThread(requestId, nativeId)),
+      startThread: async (requestId, workspaceRoot, settings) =>
+        toProviderThread(await native.startThread(requestId, workspaceRoot, settings)),
+      resumeThread: async (requestId, nativeId, _workspaceRoot, _name, settings, call) =>
+        toProviderThread(await native.resumeThread(requestId, nativeId, settings, call.signal)),
       nameThread: (requestId, nativeId, name) => native.nameThread(requestId, nativeId, name),
-      startTurn: (requestId, nativeId, text, skill) =>
-        native.startTurn(requestId, nativeId, text, skill),
+      startTurn: (requestId, nativeId, text, skill, settings) =>
+        native.startTurn(requestId, nativeId, text, skill, settings),
       steer: (requestId, nativeId, expectedTurnId, text) =>
         native.steer(requestId, nativeId, expectedTurnId, text),
       interrupt: (requestId, nativeId, nativeTurnId) =>

@@ -38,6 +38,19 @@ export type {
   IProviderCapabilities,
   IProviderStatus,
 } from './contracts/providers/index.js';
+export type {
+  IProviderModel,
+  IProviderModelPage,
+  IProviderModelsRequest,
+} from './contracts/models/index.js';
+export type {
+  ITurnSettings,
+  ISessionSettings,
+  IConfigurationRequest,
+  IConfigurationChoice,
+  ISessionConfiguration,
+} from './contracts/configuration/index.js';
+export type { INativeLineage } from './contracts/identities/index.js';
 
 // trusted host storage
 export type { IStorageDescriptor, IStorageMaintenanceOperation } from './storage/index.js';

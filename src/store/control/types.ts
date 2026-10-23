@@ -9,6 +9,7 @@ import {
   ManagedThreadSchema,
   NativeApprovalSchema,
   LifecycleEventSchema,
+  NativeLineageSchema,
 } from '../../contracts/index.js';
 
 // these shapes mirror SQLite columns; transformations retain the public camelCase contracts
@@ -16,6 +17,9 @@ export const ThreadRowSchema = z.object({
   id: ManagedThreadSchema.shape.id,
   provider: ManagedThreadSchema.shape.provider,
   native_id: ManagedThreadSchema.shape.nativeId,
+  native_lineage: z.string().nullable(),
+  fork_source_thread_id: z.uuid().nullable(),
+  is_archived: z.number().int().min(0).max(1),
   name: ManagedThreadSchema.shape.name,
   workspace_root: z.string(),
   ownership: ManagedThreadSchema.shape.ownership,
@@ -57,15 +61,29 @@ export type IActionRow = z.infer<typeof ActionRowSchema>;
 const NativeIdSchema = ManagedThreadSchema.shape.nativeId.unwrap();
 const OutcomeFields = { actionId: z.uuid(), requestId: z.string().min(1).max(256) };
 export const NativeOutcomeSchema = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('created'), ...OutcomeFields, nativeId: NativeIdSchema }),
+  z.strictObject({
+    kind: z.literal('created'),
+    ...OutcomeFields,
+    nativeId: NativeIdSchema,
+    nativeLineage: NativeLineageSchema.nullable(),
+  }),
   z.strictObject({
     kind: z.literal('resumed'),
     ...OutcomeFields,
     nativeState: z.enum(['notLoaded', 'idle', 'systemError', 'active']),
+    nativeLineage: NativeLineageSchema.nullable(),
   }),
   z.strictObject({ kind: z.literal('closed'), ...OutcomeFields }),
   z.strictObject({ kind: z.literal('cleaned'), ...OutcomeFields }),
   z.strictObject({ kind: z.literal('renamed'), ...OutcomeFields }),
+  z.strictObject({ kind: z.literal('archived'), ...OutcomeFields }),
+  z.strictObject({ kind: z.literal('unarchived'), ...OutcomeFields }),
+  z.strictObject({ kind: z.literal('reverted'), ...OutcomeFields }),
+  z.strictObject({
+    kind: z.literal('compaction-accepted'),
+    ...OutcomeFields,
+    nativeTurnId: NativeIdSchema.nullable(),
+  }),
   z.strictObject({
     kind: z.literal('turn-accepted'),
     ...OutcomeFields,

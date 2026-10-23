@@ -1,7 +1,12 @@
 import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
-import { HqResponseSchema, type IHqResponse, type IProviderId } from '../../contracts/index.js';
+import {
+  HqResponseSchema,
+  type IHqResponse,
+  type IProviderId,
+  type INativeLineage,
+} from '../../contracts/index.js';
 import type { IHistoryRequest } from '../../sessions/index.js';
 import {
   NativeObservationSchema,
@@ -29,6 +34,10 @@ const OUTCOME_PHASES = {
   closed: 'close',
   cleaned: 'clean',
   renamed: 'name',
+  archived: 'archive',
+  unarchived: 'unarchive',
+  reverted: 'revert',
+  'compaction-accepted': 'compact',
   'turn-accepted': 'turn',
   'steer-accepted': 'steer',
   'interrupt-accepted': 'interrupt',
@@ -53,7 +62,10 @@ export const parseProviderObservation = (input: unknown): INativeObservation => 
  * @throws
  * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
  */
-export const parseProviderOutcome = (input: unknown): INativeOutcome => {
+export const parseProviderOutcome = (
+  input: unknown,
+  nativeLineage: INativeLineage | null | undefined,
+): INativeOutcome => {
   const record = z.record(z.string(), z.unknown()).safeParse(input);
   const identity = z.object({ requestId: z.string() }).safeParse(input);
   if (!record.success) throw normalizeProviderError(record.error, false);
@@ -61,12 +73,14 @@ export const parseProviderOutcome = (input: unknown): INativeOutcome => {
   const parsed = OutcomeSchema.safeParse({
     ...record.data,
     actionId: identity.data.requestId.slice(0, 36),
+    nativeLineage,
   });
   if (!parsed.success) throw normalizeProviderError(parsed.error, false);
   if (
     parsed.data.kind !== 'failed' &&
     parsed.data.kind !== 'uncertain' &&
-    !parsed.data.requestId.endsWith(`:${OUTCOME_PHASES[parsed.data.kind]}`)
+    !parsed.data.requestId.endsWith(`:${OUTCOME_PHASES[parsed.data.kind]}`) &&
+    !(parsed.data.kind === 'created' && parsed.data.requestId.endsWith(':fork'))
   )
     rejectProviderResponse();
   return parsed.data;

@@ -8,10 +8,14 @@ import {createInterface} from 'node:readline';
 export const startClaudeControl = () => {
  const root=process.env.JG_HQ_FIXTURE_DIRECTORY;
  const args=process.argv.slice(2);
- const id=args[args.indexOf(args.includes('--resume')?'--resume':'--session-id')+1];
+ const flag=name=>args.includes(name)?args[args.indexOf(name)+1]:undefined;
+ let model=flag('--model')??'model-0000',effort=flag('--effort')??'native-effort';
+ const id=args[args.indexOf(args.includes('--session-id')?'--session-id':'--resume')+1];
  const directory=join(process.env.CLAUDE_CONFIG_DIR,'projects',process.cwd().replace(/[^a-zA-Z0-9]/g,'-'));
  mkdirSync(directory,{recursive:true});
  const transcript=join(directory,id+'.jsonl');
+ const inherited=args.includes('--fork-session')?readFileSync(join(directory,args[args.indexOf('--resume')+1]+'.jsonl'),'utf8').trim().split('\n').filter(Boolean).map(line=>({...JSON.parse(line),sessionId:id})):[];
+ if(inherited.length)writeFileSync(transcript,inherited.map(row=>JSON.stringify(row)).join('\n')+'\n');
  const child=spawn(process.execPath,['-e','setInterval(()=>{},60000)'],{stdio:'ignore'});
  appendFileSync(join(root,'claude-pids.jsonl'),JSON.stringify({pid:process.pid,child:child.pid})+'\n');
  appendFileSync(join(root,'claude-starts.jsonl'),JSON.stringify({args,cwd:process.cwd(),id})+'\n');
@@ -19,7 +23,7 @@ export const startClaudeControl = () => {
  const out=message=>process.stdout.write(JSON.stringify({...message,session_id:id})+'\n');
  const record=(uuid,type,content,parentUuid=null)=>appendFileSync(transcript,JSON.stringify({type,uuid,parentUuid,sessionId:id,cwd:process.cwd(),version:'2.1.304',timestamp:new Date().toISOString(),isSidechain:false,message:{role:type,content}})+'\n');
  let input=null;
- let leaf=null;
+ let leaf=inherited.filter(row=>row.uuid).at(-1)?.uuid??null;
  let hasPrompt=false;
  let isClosing=false;
  const complete=(interrupted=false)=>{
@@ -45,7 +49,9 @@ export const startClaudeControl = () => {
   if(message.type==='control_request'){
    const subtype=message.request.subtype;
    const response=body=>out({type:'control_response',response:{subtype:'success',request_id:message.request_id,response:body}});
-   if(subtype==='initialize'){response({...(settings.omitVersion?{}:{claude_code_version:settings.version??'2.1.304'}),futureMetadata:settings.futureMetadata,session_state:settings.omitIdle?undefined:settings.nativeState??'idle',commands:settings.skillsFailure?undefined:Array.from({length:settings.skillNames?.length??settings.skillCount??2},(_,index)=>({name:settings.skillNames?.[index]??(settings.skillRevision?'changed-':'')+(index===0?(settings.symbolicCommand?'native/command':'explicit-skill'):index===1?'implicit-skill':'skill-'+index),description:settings.skillDescriptionSize?'d'.repeat(settings.skillDescriptionSize):'Native installed skill '+index,argumentHint:'[task]'}))});return;}
+   if(subtype==='get_settings'){response({effective:{model,effortLevel:'stale-effort',agent:flag('--agent'),secret:'must-not-leak'},applied:settings.unavailableSettings?{model:null,effort:null}:{model,effort}});return;}
+   if(subtype==='apply_flag_settings'){model=message.request.settings.model??model;effort=message.request.settings.effortLevel??effort;response();return;}
+   if(subtype==='initialize'){response({...(settings.omitVersion?{}:{claude_code_version:settings.version??'2.1.304'}),futureMetadata:settings.futureMetadata,agents:settings.agentsUnavailable?undefined:Array.from({length:settings.agentCount??4},(_,index)=>({name:'agent-'+String(index).padStart(4,'0'),description:settings.configRevision?'Updated agent':'Native agent',model:'model-0000'})),current_permission_mode:flag('--permission-mode')??'default',session_state:settings.omitIdle?undefined:settings.nativeState??'idle',commands:settings.skillsFailure?undefined:Array.from({length:settings.skillNames?.length??settings.skillCount??2},(_,index)=>({name:settings.skillNames?.[index]??(settings.skillRevision?'changed-':'')+(index===0?(settings.symbolicCommand?'native/command':'explicit-skill'):index===1?'implicit-skill':'skill-'+index),description:settings.skillDescriptionSize?'d'.repeat(settings.skillDescriptionSize):'Native installed skill '+index,argumentHint:'[task]'}))});return;}
    if(subtype==='rename_session'){
     if(settings.rejectName){out({type:'control_response',response:{subtype:'error',request_id:message.request_id,error:'Synthetic name rejection'}});return;}
     if(message.request.session_id!==id){out({type:'control_response',response:{subtype:'error',request_id:message.request_id,error:'Wrong session'}});return;}
