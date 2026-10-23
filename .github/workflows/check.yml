@@ -22,7 +22,8 @@ jobs:
   check:
     name: Verify Node ${{ matrix.node }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # includes cold Chromium OS setup before the complete package and website checks
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
