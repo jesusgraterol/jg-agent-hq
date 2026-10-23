@@ -40,6 +40,7 @@ These contracts use the named codes below. An Exception's `data.kind` classifies
 | JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE | The Claude history is unavailable               |
 | JG_AGENT_HQ_TRANSPORT_FAILED           | The HQ transport failed                         |
 | JG_AGENT_HQ_STORE_FAILED               | The HQ store failed                             |
+| JG_AGENT_HQ_STORAGE_INVALID            | The HQ storage is invalid                       |
 | JG_AGENT_HQ_RUNTIME_NOT_RUNNING        | The HQ runtime is not running                   |
 | JG_AGENT_HQ_ACTION_CONFLICT            | The HQ action conflicts with its recorded state |
 | JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE     | The HQ action key is unavailable                |
@@ -50,6 +51,8 @@ These contracts use the named codes below. An Exception's `data.kind` classifies
 | JG_AGENT_HQ_HANDOFF_FAILED             | The HQ handoff operation failed                 |
 
 State safety rejects non-private ownership, symlinks and non-regular files. Runtime ownership is never reclaimed automatically. Transport failure includes malformed, oversized or incomplete frames and bounded-request/lifecycle failures. Native history and subscription failures remain unavailable, never successful empty results. Claude control rejects missing or non-idle initialization, invalid native session identities and malformed lifecycle evidence. Failed delivery remains uncertain when no exact native rejection or acknowledgement establishes its outcome.
+
+A nonempty SQLite schema requires exactly one matching `hq_schema` stamp. Missing, malformed or mismatched stamps use STORAGE_INVALID with the safe state-conflict classification before HQ changes the database. Read-only validation preserves uncheckpointed WAL state on rejection. Initialization failures roll back the complete HQ schema. Storage maintenance uses ACTION_CONFLICT for concurrent maintenance, calls from admitted work, active native execution or an unresolved plan write. Host callback errors propagate unchanged after admission is released.
 
 A native or worker startup failure whose cleanup could not be confirmed carries internal `cleanupUnconfirmed: true`. The runtime retains its owner record in that case rather than allowing a new host to assume its resources have stopped.
 

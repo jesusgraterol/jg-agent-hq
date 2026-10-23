@@ -34,6 +34,7 @@ import {
 } from '../handoffs/index.js';
 import type { IHistoryRequest } from '../sessions/index.js';
 import type { IClaudeHistoryRead } from '../providers/claude/history/index.js';
+import { StorageDescriptorSchema, type IStorageDescriptor } from '../storage/index.js';
 
 import {
   PlanWriteIntentSchema,
@@ -66,6 +67,7 @@ import {
 
 // worker messages are closed, bounded operations rather than arbitrary SQL
 export const StoreCommandSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('storage-maintenance') }),
   z.strictObject({
     kind: z.literal('browser-read'),
     id: z.uuid(),
@@ -156,7 +158,11 @@ export const StoreRequestSchema = z.strictObject({
   command: StoreCommandSchema,
 });
 export const StoreResponseSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('ready') }),
+  z.object({ kind: z.literal('ready'), storage: StorageDescriptorSchema }),
+  z.object({
+    kind: z.literal('startup-error'),
+    error: z.object({ code: z.string(), message: z.string(), kind: ErrorKindSchema }),
+  }),
   z.object({
     kind: z.literal('result'),
     id: z.number().int(),
@@ -175,6 +181,14 @@ export const StoreWorkerSchema = z.strictObject({
 // the worker owns persistence; callers cannot submit arbitrary statements
 export type IStore = {
   readonly isAvailable: boolean;
+  storage: IStorageDescriptor;
+  /**
+   * Drains earlier worker commands and checks for unresolved native or document work.
+   * @returns Whether a host maintenance callback can start.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  prepareStorageMaintenance(): Promise<boolean>;
   /**
    * Reads the operator-owned browser receipt.
    * @returns The receipt or null.

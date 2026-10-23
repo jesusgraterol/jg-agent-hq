@@ -1,4 +1,9 @@
-CREATE TABLE IF NOT EXISTS native_history_index (
+CREATE TABLE hq_schema (
+  id INTEGER NOT NULL CONSTRAINT hq_pk_schema__id PRIMARY KEY CHECK (id = 1),
+  schema_hash TEXT NOT NULL CHECK (length(schema_hash) = 64)
+) STRICT;
+
+CREATE TABLE hq_native_history_index (
   provider TEXT NOT NULL CHECK (length(provider) > 0),
   native_id TEXT NOT NULL CHECK (length(native_id) > 0),
   workspace_root TEXT NOT NULL,
@@ -9,15 +14,15 @@ CREATE TABLE IF NOT EXISTS native_history_index (
   observed_at INTEGER NOT NULL,
   runtime_epoch TEXT NOT NULL,
   continuation_cursor TEXT,
-  CONSTRAINT pk_nhi__provider_native_id PRIMARY KEY (provider, native_id)
+  CONSTRAINT hq_pk_nhi__provider_native_id PRIMARY KEY (provider, native_id)
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS idx_nhi__provider_workspace_root_created_at_native_id
-ON native_history_index (provider, workspace_root, created_at DESC, native_id DESC);
+CREATE INDEX hq_idx_nhi__provider_workspace_root_created_at_native_id
+ON hq_native_history_index (provider, workspace_root, created_at DESC, native_id DESC);
 
-CREATE TABLE IF NOT EXISTS thread (
+CREATE TABLE hq_thread (
   id TEXT NOT NULL,
-  provider TEXT NOT NULL CHECK (provider IN ('codex', 'claude')),
+  provider TEXT NOT NULL CHECK (length(provider) > 0),
   native_id TEXT CHECK (native_id IS NULL OR length(native_id) > 0),
   name TEXT NOT NULL COLLATE NOCASE,
   workspace_root TEXT NOT NULL,
@@ -31,19 +36,19 @@ CREATE TABLE IF NOT EXISTS thread (
   registration_action_id TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  CONSTRAINT pk_t__id PRIMARY KEY (id),
-  CONSTRAINT uq_t__provider_native_id UNIQUE (provider, native_id),
-  CONSTRAINT uq_t__name UNIQUE (name),
-  CONSTRAINT uq_t__pending_action_id UNIQUE (pending_action_id),
-  CONSTRAINT fk_t__registration_action_id FOREIGN KEY (registration_action_id) REFERENCES action(id),
-  CONSTRAINT fk_t__pending_action_id FOREIGN KEY (pending_action_id) REFERENCES action(id),
-  CONSTRAINT chk_t__native_id_creation CHECK (native_id IS NOT NULL OR state IN ('creating', 'unknown'))
+  CONSTRAINT hq_pk_t__id PRIMARY KEY (id),
+  CONSTRAINT hq_uq_t__provider_native_id UNIQUE (provider, native_id),
+  CONSTRAINT hq_uq_t__name UNIQUE (name),
+  CONSTRAINT hq_uq_t__pending_action_id UNIQUE (pending_action_id),
+  CONSTRAINT hq_fk_t__registration_action_id FOREIGN KEY (registration_action_id) REFERENCES hq_action(id),
+  CONSTRAINT hq_fk_t__pending_action_id FOREIGN KEY (pending_action_id) REFERENCES hq_action(id),
+  CONSTRAINT hq_chk_t__native_id_creation CHECK (native_id IS NOT NULL OR state IN ('creating', 'unknown'))
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS idx_t__workspace_root_created_at_id_desc ON thread (workspace_root, created_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS idx_t__runtime_epoch_ownership ON thread (runtime_epoch, ownership);
+CREATE INDEX hq_idx_t__workspace_root_created_at_id_desc ON hq_thread (workspace_root, created_at DESC, id DESC);
+CREATE INDEX hq_idx_t__runtime_epoch_ownership ON hq_thread (runtime_epoch, ownership);
 
-CREATE TABLE IF NOT EXISTS action (
+CREATE TABLE hq_action (
   id TEXT NOT NULL,
   digest TEXT NOT NULL CHECK (length(digest) = 64),
   requested_runtime_epoch TEXT NOT NULL,
@@ -64,23 +69,23 @@ CREATE TABLE IF NOT EXISTS action (
   requested_name TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  CONSTRAINT pk_a__id PRIMARY KEY (id),
-  CONSTRAINT fk_a__thread_id FOREIGN KEY (thread_id) REFERENCES thread(id),
-  CONSTRAINT fk_a__related_action_id FOREIGN KEY (related_action_id) REFERENCES action(id),
-  CONSTRAINT chk_a__queued_skill_kind CHECK (queued_skill IS NULL OR kind = 'queue'),
-  CONSTRAINT chk_a__queued_text_kind CHECK (queued_text IS NULL OR kind = 'queue'),
-  CONSTRAINT chk_a__queued_body_required CHECK (delivery != 'queued' OR (kind = 'queue' AND queued_text IS NOT NULL))
+  CONSTRAINT hq_pk_a__id PRIMARY KEY (id),
+  CONSTRAINT hq_fk_a__thread_id FOREIGN KEY (thread_id) REFERENCES hq_thread(id),
+  CONSTRAINT hq_fk_a__related_action_id FOREIGN KEY (related_action_id) REFERENCES hq_action(id),
+  CONSTRAINT hq_chk_a__queued_skill_kind CHECK (queued_skill IS NULL OR kind = 'queue'),
+  CONSTRAINT hq_chk_a__queued_text_kind CHECK (queued_text IS NULL OR kind = 'queue'),
+  CONSTRAINT hq_chk_a__queued_body_required CHECK (delivery != 'queued' OR (kind = 'queue' AND queued_text IS NOT NULL))
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS idx_a__thread_id_created_at_id_desc ON action (thread_id, created_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS idx_a__thread_id_delivery_created_at_id ON action (thread_id, delivery, created_at, id);
-CREATE INDEX IF NOT EXISTS idx_a__native_turn_id ON action (native_turn_id);
-CREATE INDEX IF NOT EXISTS idx_a__runtime_epoch_delivery ON action (runtime_epoch, delivery);
-CREATE INDEX IF NOT EXISTS idx_a__runtime_epoch_submitted ON action (runtime_epoch) WHERE delivery = 'submitted';
-CREATE INDEX IF NOT EXISTS idx_a__requested_name_delivery ON action (requested_name, delivery);
-CREATE UNIQUE INDEX IF NOT EXISTS uidx_a__runtime_epoch_native_request_id ON action (runtime_epoch, native_request_id) WHERE native_request_id IS NOT NULL;
+CREATE INDEX hq_idx_a__thread_id_created_at_id_desc ON hq_action (thread_id, created_at DESC, id DESC);
+CREATE INDEX hq_idx_a__thread_id_delivery_created_at_id ON hq_action (thread_id, delivery, created_at, id);
+CREATE INDEX hq_idx_a__native_turn_id ON hq_action (native_turn_id);
+CREATE INDEX hq_idx_a__runtime_epoch_delivery ON hq_action (runtime_epoch, delivery);
+CREATE INDEX hq_idx_a__runtime_epoch_submitted ON hq_action (runtime_epoch) WHERE delivery = 'submitted';
+CREATE INDEX hq_idx_a__requested_name_delivery ON hq_action (requested_name, delivery);
+CREATE UNIQUE INDEX hq_uidx_a__runtime_epoch_native_request_id ON hq_action (runtime_epoch, native_request_id) WHERE native_request_id IS NOT NULL;
 
-CREATE TABLE IF NOT EXISTS native_approval (
+CREATE TABLE hq_native_approval (
   id TEXT NOT NULL,
   thread_id TEXT NOT NULL,
   native_turn_id TEXT NOT NULL,
@@ -93,17 +98,17 @@ CREATE TABLE IF NOT EXISTS native_approval (
   reply_action_id TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  CONSTRAINT pk_na__id PRIMARY KEY (id),
-  CONSTRAINT uq_na__runtime_epoch_native_request_id UNIQUE (runtime_epoch, native_request_id),
-  CONSTRAINT fk_na__thread_id FOREIGN KEY (thread_id) REFERENCES thread(id),
-  CONSTRAINT fk_na__reply_action_id FOREIGN KEY (reply_action_id) REFERENCES action(id)
+  CONSTRAINT hq_pk_na__id PRIMARY KEY (id),
+  CONSTRAINT hq_uq_na__runtime_epoch_native_request_id UNIQUE (runtime_epoch, native_request_id),
+  CONSTRAINT hq_fk_na__thread_id FOREIGN KEY (thread_id) REFERENCES hq_thread(id),
+  CONSTRAINT hq_fk_na__reply_action_id FOREIGN KEY (reply_action_id) REFERENCES hq_action(id)
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS idx_na__thread_id_state ON native_approval (thread_id, state);
-CREATE INDEX IF NOT EXISTS idx_na__runtime_epoch_pending ON native_approval (runtime_epoch) WHERE state = 'pending';
+CREATE INDEX hq_idx_na__thread_id_state ON hq_native_approval (thread_id, state);
+CREATE INDEX hq_idx_na__runtime_epoch_pending ON hq_native_approval (runtime_epoch) WHERE state = 'pending';
 
-CREATE TABLE IF NOT EXISTS event (
-  sequence INTEGER CONSTRAINT pk_e__sequence PRIMARY KEY AUTOINCREMENT,
+CREATE TABLE hq_event (
+  sequence INTEGER CONSTRAINT hq_pk_e__sequence PRIMARY KEY AUTOINCREMENT,
   runtime_epoch TEXT NOT NULL,
   thread_id TEXT,
   action_id TEXT,
@@ -113,93 +118,119 @@ CREATE TABLE IF NOT EXISTS event (
   event_key TEXT,
   digest TEXT,
   created_at INTEGER NOT NULL,
-  CONSTRAINT uq_e__runtime_epoch_event_key UNIQUE (runtime_epoch, event_key),
-  CONSTRAINT fk_e__thread_id FOREIGN KEY (thread_id) REFERENCES thread(id),
-  CONSTRAINT fk_e__action_id FOREIGN KEY (action_id) REFERENCES action(id)
+  CONSTRAINT hq_uq_e__runtime_epoch_event_key UNIQUE (runtime_epoch, event_key),
+  CONSTRAINT hq_fk_e__thread_id FOREIGN KEY (thread_id) REFERENCES hq_thread(id),
+  CONSTRAINT hq_fk_e__action_id FOREIGN KEY (action_id) REFERENCES hq_action(id)
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS idx_e__thread_id_sequence ON event (thread_id, sequence);
+CREATE INDEX hq_idx_e__thread_id_sequence ON hq_event (thread_id, sequence);
 
-CREATE TABLE IF NOT EXISTS plan_operation (
+CREATE TABLE hq_plan_operation (
   id TEXT NOT NULL,
   directory TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN ('prepared', 'completed')),
   intent TEXT NOT NULL,
-  CONSTRAINT pk_po__id PRIMARY KEY (id)
+  CONSTRAINT hq_pk_po__id PRIMARY KEY (id)
 ) STRICT;
-CREATE UNIQUE INDEX IF NOT EXISTS uidx_po__directory_prepared ON plan_operation (directory) WHERE state = 'prepared';
+CREATE UNIQUE INDEX hq_uidx_po__directory_prepared ON hq_plan_operation (directory) WHERE state = 'prepared';
 
-CREATE TABLE IF NOT EXISTS plan_milestone (
+CREATE TABLE hq_plan_milestone (
   directory TEXT NOT NULL,
   ordinal INTEGER NOT NULL CHECK (ordinal > 0),
   milestone TEXT NOT NULL,
-  CONSTRAINT pk_pm__directory_ordinal PRIMARY KEY (directory, ordinal)
+  CONSTRAINT hq_pk_pm__directory_ordinal PRIMARY KEY (directory, ordinal)
 ) STRICT;
 
-CREATE TABLE IF NOT EXISTS plan_projection (
+CREATE TABLE hq_plan_projection (
   directory TEXT NOT NULL,
   source_hash TEXT,
-  CONSTRAINT pk_pp__directory PRIMARY KEY (directory)
+  CONSTRAINT hq_pk_pp__directory PRIMARY KEY (directory)
 ) STRICT;
 
-CREATE TABLE IF NOT EXISTS plan_revision_projection (
+CREATE TABLE hq_plan_revision_projection (
  directory TEXT NOT NULL,
  source_hash TEXT,
- CONSTRAINT pk_prp__directory PRIMARY KEY (directory)
+ CONSTRAINT hq_pk_prp__directory PRIMARY KEY (directory)
 ) STRICT;
-CREATE TABLE IF NOT EXISTS plan_record (
+CREATE TABLE hq_plan_record (
  directory TEXT NOT NULL,
  collection TEXT NOT NULL,
  record_id TEXT NOT NULL,
  entry TEXT NOT NULL,
- CONSTRAINT pk_pr__directory_collection_record_id PRIMARY KEY (directory, collection, record_id)
+ CONSTRAINT hq_pk_pr__directory_collection_record_id PRIMARY KEY (directory, collection, record_id)
 ) STRICT;
 
-CREATE TABLE IF NOT EXISTS thread_plan (
+CREATE TABLE hq_thread_plan (
  thread_id TEXT NOT NULL,
  directory TEXT NOT NULL,
  context TEXT NOT NULL,
  authorization_id TEXT,
  milestone_id TEXT,
- CONSTRAINT chk_tp__execution_scope_complete CHECK (authorization_id IS NOT NULL OR milestone_id IS NULL),
- CONSTRAINT pk_tp__thread_id PRIMARY KEY (thread_id),
- CONSTRAINT fk_tp__thread_id FOREIGN KEY (thread_id) REFERENCES thread(id)
+ CONSTRAINT hq_chk_tp__execution_scope_complete CHECK (authorization_id IS NOT NULL OR milestone_id IS NULL),
+ CONSTRAINT hq_pk_tp__thread_id PRIMARY KEY (thread_id),
+ CONSTRAINT hq_fk_tp__thread_id FOREIGN KEY (thread_id) REFERENCES hq_thread(id)
 ) STRICT;
-CREATE INDEX IF NOT EXISTS idx_tp__directory_thread_id ON thread_plan (directory, thread_id);
+CREATE INDEX hq_idx_tp__directory_thread_id ON hq_thread_plan (directory, thread_id);
 
-CREATE UNIQUE INDEX IF NOT EXISTS uidx_tp__authorization_id_milestone_id_execution
-ON thread_plan (authorization_id, milestone_id) WHERE authorization_id IS NOT NULL AND milestone_id IS NOT NULL;
+CREATE UNIQUE INDEX hq_uidx_tp__authorization_id_milestone_id_execution
+ON hq_thread_plan (authorization_id, milestone_id) WHERE authorization_id IS NOT NULL AND milestone_id IS NOT NULL;
 
-CREATE UNIQUE INDEX IF NOT EXISTS uidx_tp__authorization_id_plan_execution
-ON thread_plan (authorization_id) WHERE authorization_id IS NOT NULL AND milestone_id IS NULL;
+CREATE UNIQUE INDEX hq_uidx_tp__authorization_id_plan_execution
+ON hq_thread_plan (authorization_id) WHERE authorization_id IS NOT NULL AND milestone_id IS NULL;
 
-CREATE TABLE IF NOT EXISTS handoff (
+CREATE TABLE hq_handoff (
  id TEXT NOT NULL,
  workspace_root TEXT NOT NULL,
  source_thread_id TEXT NOT NULL,
  created_at INTEGER NOT NULL,
  intent TEXT NOT NULL,
- CONSTRAINT pk_h__id PRIMARY KEY (id),
- CONSTRAINT fk_h__source_thread_id FOREIGN KEY (source_thread_id) REFERENCES thread(id)
+ CONSTRAINT hq_pk_h__id PRIMARY KEY (id),
+ CONSTRAINT hq_fk_h__source_thread_id FOREIGN KEY (source_thread_id) REFERENCES hq_thread(id)
 ) STRICT;
-CREATE INDEX IF NOT EXISTS idx_h__workspace_root_created_at_id_desc ON handoff (workspace_root, created_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS idx_h__workspace_root_source_thread_id_created_at_id_desc ON handoff (workspace_root, source_thread_id, created_at DESC, id DESC);
-CREATE TABLE IF NOT EXISTS handoff_dispatch (
+CREATE INDEX hq_idx_h__workspace_root_created_at_id_desc ON hq_handoff (workspace_root, created_at DESC, id DESC);
+CREATE INDEX hq_idx_h__workspace_root_source_thread_id_created_at_id_desc ON hq_handoff (workspace_root, source_thread_id, created_at DESC, id DESC);
+CREATE TABLE hq_handoff_dispatch (
  handoff_id TEXT NOT NULL,
  phase TEXT NOT NULL CHECK (phase IN ('review', 'feedback')),
  action_id TEXT NOT NULL,
  intent TEXT NOT NULL,
- CONSTRAINT pk_hd__handoff_id_phase PRIMARY KEY (handoff_id, phase),
- CONSTRAINT uq_hd__action_id UNIQUE (action_id),
- CONSTRAINT fk_hd__handoff_id FOREIGN KEY (handoff_id) REFERENCES handoff(id)
+ CONSTRAINT hq_pk_hd__handoff_id_phase PRIMARY KEY (handoff_id, phase),
+ CONSTRAINT hq_uq_hd__action_id UNIQUE (action_id),
+ CONSTRAINT hq_fk_hd__handoff_id FOREIGN KEY (handoff_id) REFERENCES hq_handoff(id)
 ) STRICT;
 
-CREATE TABLE IF NOT EXISTS browser_action (
-  id TEXT CONSTRAINT pk_ba__id PRIMARY KEY,
+CREATE TABLE hq_browser_action (
+  id TEXT CONSTRAINT hq_pk_ba__id PRIMARY KEY,
   operator_id TEXT NOT NULL,
   digest TEXT NOT NULL CHECK (length(digest) = 64),
   receipt TEXT NOT NULL CHECK (json_valid(receipt))
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS idx_ba__submitted_epoch ON browser_action (json_extract(receipt, '$.runtimeEpoch'))
+CREATE INDEX hq_idx_ba__submitted_epoch ON hq_browser_action (json_extract(receipt, '$.runtimeEpoch'))
 WHERE json_extract(receipt, '$.state') = 'submitted';
+
+CREATE TABLE hq_claude_file (
+  workspace_root TEXT NOT NULL, native_id TEXT NOT NULL, identity TEXT NOT NULL,
+  file_size INTEGER NOT NULL, byte_offset INTEGER NOT NULL, revision TEXT NOT NULL,
+  leaf_id TEXT, name TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  supported INTEGER NOT NULL, seen TEXT NOT NULL, workspace_state TEXT NOT NULL,
+  CONSTRAINT hq_pk_cf__workspace_root_native_id PRIMARY KEY (workspace_root, native_id)
+) STRICT;
+CREATE INDEX hq_idx_cf__workspace_root_created_at_native_id_desc
+ON hq_claude_file(workspace_root, created_at DESC, native_id DESC);
+CREATE TABLE hq_claude_entry (
+  workspace_root TEXT NOT NULL, native_id TEXT NOT NULL, uuid TEXT NOT NULL,
+  parent_uuid TEXT, turn_id TEXT NOT NULL, byte_offset INTEGER NOT NULL, byte_length INTEGER NOT NULL,
+  created_at INTEGER NOT NULL, is_visible INTEGER NOT NULL,
+  is_current INTEGER NOT NULL, turn_start_offset INTEGER, anchor_id TEXT,
+  CONSTRAINT hq_pk_ce__workspace_root_native_id_uuid PRIMARY KEY (workspace_root, native_id, uuid),
+  CONSTRAINT hq_fk_ce__workspace_root_native_id FOREIGN KEY (workspace_root, native_id)
+  REFERENCES hq_claude_file(workspace_root, native_id) ON DELETE CASCADE
+) STRICT;
+CREATE INDEX hq_idx_ce__workspace_native_offset_current
+ON hq_claude_entry(workspace_root, native_id, byte_offset) WHERE is_current = 1 AND is_visible = 1;
+CREATE INDEX hq_idx_ce__workspace_native_turn_offset_current
+ON hq_claude_entry(workspace_root, native_id, turn_id, byte_offset) WHERE is_current = 1 AND is_visible = 1;
+CREATE INDEX hq_idx_ce__workspace_native_turn_start_current
+ON hq_claude_entry(workspace_root, native_id, byte_offset)
+WHERE is_current = 1 AND is_visible = 1 AND byte_offset = turn_start_offset;

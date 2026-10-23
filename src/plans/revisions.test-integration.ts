@@ -1217,7 +1217,7 @@ test('a finalization write retry after restart reuses the saved mapping, assigne
     const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
     try {
       database.exec(
-        "CREATE TRIGGER stop_plan_completion BEFORE UPDATE ON plan_operation WHEN NEW.state = 'completed' BEGIN SELECT RAISE(ABORT, 'checkpoint replay test'); END;",
+        "CREATE TRIGGER stop_plan_completion BEFORE UPDATE ON hq_plan_operation WHEN NEW.state = 'completed' BEGIN SELECT RAISE(ABORT, 'checkpoint replay test'); END;",
       );
       await expect(plan.send(command)).rejects.toThrow('store failed');
     } finally {

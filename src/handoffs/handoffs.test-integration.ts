@@ -616,12 +616,14 @@ test('handoff pages keep finding bodies inside selected reads and preserve seek 
       .sort()
       .reverse();
     try {
-      const row = database.prepare('SELECT intent FROM handoff WHERE id = ?').get(api.command.id)!;
+      const row = database
+        .prepare('SELECT intent FROM hq_handoff WHERE id = ?')
+        .get(api.command.id)!;
       const template = JSON.parse(String(row.intent));
       database.exec('BEGIN IMMEDIATE');
-      database.prepare('DELETE FROM handoff WHERE id = ?').run(api.command.id);
+      database.prepare('DELETE FROM hq_handoff WHERE id = ?').run(api.command.id);
       const insert = database.prepare(
-        'INSERT INTO handoff (id, workspace_root, source_thread_id, created_at, intent) VALUES (?, ?, ?, ?, ?)',
+        'INSERT INTO hq_handoff (id, workspace_root, source_thread_id, created_at, intent) VALUES (?, ?, ?, ?, ?)',
       );
       for (const id of ids)
         insert.run(
@@ -679,7 +681,7 @@ test('handoff pages keep finding bodies inside selected reads and preserve seek 
           creation: { ...template.creation, id: randomUUID() },
         }),
       );
-      database.prepare('DELETE FROM handoff WHERE id = ?').run(ids[300]!);
+      database.prepare('DELETE FROM hq_handoff WHERE id = ?').run(ids[300]!);
       const seen = current.data.map((handoff) => handoff.id);
       while (current.nextCursor) {
         current = await page(current.nextCursor);
@@ -887,7 +889,7 @@ test('plan edits invalidate preview and the action admission guard without grant
     const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
     try {
       database
-        .prepare('INSERT INTO thread_plan (thread_id, directory, context) VALUES (?, ?, ?)')
+        .prepare('INSERT INTO hq_thread_plan (thread_id, directory, context) VALUES (?, ?, ?)')
         .run(api.source.threadId!, directory, JSON.stringify(context));
     } finally {
       database.close();
@@ -1036,7 +1038,7 @@ test('attempted native reattachment preserves the original queued feedback targe
     try {
       database
         .prepare(
-          "UPDATE thread SET ownership = 'uncertain', state = 'unknown', runtime_epoch = ? WHERE id = ?",
+          "UPDATE hq_thread SET ownership = 'uncertain', state = 'unknown', runtime_epoch = ? WHERE id = ?",
         )
         .run(api.epoch, api.source.threadId!);
     } finally {

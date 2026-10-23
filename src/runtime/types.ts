@@ -8,6 +8,7 @@ import type {
   IBrowserReceipt,
 } from '../contracts/index.js';
 import type { IPlanContractParser } from '../plans/index.js';
+import type { IStorageDescriptor, IStorageMaintenanceOperation } from '../storage/index.js';
 
 // construction receives trusted operator configuration, never a browser-selected root
 export const AgentHqOptionsSchema = z.strictObject({
@@ -24,6 +25,19 @@ export type IAgentHqOptions = z.infer<typeof AgentHqOptionsSchema>;
 
 // the runtime owns resources independently of every client connection
 export type IAgentHq = {
+  readonly storage: IStorageDescriptor;
+  /**
+   * Drains admitted HQ work and runs a host callback under exclusive maintenance admission.
+   * The callback owns its SQLite connection; its errors propagate unchanged.
+   * It must not call HQ or resume native work. Conflicting requests are rejected.
+   * @returns The callback result after maintenance is released.
+   * @throws
+   * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  withStorageMaintenance<T>(operation: IStorageMaintenanceOperation<T>): Promise<T>;
   /**
    * Runs one trusted host dispatcher after durable admission. Never expose the callback as RPC.
    * Dispatcher failures propagate after the receipt becomes uncertain.
@@ -43,6 +57,7 @@ export type IAgentHq = {
    * @returns The receipt, or null for another operator or unknown ID.
    * @throws
    * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   readBrowserAction(id: string, operatorId: string): Promise<IBrowserReceipt | null>;
@@ -86,6 +101,7 @@ export type IAgentHq = {
    * @returns A promise resolved after confirmed resource shutdown and owner release.
    * @throws
    * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    * - JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE: The HQ state directory is unsafe
    * - JG_AGENT_HQ_STATE_FILE_UNSAFE: The HQ state file is unsafe
    * - JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE: The HQ runtime owner is unverifiable

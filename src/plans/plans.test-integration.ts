@@ -571,7 +571,7 @@ test.each(['complete-files', 'milestones-only', 'external-edit'] as const)(
       const db = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
       try {
         db.exec(
-          "CREATE TRIGGER prevent_completion BEFORE UPDATE ON plan_operation WHEN NEW.state = 'completed' BEGIN SELECT RAISE(ABORT, 'injected persistence failure'); END;",
+          "CREATE TRIGGER prevent_completion BEFORE UPDATE ON hq_plan_operation WHEN NEW.state = 'completed' BEGIN SELECT RAISE(ABORT, 'injected persistence failure'); END;",
         );
         await expect(plan.send(command)).rejects.toThrow('store failed');
         const canonical = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
@@ -608,7 +608,7 @@ test.each(['complete-files', 'milestones-only', 'external-edit'] as const)(
             expect(await readFile(join(plan.directory, 'milestones.md'), 'utf8')).toBe(canonical);
             expect((await plan.status(restarted)).coordination.planApproval).toBeNull();
             const row = db
-              .prepare('SELECT intent FROM plan_operation WHERE id = ?')
+              .prepare('SELECT intent FROM hq_plan_operation WHERE id = ?')
               .get(command.action.id)!;
             expect(JSON.parse(String(row.intent))).toMatchObject({
               state: 'completed',
@@ -639,7 +639,7 @@ test('empty milestone reads, projection reuse and renumbered continuation remain
     const db = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
     try {
       db.exec(
-        "CREATE TRIGGER prevent_projection_delete BEFORE DELETE ON plan_milestone BEGIN SELECT RAISE(ABORT, 'unnecessary projection rewrite'); END;",
+        "CREATE TRIGGER prevent_projection_delete BEFORE DELETE ON hq_plan_milestone BEGIN SELECT RAISE(ABORT, 'unnecessary projection rewrite'); END;",
       );
       const first = await plan.page(1);
       expect(first.nextCursor).not.toBeNull();
@@ -687,17 +687,17 @@ test('a failed projection refresh rolls back rows and its source guard, then ret
     const db = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
     try {
       db.exec(
-        "CREATE TRIGGER prevent_projection_insert BEFORE INSERT ON plan_milestone BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END;",
+        "CREATE TRIGGER prevent_projection_insert BEFORE INSERT ON hq_plan_milestone BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END;",
       );
       await expect(plan.page()).rejects.toThrow('store failed');
       expect(
         db
-          .prepare('SELECT source_hash FROM plan_projection WHERE directory = ?')
+          .prepare('SELECT source_hash FROM hq_plan_projection WHERE directory = ?')
           .get(plan.directory)?.source_hash,
       ).toBe(hash(content));
       expect(
         db
-          .prepare('SELECT ordinal FROM plan_milestone WHERE directory = ? ORDER BY ordinal')
+          .prepare('SELECT ordinal FROM hq_plan_milestone WHERE directory = ? ORDER BY ordinal')
           .all(plan.directory),
       ).toHaveLength(before.data.length);
       db.exec('DROP TRIGGER prevent_projection_insert');

@@ -15,6 +15,7 @@ import {
   HandoffPageSchema,
 } from '../handoffs/index.js';
 import { ClaudeHistoryReadSchema } from '../providers/claude/history/index.js';
+import type { IStorageDescriptor } from '../storage/index.js';
 
 import {
   PlanWriteIntentSchema,
@@ -43,6 +44,7 @@ import {
  * @returns A store whose close waits for worker exit.
  * @throws
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+ * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
  */
 export const createStore = async (
   databasePath: string,
@@ -79,6 +81,7 @@ export const createStore = async (
   let closing: Promise<void> | undefined;
   let readyResolve: () => void = () => undefined;
   let readyReject: (error: unknown) => void = () => undefined;
+  let storage: IStorageDescriptor | undefined;
   const ready = new Promise<void>((resolve, reject) => {
     readyResolve = resolve;
     readyReject = reject;
@@ -105,7 +108,18 @@ export const createStore = async (
     }
     const response = result.data;
     if (response.kind === 'ready') {
+      storage = response.storage;
       readyResolve();
+      return;
+    }
+    if (response.kind === 'startup-error') {
+      isAvailable = false;
+      readyReject(
+        new Exception(response.error.message, {
+          code: response.error.code,
+          data: { kind: response.error.kind },
+        }),
+      );
       return;
     }
     const entry = pending.get(response.id);
@@ -209,6 +223,8 @@ export const createStore = async (
     });
   };
   return {
+    storage: storage!,
+    prepareStorageMaintenance: () => request({ kind: 'storage-maintenance' }, z.boolean()),
     getBrowserAction: (id, operatorId) =>
       request({ kind: 'browser-read', id, operatorId }, BrowserReceiptSchema.nullable()),
     admitBrowserAction: (action, operatorId) =>

@@ -66,22 +66,22 @@ export class ControlModel {
     this.__transaction(() => {
       database
         .prepare(
-          "UPDATE thread SET ownership = 'uncertain', state = 'unknown', updated_at = ? WHERE runtime_epoch IS NOT NULL AND runtime_epoch != ? AND ownership = 'managed'",
+          "UPDATE hq_thread SET ownership = 'uncertain', state = 'unknown', updated_at = ? WHERE runtime_epoch IS NOT NULL AND runtime_epoch != ? AND ownership = 'managed'",
         )
         .run(now, runtimeEpoch);
       database
         .prepare(
-          "UPDATE action SET delivery = 'uncertain', updated_at = ? WHERE runtime_epoch != ? AND delivery = 'submitted'",
+          "UPDATE hq_action SET delivery = 'uncertain', updated_at = ? WHERE runtime_epoch != ? AND delivery = 'submitted'",
         )
         .run(now, runtimeEpoch);
       database
         .prepare(
-          "UPDATE action SET queue_ready = 0 WHERE runtime_epoch != ? AND delivery = 'queued'",
+          "UPDATE hq_action SET queue_ready = 0 WHERE runtime_epoch != ? AND delivery = 'queued'",
         )
         .run(runtimeEpoch);
       database
         .prepare(
-          "UPDATE native_approval SET state = 'expired', updated_at = ? WHERE runtime_epoch != ? AND state = 'pending'",
+          "UPDATE hq_native_approval SET state = 'expired', updated_at = ? WHERE runtime_epoch != ? AND state = 'pending'",
         )
         .run(now, runtimeEpoch);
     });
@@ -102,7 +102,7 @@ export class ControlModel {
   /** Resolves one unique label without loading a collection. */
   public getThreadByName(name: string): IManagedThread | null {
     const row = this.__database
-      .prepare(`SELECT ${THREAD_COLUMNS} FROM thread WHERE name = ? COLLATE NOCASE`)
+      .prepare(`SELECT ${THREAD_COLUMNS} FROM hq_thread WHERE name = ? COLLATE NOCASE`)
       .get(name);
     return row ? toManagedThread(ThreadRowSchema.parse(row)) : null;
   }
@@ -133,7 +133,7 @@ export class ControlModel {
   ): IManagedThread[] {
     return this.__database
       .prepare(
-        `SELECT ${THREAD_COLUMNS} FROM thread WHERE provider = ? AND native_id IN (SELECT json_each.value FROM json_each(?))`,
+        `SELECT ${THREAD_COLUMNS} FROM hq_thread WHERE provider = ? AND native_id IN (SELECT json_each.value FROM json_each(?))`,
       )
       .all(provider, JSON.stringify(nativeIds))
       .map((row) => toManagedThread(ThreadRowSchema.parse(row)));
@@ -144,12 +144,12 @@ export class ControlModel {
     workspaceRoot: string,
     page: IControlPage,
   ): { data: IManagedThread[]; hasMore: boolean } {
-    const seek = page.position ? 'AND (thread.created_at, thread.id) < (?, ?)' : '';
+    const seek = page.position ? 'AND (hq_thread.created_at, hq_thread.id) < (?, ?)' : '';
     const rows = this.__database
       .prepare(
-        `SELECT ${THREAD_COLUMNS} FROM thread
+        `SELECT ${THREAD_COLUMNS} FROM hq_thread
       WHERE workspace_root = ? ${seek}
-      ORDER BY thread.created_at DESC, thread.id DESC LIMIT ?`,
+      ORDER BY hq_thread.created_at DESC, hq_thread.id DESC LIMIT ?`,
       )
       .all(
         workspaceRoot,
@@ -167,12 +167,12 @@ export class ControlModel {
     threadId: string,
     page: IControlPage,
   ): { data: IActionSummary[]; hasMore: boolean } {
-    const seek = page.position ? 'AND (action.created_at, action.id) < (?, ?)' : '';
+    const seek = page.position ? 'AND (hq_action.created_at, hq_action.id) < (?, ?)' : '';
     const rows = this.__database
       .prepare(
-        `SELECT ${ACTION_METADATA_COLUMNS} FROM action
+        `SELECT ${ACTION_METADATA_COLUMNS} FROM hq_action
       WHERE thread_id = ? ${seek}
-      ORDER BY action.created_at DESC, action.id DESC LIMIT ?`,
+      ORDER BY hq_action.created_at DESC, hq_action.id DESC LIMIT ?`,
       )
       .all(
         threadId,
@@ -191,7 +191,7 @@ export class ControlModel {
   public listEvents(page: IEventPage): { data: ILifecycleEvent[]; hasMore: boolean } {
     const rows = this.__database
       .prepare(
-        `SELECT ${EVENT_COLUMNS} FROM event WHERE thread_id = ? AND sequence > ? ORDER BY event.sequence ASC LIMIT ?`,
+        `SELECT ${EVENT_COLUMNS} FROM hq_event WHERE thread_id = ? AND sequence > ? ORDER BY hq_event.sequence ASC LIMIT ?`,
       )
       .all(page.threadId, page.after, page.limit + 1);
     return {
@@ -241,7 +241,7 @@ export class ControlModel {
       const requestedName = 'name' in command ? command.name : null;
       this.__database
         .prepare(
-          `INSERT INTO action (id, digest, requested_runtime_epoch, runtime_epoch, kind, delivery, expected_turn_id, native_turn_id, requested_name, created_at, updated_at)
+          `INSERT INTO hq_action (id, digest, requested_runtime_epoch, runtime_epoch, kind, delivery, expected_turn_id, native_turn_id, requested_name, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, 'submitted', ?, ?, ?, ?, ?)`,
         )
         .run(
@@ -265,7 +265,7 @@ export class ControlModel {
             : null;
       if (targetId && this.__thread(targetId))
         this.__database
-          .prepare('UPDATE action SET thread_id = ? WHERE id = ?')
+          .prepare('UPDATE hq_action SET thread_id = ? WHERE id = ?')
           .run(targetId, action.id);
       this.__database.exec('SAVEPOINT admission');
       let dispatchActionId: string | null = action.id;
@@ -281,7 +281,7 @@ export class ControlModel {
           const threadId = randomUUID();
           this.__database
             .prepare(
-              `INSERT INTO thread (id, provider, native_id, name, workspace_root, ownership, runtime_epoch, pending_action_id, state, registration_action_id, created_at, updated_at)
+              `INSERT INTO hq_thread (id, provider, native_id, name, workspace_root, ownership, runtime_epoch, pending_action_id, state, registration_action_id, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, 'managed', ?, ?, ?, ?, ?, ?)`,
             )
             .run(
@@ -299,7 +299,7 @@ export class ControlModel {
             );
           this.__database
             .prepare(
-              'UPDATE action SET thread_id = ?, native_request_id = ?, requested_name = ? WHERE id = ?',
+              'UPDATE hq_action SET thread_id = ?, native_request_id = ?, requested_name = ? WHERE id = ?',
             )
             .run(threadId, `${action.id}:${nativeId ? 'resume' : 'create'}`, name, action.id);
         } else {
@@ -316,7 +316,7 @@ export class ControlModel {
               this.__conflict();
             threadId = queued.thread_id;
             this.__database
-              .prepare('UPDATE action SET related_action_id = ? WHERE id = ?')
+              .prepare('UPDATE hq_action SET related_action_id = ? WHERE id = ?')
               .run(queued.id, action.id);
           } else threadId = command.threadId;
           const thread = this.__thread(threadId);
@@ -324,11 +324,11 @@ export class ControlModel {
           if (command.kind === 'queue-cancel') {
             this.__database
               .prepare(
-                "UPDATE action SET delivery = 'canceled', queued_text = NULL, queued_skill = NULL, queue_ready = 0, updated_at = ? WHERE id = ?",
+                "UPDATE hq_action SET delivery = 'canceled', queued_text = NULL, queued_skill = NULL, queue_ready = 0, updated_at = ? WHERE id = ?",
               )
               .run(now, queued!.id);
             this.__database
-              .prepare("UPDATE action SET delivery = 'acknowledged' WHERE id = ?")
+              .prepare("UPDATE hq_action SET delivery = 'acknowledged' WHERE id = ?")
               .run(action.id);
             dispatchActionId = null;
           } else if (command.kind === 'thread-resume' || command.kind === 'thread-recover') {
@@ -355,7 +355,7 @@ export class ControlModel {
                 )
                   this.__conflict();
                 this.__database
-                  .prepare('UPDATE thread SET native_id = ? WHERE id = ?')
+                  .prepare('UPDATE hq_thread SET native_id = ? WHERE id = ?')
                   .run(prepared.nativeId, threadId);
               } else if (!thread.native_id) this.__conflict();
             }
@@ -364,11 +364,13 @@ export class ControlModel {
               command.kind === 'thread-recover' && command.recovery.kind === 'create';
             this.__database
               .prepare(
-                "UPDATE thread SET ownership = 'managed', runtime_epoch = ?, pending_action_id = ?, active_turn_id = NULL, state = ?, updated_at = ? WHERE id = ?",
+                "UPDATE hq_thread SET ownership = 'managed', runtime_epoch = ?, pending_action_id = ?, active_turn_id = NULL, state = ?, updated_at = ? WHERE id = ?",
               )
               .run(this.__epoch, action.id, creating ? 'creating' : 'starting', now, threadId);
             this.__database
-              .prepare('UPDATE action SET native_request_id = ?, requested_name = ? WHERE id = ?')
+              .prepare(
+                'UPDATE hq_action SET native_request_id = ?, requested_name = ? WHERE id = ?',
+              )
               .run(
                 `${action.id}:${creating ? 'create' : 'resume'}`,
                 creating ? thread.name : null,
@@ -383,26 +385,26 @@ export class ControlModel {
                 if (thread.pending_action_id) this.__conflict();
                 this.__availableName(command.name, action.id, thread.id);
                 this.__database
-                  .prepare('UPDATE thread SET pending_action_id = ? WHERE id = ?')
+                  .prepare('UPDATE hq_thread SET pending_action_id = ? WHERE id = ?')
                   .run(action.id, threadId);
                 this.__database
-                  .prepare('UPDATE action SET native_request_id = ? WHERE id = ?')
+                  .prepare('UPDATE hq_action SET native_request_id = ? WHERE id = ?')
                   .run(`${action.id}:name`, action.id);
                 break;
               case 'thread-close':
                 this.__requireIdle(thread);
                 this.__database
                   .prepare(
-                    "UPDATE thread SET pending_action_id = ?, state = 'stopping', updated_at = ? WHERE id = ?",
+                    "UPDATE hq_thread SET pending_action_id = ?, state = 'stopping', updated_at = ? WHERE id = ?",
                   )
                   .run(action.id, now, threadId);
                 this.__database
                   .prepare(
-                    "UPDATE action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
+                    "UPDATE hq_action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
                   )
                   .run(threadId);
                 this.__database
-                  .prepare('UPDATE action SET native_request_id = ? WHERE id = ?')
+                  .prepare('UPDATE hq_action SET native_request_id = ? WHERE id = ?')
                   .run(`${action.id}:clean`, action.id);
                 break;
               case 'message':
@@ -413,7 +415,7 @@ export class ControlModel {
                 this.__requireTurn(thread, command.expectedTurnId);
                 this.__database
                   .prepare(
-                    "UPDATE action SET delivery = 'queued', queued_text = ?, queued_skill = ? WHERE id = ?",
+                    "UPDATE hq_action SET delivery = 'queued', queued_text = ?, queued_skill = ? WHERE id = ?",
                   )
                   .run(
                     command.input.kind === 'text'
@@ -428,45 +430,45 @@ export class ControlModel {
                 this.__requireIdle(thread);
                 this.__beginTurn(queued!.id, threadId);
                 this.__database
-                  .prepare("UPDATE action SET delivery = 'acknowledged' WHERE id = ?")
+                  .prepare("UPDATE hq_action SET delivery = 'acknowledged' WHERE id = ?")
                   .run(action.id);
                 dispatchActionId = queued!.id;
                 break;
               case 'steer':
                 this.__requireTurn(thread, command.expectedTurnId);
                 this.__database
-                  .prepare('UPDATE action SET native_request_id = ? WHERE id = ?')
+                  .prepare('UPDATE hq_action SET native_request_id = ? WHERE id = ?')
                   .run(`${action.id}:steer`, action.id);
                 break;
               case 'interrupt':
                 this.__requireTurn(thread, command.expectedTurnId);
                 this.__database
-                  .prepare("UPDATE thread SET state = 'stopping', updated_at = ? WHERE id = ?")
+                  .prepare("UPDATE hq_thread SET state = 'stopping', updated_at = ? WHERE id = ?")
                   .run(now, threadId);
                 this.__database
                   .prepare(
-                    "UPDATE action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
+                    "UPDATE hq_action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
                   )
                   .run(threadId);
                 this.__database
-                  .prepare('UPDATE action SET native_request_id = ? WHERE id = ?')
+                  .prepare('UPDATE hq_action SET native_request_id = ? WHERE id = ?')
                   .run(`${action.id}:interrupt`, action.id);
                 break;
               case 'native-reply': {
                 this.__requireTurn(thread, command.expectedTurnId);
                 const approval = this.__database
                   .prepare(
-                    "SELECT id FROM native_approval WHERE id = ? AND thread_id = ? AND native_turn_id = ? AND runtime_epoch = ? AND state = 'pending' AND reply_action_id IS NULL",
+                    "SELECT id FROM hq_native_approval WHERE id = ? AND thread_id = ? AND native_turn_id = ? AND runtime_epoch = ? AND state = 'pending' AND reply_action_id IS NULL",
                   )
                   .get(command.approvalId, threadId, command.expectedTurnId, this.__epoch);
                 if (!approval) this.__conflict();
                 this.__database
                   .prepare(
-                    'UPDATE native_approval SET reply_action_id = ?, updated_at = ? WHERE id = ?',
+                    'UPDATE hq_native_approval SET reply_action_id = ?, updated_at = ? WHERE id = ?',
                   )
                   .run(action.id, now, command.approvalId);
                 this.__database
-                  .prepare('UPDATE action SET native_request_id = ? WHERE id = ?')
+                  .prepare('UPDATE hq_action SET native_request_id = ? WHERE id = ?')
                   .run(`${action.id}:reply`, action.id);
                 break;
               }
@@ -478,7 +480,7 @@ export class ControlModel {
           if (!selected) this.__conflict();
           this.__plans.bindThread(selected, prepared.planContext);
           this.__database
-            .prepare('UPDATE action SET plan_context = ? WHERE id = ?')
+            .prepare('UPDATE hq_action SET plan_context = ? WHERE id = ?')
             .run(JSON.stringify(prepared.planContext), action.id);
         }
         this.__database.exec('RELEASE admission');
@@ -488,7 +490,7 @@ export class ControlModel {
         const metadata = FailureSchema.safeParse({ kind: getErrorKind(error) });
         this.__database
           .prepare(
-            "UPDATE action SET delivery = 'failed', failure = ?, updated_at = ? WHERE id = ?",
+            "UPDATE hq_action SET delivery = 'failed', failure = ?, updated_at = ? WHERE id = ?",
           )
           .run(metadata.success ? metadata.data.kind : 'operation-failed', now, action.id);
         dispatchActionId = null;
@@ -534,31 +536,31 @@ export class ControlModel {
           this.__conflict();
         this.__database
           .prepare(
-            "UPDATE thread SET native_id = ?, state = 'creating', updated_at = ? WHERE id = ?",
+            "UPDATE hq_thread SET native_id = ?, state = 'creating', updated_at = ? WHERE id = ?",
           )
           .run(outcome.nativeId, now, thread.id);
         this.__database
           .prepare(
-            "UPDATE action SET delivery = 'submitted', native_request_id = ?, updated_at = ? WHERE id = ?",
+            "UPDATE hq_action SET delivery = 'submitted', native_request_id = ?, updated_at = ? WHERE id = ?",
           )
           .run(`${action.id}:name`, now, action.id);
       } else if (outcome.kind === 'cleaned') {
         if (!ownsThread || thread.pending_action_id !== action.id) this.__conflict();
         this.__database
-          .prepare('UPDATE action SET native_request_id = ?, updated_at = ? WHERE id = ?')
+          .prepare('UPDATE hq_action SET native_request_id = ?, updated_at = ? WHERE id = ?')
           .run(`${action.id}:close`, now, action.id);
       } else if (outcome.kind === 'uncertain' || outcome.kind === 'failed') {
         this.__database
-          .prepare('UPDATE action SET delivery = ?, failure = ?, updated_at = ? WHERE id = ?')
+          .prepare('UPDATE hq_action SET delivery = ?, failure = ?, updated_at = ? WHERE id = ?')
           .run(outcome.kind, outcome.kind === 'failed' ? outcome.failure : null, now, action.id);
         if (ownsThread && thread.pending_action_id === action.id) {
           if (action.kind === 'thread-rename' && outcome.kind === 'failed')
             this.__database
-              .prepare('UPDATE thread SET pending_action_id = NULL, updated_at = ? WHERE id = ?')
+              .prepare('UPDATE hq_thread SET pending_action_id = NULL, updated_at = ? WHERE id = ?')
               .run(now, thread.id);
           else if (action.kind !== 'thread-rename')
             this.__database
-              .prepare("UPDATE thread SET state = 'unknown', updated_at = ? WHERE id = ?")
+              .prepare("UPDATE hq_thread SET state = 'unknown', updated_at = ? WHERE id = ?")
               .run(now, thread.id);
         }
       } else if (outcome.kind === 'reply-written') {
@@ -573,20 +575,20 @@ export class ControlModel {
           thread?.last_turn_id === nativeTurnId ? thread.last_turn_state : action.completion;
         this.__database
           .prepare(
-            "UPDATE action SET delivery = 'acknowledged', native_turn_id = ?, completion = ?, failure = NULL, queued_text = NULL, queued_skill = NULL, updated_at = ? WHERE id = ?",
+            "UPDATE hq_action SET delivery = 'acknowledged', native_turn_id = ?, completion = ?, failure = NULL, queued_text = NULL, queued_skill = NULL, updated_at = ? WHERE id = ?",
           )
           .run(nativeTurnId, completion, now, action.id);
         if (ownsThread) {
           if (outcome.kind === 'closed')
             this.__database
               .prepare(
-                "UPDATE thread SET runtime_epoch = NULL, pending_action_id = NULL, active_turn_id = NULL, state = 'inactive', updated_at = ? WHERE id = ? AND pending_action_id = ?",
+                "UPDATE hq_thread SET runtime_epoch = NULL, pending_action_id = NULL, active_turn_id = NULL, state = 'inactive', updated_at = ? WHERE id = ? AND pending_action_id = ?",
               )
               .run(now, thread.id, action.id);
           else if (outcome.kind === 'resumed')
             this.__database
               .prepare(
-                'UPDATE thread SET pending_action_id = NULL, ownership = ?, state = ?, updated_at = ? WHERE id = ? AND pending_action_id = ?',
+                'UPDATE hq_thread SET pending_action_id = NULL, ownership = ?, state = ?, updated_at = ? WHERE id = ? AND pending_action_id = ?',
               )
               .run(
                 outcome.nativeState === 'idle' ? 'managed' : 'uncertain',
@@ -599,7 +601,7 @@ export class ControlModel {
             if (!action.requested_name) this.__conflict();
             this.__database
               .prepare(
-                'UPDATE thread SET name = ?, pending_action_id = NULL, state = ?, updated_at = ? WHERE id = ? AND pending_action_id = ?',
+                'UPDATE hq_thread SET name = ?, pending_action_id = NULL, state = ?, updated_at = ? WHERE id = ? AND pending_action_id = ?',
               )
               .run(
                 action.requested_name,
@@ -619,7 +621,7 @@ export class ControlModel {
                 : 'running';
             this.__database
               .prepare(
-                'UPDATE thread SET pending_action_id = NULL, active_turn_id = ?, state = ?, updated_at = ? WHERE id = ?',
+                'UPDATE hq_thread SET pending_action_id = NULL, active_turn_id = ?, state = ?, updated_at = ? WHERE id = ?',
               )
               .run(active, state, now, thread.id);
           }
@@ -634,7 +636,7 @@ export class ControlModel {
   public peekQueued(threadId: string): IActionReceipt | null {
     const row = this.__database
       .prepare(
-        `SELECT ${ACTION_COLUMNS} FROM action WHERE thread_id = ? AND delivery = 'queued' ORDER BY created_at ASC, id ASC LIMIT 1`,
+        `SELECT ${ACTION_COLUMNS} FROM hq_action WHERE thread_id = ? AND delivery = 'queued' ORDER BY created_at ASC, id ASC LIMIT 1`,
       )
       .get(threadId);
     return row ? toActionReceipt(ActionRowSchema.parse(row)) : null;
@@ -658,7 +660,7 @@ export class ControlModel {
         return null;
       const row = this.__database
         .prepare(
-          `SELECT ${ACTION_COLUMNS} FROM action WHERE thread_id = ? AND delivery = 'queued' ORDER BY created_at ASC, id ASC LIMIT 1`,
+          `SELECT ${ACTION_COLUMNS} FROM hq_action WHERE thread_id = ? AND delivery = 'queued' ORDER BY created_at ASC, id ASC LIMIT 1`,
         )
         .get(threadId);
       if (!row) return null;
@@ -701,7 +703,7 @@ export class ControlModel {
         return null;
       const existing = this.__database
         .prepare(
-          'SELECT id, thread_id, native_turn_id, digest, state FROM native_approval WHERE runtime_epoch = ? AND native_request_id = ?',
+          'SELECT id, thread_id, native_turn_id, digest, state FROM hq_native_approval WHERE runtime_epoch = ? AND native_request_id = ?',
         )
         .get(this.__epoch, approval.requestId);
       if (existing) {
@@ -717,14 +719,14 @@ export class ControlModel {
       }
       const pending = this.__database
         .prepare(
-          "SELECT id FROM native_approval WHERE runtime_epoch = ? AND state = 'pending' LIMIT 32",
+          "SELECT id FROM hq_native_approval WHERE runtime_epoch = ? AND state = 'pending' LIMIT 32",
         )
         .all(this.__epoch);
       if (pending.length >= 32) this.__conflict();
       const now = Date.now();
       this.__database
         .prepare(
-          "INSERT INTO native_approval (id, thread_id, native_turn_id, runtime_epoch, native_request_id, digest, kind, is_blocking, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+          "INSERT INTO hq_native_approval (id, thread_id, native_turn_id, runtime_epoch, native_request_id, digest, kind, is_blocking, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
         )
         .run(
           approval.id,
@@ -740,7 +742,7 @@ export class ControlModel {
         );
       if (approval.isBlocking && thread.state !== 'stopping')
         this.__database
-          .prepare('UPDATE thread SET state = ?, updated_at = ? WHERE id = ?')
+          .prepare('UPDATE hq_thread SET state = ?, updated_at = ? WHERE id = ?')
           .run(approval.kind === 'question' ? 'waiting-input' : 'waiting-approval', now, thread.id);
       this.__event('approval-opened', thread.id, null, approval.nativeTurnId);
       return { id: approval.id, thread: this.getThread(thread.id)! };
@@ -759,7 +761,7 @@ export class ControlModel {
       if (observation.kind === 'native-unavailable') {
         const affected = this.__database
           .prepare(
-            'SELECT id FROM thread WHERE runtime_epoch = ? AND provider = ? AND (? IS NULL OR native_id = ?) LIMIT ?',
+            'SELECT id FROM hq_thread WHERE runtime_epoch = ? AND provider = ? AND (? IS NULL OR native_id = ?) LIMIT ?',
           )
           .all(
             this.__epoch,
@@ -772,22 +774,22 @@ export class ControlModel {
           const id = z.uuid().parse(row.id);
           this.__database
             .prepare(
-              "UPDATE thread SET ownership = 'uncertain', state = 'unknown', updated_at = ? WHERE id = ?",
+              "UPDATE hq_thread SET ownership = 'uncertain', state = 'unknown', updated_at = ? WHERE id = ?",
             )
             .run(now, id);
           this.__database
             .prepare(
-              "UPDATE action SET delivery = 'uncertain', updated_at = ? WHERE thread_id = ? AND delivery = 'submitted'",
+              "UPDATE hq_action SET delivery = 'uncertain', updated_at = ? WHERE thread_id = ? AND delivery = 'submitted'",
             )
             .run(now, id);
           this.__database
             .prepare(
-              "UPDATE action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
+              "UPDATE hq_action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
             )
             .run(id);
           this.__database
             .prepare(
-              "UPDATE native_approval SET state = 'expired', updated_at = ? WHERE thread_id = ? AND state = 'pending'",
+              "UPDATE hq_native_approval SET state = 'expired', updated_at = ? WHERE thread_id = ? AND state = 'pending'",
             )
             .run(now, id);
           this.__event('native-unavailable', id, null);
@@ -813,7 +815,7 @@ export class ControlModel {
         .update(JSON.stringify(observation))
         .digest('hex');
       const prior = this.__database
-        .prepare('SELECT digest FROM event WHERE runtime_epoch = ? AND event_key = ?')
+        .prepare('SELECT digest FROM hq_event WHERE runtime_epoch = ? AND event_key = ?')
         .get(this.__epoch, key);
       if (prior) {
         if (prior.digest !== digest) this.__conflict();
@@ -826,7 +828,7 @@ export class ControlModel {
           thread.active_turn_id !== null && thread.active_turn_id !== observation.nativeTurnId;
         this.__database
           .prepare(
-            'UPDATE thread SET active_turn_id = ?, state = ?, ownership = ?, updated_at = ? WHERE id = ?',
+            'UPDATE hq_thread SET active_turn_id = ?, state = ?, ownership = ?, updated_at = ? WHERE id = ?',
           )
           .run(
             observation.nativeTurnId,
@@ -842,17 +844,17 @@ export class ControlModel {
       } else if (observation.kind === 'turn-completed') {
         this.__database
           .prepare(
-            'UPDATE action SET completion = ?, updated_at = ? WHERE thread_id = ? AND native_turn_id = ?',
+            'UPDATE hq_action SET completion = ?, updated_at = ? WHERE thread_id = ? AND native_turn_id = ?',
           )
           .run(observation.state, now, thread.id, observation.nativeTurnId);
         this.__database
           .prepare(
-            "UPDATE action SET delivery = 'uncertain', updated_at = ? WHERE delivery = 'submitted' AND id IN (SELECT reply_action_id FROM native_approval WHERE thread_id = ? AND native_turn_id = ? AND state = 'pending')",
+            "UPDATE hq_action SET delivery = 'uncertain', updated_at = ? WHERE delivery = 'submitted' AND id IN (SELECT reply_action_id FROM hq_native_approval WHERE thread_id = ? AND native_turn_id = ? AND state = 'pending')",
           )
           .run(now, thread.id, observation.nativeTurnId);
         this.__database
           .prepare(
-            "UPDATE native_approval SET state = 'expired', updated_at = ? WHERE thread_id = ? AND native_turn_id = ? AND state = 'pending'",
+            "UPDATE hq_native_approval SET state = 'expired', updated_at = ? WHERE thread_id = ? AND native_turn_id = ? AND state = 'pending'",
           )
           .run(now, thread.id, observation.nativeTurnId);
         if (thread.active_turn_id === observation.nativeTurnId) {
@@ -862,7 +864,7 @@ export class ControlModel {
             thread.ownership === 'managed';
           this.__database
             .prepare(
-              'UPDATE thread SET active_turn_id = NULL, last_turn_id = ?, last_turn_state = ?, state = ?, updated_at = ? WHERE id = ?',
+              'UPDATE hq_thread SET active_turn_id = NULL, last_turn_id = ?, last_turn_state = ?, state = ?, updated_at = ? WHERE id = ?',
             )
             .run(
               observation.nativeTurnId,
@@ -874,32 +876,32 @@ export class ControlModel {
           if (mayAdvance)
             this.__database
               .prepare(
-                "UPDATE action SET queue_ready = 1 WHERE thread_id = ? AND expected_turn_id = ? AND delivery = 'queued' AND runtime_epoch = ?",
+                "UPDATE hq_action SET queue_ready = 1 WHERE thread_id = ? AND expected_turn_id = ? AND delivery = 'queued' AND runtime_epoch = ?",
               )
               .run(thread.id, observation.nativeTurnId, this.__epoch);
           else
             this.__database
               .prepare(
-                "UPDATE action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
+                "UPDATE hq_action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
               )
               .run(thread.id);
         }
       } else if (observation.kind === 'request-canceled') {
         const approval = this.__database
           .prepare(
-            "SELECT reply_action_id FROM native_approval WHERE thread_id = ? AND runtime_epoch = ? AND native_request_id = ? AND state = 'pending'",
+            "SELECT reply_action_id FROM hq_native_approval WHERE thread_id = ? AND runtime_epoch = ? AND native_request_id = ? AND state = 'pending'",
           )
           .get(thread.id, this.__epoch, observation.requestId);
         if (approval) {
           this.__database
             .prepare(
-              "UPDATE native_approval SET state = 'expired', updated_at = ? WHERE thread_id = ? AND runtime_epoch = ? AND native_request_id = ? AND state = 'pending'",
+              "UPDATE hq_native_approval SET state = 'expired', updated_at = ? WHERE thread_id = ? AND runtime_epoch = ? AND native_request_id = ? AND state = 'pending'",
             )
             .run(now, thread.id, this.__epoch, observation.requestId);
           if (approval.reply_action_id)
             this.__database
               .prepare(
-                "UPDATE action SET delivery = 'uncertain', updated_at = ? WHERE id = ? AND delivery = 'submitted'",
+                "UPDATE hq_action SET delivery = 'uncertain', updated_at = ? WHERE id = ? AND delivery = 'submitted'",
               )
               .run(now, z.uuid().parse(approval.reply_action_id));
           this.__refreshApprovalState(thread, now);
@@ -908,18 +910,18 @@ export class ControlModel {
       } else if (observation.kind === 'request-resolved') {
         const approval = this.__database
           .prepare(
-            "SELECT id, native_turn_id, reply_action_id FROM native_approval WHERE thread_id = ? AND runtime_epoch = ? AND native_request_id = ? AND state = 'pending'",
+            "SELECT id, native_turn_id, reply_action_id FROM hq_native_approval WHERE thread_id = ? AND runtime_epoch = ? AND native_request_id = ? AND state = 'pending'",
           )
           .get(thread.id, this.__epoch, observation.requestId);
         if (approval) {
           const replyId = z.uuid().nullable().parse(approval.reply_action_id);
           this.__database
-            .prepare('UPDATE native_approval SET state = ?, updated_at = ? WHERE id = ?')
+            .prepare('UPDATE hq_native_approval SET state = ?, updated_at = ? WHERE id = ?')
             .run(replyId ? 'answered' : 'expired', now, z.uuid().parse(approval.id));
           if (replyId)
             this.__database
               .prepare(
-                "UPDATE action SET delivery = 'acknowledged', failure = NULL, updated_at = ? WHERE id = ? AND delivery IN ('submitted', 'uncertain')",
+                "UPDATE hq_action SET delivery = 'acknowledged', failure = NULL, updated_at = ? WHERE id = ? AND delivery IN ('submitted', 'uncertain')",
               )
               .run(now, replyId);
           this.__refreshApprovalState(thread, now);
@@ -929,7 +931,7 @@ export class ControlModel {
         eventKind = observation.kind;
       this.__database
         .prepare(
-          'INSERT INTO event (runtime_epoch, thread_id, action_id, native_turn_id, native_item_id, kind, event_key, digest, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO hq_event (runtime_epoch, thread_id, action_id, native_turn_id, native_item_id, kind, event_key, digest, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)',
         )
         .run(
           this.__epoch,
@@ -959,22 +961,22 @@ export class ControlModel {
       const now = Date.now();
       this.__database
         .prepare(
-          "UPDATE thread SET runtime_epoch = NULL, pending_action_id = NULL, active_turn_id = NULL, ownership = CASE WHEN native_id IS NULL THEN 'uncertain' ELSE 'managed' END, state = CASE WHEN native_id IS NULL THEN 'unknown' ELSE 'inactive' END, updated_at = ? WHERE runtime_epoch = ?",
+          "UPDATE hq_thread SET runtime_epoch = NULL, pending_action_id = NULL, active_turn_id = NULL, ownership = CASE WHEN native_id IS NULL THEN 'uncertain' ELSE 'managed' END, state = CASE WHEN native_id IS NULL THEN 'unknown' ELSE 'inactive' END, updated_at = ? WHERE runtime_epoch = ?",
         )
         .run(now, this.__epoch);
       this.__database
         .prepare(
-          "UPDATE action SET delivery = 'uncertain', updated_at = ? WHERE runtime_epoch = ? AND delivery = 'submitted'",
+          "UPDATE hq_action SET delivery = 'uncertain', updated_at = ? WHERE runtime_epoch = ? AND delivery = 'submitted'",
         )
         .run(now, this.__epoch);
       this.__database
         .prepare(
-          "UPDATE action SET queue_ready = 0 WHERE runtime_epoch = ? AND delivery = 'queued'",
+          "UPDATE hq_action SET queue_ready = 0 WHERE runtime_epoch = ? AND delivery = 'queued'",
         )
         .run(this.__epoch);
       this.__database
         .prepare(
-          "UPDATE native_approval SET state = 'expired', updated_at = ? WHERE runtime_epoch = ? AND state = 'pending'",
+          "UPDATE hq_native_approval SET state = 'expired', updated_at = ? WHERE runtime_epoch = ? AND state = 'pending'",
         )
         .run(now, this.__epoch);
     });
@@ -982,7 +984,7 @@ export class ControlModel {
 
   private __thread(id: string): IThreadRow | null {
     const row = this.__database
-      .prepare(`SELECT ${THREAD_COLUMNS} FROM thread WHERE id = ?`)
+      .prepare(`SELECT ${THREAD_COLUMNS} FROM hq_thread WHERE id = ?`)
       .get(id);
     return row ? ThreadRowSchema.parse(row) : null;
   }
@@ -993,11 +995,11 @@ export class ControlModel {
       return;
     const remaining = this.__database
       .prepare(
-        "SELECT kind FROM native_approval WHERE thread_id = ? AND native_turn_id = ? AND state = 'pending' AND is_blocking = 1 LIMIT 1",
+        "SELECT kind FROM hq_native_approval WHERE thread_id = ? AND native_turn_id = ? AND state = 'pending' AND is_blocking = 1 LIMIT 1",
       )
       .get(thread.id, thread.active_turn_id);
     this.__database
-      .prepare('UPDATE thread SET state = ?, updated_at = ? WHERE id = ?')
+      .prepare('UPDATE hq_thread SET state = ?, updated_at = ? WHERE id = ?')
       .run(
         remaining
           ? remaining.kind === 'question'
@@ -1011,7 +1013,7 @@ export class ControlModel {
 
   private __action(id: string): IActionRow | null {
     const row = this.__database
-      .prepare(`SELECT ${ACTION_COLUMNS} FROM action WHERE id = ?`)
+      .prepare(`SELECT ${ACTION_COLUMNS} FROM hq_action WHERE id = ?`)
       .get(id);
     return row ? ActionRowSchema.parse(row) : null;
   }
@@ -1021,14 +1023,14 @@ export class ControlModel {
     nativeId: string,
   ): IThreadRow | null {
     const row = this.__database
-      .prepare(`SELECT ${THREAD_COLUMNS} FROM thread WHERE provider = ? AND native_id = ?`)
+      .prepare(`SELECT ${THREAD_COLUMNS} FROM hq_thread WHERE provider = ? AND native_id = ?`)
       .get(provider, nativeId);
     return row ? ThreadRowSchema.parse(row) : null;
   }
 
   private __availableSlot(): void {
     const owners = this.__database
-      .prepare('SELECT id FROM thread WHERE runtime_epoch = ? LIMIT ?')
+      .prepare('SELECT id FROM hq_thread WHERE runtime_epoch = ? LIMIT ?')
       .all(this.__epoch, CONTROLLED_THREAD_CAPACITY);
     if (owners.length >= CONTROLLED_THREAD_CAPACITY) this.__conflict();
   }
@@ -1040,12 +1042,12 @@ export class ControlModel {
   private __isNameAvailable(name: string, actionId: string, threadId: string | null): boolean {
     const assigned = this.__database
       .prepare(
-        'SELECT id FROM thread WHERE name = ? COLLATE NOCASE AND (? IS NULL OR id != ?) LIMIT 1',
+        'SELECT id FROM hq_thread WHERE name = ? COLLATE NOCASE AND (? IS NULL OR id != ?) LIMIT 1',
       )
       .get(name, threadId, threadId);
     const reserved = this.__database
       .prepare(
-        "SELECT action.id FROM action INNER JOIN thread ON thread.pending_action_id = action.id WHERE action.requested_name = ? AND action.delivery IN ('submitted', 'uncertain') AND action.id != ? LIMIT 1",
+        "SELECT hq_action.id FROM hq_action INNER JOIN hq_thread ON hq_thread.pending_action_id = hq_action.id WHERE hq_action.requested_name = ? AND hq_action.delivery IN ('submitted', 'uncertain') AND hq_action.id != ? LIMIT 1",
       )
       .get(name, actionId);
     return !assigned && !reserved;
@@ -1077,12 +1079,12 @@ export class ControlModel {
     const now = Date.now();
     this.__database
       .prepare(
-        "UPDATE action SET delivery = 'submitted', runtime_epoch = ?, native_turn_id = NULL, completion = NULL, native_request_id = ?, queue_ready = 0, updated_at = ? WHERE id = ?",
+        "UPDATE hq_action SET delivery = 'submitted', runtime_epoch = ?, native_turn_id = NULL, completion = NULL, native_request_id = ?, queue_ready = 0, updated_at = ? WHERE id = ?",
       )
       .run(this.__epoch, `${actionId}:turn`, now, actionId);
     this.__database
       .prepare(
-        "UPDATE thread SET state = 'starting', pending_action_id = ?, updated_at = ? WHERE id = ?",
+        "UPDATE hq_thread SET state = 'starting', pending_action_id = ?, updated_at = ? WHERE id = ?",
       )
       .run(actionId, now, threadId);
   }
@@ -1096,7 +1098,7 @@ export class ControlModel {
   ): void {
     this.__database
       .prepare(
-        'INSERT INTO event (runtime_epoch, thread_id, action_id, native_turn_id, native_item_id, kind, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO hq_event (runtime_epoch, thread_id, action_id, native_turn_id, native_item_id, kind, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       )
       .run(this.__epoch, threadId, actionId, nativeTurnId, nativeItemId, kind, Date.now());
   }

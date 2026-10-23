@@ -41,6 +41,8 @@ The Node API exposes `createAgentHq({ stateRoot, allowedRoots })` and `requestAg
 
 The controller owns its SQLite worker and native connections independently of client connections. Private state contains the lifetime owner, Unix socket and SQLite discovery metadata. Conversation bodies remain in the native providers' storage. Browsing never resumes an external session or starts inference. Quota windows come from native account observations, with explicit stale and unavailable states.
 
+Trusted Node hosts can open the database described by `hq.storage` and keep application tables under their own prefix. HQ reserves `hq_`, validates its current schema stamp on startup, and leaves application schema ownership and `user_version` with the host. Use `hq.withStorageMaintenance(callback)` for host schema changes; it drains admitted work and rejects active native execution before the callback. Start with a fresh development state root when the HQ schema changes. See the [shared storage contract](api/README.md#shared-storage).
+
 The current read contracts were exercised against Codex 0.163.0 and Claude Code versions 2.1.304 and 2.1.306 on Linux. Unsupported native responses fail explicitly. `jg-agent-hq/contracts` contains browser-safe schemas and types; importing it does not import the host runtime.
 
 Use `--provider claude` for Claude history and usage; the default is `codex`. Claude connects lazily through its native structured CLI, with normal settings enabled and no user prompt. Usage requests explicitly disable the optional transcript-behavior scan. Its local history reader accepts only qualified transcript versions 2.1.296, 2.1.299, 2.1.304 and 2.1.306, including transcripts spanning these versions, keeps byte locations rather than conversation bodies in SQLite, and reports unsupported history as unavailable. File history cannot establish current execution state. See the [reader limits and freshness contract](api/README.md#claude-history).
@@ -97,6 +99,7 @@ These complete TypeScript examples use the public client and contracts. Start th
 - `src/handoffs/`: explicit cross-provider challenges, selected native findings and author assessment links.
 - `src/actions/`: durable action dispatch, native input routing and bounded live presentation.
 - `src/store/`: SQLite discovery metadata and the action/control ledger in one worker.
+- `src/storage/`: trusted host connection metadata and exclusive maintenance admission.
 - `src/contracts/`: browser-safe command and response contracts.
 - `scripts/package/`: build-output cleanup and packed-consumer checks.
 - `scripts/release/`: registry version/integrity checks and trusted publication of the tested archive.
@@ -106,6 +109,7 @@ These complete TypeScript examples use the public client and contracts. Start th
 - `errors/README.md`: stable application errors.
 - `website/`: private public-site workspace with its own README and test/check commands; canonical documentation bodies remain in this root README and `api/README.md`.
 - `docs/website.md`: durable website architecture, verification and generated-asset sources.
+- `docs/architecture.md`: database ownership, schema initialization and host maintenance.
 
 `/docs` is reserved for concise, quickly scannable documentation of essential durable concepts and processes. API references remain outside `/docs`.
 

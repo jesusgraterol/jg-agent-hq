@@ -61,6 +61,7 @@ export const createActions = (
   actionKey: Uint8Array,
   skills: ReturnType<typeof createSkills>,
   plans: ReturnType<typeof createPlans>,
+  runBackground: (operation: () => Promise<void>) => Promise<void>,
 ) => {
   const prompts = new Map<string, { native: INativePrompt; presentation: INativeApproval }>();
   const controlled = new Map<string, { provider: IManagedThread['provider']; nativeId: string }>();
@@ -102,11 +103,11 @@ export const createActions = (
     eventFailure = cause;
     prompts.clear();
     const previous = lane;
-    lane = (async () => {
+    lane = runBackground(async () => {
       await previous.catch(() => undefined);
       await store.observe({ kind: 'native-unavailable', provider: 'codex' });
       await store.observe({ kind: 'native-unavailable', provider: 'claude' });
-    })();
+    });
     void lane.catch((error: unknown) => {
       eventFailure = error;
     });
@@ -119,7 +120,7 @@ export const createActions = (
   const runOwned = (operation: () => Promise<void>, threadId?: string): void => {
     const task = (async () => {
       try {
-        await operation();
+        await runBackground(operation);
       } catch (error) {
         failEvents(error);
       }
@@ -167,14 +168,14 @@ export const createActions = (
     }
     eventCount += 1;
     const previous = lane;
-    lane = (async () => {
+    lane = runBackground(async () => {
       try {
         await previous;
         await operation();
       } finally {
         eventCount -= 1;
       }
-    })();
+    });
     void lane.catch(failEvents);
   };
 

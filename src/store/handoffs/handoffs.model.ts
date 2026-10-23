@@ -45,7 +45,7 @@ export class HandoffsModel {
 
   /** Reads a selected intent without loading any conversation history. */
   public get(id: string): IHandoffRecord | null {
-    const row = this.__database.prepare('SELECT intent FROM handoff WHERE id = ?').get(id);
+    const row = this.__database.prepare('SELECT intent FROM hq_handoff WHERE id = ?').get(id);
     return row ? HandoffRecordSchema.parse(JSON.parse(z.string().parse(row.intent))) : null;
   }
 
@@ -62,7 +62,7 @@ export class HandoffsModel {
     }
     this.__database
       .prepare(
-        'INSERT INTO handoff (id, workspace_root, source_thread_id, created_at, intent) VALUES (?, ?, ?, ?, ?)',
+        'INSERT INTO hq_handoff (id, workspace_root, source_thread_id, created_at, intent) VALUES (?, ?, ?, ?, ?)',
       )
       .run(
         record.id,
@@ -77,7 +77,7 @@ export class HandoffsModel {
   /** Reads only a selected phase's immutable native dispatch. */
   public getDispatch(id: string, phase: IHandoffPhase): IHandoffDispatch | null {
     const row = this.__database
-      .prepare('SELECT intent FROM handoff_dispatch WHERE handoff_id = ? AND phase = ?')
+      .prepare('SELECT intent FROM hq_handoff_dispatch WHERE handoff_id = ? AND phase = ?')
       .get(id, phase);
     return row ? HandoffDispatchSchema.parse(JSON.parse(z.string().parse(row.intent))) : null;
   }
@@ -96,7 +96,7 @@ export class HandoffsModel {
     if (!this.get(dispatch.handoffId)) conflict();
     this.__database
       .prepare(
-        'INSERT INTO handoff_dispatch (handoff_id, phase, action_id, intent) VALUES (?, ?, ?, ?)',
+        'INSERT INTO hq_handoff_dispatch (handoff_id, phase, action_id, intent) VALUES (?, ?, ?, ?)',
       )
       .run(dispatch.handoffId, dispatch.phase, dispatch.action.id, JSON.stringify(dispatch));
     return dispatch;
@@ -114,7 +114,7 @@ export class HandoffsModel {
       conflict();
     record!.findings = findings;
     this.__database
-      .prepare('UPDATE handoff SET intent = ? WHERE id = ?')
+      .prepare('UPDATE hq_handoff SET intent = ? WHERE id = ?')
       .run(JSON.stringify(record), id);
     return record!;
   }
@@ -134,7 +134,7 @@ export class HandoffsModel {
     parameters.push(page.limit + 1);
     const rows = this.__database
       .prepare(
-        "SELECT json_remove(intent, '$.findings') AS intent, json_type(intent, '$.findings') != 'null' AS has_findings FROM handoff WHERE " +
+        "SELECT json_remove(intent, '$.findings') AS intent, json_type(intent, '$.findings') != 'null' AS has_findings FROM hq_handoff WHERE " +
           filters.join(' AND ') +
           ' ORDER BY created_at DESC, id DESC LIMIT ?',
       )
@@ -159,7 +159,7 @@ export class HandoffsModel {
     const receipt = (id: string) => {
       const row = this.__database
         .prepare(
-          'SELECT id, delivery, completion, native_turn_id, thread_id FROM action WHERE id = ?',
+          'SELECT id, delivery, completion, native_turn_id, thread_id FROM hq_action WHERE id = ?',
         )
         .get(id);
       const parsed = row ? DeliveryRowSchema.parse(row) : null;
@@ -170,7 +170,7 @@ export class HandoffsModel {
     const feedback = this.getDispatch(record.id, 'feedback');
     const target = creation?.thread_id
       ? this.__database
-          .prepare('SELECT id, native_id FROM thread WHERE id = ?')
+          .prepare('SELECT id, native_id FROM hq_thread WHERE id = ?')
           .get(creation.thread_id)
       : null;
     return {

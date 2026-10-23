@@ -145,6 +145,11 @@ test.each(['milestones.md', 'coordination.json'])(
         state: 'blocked',
         pendingActionId: plan.command.action.id,
       });
+      const maintenance = vi.fn(async () => undefined);
+      await expect(fixture.runtime.withStorageMaintenance(maintenance)).rejects.toMatchObject({
+        code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+      });
+      expect(maintenance).not.toHaveBeenCalled();
       await plan.send(plan.command);
       expect(await readFile(join(plan.directory, 'milestones.md'), 'utf8')).toBe(canonical);
       expect((await plan.status()).pendingActionId).toBeNull();
@@ -164,7 +169,7 @@ test('a real lock-release failure after application leaves the journal prepared'
     const db = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
     try {
       expect(
-        db.prepare('SELECT state FROM plan_operation WHERE id = ?').get(plan.command.action.id)
+        db.prepare('SELECT state FROM hq_plan_operation WHERE id = ?').get(plan.command.action.id)
           ?.state,
       ).toBe('prepared');
     } finally {
@@ -608,7 +613,7 @@ test.each(['present', 'already-removed', 'conflicting', 'coordination-failure'] 
       const db = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
       try {
         db.prepare(
-          'INSERT INTO plan_operation (id, directory, state, intent) VALUES (?, ?, ?, ?)',
+          'INSERT INTO hq_plan_operation (id, directory, state, intent) VALUES (?, ?, ?, ?)',
         ).run(intent.id, plan.directory, 'prepared', JSON.stringify(intent));
       } finally {
         db.close();
@@ -643,7 +648,7 @@ test.each(['present', 'already-removed', 'conflicting', 'coordination-failure'] 
       const ledger = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
       try {
         const row = ledger
-          .prepare('SELECT state, intent FROM plan_operation WHERE id = ?')
+          .prepare('SELECT state, intent FROM hq_plan_operation WHERE id = ?')
           .get(intent.id)!;
         expect(row.state).toBe('completed');
         expect(JSON.parse(String(row.intent))).toMatchObject({
@@ -761,7 +766,7 @@ test.each(['prepared', 'unknown'] as const)(
       const db = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
       try {
         const row = db
-          .prepare('SELECT state, intent FROM plan_operation WHERE id = ?')
+          .prepare('SELECT state, intent FROM hq_plan_operation WHERE id = ?')
           .get(plan.command.action.id)!;
         expect(row.state).toBe('prepared');
         expect(JSON.parse(String(row.intent))).toMatchObject({

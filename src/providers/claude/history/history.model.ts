@@ -39,12 +39,12 @@ const MAX_RECORD_BYTES = 1_048_576;
 const MAX_REFRESH_BYTES = 4_194_304;
 const CHAIN = `WITH RECURSIVE current_chain AS (
   SELECT workspace_root, native_id, uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible
-  FROM claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?
-  UNION SELECT claude_entry.workspace_root, claude_entry.native_id, claude_entry.uuid, claude_entry.parent_uuid,
-  claude_entry.turn_id, claude_entry.byte_offset, claude_entry.byte_length, claude_entry.created_at, claude_entry.is_visible
-  FROM claude_entry JOIN current_chain
-  ON claude_entry.workspace_root = current_chain.workspace_root AND claude_entry.native_id = current_chain.native_id
-  AND claude_entry.uuid = current_chain.parent_uuid
+  FROM hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?
+  UNION SELECT hq_claude_entry.workspace_root, hq_claude_entry.native_id, hq_claude_entry.uuid, hq_claude_entry.parent_uuid,
+  hq_claude_entry.turn_id, hq_claude_entry.byte_offset, hq_claude_entry.byte_length, hq_claude_entry.created_at, hq_claude_entry.is_visible
+  FROM hq_claude_entry JOIN current_chain
+  ON hq_claude_entry.workspace_root = current_chain.workspace_root AND hq_claude_entry.native_id = current_chain.native_id
+  AND hq_claude_entry.uuid = current_chain.parent_uuid
 )`;
 
 /**
@@ -60,31 +60,6 @@ export class ClaudeHistoryModel {
 
   public constructor(database: DatabaseSync) {
     this.__database = database;
-    database.exec(`CREATE TABLE IF NOT EXISTS claude_file (
-      workspace_root TEXT NOT NULL, native_id TEXT NOT NULL, identity TEXT NOT NULL,
-      file_size INTEGER NOT NULL, byte_offset INTEGER NOT NULL, revision TEXT NOT NULL,
-      leaf_id TEXT, name TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-      supported INTEGER NOT NULL, seen TEXT NOT NULL, workspace_state TEXT NOT NULL,
-      CONSTRAINT pk_cf__workspace_root_native_id PRIMARY KEY (workspace_root, native_id)
-    ) STRICT;
-    CREATE INDEX IF NOT EXISTS idx_cf__workspace_root_created_at_native_id_desc
-    ON claude_file(workspace_root, created_at DESC, native_id DESC);
-    CREATE TABLE IF NOT EXISTS claude_entry (
-      workspace_root TEXT NOT NULL, native_id TEXT NOT NULL, uuid TEXT NOT NULL,
-      parent_uuid TEXT, turn_id TEXT NOT NULL, byte_offset INTEGER NOT NULL, byte_length INTEGER NOT NULL,
-      created_at INTEGER NOT NULL, is_visible INTEGER NOT NULL,
-      is_current INTEGER NOT NULL, turn_start_offset INTEGER, anchor_id TEXT,
-      CONSTRAINT pk_ce__workspace_root_native_id_uuid PRIMARY KEY (workspace_root, native_id, uuid),
-      CONSTRAINT fk_ce__workspace_root_native_id FOREIGN KEY (workspace_root, native_id)
-      REFERENCES claude_file(workspace_root, native_id) ON DELETE CASCADE
-    ) STRICT;
-    CREATE INDEX IF NOT EXISTS idx_ce__workspace_native_offset_current
-    ON claude_entry(workspace_root, native_id, byte_offset) WHERE is_current = 1 AND is_visible = 1;
-    CREATE INDEX IF NOT EXISTS idx_ce__workspace_native_turn_offset_current
-    ON claude_entry(workspace_root, native_id, turn_id, byte_offset) WHERE is_current = 1 AND is_visible = 1;
-    CREATE INDEX IF NOT EXISTS idx_ce__workspace_native_turn_start_current
-    ON claude_entry(workspace_root, native_id, byte_offset)
-    WHERE is_current = 1 AND is_visible = 1 AND byte_offset = turn_start_offset;`);
   }
 
   /**
@@ -145,7 +120,7 @@ export class ClaudeHistoryModel {
       const rows = this.__database
         .prepare(
           `SELECT native_id, workspace_root, identity, file_size, byte_offset, revision,
-        leaf_id, name, created_at, updated_at, supported, workspace_state FROM claude_file
+        leaf_id, name, created_at, updated_at, supported, workspace_state FROM hq_claude_file
         WHERE workspace_root = ? AND workspace_state = 'matching' AND (? IS NULL OR created_at < ? OR (created_at = ? AND native_id < ?))
         AND (? IS NULL OR instr(lower(coalesce(name, '')), lower(?)) > 0)
         ORDER BY created_at DESC, native_id DESC LIMIT ?`,
@@ -206,7 +181,7 @@ export class ClaudeHistoryModel {
     if (command.kind === 'turns') {
       const turns = this.__database
         .prepare(
-          `SELECT turn_id, byte_offset, created_at FROM claude_entry
+          `SELECT turn_id, byte_offset, created_at FROM hq_claude_entry
         WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1
         AND byte_offset = turn_start_offset AND byte_offset > ? ORDER BY byte_offset LIMIT ?`,
         )
@@ -238,7 +213,7 @@ export class ClaudeHistoryModel {
     }
     const entries = this.__database
       .prepare(
-        `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM claude_entry
+        `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM hq_claude_entry
       WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND byte_offset > ?
       ${command.turnId === undefined ? '' : 'AND turn_id = ?'}
       ORDER BY byte_offset LIMIT ?`,
@@ -332,7 +307,7 @@ export class ClaudeHistoryModel {
     const row = this.__database
       .prepare(
         `SELECT native_id, workspace_root, identity, file_size, byte_offset, revision,
-      leaf_id, name, created_at, updated_at, supported, workspace_state FROM claude_file WHERE workspace_root = ? AND native_id = ?`,
+      leaf_id, name, created_at, updated_at, supported, workspace_state FROM hq_claude_file WHERE workspace_root = ? AND native_id = ?`,
       )
       .get(root, nativeId);
     return row ? FileRowSchema.parse(row) : undefined;
@@ -404,12 +379,12 @@ export class ClaudeHistoryModel {
       scan.entries.closeSync();
       this.__scans.delete(root);
       this.__database
-        .prepare('DELETE FROM claude_file WHERE workspace_root = ? AND seen != ?')
+        .prepare('DELETE FROM hq_claude_file WHERE workspace_root = ? AND seen != ?')
         .run(root, seen);
       if (
         this.__database
           .prepare(
-            "SELECT native_id FROM claude_file WHERE workspace_root = ? AND workspace_state = 'unknown' LIMIT 1",
+            "SELECT native_id FROM hq_claude_file WHERE workspace_root = ? AND workspace_state = 'unknown' LIMIT 1",
           )
           .get(root)
       )
@@ -434,11 +409,11 @@ export class ClaudeHistoryModel {
       if (!row || row.identity !== identity || stat.size < row.file_size) {
         const revision = randomUUID();
         this.__database
-          .prepare('DELETE FROM claude_file WHERE workspace_root = ? AND native_id = ?')
+          .prepare('DELETE FROM hq_claude_file WHERE workspace_root = ? AND native_id = ?')
           .run(root, nativeId);
         this.__database
           .prepare(
-            `INSERT INTO claude_file (workspace_root, native_id, identity, file_size, byte_offset, revision,
+            `INSERT INTO hq_claude_file (workspace_root, native_id, identity, file_size, byte_offset, revision,
             leaf_id, name, created_at, updated_at, supported, seen, workspace_state)
             VALUES (?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, 0, ?, 'unknown')`,
           )
@@ -455,7 +430,7 @@ export class ClaudeHistoryModel {
         row = this.__file(root, nativeId)!;
       }
       this.__database
-        .prepare('UPDATE claude_file SET seen = ? WHERE workspace_root = ? AND native_id = ?')
+        .prepare('UPDATE hq_claude_file SET seen = ? WHERE workspace_root = ? AND native_id = ?')
         .run(seen, root, nativeId);
       if (row.supported === -1) return true;
       row.updated_at = Math.max(row.updated_at, Math.trunc(stat.mtimeMs));
@@ -488,7 +463,7 @@ export class ClaudeHistoryModel {
         row.byte_offset = lineStart;
         this.__database
           .prepare(
-            `UPDATE claude_file SET byte_offset = ?, file_size = ?, leaf_id = ?, name = ?,
+            `UPDATE hq_claude_file SET byte_offset = ?, file_size = ?, leaf_id = ?, name = ?,
           created_at = ?, updated_at = ?, supported = ?, revision = ?, workspace_state = ? WHERE workspace_root = ? AND native_id = ?`,
           )
           .run(
@@ -509,7 +484,7 @@ export class ClaudeHistoryModel {
         this.__database.exec('ROLLBACK');
         this.__database
           .prepare(
-            'UPDATE claude_file SET supported = -1, workspace_state = ? WHERE workspace_root = ? AND native_id = ?',
+            'UPDATE hq_claude_file SET supported = -1, workspace_state = ? WHERE workspace_root = ? AND native_id = ?',
           )
           .run(row.workspace_state, root, nativeId);
         if (isException(cause)) throw cause;
@@ -567,7 +542,7 @@ export class ClaudeHistoryModel {
     const parent = record.parentUuid
       ? this.__database
           .prepare(
-            `SELECT turn_id, turn_start_offset, anchor_id FROM claude_entry
+            `SELECT turn_id, turn_start_offset, anchor_id FROM hq_claude_entry
       WHERE workspace_root = ? AND native_id = ? AND uuid = ?`,
           )
           .get(root, nativeId, record.parentUuid)
@@ -593,7 +568,7 @@ export class ClaudeHistoryModel {
     if (record.parentUuid && !parent) this.__unavailable();
     const previous = this.__database
       .prepare(
-        'SELECT parent_uuid FROM claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?',
+        'SELECT parent_uuid FROM hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?',
       )
       .get(root, nativeId, record.uuid);
     if (previous && previous.parent_uuid !== (record.parentUuid ?? null)) this.__unavailable();
@@ -615,7 +590,7 @@ export class ClaudeHistoryModel {
         : null;
     this.__database
       .prepare(
-        `INSERT INTO claude_entry (workspace_root, native_id, uuid, parent_uuid, turn_id, byte_offset,
+        `INSERT INTO hq_claude_entry (workspace_root, native_id, uuid, parent_uuid, turn_id, byte_offset,
           byte_length, created_at, is_visible, is_current, turn_start_offset, anchor_id)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(workspace_root, native_id, uuid) DO UPDATE SET parent_uuid = excluded.parent_uuid,
@@ -641,7 +616,7 @@ export class ClaudeHistoryModel {
       if (!isAppend && !isSameLeaf)
         this.__database
           .prepare(
-            `${CHAIN} UPDATE claude_entry
+            `${CHAIN} UPDATE hq_claude_entry
         SET is_current = CASE WHEN uuid IN (SELECT uuid FROM current_chain) THEN 1 ELSE 0 END
         WHERE workspace_root = ? AND native_id = ?`,
           )

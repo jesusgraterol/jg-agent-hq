@@ -28,7 +28,9 @@ export class PlansModel {
    * Returns a previously admitted write, including a resumable prepared intent.
    */
   public getIntent(id: string): IPlanWriteIntent | null {
-    const row = this.__database.prepare('SELECT intent FROM plan_operation WHERE id = ?').get(id);
+    const row = this.__database
+      .prepare('SELECT intent FROM hq_plan_operation WHERE id = ?')
+      .get(id);
     return row ? PlanWriteIntentSchema.parse(JSON.parse(z.string().parse(row.intent))) : null;
   }
 
@@ -50,7 +52,7 @@ export class PlansModel {
       return previous;
     }
     const unfinished = this.__database
-      .prepare("SELECT id FROM plan_operation WHERE directory = ? AND state = 'prepared'")
+      .prepare("SELECT id FROM hq_plan_operation WHERE directory = ? AND state = 'prepared'")
       .get(intent.directory);
     if (unfinished)
       throw new Exception('The HQ action conflicts with its recorded state', {
@@ -60,7 +62,7 @@ export class PlansModel {
         },
       });
     this.__database
-      .prepare('INSERT INTO plan_operation (id, directory, state, intent) VALUES (?, ?, ?, ?)')
+      .prepare('INSERT INTO hq_plan_operation (id, directory, state, intent) VALUES (?, ?, ?, ?)')
       .run(intent.id, intent.directory, 'prepared', JSON.stringify(intent));
     return intent;
   }
@@ -84,14 +86,16 @@ export class PlansModel {
     intent.plan = null;
     intent.milestones = { operation: 'keep' };
     this.__database
-      .prepare("UPDATE plan_operation SET state = 'completed', intent = ? WHERE id = ?")
+      .prepare("UPDATE hq_plan_operation SET state = 'completed', intent = ? WHERE id = ?")
       .run(JSON.stringify(intent), id);
   }
 
   /** Reads unresolved write state without loading its contents. */
   public getPendingId(directory: string): string | null {
     const row = this.__database
-      .prepare("SELECT id FROM plan_operation WHERE directory = ? AND state = 'prepared' LIMIT 1")
+      .prepare(
+        "SELECT id FROM hq_plan_operation WHERE directory = ? AND state = 'prepared' LIMIT 1",
+      )
       .get(directory);
     return row ? z.string().parse(row.id) : null;
   }
@@ -99,22 +103,22 @@ export class PlansModel {
   /** Replaces only a selected plan's derived milestone rows in one transaction. */
   public project(projection: IPlanProjection): void {
     const current = this.__database
-      .prepare('SELECT source_hash FROM plan_projection WHERE directory = ?')
+      .prepare('SELECT source_hash FROM hq_plan_projection WHERE directory = ?')
       .get(projection.directory);
     if (current && current.source_hash === projection.sourceHash) return;
     this.__database.exec('BEGIN IMMEDIATE');
     try {
       this.__database
-        .prepare('DELETE FROM plan_milestone WHERE directory = ?')
+        .prepare('DELETE FROM hq_plan_milestone WHERE directory = ?')
         .run(projection.directory);
       const insert = this.__database.prepare(
-        'INSERT INTO plan_milestone (directory, ordinal, milestone) VALUES (?, ?, ?)',
+        'INSERT INTO hq_plan_milestone (directory, ordinal, milestone) VALUES (?, ?, ?)',
       );
       for (const milestone of projection.milestones)
         insert.run(projection.directory, milestone.ordinal, JSON.stringify(milestone));
       this.__database
         .prepare(
-          'INSERT INTO plan_projection (directory, source_hash) VALUES (?, ?) ON CONFLICT(directory) DO UPDATE SET source_hash = excluded.source_hash',
+          'INSERT INTO hq_plan_projection (directory, source_hash) VALUES (?, ?) ON CONFLICT(directory) DO UPDATE SET source_hash = excluded.source_hash',
         )
         .run(projection.directory, projection.sourceHash);
       this.__database.exec('COMMIT');
@@ -132,7 +136,7 @@ export class PlansModel {
   ): { data: z.infer<typeof PlanMilestoneSchema>[]; hasMore: boolean } {
     const rows = this.__database
       .prepare(
-        'SELECT milestone FROM plan_milestone WHERE directory = ? AND ordinal > ? ORDER BY ordinal LIMIT ?',
+        'SELECT milestone FROM hq_plan_milestone WHERE directory = ? AND ordinal > ? ORDER BY ordinal LIMIT ?',
       )
       .all(directory, after, limit + 1);
     const hasMore = rows.length > limit;
@@ -147,22 +151,22 @@ export class PlansModel {
   /** Rebuilds retained evidence rows only when the authoritative file hash changes. */
   public projectRevision(projection: IPlanRevisionProjection): void {
     const current = this.__database
-      .prepare('SELECT source_hash FROM plan_revision_projection WHERE directory = ?')
+      .prepare('SELECT source_hash FROM hq_plan_revision_projection WHERE directory = ?')
       .get(projection.directory);
     if (current && current.source_hash === projection.sourceHash) return;
     this.__database.exec('BEGIN IMMEDIATE');
     try {
       this.__database
-        .prepare('DELETE FROM plan_record WHERE directory = ?')
+        .prepare('DELETE FROM hq_plan_record WHERE directory = ?')
         .run(projection.directory);
       const insert = this.__database.prepare(
-        'INSERT INTO plan_record (directory, collection, record_id, entry) VALUES (?, ?, ?, ?)',
+        'INSERT INTO hq_plan_record (directory, collection, record_id, entry) VALUES (?, ?, ?, ?)',
       );
       for (const row of projection.records)
         insert.run(projection.directory, row.collection, row.id, JSON.stringify(row.entry));
       this.__database
         .prepare(
-          'INSERT INTO plan_revision_projection (directory, source_hash) VALUES (?, ?) ON CONFLICT(directory) DO UPDATE SET source_hash = excluded.source_hash',
+          'INSERT INTO hq_plan_revision_projection (directory, source_hash) VALUES (?, ?) ON CONFLICT(directory) DO UPDATE SET source_hash = excluded.source_hash',
         )
         .run(projection.directory, projection.sourceHash);
       this.__database.exec('COMMIT');
@@ -181,7 +185,7 @@ export class PlansModel {
   }) {
     const rows = this.__database
       .prepare(
-        'SELECT record_id, entry FROM plan_record WHERE directory = ? AND collection = ? AND record_id > ? ORDER BY record_id LIMIT ?',
+        'SELECT record_id, entry FROM hq_plan_record WHERE directory = ? AND collection = ? AND record_id > ? ORDER BY record_id LIMIT ?',
       )
       .all(page.directory, page.collection, page.after, page.limit + 1);
     const data = [];
@@ -201,7 +205,7 @@ export class PlansModel {
   /** Resolves one thread's current guided scope without trusting its display label. */
   public getThreadPlan(threadId: string): IActionPlanContext | null {
     const row = this.__database
-      .prepare('SELECT context FROM thread_plan WHERE thread_id = ?')
+      .prepare('SELECT context FROM hq_thread_plan WHERE thread_id = ?')
       .get(threadId);
     return row ? ActionPlanContextSchema.parse(JSON.parse(z.string().parse(row.context))) : null;
   }
@@ -210,7 +214,7 @@ export class PlansModel {
   public getPlanThreads(directory: string): string[] {
     const rows = this.__database
       .prepare(
-        "SELECT thread.id FROM thread_plan INNER JOIN thread ON thread.id = thread_plan.thread_id WHERE thread_plan.directory = ? AND (thread.runtime_epoch IS NOT NULL OR thread.ownership = 'uncertain') ORDER BY thread.id LIMIT 33",
+        "SELECT hq_thread.id FROM hq_thread_plan INNER JOIN hq_thread ON hq_thread.id = hq_thread_plan.thread_id WHERE hq_thread_plan.directory = ? AND (hq_thread.runtime_epoch IS NOT NULL OR hq_thread.ownership = 'uncertain') ORDER BY hq_thread.id LIMIT 33",
       )
       .all(directory);
     if (rows.length > 32)
@@ -234,7 +238,7 @@ export class PlansModel {
     if (execution) {
       const other = this.__database
         .prepare(
-          'SELECT thread.id, thread.state, thread.ownership, thread.runtime_epoch FROM thread_plan INNER JOIN thread ON thread.id = thread_plan.thread_id WHERE thread_plan.authorization_id = ? AND thread_plan.milestone_id IS ? AND thread_plan.thread_id != ? LIMIT 1',
+          'SELECT hq_thread.id, hq_thread.state, hq_thread.ownership, hq_thread.runtime_epoch FROM hq_thread_plan INNER JOIN hq_thread ON hq_thread.id = hq_thread_plan.thread_id WHERE hq_thread_plan.authorization_id = ? AND hq_thread_plan.milestone_id IS ? AND hq_thread_plan.thread_id != ? LIMIT 1',
         )
         .get(execution.authorizationId, execution.milestoneId, threadId);
       if (other) {
@@ -250,13 +254,13 @@ export class PlansModel {
             },
           });
         this.__database
-          .prepare('DELETE FROM thread_plan WHERE thread_id = ?')
+          .prepare('DELETE FROM hq_thread_plan WHERE thread_id = ?')
           .run(z.string().parse(other.id));
       }
     }
     this.__database
       .prepare(
-        'INSERT INTO thread_plan (thread_id, directory, context, authorization_id, milestone_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(thread_id) DO UPDATE SET directory = excluded.directory, context = excluded.context, authorization_id = excluded.authorization_id, milestone_id = excluded.milestone_id',
+        'INSERT INTO hq_thread_plan (thread_id, directory, context, authorization_id, milestone_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(thread_id) DO UPDATE SET directory = excluded.directory, context = excluded.context, authorization_id = excluded.authorization_id, milestone_id = excluded.milestone_id',
       )
       .run(
         threadId,

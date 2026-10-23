@@ -119,7 +119,7 @@ test('owner-only IPC survives abandoned clients; shutdown releases SQLite and th
     try {
       const rows = database
         .prepare(
-          'SELECT native_id, runtime_epoch, continuation_cursor FROM native_history_index ORDER BY native_id',
+          'SELECT native_id, runtime_epoch, continuation_cursor FROM hq_native_history_index ORDER BY native_id',
         )
         .all();
       expect(rows).toHaveLength(32);
@@ -129,7 +129,7 @@ test('owner-only IPC survives abandoned clients; shutdown releases SQLite and th
       });
       expect(
         database
-          .prepare('PRAGMA table_info(native_history_index)')
+          .prepare('PRAGMA table_info(hq_native_history_index)')
           .all()
           .map((column) => column.name),
       ).not.toContain('text');
@@ -484,8 +484,8 @@ test('a corrupt SQLite file fails worker startup without deleting stored content
     await writeFile(join(stateRoot, 'hq.sqlite'), 'corrupt SQLite content', { mode: 0o600 });
     await expectToRejectCode(
       createAgentHq({ stateRoot, allowedRoots: [root] }),
-      'JG_AGENT_HQ_STORE_FAILED',
-      'The HQ store failed',
+      'JG_AGENT_HQ_STORAGE_INVALID',
+      'The HQ storage is invalid',
     );
     expect(await readdir(stateRoot)).toStrictEqual(['action.key', 'hq.sqlite']);
     expect(await readFile(join(stateRoot, 'hq.sqlite'), 'utf8')).toBe('corrupt SQLite content');

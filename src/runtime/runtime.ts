@@ -16,6 +16,7 @@ import { readNativeHistory } from '../sessions/index.js';
 import { suggestThreadName } from '../sessions/names/index.js';
 import { createSkills } from '../skills/index.js';
 import { createStore } from '../store/index.js';
+import { createStorage } from '../storage/index.js';
 import { createPlans, type IPlanStopJob } from '../plans/index.js';
 
 import {
@@ -48,6 +49,7 @@ const UnconfirmedCleanupSchema = z.object({ cleanupUnconfirmed: z.literal(true) 
  * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
  * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+ * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
  */
 export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq> => {
   const parsed = AgentHqOptionsSchema.safeParse(options);
@@ -94,6 +96,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const browser = createBrowserActions(store);
   const native = provider;
   const projection = store;
+  const storage = createStorage(projection);
   const claude = createClaudeProvider(projection);
   const claudeControl = createClaudeControl(claudeAdditionalDirectories);
   const plans = createPlans(
@@ -129,6 +132,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     actionKey,
     skills,
     plans,
+    storage.background,
   );
   let resolveClosed: () => void = () => undefined;
   let rejectClosed: (error: unknown) => void = () => undefined;
@@ -150,7 +154,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           kind: 'state-conflict',
         },
       });
-    const task = (async () => {
+    const task = storage.background(async () => {
       let isQuiescent = false;
       try {
         await actions.quiescePlan(job.controls);
@@ -179,7 +183,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
         plans.stopFinished(job.phaseActionId);
         revisionJobs.delete(job.phaseActionId);
       }
-    })();
+    });
     revisionJobs.set(job.phaseActionId, task);
   });
   const close = (): Promise<void> =>
@@ -198,6 +202,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
             cause: failure.reason,
           });
         await ownership.release();
+        storage.dispose();
         resolveClosed();
       } catch (error) {
         rejectClosed(error);
@@ -205,7 +210,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       }
     })());
 
-  const request = async (input: IHqRequestInput): Promise<IHqResponse> => {
+  const handleRequest = async (input: IHqRequestInput): Promise<IHqResponse> => {
     const result = HqRequestSchema.safeParse(input);
     if (!result.success)
       throw new Exception('The HQ request is invalid', {
@@ -247,7 +252,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
         };
       case 'stop': {
         setImmediate(() => {
-          void close().catch(() => undefined);
+          void storage.background(close).catch(() => undefined);
         });
         return { kind: 'stop', result: { accepted: true, runtimeEpoch: ownership.owner.nonce } };
       }
@@ -330,6 +335,8 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       }
     }
   };
+  const request = (input: IHqRequestInput): Promise<IHqResponse> =>
+    storage.run(() => handleRequest(input));
   const handoffs = createHandoffs(
     projection,
     actions,
@@ -349,8 +356,20 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     stateRoot,
     closed,
     request,
-    close,
-    performBrowserAction: browser.perform,
-    readBrowserAction: browser.read,
+    get storage() {
+      return structuredClone(projection.storage);
+    },
+    withStorageMaintenance: async (operation) => {
+      if (closing)
+        throw new Exception('The HQ runtime is not running', {
+          code: 'JG_AGENT_HQ_RUNTIME_NOT_RUNNING',
+          data: { kind: 'state-conflict' },
+        });
+      return storage.withStorageMaintenance(operation);
+    },
+    close: () => storage.run(close),
+    performBrowserAction: (input, operatorId, execute) =>
+      storage.run(() => browser.perform(input, operatorId, execute)),
+    readBrowserAction: (id, operatorId) => storage.run(() => browser.read(id, operatorId)),
   };
 };

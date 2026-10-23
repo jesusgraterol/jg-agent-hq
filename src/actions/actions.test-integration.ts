@@ -337,7 +337,7 @@ test('queued text cannot answer native questions; secret answers are absent from
     const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
     try {
       const saved = JSON.stringify(
-        database.prepare('SELECT id, digest, queued_text FROM action').all(),
+        database.prepare('SELECT id, digest, queued_text FROM hq_action').all(),
       );
       expect(saved).not.toContain('fictional-answer-for-the-test');
       expect(saved).toContain('Next task after the question');
@@ -1129,7 +1129,7 @@ test('shutdown waits for admission and cannot start inference after native clean
     const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
     try {
       const saved = database
-        .prepare('SELECT state, runtime_epoch FROM thread WHERE id = ?')
+        .prepare('SELECT state, runtime_epoch FROM hq_thread WHERE id = ?')
         .get(thread.id);
       expect(saved).toMatchObject({ state: 'inactive', runtime_epoch: null });
     } finally {
@@ -1302,7 +1302,7 @@ test('a ledger read failure during shutdown still stops the owned native process
       enableForeignKeyConstraints: false,
     });
     try {
-      database.exec('DROP TABLE thread');
+      database.exec('DROP TABLE hq_thread');
     } finally {
       database.close();
     }

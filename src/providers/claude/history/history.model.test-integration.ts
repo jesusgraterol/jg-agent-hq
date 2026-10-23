@@ -401,7 +401,7 @@ test('history qualification refreshes a rejected projection after runtime restar
     const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'));
     try {
       database
-        .prepare('UPDATE claude_file SET identity = ?, supported = -1 WHERE native_id = ?')
+        .prepare('UPDATE hq_claude_file SET identity = ?, supported = -1 WHERE native_id = ?')
         .run(fileIdentity, nativeId);
     } finally {
       database.close();
