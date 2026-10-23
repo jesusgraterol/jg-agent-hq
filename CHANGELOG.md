@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.0
+
+- Add provider-neutral session capabilities, native lifecycle/configuration, file inputs, structured results, permissions, account observations and extension controls. Detect usable native contracts instead of restricting CLI version labels; isolate unavailable providers.
+- Add task-scoped agent identities, streams, subscriptions, requests, verified skill grants and bounded report storage/search. Agents can delegate, yield for named children and continue from their exact results across vendors or within one vendor. Replace the fixed-provider handoff API with this flow.
+- Support optional verified jg-skills delegation without changing native explicit-only loading, later approval checkpoints or standalone workflows. Keep execution grants, native tool permissions, outcomes and operator approval separate.
+- Expose trusted shared SQLite metadata and coordinated host maintenance. Capture WAL data, host tables, reports and registered plan companions; validate offline recovery with the matching private key and paused automation. Hosts own off-machine backup operations.
+- Ship the current schema and API directly. Start with a fresh development state root when changing the schema; no data conversion is provided. Add public host examples and packed-consumer coverage for storage and recovery.
+
 ## 1.1.0
 
 - Rebuild the homepage around a native-session visual, local setup and three complete source-backed walkthroughs. Show cross-provider reviews and retained revision evidence with explicit host decisions.

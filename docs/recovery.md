@@ -18,4 +18,6 @@ Recover repositories and native files separately. Source paths and plan bindings
 
 ## Off-machine durability
 
+The development helper examples/shared-storage.ts demonstrates a host-owned application table, maintenance, capture and offline restore using public exports. Capture already returns verified metadata, so the helper avoids an immediate extra full-database inspection. Its application transaction commits independently of capture. Inspect the restored values before starting a recovered runtime with explicitly chosen roots.
+
 The host application owns encryption and key recovery, scheduling, uploads, retention and the last successful backup status. Plaintext action.key must accompany the database inside the protected backup. Losing the disk can lose all changes after the last successful off-machine backup. Producing a local snapshot alone does not protect against disk failure.

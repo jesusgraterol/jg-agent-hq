@@ -4,6 +4,8 @@ import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { DatabaseSync } from 'node:sqlite';
+import { expectToRejectCode } from 'jg-exception/testing';
 import type {
   IRequestSpecification,
   IPlanOperatorAction,
@@ -26,6 +28,7 @@ import {
 import { controlSession } from './control-session.ts';
 import { reviewHandoff } from './review-handoff.ts';
 import { revisePlan } from './revise-plan.ts';
+import { shareStorage } from './shared-storage.ts';
 
 const operator = (): IPlanOperatorAction => ({
   id: randomUUID(),
@@ -33,6 +36,73 @@ const operator = (): IPlanOperatorAction => ({
   source: { kind: 'user-action', reference: `example:confirmed:${randomUUID()}` },
 });
 const skills = ['jg-review-session', 'jg-feedback', 'jg-plan', 'jg-breakdown'];
+
+test('the shared-storage source preserves host schema ownership and verifies an offline restore', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const host = new DatabaseSync(fixture.runtime.storage.databasePath);
+    try {
+      host.exec('PRAGMA user_version = 37');
+    } finally {
+      host.close();
+    }
+    const schemaHash = fixture.runtime.storage.schemaHash;
+    for (const [index, label] of ['Host preference. 🙂', 'Changed host preference.'].entries()) {
+      const result = await shareStorage({
+        hq: fixture.runtime,
+        label,
+        snapshotDirectory: join(fixture.root, `snapshot-${index}`),
+        recoveryDirectory: join(fixture.root, `recovery-${index}`),
+      });
+      expect(result.label).toBe(label);
+      expect(result.snapshot.header.schemaHash).toBe(schemaHash);
+      const recovered = new DatabaseSync(join(result.restored.stateRoot, 'hq.sqlite'), {
+        readOnly: true,
+      });
+      try {
+        expect(recovered.prepare('SELECT count(*) AS count FROM app_preference').get()?.count).toBe(
+          1,
+        );
+        expect(recovered.prepare('PRAGMA user_version').get()?.user_version).toBe(37);
+      } finally {
+        recovered.close();
+      }
+    }
+    expect(await fixture.request({ kind: 'status' })).toMatchObject({
+      kind: 'status',
+      result: { providers: [{ state: 'idle' }, { state: 'idle' }] },
+    });
+  });
+});
+
+test('the shared-storage source preserves an occupied target and its already committed preference', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const snapshotDirectory = join(fixture.root, 'occupied');
+    await mkdir(snapshotDirectory);
+    await writeFile(join(snapshotDirectory, 'marker.txt'), 'Keep this directory.');
+    await expectToRejectCode(
+      shareStorage({
+        hq: fixture.runtime,
+        label: 'Committed before capture.',
+        snapshotDirectory,
+        recoveryDirectory: join(fixture.root, 'recovery'),
+      }),
+      'JG_AGENT_HQ_SNAPSHOT_INVALID',
+    );
+    expect(await readFile(join(snapshotDirectory, 'marker.txt'), 'utf8')).toBe(
+      'Keep this directory.',
+    );
+    await fixture.runtime.withStorageMaintenance(async (storage) => {
+      const host = new DatabaseSync(storage.databasePath);
+      try {
+        expect(host.prepare('SELECT label FROM app_preference WHERE id = 1').get()?.label).toBe(
+          'Committed before capture.',
+        );
+      } finally {
+        host.close();
+      }
+    });
+  });
+});
 
 test.each(['codex', 'claude'] as const)(
   'the control-session source operates the real %s controller and IPC',

@@ -3019,8 +3019,13 @@ test.each([
         { autoComplete: true, structuredOutput: parentOutcome(requestId, 'completed') },
       );
       if (provider === 'claude') await refresh();
-      await dispatch(fixture, requestId);
+      else await dispatch(fixture, requestId);
       await expect.poll(async () => (await readRequest(fixture, requestId)).state).toBe('resolved');
+      if (provider === 'claude')
+        await expectToRejectCode(
+          dispatch(fixture, requestId),
+          'JG_AGENT_HQ_COLLABORATION_CONFLICT',
+        );
       expect(await readRequest(fixture, requestId)).toMatchObject({
         dispatchCount: 1,
         outcome: 'completed',

@@ -1,6 +1,8 @@
 # jg-agent-hq
 
-Workspace primitives for native coding agents. The public API provides owner-aware filesystem locks, Claude and Codex thread control, live input and history, actual account usage, and revision-bound plan authority.
+A TypeScript library and local controller for applications that run coding agents. Create native Claude Code and Codex sessions, send work, handle permissions and follow results through one API. Agents collaborate through indexed streams, directed requests and exact reports, with explicit authority for delegated work.
+
+Use it to build an agent dashboard, editor integration or automated development workflow. HQ owns local session control, agent identity, collaboration state and plan coordination. Your application owns its interface, authentication and off-machine backups. Native CLIs supply the coding harnesses, tools, skills and sign-in; additional providers can implement the same host contract.
 
 Requires Node.js 24.15.0 or later on Linux or macOS. The lock protocol uses POSIX ownership, private directories and process-liveness probes. Windows is outside the supported host contract.
 
@@ -101,9 +103,14 @@ Follow the [three complete walkthroughs](https://jg-agent-hq.jesusgraterol.dev/e
 
 These complete TypeScript examples use the public client and contracts. Start the local controller, sign in to the native CLIs, and install the required skills and supported project-local jg-plans CLI first. The host supplies actual user decisions and keeps native permission handling separate. Retain request identities before submission; after an interrupted client call, inspect those receipts instead of rerunning a whole example. Examples are development sources, not package exports or automatic website actions.
 
+`examples/shared-storage.ts` uses a quiescent trusted Node runtime to save a singleton application preference under the app\_ prefix, capture and inspect shared SQLite storage, and verify the value after offline restore. It closes its own SQL connections and preserves the host's user_version. Select absent output directories and pause every other writer first. The application write commits before capture; a later backup failure does not roll it back. The recovered state still requires explicit allowed roots and fresh authority before execution.
+
+The [qualification matrix](api/README.md#qualification) records native journeys, host coverage and remaining interface limits.
+
 ## Project blueprint
 
 - `src/index.ts`: the explicit public package boundary.
+- `examples/`: public source helpers for sessions, stream review, plan revision and shared host storage.
 - `src/locks/`: lock ownership, acquisition, status and deliberate recovery.
 - `src/runtime/`: trusted configuration and lifetime ownership.
 - `src/ipc/` and `src/cli/`: private local commands and the installed executable.

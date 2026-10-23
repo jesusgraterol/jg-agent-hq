@@ -1,5 +1,5 @@
 import { requestAgentHq } from 'jg-agent-hq';
-import type { IActionReceipt } from 'jg-agent-hq/contracts';
+import type { IActionReceipt, IProviderId } from 'jg-agent-hq/contracts';
 import { waitUntil } from 'jg-utilities';
 
 /**
@@ -11,7 +11,7 @@ import { waitUntil } from 'jg-utilities';
 export const controlSession = async (input: {
   stateRoot: string;
   workspaceRoot: string;
-  provider: 'claude' | 'codex';
+  provider: IProviderId;
   name: string;
   text: string;
   actionIds: { create: string; message: string };
