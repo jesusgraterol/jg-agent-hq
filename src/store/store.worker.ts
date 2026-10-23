@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { parentPort, workerData } from 'node:worker_threads';
+import { backup, DatabaseSync } from 'node:sqlite';
 import { Exception, extractMessage, isException } from 'jg-exception';
 
 import { getErrorKind } from '../errors/index.js';
@@ -21,6 +22,7 @@ const startWorker = async (): Promise<void> => {
   const { database, schemaHash } = openDatabase(
     options.databasePath,
     await readFile(new URL('./schema.sql', import.meta.url), 'utf8'),
+    options.actionKey,
   );
   try {
     const storage = {
@@ -41,7 +43,7 @@ const startWorker = async (): Promise<void> => {
   workspace_root = excluded.workspace_root, name = excluded.name, created_at = excluded.created_at, updated_at = excluded.updated_at,
   native_state = excluded.native_state, observed_at = excluded.observed_at,
   runtime_epoch = excluded.runtime_epoch, continuation_cursor = excluded.continuation_cursor`);
-    port.on('message', (message: unknown) => {
+    port.on('message', async (message: unknown) => {
       const parsed = StoreRequestSchema.safeParse(message);
       if (!parsed.success)
         throw new Exception('The HQ store failed', {
@@ -59,6 +61,24 @@ const startWorker = async (): Promise<void> => {
         }
         let result: unknown = null;
         switch (command.kind) {
+          case 'snapshot-plans':
+            result = database
+              .prepare(
+                'SELECT directory FROM hq_plan_registration WHERE directory > ? ORDER BY directory LIMIT 128',
+              )
+              .all(command.after)
+              .map((row) => row.directory);
+            break;
+          case 'snapshot-backup': {
+            await backup(database, command.destination);
+            const copy = new DatabaseSync(command.destination);
+            try {
+              copy.exec('PRAGMA journal_mode = DELETE');
+            } finally {
+              copy.close();
+            }
+            break;
+          }
           case 'dispatch-page':
             result = collaboration.dispatchPage(command.query);
             break;
@@ -108,7 +128,7 @@ const startWorker = async (): Promise<void> => {
             const pendingPlan = database
               .prepare("SELECT 1 FROM hq_plan_operation WHERE state = 'prepared' LIMIT 1")
               .get();
-            result = !activeThread && !activeAction && !pendingPlan;
+            result = !activeThread && !activeAction && (command.isSnapshot || !pendingPlan);
             break;
           }
           case 'browser-read':

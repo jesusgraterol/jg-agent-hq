@@ -71,6 +71,7 @@ export const createStorage = (store: IStore) => {
    */
   const withStorageMaintenance = async <T>(
     operation: IStorageMaintenanceOperation<T>,
+    isSnapshot = false,
   ): Promise<T> => {
     if (typeof operation !== 'function')
       throw new Exception('The HQ request is invalid', {
@@ -85,7 +86,7 @@ export const createStorage = (store: IStore) => {
     try {
       while (active.size > 0) await Promise.allSettled([...active]);
       isMaintenanceHeld = true;
-      if (!(await store.prepareStorageMaintenance())) conflict();
+      if (!(await store.prepareStorageMaintenance(isSnapshot))) conflict();
       return await operation(structuredClone(store.storage));
     } finally {
       isMaintenanceHeld = false;

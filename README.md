@@ -45,6 +45,8 @@ Use `sessions` for discovery and `session-evidence` for newest-first historical 
 
 Trusted Node hosts can open the database described by `hq.storage` and keep application tables under their own prefix. HQ reserves `hq_`, validates its current schema stamp on startup, and leaves application schema ownership and `user_version` with the host. Use `hq.withStorageMaintenance(callback)` for host schema changes; it drains admitted work and rejects active native execution before the callback. Start with a fresh development state root when the HQ schema changes. See the [shared storage contract](api/README.md#shared-storage).
 
+`createHqSnapshot(hq, destination)` captures quiescent local state through SQLite's backup API, including host tables, stored reports, action.key and registered plan companions. Busy checkpoints return a conflict without interrupting work. `inspectHqSnapshot(directory)` verifies the complete snapshot; `restoreHqSnapshot({ snapshotDirectory, destination })` validates and stages it into a new private recovery workspace. Restored automation is paused, skill grants are revoked, native ownership needs reconciliation and allowed roots must be selected explicitly. Hosts own remote backups; a failed disk can lose changes since the last successful off-machine backup. See [snapshot and restore](api/README.md#snapshot-and-restore) and [recovery](docs/recovery.md).
+
 Provider IDs are bounded lowercase identifiers. Codex and Claude are built in; trusted Node hosts can register additional `IAgentProviderFactory` implementations through `providerFactories`. Capabilities report current operation support, provider/session scope and unavailable reasons. Native version labels are diagnostic metadata and never determine admission. Unknown essential control data fails explicitly. `jg-agent-hq/contracts` contains browser-safe schemas and types; importing it does not import the host runtime.
 
 Use `--provider claude` for Claude history and usage; the default is `codex`. Claude connects lazily through its native structured CLI, with normal settings enabled and no user prompt. Usage requests explicitly disable the optional transcript-behavior scan. Its local history reader validates required identity, workspace and chain fields, tolerates additive fields and mixed version labels, and keeps byte locations rather than conversation bodies in SQLite. Unknown ordered content is presented as unsupported; untrustworthy identity or ordering makes the affected read unavailable. File history cannot establish current execution state. See the [reader limits and freshness contract](api/README.md#claude-history).
@@ -119,6 +121,7 @@ These complete TypeScript examples use the public client and contracts. Start th
 - `src/actions/`: durable action dispatch, native input routing and bounded live presentation.
 - `src/store/`: SQLite discovery metadata, collaboration streams and the action/control ledger in one worker.
 - `src/storage/`: trusted host connection metadata and exclusive maintenance admission.
+- `src/snapshots/`: quiescent capture, streamed inventory validation and offline recovery with execution paused.
 - `src/contracts/`: browser-safe command and response contracts.
 - `scripts/package/`: build-output cleanup and packed-consumer checks.
 - `scripts/release/`: registry version/integrity checks and trusted publication of the tested archive.
@@ -129,6 +132,7 @@ These complete TypeScript examples use the public client and contracts. Start th
 - `website/`: private public-site workspace with its own README and test/check commands; canonical documentation bodies remain in this root README and `api/README.md`.
 - `docs/website.md`: durable website architecture, verification and generated-asset sources.
 - `docs/architecture.md`: provider and database ownership, schema initialization and host maintenance.
+- `docs/recovery.md`: local snapshot coverage, offline recovery and the host's remote durability responsibilities.
 
 `/docs` is reserved for concise, quickly scannable documentation of essential durable concepts and processes. API references remain outside `/docs`.
 

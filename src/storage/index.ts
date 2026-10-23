@@ -1,5 +1,5 @@
 // types and validated worker metadata
-export { StorageDescriptorSchema } from './types.js';
+export { StorageDescriptorSchema, StorageStampSchema } from './types.js';
 export type { IStorageDescriptor, IStorageMaintenanceOperation } from './types.js';
 
 // required connection settings

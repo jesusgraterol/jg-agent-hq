@@ -44,6 +44,7 @@ export const resolveDocumentLink = (href: string, source: string): string => {
       'README.md',
       'api/README.md',
       'errors/README.md',
+      'docs/recovery.md',
       ...EXAMPLE_SOURCE_RECORDS.map((record) => record.source),
     ].includes(path) ||
     url.search

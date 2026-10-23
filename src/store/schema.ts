@@ -1,26 +1,35 @@
 import { DatabaseSync } from 'node:sqlite';
 import { hashValue } from 'jg-crypto';
 import { Exception, isException } from 'jg-exception';
-import { z } from 'zod';
 
-import { STORAGE_CONNECTION_SETTINGS } from '../storage/index.js';
-
-const SchemaStampSchema = z.object({ id: z.literal(1), schema_hash: z.string() });
+import { STORAGE_CONNECTION_SETTINGS, StorageStampSchema } from '../storage/index.js';
 
 /**
  * Recognizes an empty schema or validates its singleton stamp without issuing writes.
  * @returns Whether initialization is required.
  * @throws
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
+ * - JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE: The HQ action key is unavailable
  */
-const validateSchemaStamp = (database: DatabaseSync, schemaHash: string): boolean => {
+const validateSchemaStamp = (
+  database: DatabaseSync,
+  schemaHash: string,
+  actionKeyHash: string,
+): boolean => {
   try {
     if (!database.prepare('SELECT 1 FROM sqlite_schema LIMIT 1').get()) return true;
-    const rows = database.prepare('SELECT id, schema_hash FROM hq_schema LIMIT 2').all();
-    const stamp = SchemaStampSchema.safeParse(rows.length === 1 ? rows[0] : null);
+    const rows = database
+      .prepare('SELECT id, schema_hash, action_key_hash FROM hq_schema LIMIT 2')
+      .all();
+    const stamp = StorageStampSchema.safeParse(rows.length === 1 ? rows[0] : null);
     if (!stamp.success || stamp.data.schema_hash !== schemaHash)
       throw new Exception('The HQ storage is invalid', {
         code: 'JG_AGENT_HQ_STORAGE_INVALID',
+        data: { kind: 'state-conflict' },
+      });
+    if (stamp.data.action_key_hash !== actionKeyHash)
+      throw new Exception('The HQ action key is unavailable', {
+        code: 'JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE',
         data: { kind: 'state-conflict' },
       });
     return false;
@@ -40,12 +49,15 @@ const validateSchemaStamp = (database: DatabaseSync, schemaHash: string): boolea
  * @returns The worker-owned connection and complete HQ schema hash.
  * @throws
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
+ * - JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE: The HQ action key is unavailable
  */
 export const openDatabase = (
   databasePath: string,
   source: string,
+  actionKey: Uint8Array,
 ): { database: DatabaseSync; schemaHash: string } => {
   const schemaHash = hashValue(source);
+  const actionKeyHash = hashValue(actionKey);
   const options = {
     timeout: STORAGE_CONNECTION_SETTINGS.busyTimeoutMs,
     enableForeignKeyConstraints: STORAGE_CONNECTION_SETTINGS.foreignKeys,
@@ -53,7 +65,7 @@ export const openDatabase = (
   let inspection: DatabaseSync | undefined;
   try {
     inspection = new DatabaseSync(databasePath, { ...options, readOnly: true });
-    validateSchemaStamp(inspection, schemaHash);
+    validateSchemaStamp(inspection, schemaHash, actionKeyHash);
   } catch (cause) {
     if (isException(cause)) throw cause;
     throw new Exception('The HQ storage is invalid', {
@@ -66,7 +78,7 @@ export const openDatabase = (
   }
   const database = new DatabaseSync(databasePath, options);
   try {
-    if (validateSchemaStamp(database, schemaHash)) {
+    if (validateSchemaStamp(database, schemaHash, actionKeyHash)) {
       database.exec('BEGIN IMMEDIATE');
       try {
         if (database.prepare('SELECT 1 FROM sqlite_schema LIMIT 1').get())
@@ -75,7 +87,9 @@ export const openDatabase = (
             data: { kind: 'state-conflict' },
           });
         database.exec(source);
-        database.prepare('INSERT INTO hq_schema (id, schema_hash) VALUES (1, ?)').run(schemaHash);
+        database
+          .prepare('INSERT INTO hq_schema (id, schema_hash, action_key_hash) VALUES (1, ?, ?)')
+          .run(schemaHash, actionKeyHash);
         database.exec('COMMIT');
       } catch (cause) {
         database.exec('ROLLBACK');

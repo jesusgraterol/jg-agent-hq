@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { hashValue } from 'jg-crypto';
 import { Exception, extractMessage, isException } from 'jg-exception';
 import { z } from 'zod';
 
@@ -17,6 +18,7 @@ import { suggestThreadName } from '../sessions/names/index.js';
 import { createSkills } from '../skills/index.js';
 import { createStore } from '../store/index.js';
 import { createStorage } from '../storage/index.js';
+import { registerSnapshotContext } from '../snapshots/index.js';
 import { createPlans, type IPlanStopJob } from '../plans/index.js';
 
 import {
@@ -367,7 +369,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     await close();
     throw error;
   }
-  return {
+  const runtime: IAgentHq = {
     stateRoot,
     closed,
     request,
@@ -387,4 +389,15 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       storage.run(() => browser.perform(input, operatorId, execute)),
     readBrowserAction: (id, operatorId) => storage.run(() => browser.read(id, operatorId)),
   };
+  registerSnapshotContext({
+    runtime,
+    stateRoot,
+    actionKeyHash: hashValue(actionKey),
+    coordinationRoot: coordinationRoot ?? stateRoot,
+    allowedRoots,
+    store: projection,
+    maintenance: storage.withStorageMaintenance,
+    isClosing: () => Boolean(closing),
+  });
+  return runtime;
 };

@@ -48,6 +48,7 @@ import {
  * @throws
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
+ * - JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE: The HQ action key is unavailable
  */
 export const createStore = async (
   databasePath: string,
@@ -76,7 +77,7 @@ export const createStore = async (
     {
       resolve: (result: unknown) => void;
       reject: (error: unknown) => void;
-      timer: ReturnType<typeof setTimeout>;
+      timer: ReturnType<typeof setTimeout> | undefined;
     }
   >();
   let sequence = 0;
@@ -195,17 +196,20 @@ export const createStore = async (
         }),
       );
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pending.delete(id);
-        reject(
-          new Exception('The HQ store failed: request deadline exceeded', {
-            code: 'JG_AGENT_HQ_STORE_FAILED',
-            data: {
-              kind: 'operation-failed',
-            },
-          }),
-        );
-      }, 5000);
+      const timer =
+        command.kind === 'snapshot-backup'
+          ? undefined
+          : setTimeout(() => {
+              pending.delete(id);
+              reject(
+                new Exception('The HQ store failed: request deadline exceeded', {
+                  code: 'JG_AGENT_HQ_STORE_FAILED',
+                  data: {
+                    kind: 'operation-failed',
+                  },
+                }),
+              );
+            }, 5000);
       pending.set(id, {
         resolve: (result) => {
           const checked = schema.safeParse(result);
@@ -244,7 +248,13 @@ export const createStore = async (
     collaboration: (command, binding) =>
       request({ kind: 'collaboration', request: command, binding }, CollaborationResponseSchema),
     recoverCollaborationFanout: () => request({ kind: 'collaboration-fanout' }, z.boolean()),
-    prepareStorageMaintenance: () => request({ kind: 'storage-maintenance' }, z.boolean()),
+    prepareStorageMaintenance: (isSnapshot) =>
+      request({ kind: 'storage-maintenance', isSnapshot }, z.boolean()),
+    snapshotPlans: (after) =>
+      request({ kind: 'snapshot-plans', after }, z.array(z.string()).max(128)),
+    snapshotBackup: async (destination) => {
+      await request({ kind: 'snapshot-backup', destination }, z.null());
+    },
     getBrowserAction: (id, operatorId) =>
       request({ kind: 'browser-read', id, operatorId }, BrowserReceiptSchema.nullable()),
     admitBrowserAction: (action, operatorId) =>

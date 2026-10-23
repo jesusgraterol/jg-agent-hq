@@ -63,6 +63,14 @@ export type { INativeLineage } from './contracts/identities/index.js';
 // trusted host storage
 export type { IStorageDescriptor, IStorageMaintenanceOperation } from './storage/index.js';
 
+// trusted host snapshot and offline recovery
+export { createHqSnapshot, inspectHqSnapshot, restoreHqSnapshot } from './snapshots/index.js';
+export type {
+  IHqSnapshotInspection,
+  IHqRestoreOptions,
+  IHqRestoreResult,
+} from './snapshots/index.js';
+
 // pure execution revision contracts
 export { computePlanRevision } from './plans/index.js';
 export type { IPlanContract, IPlanContractParser } from './plans/index.js';

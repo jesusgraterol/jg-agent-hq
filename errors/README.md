@@ -41,6 +41,8 @@ These contracts use the named codes below. An Exception's `data.kind` classifies
 | JG_AGENT_HQ_TRANSPORT_FAILED           | The HQ transport failed                                          |
 | JG_AGENT_HQ_STORE_FAILED               | The HQ store failed                                              |
 | JG_AGENT_HQ_STORAGE_INVALID            | The HQ storage is invalid                                        |
+| JG_AGENT_HQ_SNAPSHOT_INVALID           | The HQ snapshot is invalid                                       |
+| JG_AGENT_HQ_SNAPSHOT_FAILED            | The HQ snapshot operation failed                                 |
 | JG_AGENT_HQ_PROVIDER_FAILED            | The HQ provider integration failed                               |
 | JG_AGENT_HQ_CAPABILITY_UNAVAILABLE     | The HQ capability is unavailable                                 |
 | JG_AGENT_HQ_RUNTIME_NOT_RUNNING        | The HQ runtime is not running                                    |
@@ -52,9 +54,11 @@ These contracts use the named codes below. An Exception's `data.kind` classifies
 | JG_AGENT_HQ_PLAN_INVALID               | The HQ plan is invalid                                           |
 | JG_AGENT_HQ_PLAN_FAILED                | The HQ plan operation failed                                     |
 
-State safety rejects non-private ownership, symlinks and non-regular files. Runtime ownership is never reclaimed automatically. Transport failure includes malformed, oversized or incomplete frames and bounded-request/lifecycle failures. Native history and subscription failures remain unavailable, never successful empty results. Claude control rejects missing or non-idle initialization, invalid native session identities and malformed lifecycle evidence. Failed delivery remains uncertain when no exact native rejection or acknowledgement establishes its outcome.
+State safety rejects non-private ownership, symlinks and non-regular files. ACTION_KEY_UNAVAILABLE also rejects a valid-length key whose fingerprint differs from the database stamp, before opening a writer. Runtime ownership is never reclaimed automatically. Transport failure includes malformed, oversized or incomplete frames and bounded-request/lifecycle failures. Native history and subscription failures remain unavailable, never successful empty results. Claude control rejects missing or non-idle initialization, invalid native session identities and malformed lifecycle evidence. Failed delivery remains uncertain when no exact native rejection or acknowledgement establishes its outcome.
 
 A nonempty SQLite schema requires exactly one matching `hq_schema` stamp. Missing, malformed or mismatched stamps use STORAGE_INVALID with the safe state-conflict classification before HQ changes the database. Read-only validation preserves uncheckpointed WAL state on rejection. Initialization failures roll back the complete HQ schema. Storage maintenance uses ACTION_CONFLICT for concurrent maintenance, calls from admitted work, active native execution or an unresolved plan write. Host callback errors propagate unchanged after admission is released.
+
+Snapshot capture retains prepared document writes but uses ACTION_CONFLICT for active native execution, concurrent maintenance and document contention. SNAPSHOT_INVALID classifies invalid selections or incomplete, corrupt, unsafe or occupied snapshot/recovery paths as invalid-request. SNAPSHOT_FAILED classifies operational backup, copy, worker, lock-release and cleanup failures as operation-failed. Its stable message may carry a private extracted diagnostic suffix. These contracts belong only to trusted Node snapshot exports.
 
 A native or worker startup failure whose cleanup could not be confirmed carries internal `cleanupUnconfirmed: true`. The runtime retains its owner record in that case rather than allowing a new host to assume its resources have stopped.
 

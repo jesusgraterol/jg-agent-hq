@@ -1,6 +1,7 @@
 CREATE TABLE hq_schema (
   id INTEGER NOT NULL CONSTRAINT hq_pk_schema__id PRIMARY KEY CHECK (id = 1),
-  schema_hash TEXT NOT NULL CHECK (length(schema_hash) = 64)
+  schema_hash TEXT NOT NULL CHECK (length(schema_hash) = 64),
+  action_key_hash TEXT NOT NULL CHECK (length(action_key_hash) = 64)
 ) STRICT;
 
 CREATE TABLE hq_native_history_index (
@@ -510,3 +511,28 @@ CREATE TABLE hq_agent_spawn (
   CONSTRAINT hq_fk_as__parent FOREIGN KEY (task_id, parent_agent_id) REFERENCES hq_task_agent(task_id, agent_id),
   CONSTRAINT hq_fk_as__child FOREIGN KEY (task_id, child_agent_id) REFERENCES hq_task_agent(task_id, agent_id)
 ) STRICT;
+
+-- durable plan references support seek enumeration without repeated JSON scans
+CREATE TABLE hq_plan_registration (
+  directory TEXT NOT NULL CONSTRAINT hq_pk_preg__directory PRIMARY KEY
+) STRICT;
+CREATE TRIGGER hq_trg_po__register AFTER INSERT ON hq_plan_operation
+BEGIN INSERT INTO hq_plan_registration VALUES (new.directory) ON CONFLICT(directory) DO NOTHING; END;
+CREATE TRIGGER hq_trg_pp__register AFTER INSERT ON hq_plan_projection
+BEGIN INSERT INTO hq_plan_registration VALUES (new.directory) ON CONFLICT(directory) DO NOTHING; END;
+CREATE TRIGGER hq_trg_prp__register AFTER INSERT ON hq_plan_revision_projection
+BEGIN INSERT INTO hq_plan_registration VALUES (new.directory) ON CONFLICT(directory) DO NOTHING; END;
+CREATE TRIGGER hq_trg_tp__register AFTER INSERT ON hq_thread_plan
+BEGIN INSERT INTO hq_plan_registration VALUES (new.directory) ON CONFLICT(directory) DO NOTHING; END;
+CREATE TRIGGER hq_trg_tp__register_update AFTER UPDATE OF directory ON hq_thread_plan
+BEGIN INSERT INTO hq_plan_registration VALUES (new.directory) ON CONFLICT(directory) DO NOTHING; END;
+CREATE TRIGGER hq_trg_ct__register AFTER INSERT ON hq_collaboration_task WHEN new.plan IS NOT NULL
+BEGIN INSERT INTO hq_plan_registration VALUES (json_extract(new.plan, '$.directory')) ON CONFLICT(directory) DO NOTHING; END;
+CREATE TRIGGER hq_trg_ct__register_update AFTER UPDATE OF plan ON hq_collaboration_task WHEN new.plan IS NOT NULL
+BEGIN INSERT INTO hq_plan_registration VALUES (json_extract(new.plan, '$.directory')) ON CONFLICT(directory) DO NOTHING; END;
+CREATE TRIGGER hq_trg_sg__register AFTER INSERT ON hq_skill_grant WHEN new.plan IS NOT NULL
+BEGIN INSERT INTO hq_plan_registration VALUES (json_extract(new.plan, '$.directory')) ON CONFLICT(directory) DO NOTHING; END;
+CREATE TRIGGER hq_trg_r__register AFTER INSERT ON hq_request WHEN json_extract(new.specification, '$.plan') IS NOT NULL
+BEGIN INSERT INTO hq_plan_registration VALUES (json_extract(new.specification, '$.plan.directory')) ON CONFLICT(directory) DO NOTHING; END;
+CREATE TRIGGER hq_trg_r__register_update AFTER UPDATE OF specification ON hq_request WHEN json_extract(new.specification, '$.plan') IS NOT NULL
+BEGIN INSERT INTO hq_plan_registration VALUES (json_extract(new.specification, '$.plan.directory')) ON CONFLICT(directory) DO NOTHING; END;
