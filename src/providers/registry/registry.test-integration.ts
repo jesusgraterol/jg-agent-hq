@@ -22,6 +22,14 @@ import { z } from 'zod';
 import { withClaudeRuntime, writeFixtureControl } from '../../../scripts/test-support/index.js';
 
 const supported = { state: 'supported', changeMode: 'live', reason: null } as const;
+const unsupported = {
+  state: 'unsupported',
+  changeMode: null,
+  reason: {
+    code: 'fixture-observation-unsupported',
+    message: 'The test provider does not expose this native observation.',
+  },
+} as const;
 
 /** Models only an external provider; HQ admission, actions, persistence and IPC remain real. */
 const createFixtureProvider = () => {
@@ -68,6 +76,19 @@ const createFixtureProvider = () => {
       compact: supported,
       revert: supported,
       configuration: supported,
+      account: unsupported,
+      mcpServers: unsupported,
+      mcpTools: unsupported,
+      mcpResources: unsupported,
+      skillsReload: unsupported,
+      mcpReload: unsupported,
+      mcpReconnect: unsupported,
+      mcpSetEnabled: unsupported,
+      mcpLogin: unsupported,
+      pluginsReload: unsupported,
+      accountLogin: unsupported,
+      accountLoginCancel: unsupported,
+      accountLogout: unsupported,
     },
     inputSchema: z.record(z.string(), z.json()).parse(z.toJSONSchema(MessageInputSchema)),
     configurationSchema: null,
@@ -87,6 +108,48 @@ const createFixtureProvider = () => {
           return !isClosed;
         },
         readCapabilities: async () => capabilities,
+        readLogin: async () => ({
+          state: 'unavailable',
+          authorizationUrl: null,
+          canCancel: false,
+          observedAt: null,
+        }),
+        controlAccount: async () => {
+          throw new Error('Unsupported fixture operation');
+        },
+        controlExtensions: async () => {
+          throw new Error('Unsupported fixture operation');
+        },
+        readAccount: async () => ({
+          provider: factory.id,
+          state: 'unavailable',
+          accountType: null,
+          email: null,
+          organization: null,
+          subscription: null,
+          isAuthenticationRequired: null,
+          observedAt: null,
+          source: 'native',
+        }),
+        readMcpServers: async () => ({
+          state: 'unsupported',
+          data: [],
+          observedAt: null,
+          unavailableCount: 0,
+          nextCursor: null,
+        }),
+        readMcpTools: async () => ({
+          state: 'unsupported',
+          data: [],
+          observedAt: null,
+          unavailableCount: 0,
+        }),
+        readMcpResources: async () => ({
+          state: 'unsupported',
+          data: [],
+          observedAt: null,
+          unavailableCount: 0,
+        }),
         readConfiguration: async (command, nativeId) => ({
           provider: factory.id,
           nativeId: nativeId ?? null,

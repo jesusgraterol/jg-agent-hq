@@ -1,3 +1,18 @@
+// native authentication and extension controls
+export {
+  AccountControlCommandSchema,
+  LoginObservationSchema,
+  LoginRequestSchema,
+  NativeControlResultSchema,
+} from './accounts/index.js';
+export type {
+  IAccountControlCommand,
+  ILoginObservation,
+  INativeControlResult,
+} from './accounts/index.js';
+export { ExtensionControlCommandSchema } from './extensions/index.js';
+export type { IExtensionControlCommand } from './extensions/index.js';
+
 // constants
 export {
   DEFAULT_PAGE_SIZE,
@@ -258,3 +273,26 @@ export {
   TurnResultSchema,
 } from './results/index.js';
 export type { IOutputSchema, ITurnUsage, ITurnResult } from './results/index.js';
+// native accounts and configured MCP inventories
+export { AccountRequestSchema, AccountObservationSchema } from './accounts/index.js';
+export type { IAccountRequest, IAccountObservation } from './accounts/index.js';
+export {
+  MAX_MCP_ITEMS,
+  MAX_MCP_CATALOG_BYTES,
+  McpRequestSchema,
+  McpServerSchema,
+  McpToolSchema,
+  McpResourceSchema,
+  McpServerPageSchema,
+  McpToolPageSchema,
+  McpResourcePageSchema,
+} from './extensions/index.js';
+export type {
+  IMcpRequest,
+  IMcpServer,
+  IMcpTool,
+  IMcpResource,
+  IMcpServerPage,
+  IMcpToolPage,
+  IMcpResourcePage,
+} from './extensions/index.js';

@@ -6,6 +6,10 @@ import {
   HistoryItemSchema,
   MAX_PROVIDERS,
   ApprovalPresentationSchema,
+  AccountObservationSchema,
+  LoginObservationSchema,
+  NativeControlResultSchema,
+  MAX_MCP_CATALOG_BYTES,
   ProviderCapabilitySetSchema,
   ProviderIdSchema,
   ProviderStatusSchema,
@@ -21,6 +25,11 @@ import {
 import { NativeIdSchema } from '../../contracts/identities/index.js';
 import { MAX_FRAME_BYTES } from '../../ipc/index.js';
 import { ApprovalRecordSchema } from '../../store/control/index.js';
+import {
+  ProviderMcpServerPageSchema,
+  ProviderMcpToolsSchema,
+  ProviderMcpResourcesSchema,
+} from '../extensions/index.js';
 import {
   ProviderInspectionSchema,
   ProviderThreadSchema,
@@ -82,6 +91,19 @@ const unavailableCapabilities = (): IProviderCapabilitySet => {
       compact: unavailable,
       revert: unavailable,
       configuration: unavailable,
+      account: unavailable,
+      mcpServers: unavailable,
+      mcpTools: unavailable,
+      mcpResources: unavailable,
+      skillsReload: unavailable,
+      mcpReload: unavailable,
+      mcpReconnect: unavailable,
+      mcpSetEnabled: unavailable,
+      mcpLogin: unavailable,
+      pluginsReload: unavailable,
+      accountLogin: unavailable,
+      accountLoginCancel: unavailable,
+      accountLogout: unavailable,
     },
     inputSchema: null,
     configurationSchema: null,
@@ -351,6 +373,51 @@ export const createProviderRegistry = (
               const result = await adapter.readCapabilities(nativeId, call);
               if (Buffer.byteLength(JSON.stringify(result)) > 65_536) capabilityUnavailable();
               return ProviderCapabilitySetSchema.parse(result);
+            }),
+          readLogin: (requestId) =>
+            invoke(async (call) =>
+              LoginObservationSchema.parse(await adapter.readLogin(requestId, call)),
+            ),
+          controlAccount: (requestId, command, loginRequestId) =>
+            invokeControl(async (call) =>
+              NativeControlResultSchema.parse(
+                await adapter.controlAccount(requestId, command, loginRequestId, call),
+              ),
+            ),
+          controlExtensions: (requestId, nativeId, workspaceRoot, command) =>
+            invokeControl(async (call) =>
+              NativeControlResultSchema.parse(
+                await adapter.controlExtensions(requestId, nativeId, workspaceRoot, command, call),
+              ),
+            ),
+          readAccount: () =>
+            invoke(async (call) => {
+              const result = AccountObservationSchema.parse(await adapter.readAccount(call));
+              if (result.provider !== provider) rejectProviderResponse();
+              return result;
+            }),
+          readMcpServers: (nativeId, limit, cursor) =>
+            invoke(async (call) => {
+              const raw = await adapter.readMcpServers(nativeId, limit, cursor, call);
+              if (Buffer.byteLength(JSON.stringify(raw)) > MAX_MCP_CATALOG_BYTES)
+                rejectProviderResponse();
+              const page = ProviderMcpServerPageSchema.parse(raw);
+              if (page.data.length > limit) rejectProviderResponse();
+              return page;
+            }),
+          readMcpTools: (nativeId, serverName) =>
+            invoke(async (call) => {
+              const raw = await adapter.readMcpTools(nativeId, serverName, call);
+              if (Buffer.byteLength(JSON.stringify(raw)) > MAX_MCP_CATALOG_BYTES)
+                rejectProviderResponse();
+              return ProviderMcpToolsSchema.parse(raw);
+            }),
+          readMcpResources: (nativeId, serverName) =>
+            invoke(async (call) => {
+              const raw = await adapter.readMcpResources(nativeId, serverName, call);
+              if (Buffer.byteLength(JSON.stringify(raw)) > MAX_MCP_CATALOG_BYTES)
+                rejectProviderResponse();
+              return ProviderMcpResourcesSchema.parse(raw);
             }),
           readHistory: (command) =>
             invoke(async (call) =>

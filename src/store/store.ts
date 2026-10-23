@@ -311,6 +311,8 @@ export const createStore = async (
     listThreads: (workspaceRoot, page) =>
       request({ kind: 'threads', workspaceRoot, page }, ManagedThreadPageSchema),
     listActions: (threadId, page) => request({ kind: 'actions', threadId, page }, ActionPageSchema),
+    listProviderActions: (provider, page) =>
+      request({ kind: 'provider-actions', provider, page }, ActionPageSchema),
     listApprovals: (threadId, page) =>
       request({ kind: 'approvals', threadId, page }, ApprovalPageSchema),
     listEvents: (page) => request({ kind: 'events', page }, LifecyclePageSchema),

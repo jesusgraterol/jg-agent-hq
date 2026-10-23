@@ -30,6 +30,9 @@ export type {
   IProviderThread,
   IProviderInspection,
   IProviderSkills,
+  IProviderMcpServerPage,
+  IProviderMcpTools,
+  IProviderMcpResources,
 } from './providers/index.js';
 export type {
   IProviderId,

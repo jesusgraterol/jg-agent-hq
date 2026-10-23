@@ -161,7 +161,13 @@ const startWorker = async (): Promise<void> => {
             result = controls.listThreads(command.workspaceRoot, command.page);
             break;
           case 'actions':
-            result = controls.listActions(command.threadId, command.page);
+          case 'provider-actions':
+            result = controls.listActions(
+              command.kind === 'actions'
+                ? { threadId: command.threadId }
+                : { provider: command.provider },
+              command.page,
+            );
             break;
           case 'events':
             result = controls.listEvents(command.page);

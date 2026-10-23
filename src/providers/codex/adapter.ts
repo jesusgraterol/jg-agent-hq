@@ -151,6 +151,43 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
             compact: SUPPORTED_PROVIDER_OPERATION,
             revert: SUPPORTED_PROVIDER_OPERATION,
             configuration: SUPPORTED_PROVIDER_OPERATION,
+            account: SUPPORTED_PROVIDER_OPERATION,
+            skillsReload: SUPPORTED_PROVIDER_OPERATION,
+            mcpReload: SUPPORTED_PROVIDER_OPERATION,
+            mcpReconnect: {
+              state: 'unsupported',
+              changeMode: null,
+              reason: {
+                code: 'native-control-unsupported',
+                message:
+                  'The native interface has no qualified structured control for this operation.',
+              },
+            },
+            mcpSetEnabled: {
+              state: 'unsupported',
+              changeMode: null,
+              reason: {
+                code: 'native-control-unsupported',
+                message:
+                  'The native interface has no qualified structured control for this operation.',
+              },
+            },
+            mcpLogin: SUPPORTED_PROVIDER_OPERATION,
+            pluginsReload: {
+              state: 'unsupported',
+              changeMode: null,
+              reason: {
+                code: 'native-control-unsupported',
+                message:
+                  'The native interface has no qualified structured control for this operation.',
+              },
+            },
+            accountLogin: SUPPORTED_PROVIDER_OPERATION,
+            accountLoginCancel: SUPPORTED_PROVIDER_OPERATION,
+            accountLogout: SUPPORTED_PROVIDER_OPERATION,
+            mcpServers: SUPPORTED_PROVIDER_OPERATION,
+            mcpTools: SUPPORTED_PROVIDER_OPERATION,
+            mcpResources: SUPPORTED_PROVIDER_OPERATION,
           },
           inputSchema: {
             ...PROVIDER_INPUT_SCHEMA,
@@ -214,6 +251,15 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
         };
       },
       readUsage: () => native.readUsage(),
+      readAccount: () => native.readAccount(),
+      readLogin: (requestId) => native.readLogin(requestId),
+      controlAccount: (requestId, command, loginRequestId) =>
+        native.controlAccount(requestId, command, loginRequestId),
+      controlExtensions: (requestId, nativeId, workspaceRoot, command) =>
+        native.controlExtensions(requestId, nativeId, workspaceRoot, command),
+      readMcpServers: (nativeId, limit, cursor) => native.readMcpServers(nativeId, limit, cursor),
+      readMcpTools: (nativeId, serverName) => native.readMcpTools(nativeId, serverName),
+      readMcpResources: (nativeId, serverName) => native.readMcpResources(nativeId, serverName),
       readSkills: (_nativeId, workspaceRoot) => native.readSkills(workspaceRoot),
       formatSkill: (skill, argumentsText) =>
         `$${skill.name}${argumentsText ? ` ${argumentsText}` : ''}`,

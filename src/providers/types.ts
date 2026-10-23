@@ -19,8 +19,18 @@ import type {
   IConfigurationRequest,
   ISessionConfiguration,
   IPreparedInput,
+  IAccountObservation,
+  IAccountControlCommand,
+  IExtensionControlCommand,
+  ILoginObservation,
+  INativeControlResult,
 } from '../contracts/index.js';
 import type { IProviderInputFile } from './inputs/index.js';
+import type {
+  IProviderMcpServerPage,
+  IProviderMcpTools,
+  IProviderMcpResources,
+} from './extensions/index.js';
 import type { IHistoryRequest } from '../sessions/index.js';
 import type { INativeObservation, INativeOutcome } from '../store/control/index.js';
 
@@ -135,6 +145,44 @@ export type IAgentProvider = {
   ): Promise<IProviderInspection>;
   /** @returns Native quota observations without starting a model turn. */
   readUsage(call: IProviderCall): Promise<IUsageSnapshot>;
+  /** @returns Safe native account metadata, with an explicit unavailable observation when absent. */
+  readAccount(call: IProviderCall): Promise<IAccountObservation>;
+  /** @returns Safe live authentication presentation for one exact admitted request. */
+  readLogin(requestId: string, call: IProviderCall): Promise<ILoginObservation>;
+  /** @returns Native account-control acknowledgement; completion is observed separately for login. */
+  controlAccount(
+    requestId: string,
+    command: IAccountControlCommand,
+    loginRequestId: string | undefined,
+    call: IProviderCall,
+  ): Promise<INativeControlResult>;
+  /** @returns Native acknowledgement for a concrete extension operation. */
+  controlExtensions(
+    requestId: string,
+    nativeId: string,
+    workspaceRoot: string,
+    command: IExtensionControlCommand,
+    call: IProviderCall,
+  ): Promise<INativeControlResult>;
+  /** @returns One native server page without configuration credentials. */
+  readMcpServers(
+    nativeId: string,
+    limit: number,
+    cursor: string | undefined,
+    call: IProviderCall,
+  ): Promise<IProviderMcpServerPage>;
+  /** @returns A bounded inventory for one configured native MCP server. */
+  readMcpTools(
+    nativeId: string,
+    serverName: string,
+    call: IProviderCall,
+  ): Promise<IProviderMcpTools>;
+  /** @returns Bounded native resource metadata, or an explicit unsupported state. */
+  readMcpResources(
+    nativeId: string,
+    serverName: string,
+    call: IProviderCall,
+  ): Promise<IProviderMcpResources>;
   /** @returns The bounded native skill inventory for the selected session. */
   readSkills(
     nativeId: string,

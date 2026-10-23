@@ -33,6 +33,7 @@ else {
   let threadSequence = 0;
   let turnSequence = 0;
   const interrupts = [];
+  const logins=new Map();
   const complete = (threadId,status = 'completed') => {
     const thread = managed.get(threadId);
     if (!thread?.activeTurn) return;
@@ -76,6 +77,38 @@ else {
         return {name,description:control.skillDescriptionSize?'d'.repeat(control.skillDescriptionSize):'Native installed skill '+index,path:join(directory,'skills',name,'SKILL.md'),scope:'user',enabled:!(control.disabledSkill&&index===0),dependencies:{tools:[{type:'mcp',value:'example',description:'Native declared prerequisite'}]}};
       });
       respond(request.id,{data:[{cwd:control.wrongSkillRoot??params.cwds[0],skills,errors:control.skillErrors?[{}]:[]}]});return;
+    }
+    if(method==='account/login/start'||method==='mcpServer/oauth/login'){
+      if(control.rejectAuth){process.stdout.write(JSON.stringify({id:request.id,error:{code:-32603,message:'Sensitive native failure must not escape'}})+'\n');return;}
+      const loginId=control.sharedMcpLoginId&&method==='mcpServer/oauth/login'?'shared-native-login':'login-'+request.id;
+      const kind=method==='account/login/start'?'account':'mcp';
+      logins.set(loginId,{kind,threadId:params.threadId,name:params.name});
+      const completeLogin=()=>{notify(kind==='account'?'account/login/completed':'mcpServer/oauthLogin/completed',{loginId:control.wrongLoginId?'unrelated-login':loginId,success:control.loginFails?false:true,threadId:params.threadId,name:params.name});if(control.duplicateLoginCompletion)notify(kind==='account'?'account/login/completed':'mcpServer/oauthLogin/completed',{loginId,success:true,threadId:params.threadId,name:params.name});};
+      if(control.loginCompletesEarly)completeLogin();
+      const acknowledge=()=>respond(request.id,kind==='account'?{type:'chatgpt',loginId,authUrl:'https://auth.example.test/authorize?state=transient-challenge'}:{loginId,authorizationUrl:'https://mcp.example.test/authorize?state=transient-challenge'});if(control.lateAuth)setTimeout(acknowledge,31000);else acknowledge();
+      if(control.loginCompletes)setImmediate(completeLogin);
+      return;
+    }
+    if(method==='account/login/cancel'){
+      const login=logins.get(params.loginId);
+      if(login&&control.cancelNotifiesEarly)notify('account/login/completed',{loginId:params.loginId,success:false,error:'Canceled'});
+      respond(request.id,{status:login?'canceled':'notFound'});logins.delete(params.loginId);return;
+    }
+    if(method==='account/logout'){
+      writeFileSync(join(directory,'control.json'),JSON.stringify({...control,account:null}));
+      notify('account/updated',{authMode:null});respond(request.id,{});return;
+    }
+    if(method==='config/mcpServer/reload'){
+      if(control.rejectExtension){process.stdout.write(JSON.stringify({id:request.id,error:{code:-32602,message:'Sensitive native failure must not escape'}})+'\n');return;}
+      if(control.lateExtension)setTimeout(()=>respond(request.id,{}),31000);else respond(request.id,{});return;
+    }
+    if (method === 'account/read') {respond(request.id,control.accountUnavailable?{}:{account:Object.hasOwn(control,'account')?control.account:{type:'chatgpt',email:'fixture@example.com',planType:'pro',token:'credential-must-not-be-returned'},requiresOpenaiAuth:true,credential:'credential-must-not-be-returned'});return;}
+    if (method === 'mcpServerStatus/list') {
+      if(control.mcpFailure){process.stdout.write(JSON.stringify({id:request.id,error:{code:-32603,message:'Native catalog unavailable'}})+'\n');return;}
+      const servers=control.mcpServers??[{name:'fixture-server',runtimeStatus:'connected',authStatus:'oAuth',pluginId:null,serverInfo:{name:'Fixture MCP',version:'1'},tools:{inspect:{name:'inspect',description:'Fixture native tool',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true}}},toolsError:null,resources:[{uri:'fixture://readme',name:'Fixture readme',mimeType:'text/plain'}],resourceTemplates:[{uriTemplate:'fixture://{name}',name:'Fixture template'}],config:{headers:{authorization:'credential-must-not-be-returned'}}}];
+      const selected=params.serverName?servers.filter(server=>server.name===params.serverName):servers;
+      const offset=Number(params.cursor??0),limit=params.limit??32;
+      respond(request.id,{data:selected.slice(offset,offset+limit),nextCursor:offset+limit<selected.length?String(offset+limit):null});return;
     }
     if (method === 'thread/start') {
       const nativeId='native-'+(++threadSequence);

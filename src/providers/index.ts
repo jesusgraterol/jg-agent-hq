@@ -41,4 +41,9 @@ export { createClaudeControl } from './claude/control/index.js';
 // bounded native inputs and complete results
 export { readInputFiles } from './inputs/index.js';
 export type { IProviderInputFile } from './inputs/index.js';
+export type {
+  IProviderMcpServerPage,
+  IProviderMcpTools,
+  IProviderMcpResources,
+} from './extensions/index.js';
 export { toTurnResult } from './results/index.js';

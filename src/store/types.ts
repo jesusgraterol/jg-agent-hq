@@ -147,6 +147,11 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     threadId: z.uuid(),
     page: ControlPageSchema,
   }),
+  z.strictObject({
+    kind: z.literal('provider-actions'),
+    provider: ManagedThreadSchema.shape.provider,
+    page: ControlPageSchema,
+  }),
   z.strictObject({ kind: z.literal('events'), page: EventPageSchema }),
   z.strictObject({
     kind: z.literal('approvals'),
@@ -427,6 +432,16 @@ export type IStore = {
    */
   listActions(
     threadId: string,
+    page: IControlPage,
+  ): Promise<{ data: IActionSummary[]; hasMore: boolean }>;
+  /**
+   * Reads indexed global provider actions, including authentication receipts.
+   * @returns One descending seek page without queued input or result bodies.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  listProviderActions(
+    provider: string,
     page: IControlPage,
   ): Promise<{ data: IActionSummary[]; hasMore: boolean }>;
   /**

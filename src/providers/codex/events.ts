@@ -47,6 +47,7 @@ export const createCodexEvents = (
     }
   >();
   return {
+    controlOutcome: (outcome) => events.outcome(outcome),
     prepareTurn(nativeId, schema) {
       if (!turns.has(nativeId) && turns.size >= 32) parseNative(z.never(), nativeId);
       turns.set(nativeId, {

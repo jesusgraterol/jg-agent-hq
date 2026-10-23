@@ -11,6 +11,7 @@ import type {
   INativeApprovalSummary,
   IPreparedInput,
   IPlanRevisionWorkflow,
+  ILoginObservation,
 } from '../contracts/index.js';
 import { getErrorKind } from '../errors/index.js';
 import type { INativePrompt, IProviderThread } from '../providers/index.js';
@@ -41,6 +42,7 @@ export const createActions = (
   skills: ReturnType<typeof createSkills>,
   plans: ReturnType<typeof createPlans>,
   runBackground: (operation: () => Promise<void>) => Promise<void>,
+  invalidateNativeCatalogs: () => void,
 ) => {
   const prompts = new Map<string, { native: INativePrompt; threadId: string }>();
   const controlled = new Map<string, { provider: IManagedThread['provider']; nativeId: string }>();
@@ -251,7 +253,12 @@ export const createActions = (
     if (thread?.nativeId && (outcome.kind === 'closed' || outcome.kind === 'archived')) {
       controlled.delete(key(thread.provider, thread.nativeId));
     }
-    if (thread?.state === 'completed') advanceQueue(thread.id, thread.provider);
+    if (
+      thread?.state === 'completed' &&
+      outcome.kind !== 'control-accepted' &&
+      outcome.kind !== 'control-completed'
+    )
+      advanceQueue(thread.id, thread.provider);
     return receipt;
   };
 
@@ -325,7 +332,39 @@ export const createActions = (
           : null;
       if (requestId.endsWith(':fork') && !source?.nativeId) conflict();
       hasDispatched = true;
-      if (requestId.endsWith(':create') || requestId.endsWith(':fork')) {
+      if (requestId.endsWith(':control')) {
+        if (
+          !nativeId ||
+          ![
+            'skills-reload',
+            'mcp-reload',
+            'mcp-reconnect',
+            'mcp-set-enabled',
+            'mcp-login',
+            'plugins-reload',
+          ].includes(command.kind)
+        )
+          conflict();
+        const result = await control.controlExtensions(
+          requestId,
+          nativeId,
+          thread.workspaceRoot,
+          command as Extract<
+            IActionEnvelope['command'],
+            {
+              kind:
+                | 'skills-reload'
+                | 'mcp-reload'
+                | 'mcp-reconnect'
+                | 'mcp-set-enabled'
+                | 'mcp-login'
+                | 'plugins-reload';
+            }
+          >,
+        );
+        invalidateNativeCatalogs();
+        await apply({ kind: 'control-accepted', actionId: receipt.id, requestId, ...result });
+      } else if (requestId.endsWith(':create') || requestId.endsWith(':fork')) {
         const created = await verifyThread(
           thread,
           requestId.endsWith(':fork')
@@ -551,10 +590,21 @@ export const createActions = (
           !receipt ||
           receipt.runtimeEpoch !== epoch ||
           receipt.nativeRequestId !== outcome.requestId ||
-          !['submitted', 'uncertain'].includes(receipt.delivery) ||
-          !receipt.threadId
+          (!['submitted', 'uncertain'].includes(receipt.delivery) &&
+            !(
+              outcome.kind === 'control-completed' &&
+              receipt.delivery === 'acknowledged' &&
+              receipt.completion === null
+            )) ||
+          receipt.provider !== provider
         )
           return;
+        if (outcome.kind === 'control-accepted' || outcome.kind === 'control-completed') {
+          invalidateNativeCatalogs();
+          await apply(outcome);
+          return;
+        }
+        if (!receipt.threadId) return;
         const thread = await store.getThread(receipt.threadId);
         if (!thread || thread.provider !== provider) return;
         let verifiedOutcome = outcome;
@@ -653,6 +703,100 @@ export const createActions = (
     if (!provider) return (await plans.admitNative(action, prepared)).receipt;
     const control = await registry.get(provider);
     if (!control.isAvailable) agentUnavailable();
+    if (
+      command.kind === 'account-login' ||
+      command.kind === 'account-login-cancel' ||
+      command.kind === 'account-logout'
+    ) {
+      const capabilities = await control.readCapabilities(undefined);
+      const operation =
+        command.kind === 'account-login'
+          ? 'accountLogin'
+          : command.kind === 'account-login-cancel'
+            ? 'accountLoginCancel'
+            : 'accountLogout';
+      if (capabilities.operations[operation].state !== 'supported') capabilityUnavailable();
+      const admitted = await plans.admitNative(action, prepared);
+      if (admitted.isNew && admitted.dispatchActionId) {
+        runOwned(async () => {
+          let hasDispatched = false;
+          try {
+            const login =
+              command.kind === 'account-login-cancel'
+                ? await store.getAction(command.loginActionId)
+                : null;
+            if (
+              command.kind === 'account-login-cancel' &&
+              (!login?.nativeRequestId ||
+                login.provider !== provider ||
+                login.runtimeEpoch !== epoch)
+            )
+              conflict();
+            hasDispatched = true;
+            const result = await control.controlAccount(
+              admitted.receipt.nativeRequestId!,
+              command,
+              login?.nativeRequestId ?? undefined,
+            );
+            invalidateNativeCatalogs();
+            await apply({
+              kind: 'control-accepted',
+              actionId: action.id,
+              requestId: admitted.receipt.nativeRequestId!,
+              ...result,
+            });
+          } catch (error) {
+            const explicit =
+              isException(error) &&
+              (NativeRejectionSchema.safeParse(error.data).success ||
+                error.code === 'JG_AGENT_HQ_CAPABILITY_UNAVAILABLE' ||
+                error.code === 'JG_AGENT_HQ_ACTION_CONFLICT');
+            await apply(
+              !hasDispatched || explicit
+                ? {
+                    kind: 'failed',
+                    actionId: action.id,
+                    requestId: admitted.receipt.nativeRequestId!,
+                    failure:
+                      getErrorKind(error) === 'state-conflict'
+                        ? 'state-conflict'
+                        : 'agent-unavailable',
+                  }
+                : {
+                    kind: 'uncertain',
+                    actionId: action.id,
+                    requestId: admitted.receipt.nativeRequestId!,
+                  },
+            );
+          }
+        });
+      }
+      return admitted.receipt;
+    }
+    if (
+      command.kind === 'skills-reload' ||
+      command.kind === 'mcp-reload' ||
+      command.kind === 'mcp-reconnect' ||
+      command.kind === 'mcp-set-enabled' ||
+      command.kind === 'mcp-login' ||
+      command.kind === 'plugins-reload'
+    ) {
+      const target = await store.getThread(command.threadId);
+      const capabilities = await control.readCapabilities(target?.nativeId ?? undefined);
+      const operation =
+        command.kind === 'skills-reload'
+          ? 'skillsReload'
+          : command.kind === 'mcp-reload'
+            ? 'mcpReload'
+            : command.kind === 'mcp-reconnect'
+              ? 'mcpReconnect'
+              : command.kind === 'mcp-set-enabled'
+                ? 'mcpSetEnabled'
+                : command.kind === 'mcp-login'
+                  ? 'mcpLogin'
+                  : 'pluginsReload';
+      if (capabilities.operations[operation].state !== 'supported') capabilityUnavailable();
+    }
     if (command.kind === 'steer') {
       const capabilities = await control.readCapabilities(
         (await store.getThread(command.threadId))?.nativeId ?? undefined,
@@ -849,6 +993,53 @@ export const createActions = (
   };
 
   return {
+    /**
+     * Reads live native authentication presentation without replaying an interrupted action.
+     * @returns The exact challenge or its known terminal status; restart loses sensitive presentation.
+     * @throws
+     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+     * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+     * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+     * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
+     */
+    async readLogin(actionId: string): Promise<ILoginObservation> {
+      const receipt = await store.getAction(actionId);
+      const absent: ILoginObservation = {
+        state: 'unavailable',
+        authorizationUrl: null,
+        canCancel: false,
+        observedAt: null,
+      };
+      if (
+        !receipt?.provider ||
+        !['account-login', 'mcp-login'].includes(receipt.kind) ||
+        !receipt.nativeRequestId
+      )
+        return absent;
+      if (receipt.threadId) {
+        const thread = await store.getThread(receipt.threadId);
+        if (!thread) return absent;
+        await validateRoot(thread);
+      }
+      if (receipt.completion !== null)
+        return {
+          state:
+            receipt.completion === 'completed'
+              ? 'completed'
+              : receipt.completion === 'interrupted'
+                ? 'canceled'
+                : 'failed',
+          authorizationUrl: null,
+          canCancel: false,
+          observedAt: receipt.updatedAt,
+        };
+      if (receipt.runtimeEpoch !== epoch || receipt.delivery === 'failed') return absent;
+      return (await registry.get(receipt.provider)).readLogin(receipt.nativeRequestId);
+    },
     live,
     /**
      * Returns after durable admission; the native operation outlives this client request.

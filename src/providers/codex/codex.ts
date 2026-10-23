@@ -1,9 +1,13 @@
-import { Exception } from 'jg-exception';
+import { Exception, isException } from 'jg-exception';
 import { z } from 'zod';
 
 import type { IUsageSnapshot, ISessionSettings, IOutputSchema } from '../../contracts/index.js';
 
 import { createCodexRpc } from './rpc.js';
+import { createCodexExtensions } from './extensions/index.js';
+import { createCodexAccounts } from './accounts/index.js';
+import { createCodexAuthentication } from './authentication/index.js';
+import { capabilityUnavailable } from '../registry/index.js';
 import {
   NativeBucketSchema,
   NativeSkillsSchema,
@@ -47,6 +51,8 @@ export const createCodexProvider = async (
   let refresh: Promise<IUsageSnapshot> | undefined;
   let accountGeneration = 0;
   let events: ICodexEvents | undefined;
+  let authentication: ReturnType<typeof createCodexAuthentication> | undefined;
+  const extensionRequests = new Map<string, 'skills-reload' | 'mcp-reload'>();
   const outputSchemas = new Map<string, IOutputSchema>();
   const configurations = new Map<
     string,
@@ -117,9 +123,32 @@ export const createCodexProvider = async (
         if (events) events.request(id, method, params);
         else void rpc?.reject(id).catch(() => undefined);
       },
-      lateResponse: (id, result, error) => events?.lateResponse(id, result, error),
-      unavailable: () => events?.unavailable(),
+      lateResponse: (id, result, error) => {
+        if (authentication?.lateResponse(id, result, error)) return;
+        if (extensionRequests.has(id)) {
+          extensionRequests.delete(id);
+          if (error !== undefined)
+            events?.controlOutcome({ kind: 'failed', requestId: id, failure: 'agent-unavailable' });
+          else {
+            z.object({}).parse(result);
+            events?.controlOutcome({
+              kind: 'control-accepted',
+              requestId: id,
+              state: 'applied',
+              completion: 'completed',
+            });
+          }
+          return;
+        }
+        events?.lateResponse(id, result, error);
+      },
+      unavailable: () => {
+        authentication?.unavailable();
+        extensionRequests.clear();
+        events?.unavailable();
+      },
       notify: (method, params) => {
+        authentication?.notify(method, params);
         events?.notify(method, params);
         if (method !== 'account/rateLimits/updated' && method !== 'account/updated') return;
         if (method === 'account/updated') {
@@ -148,7 +177,53 @@ export const createCodexProvider = async (
     extraSkillRoots,
   );
   const connection = rpc;
+  authentication = createCodexAuthentication(connection, (outcome) =>
+    events?.controlOutcome(outcome),
+  );
   return {
+    ...createCodexExtensions(connection),
+    ...createCodexAccounts(connection),
+    readLogin: authentication.readLogin,
+    controlAccount: authentication.controlAccount,
+    /**
+     * Applies supported native reloads or starts exact-session MCP OAuth.
+     * @returns Native control acknowledgement, separate from authentication completion.
+     * @throws
+     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
+     * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+     */
+    async controlExtensions(requestId, nativeId, workspaceRoot, command) {
+      if (command.kind === 'mcp-login')
+        return authentication!.loginMcp(requestId, nativeId, command.serverName);
+      if (command.kind !== 'skills-reload' && command.kind !== 'mcp-reload')
+        capabilityUnavailable();
+      if (extensionRequests.size >= 32)
+        throw new Exception('The HQ action conflicts with its recorded state', {
+          code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+          data: { kind: 'state-conflict' },
+        });
+      extensionRequests.set(requestId, command.kind);
+      try {
+        z.object({}).parse(
+          await connection.request(
+            command.kind === 'skills-reload' ? 'skills/list' : 'config/mcpServer/reload',
+            command.kind === 'skills-reload' ? { cwds: [workspaceRoot], forceReload: true } : {},
+            requestId,
+          ),
+        );
+        extensionRequests.delete(requestId);
+        return { state: 'applied', completion: 'completed' };
+      } catch (error) {
+        if (
+          isException(error) &&
+          z.object({ nativeCode: z.number() }).safeParse(error.data).success
+        )
+          extensionRequests.delete(requestId);
+        throw error;
+      }
+    },
     userAgent: connection.userAgent,
     get isAvailable() {
       return connection.isAvailable;

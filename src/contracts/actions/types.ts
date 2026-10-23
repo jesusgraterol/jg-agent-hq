@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 import { ProviderIdSchema } from '../providers/index.js';
 import { SessionSettingsSchema, TurnSettingsSchema } from '../configuration/index.js';
+import { AccountControlCommandSchema } from '../accounts/index.js';
+import { ExtensionControlCommandSchema } from '../extensions/index.js';
 
 import { MessageInputSchema, NativeSkillInputSchema } from '../skills/index.js';
 
@@ -26,6 +28,8 @@ const TextSchema = z.string().min(1).max(65_536);
 const ActiveTargetFields = { threadId: ThreadIdSchema, expectedTurnId: NativeIdSchema };
 
 export const ActionCommandSchema = z.discriminatedUnion('kind', [
+  ...AccountControlCommandSchema.options,
+  ...ExtensionControlCommandSchema.options,
   z.strictObject({
     kind: z.literal('thread-create'),
     provider: ProviderIdSchema,
@@ -162,6 +166,8 @@ export const ActionReceiptSchema = z.object({
   digest: z.string().regex(/^[a-f0-9]{64}$/),
   runtimeEpoch: z.uuid(),
   kind: z.enum(ActionCommandSchema.options.map((command) => command.shape.kind.value)),
+  provider: ProviderIdSchema.nullable(),
+  controlState: z.enum(['accepted', 'applied', 'held']).nullable(),
   threadId: ThreadIdSchema.nullable(),
   nativeTurnId: NativeIdSchema.nullable(),
   nativeRequestId: z.string().nullable(),

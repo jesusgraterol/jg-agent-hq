@@ -42,6 +42,8 @@ export const ActionRowSchema = z.object({
   requested_runtime_epoch: z.uuid(),
   runtime_epoch: z.uuid(),
   kind: ActionReceiptSchema.shape.kind,
+  provider: ActionReceiptSchema.shape.provider,
+  control_state: ActionReceiptSchema.shape.controlState,
   thread_id: z.uuid().nullable(),
   expected_turn_id: ActionReceiptSchema.shape.nativeTurnId,
   native_turn_id: ActionReceiptSchema.shape.nativeTurnId,
@@ -98,6 +100,17 @@ export const NativeOutcomeSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({ kind: z.literal('interrupt-accepted'), ...OutcomeFields }),
   z.strictObject({ kind: z.literal('reply-written'), ...OutcomeFields }),
+  z.strictObject({
+    kind: z.literal('control-accepted'),
+    ...OutcomeFields,
+    state: z.enum(['accepted', 'applied', 'held']),
+    completion: ActionReceiptSchema.shape.completion,
+  }),
+  z.strictObject({
+    kind: z.literal('control-completed'),
+    ...OutcomeFields,
+    completion: ActionReceiptSchema.shape.completion.unwrap(),
+  }),
   z.strictObject({ kind: z.literal('uncertain'), ...OutcomeFields }),
   z.strictObject({
     kind: z.literal('failed'),

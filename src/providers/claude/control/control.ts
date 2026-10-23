@@ -7,12 +7,16 @@ import type {
   IConfigurationRequest,
   ISessionSettings,
   ITurnSettings,
+  IExtensionControlCommand,
+  INativeControlResult,
 } from '../../../contracts/index.js';
 import type { IProviderInputFile } from '../../inputs/index.js';
 import { capabilityUnavailable } from '../../registry/index.js';
 import { toClaudeConfiguration } from '../configuration/index.js';
+import { createClaudeExtensions } from '../extensions/index.js';
 
 import { createClaudeRpc } from '../rpc.js';
+import { ClaudeInitializeSchema } from '../types.js';
 
 import type { IClaudeControlEvents, IClaudeSession } from './types.js';
 import { receiveClaudeMessage } from './stream.js';
@@ -24,6 +28,10 @@ import { toClaudeSkills } from './skills.js';
  */
 export const createClaudeControl = (additionalDirectories: string[] = []) => {
   const sessions = new Map<string, IClaudeSession>();
+  const extensionRequests = new Map<
+    string,
+    { nativeId: string; kind: IExtensionControlCommand['kind'] }
+  >();
   let events: IClaudeControlEvents | undefined;
   let isClosing = false;
   const unavailable: () => never = () => {
@@ -44,6 +52,44 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     const session = sessions.get(id);
     if (!session?.connection?.isAvailable || session.isClosing) unavailable();
     return session;
+  };
+  /** Refreshes optional command/agent metadata after native configuration changes. */
+  const refreshCatalog = async (session: IClaudeSession): Promise<void> => {
+    session.skills = null;
+    session.connection!.initialization.agents = undefined;
+    try {
+      const initialized = ClaudeInitializeSchema.parse(
+        await session.connection!.requestControl({ subtype: 'initialize' }),
+      );
+      const inventory = toClaudeSkills({ skills: initialized.commands });
+      if (Buffer.byteLength(JSON.stringify(inventory.skills)) <= 1_048_576)
+        session.skills = { ...inventory, observedAt: Date.now() };
+      session.connection!.initialization.agents = initialized.agents;
+    } catch {
+      /* optional metadata stays unavailable after an acknowledged native reload */
+    }
+  };
+  /** Validates the exact control response and refreshes catalogs without starting inference. */
+  const completeExtension = async (
+    requestId: string,
+    raw: unknown,
+  ): Promise<INativeControlResult> => {
+    const request = extensionRequests.get(requestId);
+    if (!request) conflict();
+    const plugins =
+      request.kind === 'plugins-reload'
+        ? z
+            .object({ held: z.boolean().optional(), error_count: z.number().int().nonnegative() })
+            .parse(raw)
+        : null;
+    extensionRequests.delete(requestId);
+    if (plugins?.held) return { state: 'held', completion: 'completed' };
+    if (request.kind === 'skills-reload' || request.kind === 'plugins-reload')
+      await refreshCatalog(get(request.nativeId));
+    return {
+      state: 'applied',
+      completion: plugins && plugins.error_count > 0 ? 'failed' : 'completed',
+    };
   };
   /**
    * Checks the process-bound output format without restarting a controlled session.
@@ -119,6 +165,23 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
           ...(forkSourceNativeId ? { forkSourceNativeId } : {}),
           receive: (raw) => receiveClaudeMessage(session, raw, events),
           lateResponse(id, result, error) {
+            if (extensionRequests.get(id)?.nativeId === nativeId) {
+              if (error !== undefined) {
+                extensionRequests.delete(id);
+                events?.outcome({ kind: 'failed', requestId: id, failure: 'agent-unavailable' });
+                return;
+              }
+              void (async () => {
+                try {
+                  const resultState = await completeExtension(id, result);
+                  events?.outcome({ kind: 'control-accepted', requestId: id, ...resultState });
+                } catch {
+                  events?.unavailable(nativeId);
+                  await session.connection?.close();
+                }
+              })().catch(() => events?.unavailable(nativeId));
+              return;
+            }
             if (!/^[a-f0-9-]{36}:(name|interrupt)$/.test(id)) return;
             if (error !== undefined)
               events?.outcome({
@@ -156,8 +219,65 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     return { id: nativeId, cwd: workspaceRoot, status: { type: 'idle' as const } };
   };
   return {
+    /**
+     * Applies one supported native extension command to an idle owned session.
+     * @returns Native acknowledgement, preserving held plugin reloads explicitly.
+     * @throws
+     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     */
+    async controlExtensions(
+      requestId: string,
+      nativeId: string,
+      workspaceRoot: string,
+      command: IExtensionControlCommand,
+    ): Promise<INativeControlResult> {
+      const session = get(nativeId);
+      if (session.workspaceRoot !== workspaceRoot) conflict();
+      if (command.kind === 'mcp-login' || command.kind === 'mcp-reload') capabilityUnavailable();
+      if (session.input || session.requests.size || extensionRequests.size >= 32) conflict();
+      extensionRequests.set(requestId, { nativeId, kind: command.kind });
+      const body =
+        command.kind === 'skills-reload'
+          ? { subtype: 'reload_skills' }
+          : command.kind === 'plugins-reload'
+            ? { subtype: 'reload_plugins', hold_on_cache_impact: true }
+            : command.kind === 'mcp-reconnect'
+              ? { subtype: 'mcp_reconnect', serverName: command.serverName }
+              : {
+                  subtype: 'mcp_toggle',
+                  serverName: command.serverName,
+                  enabled: command.isEnabled,
+                };
+      try {
+        return await completeExtension(
+          requestId,
+          await session.connection!.requestControl(body, requestId),
+        );
+      } catch (error) {
+        if (
+          isException(error) &&
+          z.object({ nativeRejection: z.literal(true) }).safeParse(error.data).success
+        )
+          extensionRequests.delete(requestId);
+        throw error;
+      }
+    },
     get isAvailable() {
       return !isClosing;
+    },
+    /** @returns Native MCP status for this exact controlled session. */
+    readMcpServers(nativeId: string, limit: number, cursor?: string) {
+      return createClaudeExtensions(get(nativeId).connection!).readMcpServers(limit, cursor);
+    },
+    /** @returns Native tool metadata for one configured session server. */
+    readMcpTools(nativeId: string, serverName: string) {
+      return createClaudeExtensions(get(nativeId).connection!).readMcpTools(serverName);
+    },
+    /** @returns An explicit unsupported native resource catalog observation. */
+    readMcpResources(nativeId: string) {
+      return createClaudeExtensions(get(nativeId).connection!).readMcpResources();
     },
     get version() {
       return (

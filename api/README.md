@@ -50,22 +50,27 @@ Factories receive canonical allowed roots, the runtime epoch, a cancellation sig
 
 The current built-in surfaces map to these native entry points:
 
-| HQ surface          | Codex                                                                    | Claude                                                                        |
-| ------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
-| Create/adopt/resume | `thread/start`, `thread/read`, `thread/resume`                           | Structured session creation/resume and idle/session-ID fences                 |
-| Rename              | `thread/name/set`                                                        | `rename_session` control request                                              |
-| Message/queue       | `turn/start` with explicit native input                                  | Structured user messages with matching acknowledgements                       |
-| Steer               | `turn/steer` for the exact active turn                                   | Explicitly unsupported by the structured interface                            |
-| Interrupt           | `turn/interrupt`                                                         | `interrupt` control request; completion remains separate                      |
-| Close/recover       | Native background-terminal cleanup/verification and `thread/unsubscribe` | Confirmed process-group shutdown and explicit session release/resume          |
-| History             | `thread/list`, `thread/read`, `thread/turns/list`, `thread/items/list`   | Bounded worker-owned indexing of native transcripts                           |
-| Skills              | `skills/list` and native skill input                                     | Initialization command metadata and native invocation text                    |
-| Fork                | `thread/fork` with verified source lineage                               | Native `--resume`, `--fork-session` and distinct `--session-id`               |
-| Archive/unarchive   | Native archive/unarchive, with explicit resume afterward                 | Explicitly unsupported                                                        |
-| Compact             | `thread/compact/start`, correlated with native turn events               | Native `/compact`, correlated with input and result events                    |
-| Revert              | `thread/revert` before an exact turn, without undoing files              | Explicitly unsupported                                                        |
-| Models/settings     | `model/list`, `config/read`, native startup and next-turn parameters     | `list_models`, `get_settings`, native startup flags and `apply_flag_settings` |
-| Usage               | `account/rateLimits/read`                                                | `get_usage` control request, with explicit unavailable observations           |
+| HQ surface          | Codex                                                                    | Claude                                                                                     |
+| ------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| Create/adopt/resume | `thread/start`, `thread/read`, `thread/resume`                           | Structured session creation/resume and idle/session-ID fences                              |
+| Rename              | `thread/name/set`                                                        | `rename_session` control request                                                           |
+| Message/queue       | `turn/start` with explicit native input                                  | Structured user messages with matching acknowledgements                                    |
+| Steer               | `turn/steer` for the exact active turn                                   | Explicitly unsupported by the structured interface                                         |
+| Interrupt           | `turn/interrupt`                                                         | `interrupt` control request; completion remains separate                                   |
+| Close/recover       | Native background-terminal cleanup/verification and `thread/unsubscribe` | Confirmed process-group shutdown and explicit session release/resume                       |
+| History             | `thread/list`, `thread/read`, `thread/turns/list`, `thread/items/list`   | Bounded worker-owned indexing of native transcripts                                        |
+| Skills              | `skills/list` and native skill input                                     | Initialization command metadata and native invocation text                                 |
+| Fork                | `thread/fork` with verified source lineage                               | Native `--resume`, `--fork-session` and distinct `--session-id`                            |
+| Archive/unarchive   | Native archive/unarchive, with explicit resume afterward                 | Explicitly unsupported                                                                     |
+| Compact             | `thread/compact/start`, correlated with native turn events               | Native `/compact`, correlated with input and result events                                 |
+| Revert              | `thread/revert` before an exact turn, without undoing files              | Explicitly unsupported                                                                     |
+| Models/settings     | `model/list`, `config/read`, native startup and next-turn parameters     | `list_models`, `get_settings`, native startup flags and `apply_flag_settings`              |
+| Usage               | `account/rateLimits/read`                                                | `get_usage` control request, with explicit unavailable observations                        |
+| Account             | `account/read`, ChatGPT login start/cancel and native logout             | Initialization account metadata and native `auth logout`; interactive login is unavailable |
+| Skill reload        | `skills/list` with native `forceReload`                                  | `reload_skills`, followed by complete initialization command metadata                      |
+| MCP inventory       | `mcpServerStatus/list`, including tools and resources                    | `mcp_status`; tool input schemas and resource catalogs are unavailable                     |
+| MCP controls        | `config/mcpServer/reload`, server OAuth login                            | `mcp_reconnect`, `mcp_toggle`; structured server login is unavailable                      |
+| Plugin reload       | Under-development native plugin management is unavailable                | `reload_plugins` for existing native configuration, retaining held outcomes                |
 
 Availability depends on the selected native connection and, for session metadata, that session's initialization. Native settings, hooks, plugins and authentication remain with the harness. Codex protocol details are in the [official app-server reference](https://learn.chatgpt.com/docs/app-server); Claude flags and programmatic behavior are in the [CLI reference](https://code.claude.com/docs/en/cli-reference) and [programmatic guide](https://code.claude.com/docs/en/headless). Public-API integration tests exercise both native boundaries and a third provider through real HQ persistence and IPC, including compatible version labels, missing-provider isolation, duplicate registration and malformed evidence.
 
@@ -77,22 +82,52 @@ Third-party adapter failures use JG_AGENT_HQ_PROVIDER_FAILED, retaining safe dia
 
 Import `HqRequestSchema`, `HqResponseSchema` and their inferred types from `jg-agent-hq/contracts`. Requests are closed contracts. Responses tolerate additive fields. Provider fields use `ProviderIdSchema`, a bounded lowercase identifier. `codex` and `claude` are built in; trusted Node factories can add providers. Status returns a bounded `providers` array of `{ provider, state, version }`, where state is `idle`, `ready` or `unavailable`. Reading status does not start a provider. The diagnostic version/user-agent string may be null and never decides compatibility.
 
-| Command         | Required fields                                          | Result                                                                                     |
-| --------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `status`        | None                                                     | Runtime epoch, host PID, start time, worker availability and native transport availability |
-| `capabilities`  | `provider`; optional managed `threadId`                  | Provider/session-scoped support, input/configuration schemas and unavailable reasons       |
-| `models`        | `provider`                                               | Paged native model identities, effort choices and defaults when observed                   |
-| `configuration` | `provider`, `workspaceRoot`; optional managed `threadId` | Known effective native settings and paged agent/profile choices                            |
-| `stop`          | None                                                     | Accepted shutdown and runtime epoch                                                        |
-| `threads`       | `provider`, `workspaceRoot`                              | Paged native discovery; optional `search`                                                  |
-| `thread`        | `provider`, `workspaceRoot`, `nativeId`                  | One native thread's metadata                                                               |
-| `turns`         | Same target fields                                       | Paged native turn metadata without hydrating items                                         |
-| `items`         | Same target fields                                       | Paged persisted native items; optional `turnId`                                            |
-| `usage`         | `provider`                                               | Actual subscription observations                                                           |
+| Command                       | Required fields                                          | Result                                                                                     |
+| ----------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `status`                      | None                                                     | Runtime epoch, host PID, start time, worker availability and native transport availability |
+| `capabilities`                | `provider`; optional managed `threadId`                  | Provider/session-scoped support, input/configuration schemas and unavailable reasons       |
+| `models`                      | `provider`                                               | Paged native model identities, effort choices and defaults when observed                   |
+| `configuration`               | `provider`, `workspaceRoot`; optional managed `threadId` | Known effective native settings and paged agent/profile choices                            |
+| `stop`                        | None                                                     | Accepted shutdown and runtime epoch                                                        |
+| `threads`                     | `provider`, `workspaceRoot`                              | Paged native discovery; optional `search`                                                  |
+| `thread`                      | `provider`, `workspaceRoot`, `nativeId`                  | One native thread's metadata                                                               |
+| `turns`                       | Same target fields                                       | Paged native turn metadata without hydrating items                                         |
+| `items`                       | Same target fields                                       | Paged persisted native items; optional `turnId`                                            |
+| `account`                     | `provider`                                               | Safe native account metadata with explicit unavailable observations                        |
+| `mcp-servers`                 | Managed `threadId`                                       | Paged configured native MCP server identity, connection and auth metadata                  |
+| `mcp-tools` / `mcp-resources` | Managed `threadId`, `serverName`                         | Paged native descriptions; no resource content is fetched                                  |
+| `provider-actions`            | `provider`                                               | Paged global action metadata, including authentication receipts                            |
+| `login`                       | `actionId`                                               | Live authentication presentation or known terminal state                                   |
+| `usage`                       | `provider`                                               | Actual subscription observations                                                           |
 
 Paged commands accept `limit` (default 32, maximum 128) and an opaque `cursor`. Continue with exactly the same command, target, filters and limit. The cursor binds those fields to the provider continuation. Codex requests descending creation order for threads, descending turns and ascending items. Claude orders discovery by creation time/native UUID descending and history by native chain position ascending. Workspace authorization is rechecked for each request, independently of cursor validation, before selected-thread items are fetched.
 
 Threads expose native state, `historyState` (`available` or `unavailable`), ownership (`external`, `managed` or `uncertain`) and nullable `managedId`. A managed thread uses its HQ name; an external thread retains its nullable native name. Timestamps use Unix milliseconds. Discovery projections are not authoritative transcript history and never cache a conversation body. Repeated Codex history reads go to its native APIs so a completed turn whose items have not flushed can be read again later. There is no resume-to-read behavior or Codex transcript-file parser.
+
+## Native accounts and extensions
+
+`account` reads only native account metadata: `provider`, `state`, nullable `accountType`, `email`, `organization`, `subscription`, `isAuthenticationRequired`, `observedAt`, and `source: 'native'`. This describes configured authentication; it is not a network-validity guarantee. Codex uses `account/read` without token refresh. Claude reads fresh initialization account metadata in an owned read process. Missing optional metadata yields `unavailable` without disabling session control. Configuration files, environment values, headers and credentials are never returned.
+
+`mcp-servers`, `mcp-tools` and `mcp-resources` require the exact managed session and an authorized workspace. They return `provider`, `state` (`available`, `partial`, `unavailable`, `unsupported`), `observedAt`, `unavailableCount`, `data` and `nextCursor`. Default and maximum page sizes are 32 and 128. Native leaf inventories are bounded to 4096 entries and 1 MiB before paging; malformed optional entries are counted without inventing metadata. Claude server and all leaf continuation use a content revision and stable identity, so catalog changes invalidate continuation. Codex retains its native server cursor. Query binding is checked before native retrieval. Unknown server metadata remains null. Claude's native status surface omits tool input schemas and does not enumerate resources; HQ reports null schemas and an unsupported resource catalog. Metadata reads never fetch resource contents or call tools.
+
+Concrete action commands use the existing `{ kind: 'action', action: { id, runtimeEpoch, command } }` envelope:
+
+- `skills-reload`, `mcp-reload` and `plugins-reload` take `threadId`.
+- `mcp-reconnect` and `mcp-login` also take `serverName`.
+- `mcp-set-enabled` takes `threadId`, `serverName` and `isEnabled`.
+- `account-login` and `account-logout` take `provider` and nonempty `operatorConfirmation`; `account-login-cancel` additionally takes the initiating `loginActionId`.
+
+Capabilities distinguish each operation. Extension changes require an idle owned session and cannot bypass a permission wait. Codex MCP reload queues a native refresh for all loaded sessions, so HQ requires those sessions to be idle and fences new execution until its outcome is known. Claude reconnect and enable/disable target one session server. Skill reload uses the runtime-authorized managed workspace and retains explicit-only native commands. Plugin reload preserves native configuration and reports `held` when the native interface defers the change. A reload applied with native plugin errors retains `controlState: 'applied'` and `completion: 'failed'`. HQ does not install plugins, forward arbitrary RPC, replace MCP configuration, disable normal hooks or inject global settings.
+
+Receipts include nullable `provider` and `controlState` (`accepted`, `applied`, `held`). Native login initiation is acknowledged as `accepted`, with null `completion`; it does not claim authentication succeeded. Exact native completion sets `completed`, `failed` or `interrupted`. A matching cancellation acknowledgement records interruption even when its failure notification arrives first. OAuth completion matches the exact native login ID and, for MCP, the server and session as well. Unknown completion identities do not resolve another action. Native permission approval and plan authority remain separate.
+
+`login` returns `state` (`pending`, `completed`, `failed`, `canceled`, `unavailable`), nullable `authorizationUrl`, `canCancel` and nullable `observedAt`. URLs are sensitive live presentation: HQ never opens them automatically or persists them, login IDs or tokens. Codex exposes its native ChatGPT browser login and cancellation, logout and configured MCP OAuth. Claude's interactive login and MCP OAuth commands have no qualified structured challenge surface and remain explicitly unsupported. Claude logout uses the native CLI, discards human-oriented output, confirms process-group shutdown and invalidates account-derived observations. Unconfirmed logout cleanup remains owned by the provider and prevents HQ from releasing runtime ownership.
+
+Close the selected provider's managed sessions before changing its account. Pending or uncertain provider-wide changes fence new execution in that runtime; the other provider remains usable. `status` reports lazy native connection health without starting a provider; ready transport does not prove credentials are valid. `provider-actions` pages global receipt metadata in descending creation time/UUID order; thread-scoped controls remain in `actions`. Inspect selected receipts after interrupted requests instead of resending them. Restart retains receipts, loses sensitive login presentation, and never restarts authentication or inference. Native account reads cannot prove an interrupted sign-out's exact effect. A new account action requires fresh explicit operator intent after runtime ownership recovery.
+
+Catalog observations are coalesced only while a read is in flight, with no retained performance cache. Native changes invalidate those joins; subsequent reads obtain fresh metadata. Native rejection is recorded as failed, while timeouts and lost responses remain uncertain until exact late evidence arrives. A late acknowledgement clears only its own pending control and does not resume queued work or grant authority.
+
+Native qualification on 2026-10-23 used Codex 0.163.0 and Claude Code 2.1.309. Both exposed account metadata, configured MCP servers/tools and explicit-only skills after native reload. Codex exposed resource/template metadata and completed native MCP reload; Claude completed reconnect, disable/enable and plugin reload without inference. Disposable native account configuration verified Codex browser-login initiation/cancellation and both providers' logout. An owned loopback OAuth server verified Codex MCP challenge initiation and exact terminal denial through its native callback. User credential storage was not altered. These observations qualify the listed operations on this host; they do not establish other platforms or remote authentication success.
 
 ## Native configuration
 

@@ -22,6 +22,7 @@ const main = async (): Promise<void> => {
       'native-id': { type: 'string' },
       'turn-id': { type: 'string' },
       'thread-id': { type: 'string' },
+      'server-name': { type: 'string' },
       id: { type: 'string' },
       'skill-id': { type: 'string' },
       arguments: { type: 'string' },
@@ -39,7 +40,7 @@ const main = async (): Promise<void> => {
   const [kind] = positionals;
   if (values.help || !kind || kind === 'help') {
     process.stdout.write(
-      'jg-agent-hq serve|status|stop|capabilities|threads|thread|turns|items|usage|models|configuration|managed-thread-name|suggest-thread-name|skills|skill-preview|plan-status|plan-milestones|handoff-show|handoffs|request --state-root <path> [--provider <provider-id>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--skill-id <id>] [--arguments <text>] [--directory <path>] [--id <uuid>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nrequest reads one validated HQ command as JSON from stdin.\n',
+      'jg-agent-hq serve|status|stop|capabilities|threads|thread|turns|items|usage|account|models|configuration|mcp-servers|mcp-tools|mcp-resources|managed-thread-name|suggest-thread-name|skills|skill-preview|plan-status|plan-milestones|handoff-show|handoffs|request --state-root <path> [--provider <provider-id>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--server-name <name>] [--skill-id <id>] [--arguments <text>] [--directory <path>] [--id <uuid>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nrequest reads one validated HQ command as JSON from stdin.\n',
     );
     return;
   }
@@ -253,6 +254,8 @@ const main = async (): Promise<void> => {
           'capabilities',
           'models',
           'configuration',
+          'account',
+          'provider-actions',
         ].includes(kind)
           ? (values.provider ?? 'codex')
           : values.provider,
@@ -261,6 +264,7 @@ const main = async (): Promise<void> => {
       ['nativeId', values['native-id']],
       ['turnId', values['turn-id']],
       ['threadId', values['thread-id']],
+      ['serverName', values['server-name']],
       ['skillId', values['skill-id']],
       ['arguments', values.arguments ?? (kind === 'skill-preview' ? '' : undefined)],
       ['name', values.name],

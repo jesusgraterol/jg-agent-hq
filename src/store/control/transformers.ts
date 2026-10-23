@@ -39,6 +39,8 @@ export const toActionSummary = (
   digest: action.digest,
   runtimeEpoch: action.runtime_epoch,
   kind: action.kind,
+  provider: action.provider,
+  controlState: action.control_state,
   threadId: action.thread_id,
   nativeTurnId: action.native_turn_id,
   nativeRequestId: action.native_request_id,

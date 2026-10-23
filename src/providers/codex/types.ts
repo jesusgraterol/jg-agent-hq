@@ -13,9 +13,20 @@ import {
   type ISessionSettings,
   type ITurnSettings,
   type IOutputSchema,
+  type IAccountObservation,
+  type IAccountControlCommand,
+  type IExtensionControlCommand,
+  type ILoginObservation,
+  type INativeControlResult,
 } from '../../contracts/index.js';
 import type { IProviderInputFile } from '../inputs/index.js';
+import type { IAgentProviderOutcome } from '../index.js';
 import type { IProviderSkills } from '../types.js';
+import type {
+  IProviderMcpServerPage,
+  IProviderMcpTools,
+  IProviderMcpResources,
+} from '../extensions/index.js';
 
 // additive native responses are narrowed to fields this adapter actually uses
 export const NativeThreadSchema = z.object({
@@ -78,6 +89,7 @@ export type INativePage<T> = { data: T[]; nextCursor: string | null };
 
 // callbacks are owned by the runtime, independently of connected clients
 export type ICodexEvents = {
+  controlOutcome(outcome: IAgentProviderOutcome): void;
   forgetTurn(nativeId: string): void;
   prepareTurn(nativeId: string, outputSchema: IOutputSchema | undefined): void;
   notify(method: string, params: unknown): void;
@@ -88,6 +100,29 @@ export type ICodexEvents = {
 
 // native read models and explicit control operations; execution settings remain with Codex
 export type ICodexProvider = {
+  /** @returns Safe native account metadata without refreshing tokens. */
+  readAccount(): Promise<IAccountObservation>;
+  /** @returns Live presentation for the exact native challenge. */
+  readLogin(requestId: string): Promise<ILoginObservation>;
+  /** @returns Native authentication admission without accepting raw credentials. */
+  controlAccount(
+    requestId: string,
+    command: IAccountControlCommand,
+    loginRequestId?: string,
+  ): Promise<INativeControlResult>;
+  /** @returns One concrete native extension-control acknowledgement. */
+  controlExtensions(
+    requestId: string,
+    nativeId: string,
+    workspaceRoot: string,
+    command: IExtensionControlCommand,
+  ): Promise<INativeControlResult>;
+  /** @returns A safe native MCP server page for the selected thread. */
+  readMcpServers(nativeId: string, limit: number, cursor?: string): Promise<IProviderMcpServerPage>;
+  /** @returns One bounded configured tool inventory. */
+  readMcpTools(nativeId: string, serverName: string): Promise<IProviderMcpTools>;
+  /** @returns One bounded configured resource inventory. */
+  readMcpResources(nativeId: string, serverName: string): Promise<IProviderMcpResources>;
   userAgent: string | null;
   readonly isAvailable: boolean;
   listThreads(

@@ -18,6 +18,8 @@ type IControlRead = Extract<
       | 'managed-thread'
       | 'managed-thread-name'
       | 'actions'
+      | 'provider-actions'
+      | 'login'
       | 'events'
       | 'approvals'
       | 'live-items';
@@ -67,6 +69,11 @@ const nextPageCursor = (
  * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
  * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+ * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+ * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+ * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+ * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+ * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
  */
 export const readControl = async (
   command: IControlRead,
@@ -77,6 +84,19 @@ export const readControl = async (
   const authorize = async (thread: IManagedThread | null): Promise<void> => {
     if (thread) await resolveWorkspaceTarget(thread.workspaceRoot, roots);
   };
+  if (command.kind === 'login')
+    return { kind: 'login', result: await actions.readLogin(command.actionId) };
+  if (command.kind === 'provider-actions') {
+    const { cursor, ...filters } = command;
+    const page = await store.listProviderActions(command.provider, {
+      limit: command.limit,
+      position: readPosition(cursor, filters),
+    });
+    return {
+      kind: command.kind,
+      result: { data: page.data, nextCursor: nextPageCursor(page, filters) },
+    };
+  }
   if (command.kind === 'receipt') {
     const receipt = await store.getAction(command.actionId);
     if (receipt?.threadId) await authorize(await store.getThread(receipt.threadId));

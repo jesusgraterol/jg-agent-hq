@@ -4,6 +4,8 @@ import { z } from 'zod';
 
 import { HqRequestSchema, type IHqRequestInput, type IHqResponse } from '../contracts/index.js';
 import { createActions, readControl } from '../actions/index.js';
+import { createAccounts } from '../accounts/index.js';
+import { createExtensions } from '../extensions/index.js';
 import { createHandoffs } from '../handoffs/index.js';
 import { CONTROL_SOCKET, createIpcServer } from '../ipc/index.js';
 import { createCodexProviderFactory, createClaudeProviderFactory } from '../providers/index.js';
@@ -111,6 +113,8 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     parsed.data.parsePlanContract,
   );
   const skills = createSkills(providers, projection, allowedRoots);
+  const accounts = createAccounts(providers);
+  const extensions = createExtensions(providers, projection, allowedRoots);
   const actions = createActions(
     providers,
     projection,
@@ -120,6 +124,11 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     skills,
     plans,
     storage.background,
+    () => {
+      skills.invalidate();
+      extensions.invalidate();
+      accounts.invalidate();
+    },
   );
   let resolveClosed: () => void = () => undefined;
   let rejectClosed: (error: unknown) => void = () => undefined;
@@ -242,6 +251,12 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           result: await providers.capabilities(command.provider, thread ?? undefined),
         };
       }
+      case 'account':
+        return { kind: command.kind, result: await accounts.read(command) };
+      case 'mcp-servers':
+      case 'mcp-tools':
+      case 'mcp-resources':
+        return extensions.read(command);
       case 'usage':
         return {
           kind: 'usage',
@@ -297,6 +312,8 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       case 'managed-threads':
       case 'managed-thread':
       case 'actions':
+      case 'provider-actions':
+      case 'login':
       case 'events':
       case 'approvals':
       case 'live-items':

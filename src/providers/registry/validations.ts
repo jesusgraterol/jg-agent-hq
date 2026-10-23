@@ -42,6 +42,8 @@ const OUTCOME_PHASES = {
   'steer-accepted': 'steer',
   'interrupt-accepted': 'interrupt',
   'reply-written': 'reply',
+  'control-accepted': 'control',
+  'control-completed': 'control',
 } satisfies Record<Exclude<INativeOutcome['kind'], 'failed' | 'uncertain'>, string>;
 
 /**

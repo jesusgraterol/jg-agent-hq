@@ -1,6 +1,19 @@
 import { z } from 'zod';
 
 import {
+  AccountRequestSchema,
+  AccountObservationSchema,
+  LoginRequestSchema,
+  LoginObservationSchema,
+} from './accounts/index.js';
+import {
+  McpRequestSchema,
+  McpServerPageSchema,
+  McpToolPageSchema,
+  McpResourcePageSchema,
+} from './extensions/index.js';
+
+import {
   MAX_PROVIDERS,
   ProviderCapabilitiesSchema,
   ProviderIdSchema,
@@ -39,6 +52,8 @@ const TargetFields = {
 
 // only implemented operations can be admitted; native RPC is never exposed
 export const HqRequestSchema = z.discriminatedUnion('kind', [
+  AccountRequestSchema,
+  ...McpRequestSchema.options,
   ProviderModelsRequestSchema,
   ConfigurationRequestSchema,
   z.strictObject({ kind: z.literal('status') }),
@@ -93,6 +108,12 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({ kind: z.literal('suggest-thread-name'), topic: z.string().min(1).max(1024) }),
   z.strictObject({ kind: z.literal('actions'), threadId: z.uuid(), ...PageFields }),
+  z.strictObject({
+    kind: z.literal('provider-actions'),
+    provider: ProviderIdSchema,
+    ...PageFields,
+  }),
+  LoginRequestSchema,
   z.strictObject({
     kind: z.literal('events'),
     threadId: z.uuid(),
@@ -185,6 +206,18 @@ export const RuntimeStatusSchema = z.object({
 export type IRuntimeStatus = z.infer<typeof RuntimeStatusSchema>;
 const PageResultFields = { nextCursor: CursorSchema.nullable(), source: z.literal('native') };
 export const HqResponseSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('account'), result: AccountObservationSchema }),
+  z.object({ kind: z.literal('login'), result: LoginObservationSchema }),
+  z.object({
+    kind: z.literal('provider-actions'),
+    result: z.object({
+      data: z.array(ActionSummarySchema).max(128),
+      nextCursor: z.string().nullable(),
+    }),
+  }),
+  z.object({ kind: z.literal('mcp-servers'), result: McpServerPageSchema }),
+  z.object({ kind: z.literal('mcp-tools'), result: McpToolPageSchema }),
+  z.object({ kind: z.literal('mcp-resources'), result: McpResourcePageSchema }),
   z.object({ kind: z.literal('configuration'), result: SessionConfigurationSchema }),
   z.object({ kind: z.literal('models'), result: ProviderModelPageSchema }),
   z.object({ kind: z.literal('thread-plan'), result: ActionPlanContextSchema.nullable() }),

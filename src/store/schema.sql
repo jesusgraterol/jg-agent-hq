@@ -58,6 +58,8 @@ CREATE TABLE hq_action (
   requested_runtime_epoch TEXT NOT NULL,
   runtime_epoch TEXT NOT NULL,
   kind TEXT NOT NULL,
+  provider TEXT,
+  control_state TEXT CHECK (control_state IS NULL OR control_state IN ('accepted','applied','held')),
   thread_id TEXT,
   expected_turn_id TEXT,
   native_turn_id TEXT,
@@ -80,6 +82,8 @@ CREATE TABLE hq_action (
   CONSTRAINT hq_chk_a__queued_body_required CHECK (delivery != 'queued' OR (kind = 'queue' AND queued_input IS NOT NULL))
 ) STRICT;
 
+CREATE INDEX hq_idx_a__provider_created_at_id_desc ON hq_action (provider, created_at DESC, id DESC) WHERE thread_id IS NULL;
+CREATE INDEX hq_idx_a__provider_epoch_pending_control ON hq_action (provider, runtime_epoch) WHERE kind IN ('account-login','account-logout','mcp-reload') AND delivery IN ('submitted','uncertain','acknowledged') AND completion IS NULL;
 CREATE INDEX hq_idx_a__thread_id_created_at_id_desc ON hq_action (thread_id, created_at DESC, id DESC);
 CREATE INDEX hq_idx_a__thread_id_delivery_created_at_id ON hq_action (thread_id, delivery, created_at, id);
 CREATE INDEX hq_idx_a__native_turn_id ON hq_action (native_turn_id);

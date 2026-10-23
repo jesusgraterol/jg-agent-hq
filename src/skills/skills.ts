@@ -112,6 +112,10 @@ export const createSkills = (
     }
   };
   return {
+    /** Stops new reads joining an observation started before a native change. */
+    invalidate(): void {
+      pending.clear();
+    },
     /** Resolves one unambiguous native name from a single bounded inventory read.
      * @returns An exact preview, or an explicit missing/disabled/unavailable state.
      * @throws

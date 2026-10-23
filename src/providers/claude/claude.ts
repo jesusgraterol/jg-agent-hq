@@ -17,6 +17,7 @@ import { ClaudeUsageSchema } from './types.js';
 import { toClaudeUsageSnapshot } from './transformers.js';
 import { readClaudeModels } from './models/index.js';
 import { toClaudeConfiguration } from './configuration/index.js';
+import { toClaudeAccount } from './accounts/index.js';
 
 /**
  * Lazily connects read-only Claude capabilities; Codex needs no Claude installation.
@@ -25,7 +26,7 @@ import { toClaudeConfiguration } from './configuration/index.js';
 export const createClaudeProvider = (store: IStore) => {
   let connection: Awaited<ReturnType<typeof createClaudeRpc>> | undefined;
   let opening: Promise<Awaited<ReturnType<typeof createClaudeRpc>>> | undefined;
-  const configurationReads = new Set<Promise<Awaited<ReturnType<typeof createClaudeRpc>>>>();
+  const metadataReads = new Set<Promise<Awaited<ReturnType<typeof createClaudeRpc>>>>();
   let isClosing = false;
   let generation = 0;
   let refresh: Promise<IUsageSnapshot> | undefined;
@@ -57,7 +58,58 @@ export const createClaudeProvider = (store: IStore) => {
       );
     return (opening ??= connect());
   };
+  /** Runs one bounded metadata read and confirms native shutdown before releasing its slot. */
+  const withReadConnection = async <T>(
+    workspaceRoot: string | undefined,
+    signal: AbortSignal | undefined,
+    read: (native: Awaited<ReturnType<typeof createClaudeRpc>>) => Promise<T>,
+  ): Promise<T> => {
+    if (isClosing || metadataReads.size >= 4)
+      throw new Exception('The Claude integration failed', {
+        code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+        data: { kind: 'agent-unavailable' },
+      });
+    const starting = createClaudeRpc(() => {}, undefined, workspaceRoot, signal);
+    metadataReads.add(starting);
+    let native: Awaited<ReturnType<typeof createClaudeRpc>> | undefined;
+    let hasUnconfirmedStartup = false;
+    try {
+      native = await starting;
+      if (isClosing)
+        throw new Exception('The Claude integration failed', {
+          code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+          data: { kind: 'agent-unavailable' },
+        });
+      return await read(native);
+    } catch (cause) {
+      hasUnconfirmedStartup =
+        !native &&
+        isException(cause) &&
+        z.object({ cleanupUnconfirmed: z.literal(true) }).safeParse(cause.data).success;
+      throw cause;
+    } finally {
+      if (native) await native.close();
+      if (!hasUnconfirmedStartup) metadataReads.delete(starting);
+    }
+  };
   return {
+    /**
+     * Drops account-derived observations and the read connection after native sign-out.
+     * @returns Confirmation that subsequent observations use a fresh native connection.
+     * @throws
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+     */
+    async invalidateAuthentication(): Promise<void> {
+      generation += 1;
+      latest = unavailable();
+      if (opening) {
+        const native = await opening;
+        await native.close();
+      }
+      connection = undefined;
+      opening = undefined;
+    },
     /**
      * Verifies native initialization without requesting usage or starting inference.
      * @returns Confirmation that the read connection is ready.
@@ -89,41 +141,30 @@ export const createClaudeProvider = (store: IStore) => {
      * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
      */
     async readConfiguration(command: IConfigurationRequest, signal?: AbortSignal) {
-      if (isClosing || configurationReads.size >= 4)
-        throw new Exception('The Claude integration failed', {
-          code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-          data: { kind: 'agent-unavailable' },
-        });
-      const starting = createClaudeRpc(() => {}, undefined, command.workspaceRoot, signal);
-      configurationReads.add(starting);
-      let native: Awaited<ReturnType<typeof createClaudeRpc>> | undefined;
-      let hasUnconfirmedStartup = false;
-      try {
-        native = await starting;
-        if (isClosing)
-          throw new Exception('The Claude integration failed', {
-            code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-            data: { kind: 'agent-unavailable' },
-          });
-        return toClaudeConfiguration(
+      return withReadConnection(command.workspaceRoot, signal, async (native) =>
+        toClaudeConfiguration(
           await native.requestControl({ subtype: 'get_settings' }),
           native.initialization.agents,
           native.initialization.current_permission_mode,
           undefined,
           {},
           command,
-        );
-      } catch (cause) {
-        hasUnconfirmedStartup =
-          !native &&
-          isException(cause) &&
-          z.object({ cleanupUnconfirmed: z.literal(true) }).safeParse(cause.data).success;
-        throw cause;
-      } finally {
-        if (native) await native.close();
-        if (!hasUnconfirmedStartup) configurationReads.delete(starting);
-      }
+        ),
+      );
     },
+    /**
+     * Reads fresh native account metadata in a disposable read lane.
+     * @returns Safe account metadata after confirmed read-lane cleanup.
+     * @throws
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+     */
+    async readAccount(signal?: AbortSignal) {
+      return withReadConnection(undefined, signal, async (native) =>
+        toClaudeAccount(native.initialization.account, native.initializedAt),
+      );
+    },
+
     get version() {
       return connection?.version ?? null;
     },
@@ -199,7 +240,7 @@ export const createClaudeProvider = (store: IStore) => {
     async close(): Promise<void> {
       isClosing = true;
       const results = await Promise.allSettled(
-        [...(opening ? [opening] : []), ...configurationReads].map(async (starting) => {
+        [...(opening ? [opening] : []), ...metadataReads].map(async (starting) => {
           let native: Awaited<ReturnType<typeof createClaudeRpc>>;
           try {
             native = await starting;

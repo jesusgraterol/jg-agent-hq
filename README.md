@@ -51,6 +51,8 @@ Explicit actions create, name, adopt, resume and close threads; send idle messag
 
 Actions also fork native history into a distinct session, compact idle sessions, and use native archive/unarchive and history revert where supported. Forks retain exact native lineage and receive no plan execution authority from their source. Unarchive leaves a session inactive until explicitly resumed. Revert changes conversation history; it does not undo files. Claude exposes compaction and fork, with archive and conversation revert reported as unsupported.
 
+Use `account --provider <id>` for safe native account metadata, and `mcp-servers --thread-id <id>` for configured server status. `mcp-tools` and `mcp-resources` select `--server-name <name>` and support bounded continuation. Native reload and authentication controls use the existing JSON `request` interface and durable action receipts. Login URLs are live presentation and are never saved in SQLite. See [native accounts and extensions](api/README.md#native-accounts-and-extensions).
+
 Use `models --provider <id>` for native model and effort choices, and `configuration --provider <id> --workspace-root <path> [--thread-id <id>]` for known effective settings and paged native agent/profile metadata. Creation and explicit resume accept typed startup settings; messages can select a model and effort for the next turn. Startup instructions, native Claude agents and permission settings require an idle session restart. Capability schemas describe supported selections and change modes. Unknown settings remain explicit, and native configuration files stay with each CLI. See the [configuration contract](api/README.md#native-configuration).
 
 Native execution settings, instructions, skills and tool permissions remain with each CLI. Claude uses an owned structured process per controlled session and reports immediate steering as unavailable. Plan approval grants no native tool permission. Close other CLI controllers before confirming adoption, resume or recovery. HQ coordinates sessions sharing one state directory; it cannot lock independently running native CLIs. Integrating browser hosts can use durable host-action admission and operator-scoped reconciliation through the programmatic API; see the [browser host contract](api/README.md#browser-host-integration). The standalone CLI advertises only commands it implements.
@@ -107,6 +109,7 @@ These complete TypeScript examples use the public client and contracts. Start th
 - `src/sessions/`: authorized, cursor-bound history reads and short label suggestions.
 - `src/plans/`: execution digests, milestone finalization, revision checkpoints, retained verification and explicit plan authority.
 - `src/skills/`: bounded native catalogs, invocation previews and explicit input preparation.
+- `src/accounts/` and `src/extensions/`: safe account observations and authorized, bounded native MCP inventories.
 - `src/handoffs/`: explicit cross-provider challenges, selected native findings and author assessment links.
 - `src/actions/`: durable action dispatch, native input routing and bounded live presentation.
 - `src/store/`: SQLite discovery metadata and the action/control ledger in one worker.

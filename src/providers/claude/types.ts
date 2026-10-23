@@ -5,6 +5,7 @@ export const ClaudeInitializeSchema = z.object({
   claude_code_version: z.string().min(1).max(128).nullable().optional().catch(null),
   commands: z.unknown().optional(),
   agents: z.unknown().optional(),
+  account: z.unknown().optional(),
   current_permission_mode: z.unknown().optional(),
   session_state: z.enum(['idle', 'running', 'requires_action']).optional(),
 });
