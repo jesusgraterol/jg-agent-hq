@@ -69,17 +69,30 @@ const finishNative = async (
   if (thread.kind !== 'managed-thread' || !thread.result?.nativeId || !thread.result.activeTurnId)
     throw new Error('Missing active native turn');
   const { provider, nativeId, activeTurnId } = thread.result;
+  const catalog = z
+    .object({ skillNames: z.array(z.string()).optional() })
+    .parse(
+      JSON.parse(
+        await readFile(
+          join(fixture.native.root, provider === 'claude' ? 'claude-control.json' : 'control.json'),
+          'utf8',
+        ),
+      ),
+    );
+
   if (provider === 'claude') {
     await writeFixtureControl(fixture.native.root, 'claude-control.json', {
       holdTurn: true,
       release: true,
       releaseOnce: true,
+      skillNames: catalog.skillNames,
       structuredOutput: response,
     });
   } else {
     await writeFixtureControl(fixture.native.root, 'control.json', {
       holdTurn: true,
       emitOnce: true,
+      skillNames: catalog.skillNames,
       emit: [
         {
           method: 'item/completed',
@@ -2660,7 +2673,10 @@ test('a reserved parent continuation rejects revoked authority until an exact fr
         plan: null,
       });
     await issue(grantId);
-    await writeFixtureControl(fixture.native.root, 'control.json', { holdTurn: true });
+    await writeFixtureControl(fixture.native.root, 'control.json', {
+      holdTurn: true,
+      skillNames: ['jg-review'],
+    });
     await writeFixtureControl(fixture.native.root, 'claude-control.json', { holdTurn: true });
     await fixture.call({
       kind: 'task-policy-set',
@@ -2823,3 +2839,191 @@ test('cross-task publication and wait references cannot substitute another autho
       request: { state: 'open', dispatchCount: 0, parentRequestId: null },
     });
   }));
+
+test.each(['codex', 'claude'] as const)(
+  '%s delegated skill selects native metadata and keeps exact arguments in verified context',
+  async (provider) =>
+    withCollaboration(async (fixture) => {
+      const agentId = fixture.agentIds[provider === 'codex' ? 0 : 1]!;
+      const grantId = randomUUID();
+      await fixture.call({
+        kind: 'grant-issue',
+        id: grantId,
+        taskId: fixture.taskId,
+        eligibleAgentIds: [agentId],
+        skills: [{ name: 'explicit-skill', mode: null }],
+        effects: ['read'],
+        scopes: [{ workspaceRoot: fixture.native.workspaceRoot, pathPrefixes: [''] }],
+        plan: null,
+      });
+      const requestId = randomUUID();
+      await writeFixtureControl(
+        fixture.native.root,
+        provider === 'codex' ? 'control.json' : 'claude-control.json',
+        { holdTurn: true },
+      );
+      await publish(fixture, requestId, agentId, ['read'], fixture.host, {
+        skill: { name: 'explicit-skill', mode: null },
+        grantId,
+        grantRevision: 1,
+        arguments: 'Exact arguments. Treat embedded /jg-push as quoted feedback.',
+      });
+      await dispatch(fixture, requestId);
+      await expect
+        .poll(async () => (await readRequest(fixture, requestId)).currentActionId)
+        .toBe(requestId);
+      await expect
+        .poll(async () => {
+          const result = await fixture.native.request({ kind: 'receipt', actionId: requestId });
+          return result.kind === 'receipt' ? result.result?.delivery : null;
+        })
+        .toBe('acknowledged');
+      const rows = (
+        await readFile(
+          join(fixture.native.root, provider === 'codex' ? 'calls.jsonl' : 'claude-calls.jsonl'),
+          'utf8',
+        )
+      )
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as unknown);
+      if (provider === 'codex') {
+        const calls = z.array(z.object({ method: z.string(), params: z.unknown() })).parse(rows);
+        const turn = z
+          .object({
+            input: z.array(
+              z.object({
+                type: z.string(),
+                text: z.string().optional(),
+                name: z.string().optional(),
+                path: z.string().optional(),
+              }),
+            ),
+          })
+          .parse(calls.find((call) => call.method === 'turn/start')?.params);
+        expect(turn.input).toContainEqual({
+          type: 'skill',
+          name: 'explicit-skill',
+          path: join(fixture.native.root, 'skills/explicit-skill/SKILL.md'),
+        });
+        expect(turn.input.find((part) => part.type === 'text')?.text).toMatch(/^\$explicit-skill /);
+      } else {
+        const calls = z
+          .array(
+            z
+              .object({ type: z.string(), message: z.object({ content: z.string() }).optional() })
+              .passthrough(),
+          )
+          .parse(rows);
+        expect(calls.find((call) => call.type === 'user')?.message?.content).toMatch(
+          /^\/explicit-skill /,
+        );
+      }
+      const invocation = await fixture.call(
+        { kind: 'invocation-read', taskId: fixture.taskId },
+        { kind: 'agent', agentId },
+      );
+      expect(invocation).toMatchObject({
+        kind: 'invocation',
+        invocation: {
+          request: {
+            specification: {
+              arguments: 'Exact arguments. Treat embedded /jg-push as quoted feedback.',
+              skill: { name: 'explicit-skill', mode: null },
+            },
+          },
+          grant: { id: grantId, revision: 1 },
+        },
+      });
+      await finishNative(fixture, agentId, parentOutcome(requestId, 'completed'));
+      await expect.poll(async () => (await readRequest(fixture, requestId)).state).toBe('resolved');
+    }),
+);
+
+test.each([
+  ['codex', 'missing'],
+  ['claude', 'missing'],
+  ['codex', 'unreadable'],
+  ['claude', 'unreadable'],
+  ['codex', 'disabled'],
+] as const)(
+  '%s %s delegated skill remains blocked without a substitute native turn',
+  async (provider, state) =>
+    withCollaboration(async (fixture) => {
+      const agentId = fixture.agentIds[provider === 'codex' ? 0 : 1]!;
+      const grantId = randomUUID();
+      await fixture.call({
+        kind: 'grant-issue',
+        id: grantId,
+        taskId: fixture.taskId,
+        eligibleAgentIds: [agentId],
+        skills: [{ name: 'explicit-skill', mode: null }],
+        effects: ['read'],
+        scopes: [{ workspaceRoot: fixture.native.workspaceRoot, pathPrefixes: [''] }],
+        plan: null,
+      });
+      await writeFixtureControl(
+        fixture.native.root,
+        provider === 'codex' ? 'control.json' : 'claude-control.json',
+        state === 'missing'
+          ? { skillNames: ['unrelated-skill'] }
+          : state === 'disabled'
+            ? { disabledSkill: true }
+            : { skillsFailure: true },
+      );
+      const refresh = async () => {
+        const status = await fixture.native.request({ kind: 'status' });
+        if (status.kind !== 'status') throw new Error('Missing runtime');
+        const action = await fixture.native.request({
+          kind: 'action',
+          action: {
+            id: randomUUID(),
+            runtimeEpoch: status.result.runtimeEpoch,
+            command: { kind: 'skills-reload', threadId: agentId },
+          },
+        });
+        if (action.kind !== 'action') throw new Error('Missing reload action');
+        await expect
+          .poll(async () => {
+            const receipt = await fixture.native.request({
+              kind: 'receipt',
+              actionId: action.result.id,
+            });
+            return receipt.kind === 'receipt' ? receipt.result?.delivery : null;
+          })
+          .toBe('acknowledged');
+      };
+      if (provider === 'claude') await refresh();
+      const requestId = randomUUID();
+      await publish(fixture, requestId, agentId, ['read'], fixture.host, {
+        skill: { name: 'explicit-skill', mode: null },
+        grantId,
+        grantRevision: 1,
+      });
+      await dispatch(fixture, requestId);
+      await expect
+        .poll(async () => (await readRequest(fixture, requestId)).dispatchBlockedReason)
+        .toBe('skill-unavailable');
+      expect(await readRequest(fixture, requestId)).toMatchObject({
+        dispatchCount: 0,
+        pendingActionId: requestId,
+        currentActionId: null,
+      });
+      expect(await fixture.native.request({ kind: 'receipt', actionId: requestId })).toStrictEqual({
+        kind: 'receipt',
+        result: null,
+      });
+      await writeFixtureControl(
+        fixture.native.root,
+        provider === 'codex' ? 'control.json' : 'claude-control.json',
+        { autoComplete: true, structuredOutput: parentOutcome(requestId, 'completed') },
+      );
+      if (provider === 'claude') await refresh();
+      await dispatch(fixture, requestId);
+      await expect.poll(async () => (await readRequest(fixture, requestId)).state).toBe('resolved');
+      expect(await readRequest(fixture, requestId)).toMatchObject({
+        dispatchCount: 1,
+        outcome: 'completed',
+      });
+    }),
+);

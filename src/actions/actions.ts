@@ -918,8 +918,25 @@ export const createActions = (
       const thread = await store.getThread(command.threadId);
       if (!thread?.nativeId) conflict();
       const files = await readInputFiles(command.input.files ?? [], thread.workspaceRoot, roots);
+      let selection: Parameters<typeof skills.prepare>[1] = command.input;
+      if (scopes.collaboration) {
+        const job = await store.dispatchJob(
+          scopes.collaboration.taskId,
+          scopes.collaboration.requestId,
+        );
+        if (
+          command.kind !== 'message' ||
+          command.input.kind !== 'text' ||
+          command.input.text !== job.packet ||
+          command.threadId !== job.thread?.id ||
+          action.id !== job.request.pendingActionId
+        )
+          conflict();
+        const skill = job.request.specification.skill;
+        if (skill) selection = { kind: 'skill-name', name: skill.name, arguments: job.packet! };
+      }
       input = {
-        ...(await skills.prepare(command.threadId, command.input)),
+        ...(await skills.prepare(command.threadId, selection)),
         files: files.map(({ content: _content, ...reference }) => reference),
         settings: command.settings ?? {},
       };

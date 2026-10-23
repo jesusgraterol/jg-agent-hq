@@ -378,8 +378,18 @@ export class ControlModel {
             )
           : collaborationForbidden()
         : null;
-      if (collaborationContext && prepared.input?.text !== collaborationContext.packet)
-        return collaborationConflict();
+      if (collaborationContext) {
+        // native formatting adds the selected skill; the immutable command still binds the exact packet
+        const selectedSkill = collaborationContext.specification.skill;
+        if (
+          action.command.kind !== 'message' ||
+          action.command.input.kind !== 'text' ||
+          action.command.input.text !== collaborationContext.packet ||
+          (prepared.input?.skill?.name ?? null) !== (selectedSkill?.name ?? null) ||
+          (selectedSkill === null && prepared.input?.text !== collaborationContext.packet)
+        )
+          return collaborationConflict();
+      }
       const now = Date.now();
       const command = action.command;
       const expectedTurn = 'expectedTurnId' in command ? command.expectedTurnId : null;

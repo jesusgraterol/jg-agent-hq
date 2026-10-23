@@ -190,27 +190,6 @@ ON hq_thread_plan (authorization_id, milestone_id) WHERE authorization_id IS NOT
 CREATE UNIQUE INDEX hq_uidx_tp__authorization_id_plan_execution
 ON hq_thread_plan (authorization_id) WHERE authorization_id IS NOT NULL AND milestone_id IS NULL;
 
-CREATE TABLE hq_handoff (
- id TEXT NOT NULL,
- workspace_root TEXT NOT NULL,
- source_thread_id TEXT NOT NULL,
- created_at INTEGER NOT NULL,
- intent TEXT NOT NULL,
- CONSTRAINT hq_pk_h__id PRIMARY KEY (id),
- CONSTRAINT hq_fk_h__source_thread_id FOREIGN KEY (source_thread_id) REFERENCES hq_thread(id)
-) STRICT;
-CREATE INDEX hq_idx_h__workspace_root_created_at_id_desc ON hq_handoff (workspace_root, created_at DESC, id DESC);
-CREATE INDEX hq_idx_h__workspace_root_source_thread_id_created_at_id_desc ON hq_handoff (workspace_root, source_thread_id, created_at DESC, id DESC);
-CREATE TABLE hq_handoff_dispatch (
- handoff_id TEXT NOT NULL,
- phase TEXT NOT NULL CHECK (phase IN ('review', 'feedback')),
- action_id TEXT NOT NULL,
- intent TEXT NOT NULL,
- CONSTRAINT hq_pk_hd__handoff_id_phase PRIMARY KEY (handoff_id, phase),
- CONSTRAINT hq_uq_hd__action_id UNIQUE (action_id),
- CONSTRAINT hq_fk_hd__handoff_id FOREIGN KEY (handoff_id) REFERENCES hq_handoff(id)
-) STRICT;
-
 CREATE TABLE hq_browser_action (
   id TEXT CONSTRAINT hq_pk_ba__id PRIMARY KEY,
   operator_id TEXT NOT NULL,

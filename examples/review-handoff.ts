@@ -1,80 +1,97 @@
 import { requestAgentHq } from 'jg-agent-hq';
-import type { IHandoff, IHandoffPreview } from 'jg-agent-hq/contracts';
+import type {
+  ICollaborationCommand,
+  ICollaborationRequestRecord,
+  ICollaborationResponse,
+  IRequestSpecification,
+} from 'jg-agent-hq/contracts';
 import { waitUntil } from 'jg-utilities';
 
 /**
- * Opens review in the other provider and delivers only explicitly selected findings.
- * Both providers must be signed in, with jg-review-session and jg-feedback available.
- * The host presents each exact preview and lets the user select a completed native
- * reviewer message. Feedback delivery grants no implementation or tool permission.
+ * Requests a review and returns its exact report reference for author assessment.
+ * The host has already created the task, stream, memberships and any selected skill grants.
+ * Either agent may use any provider. A null skill selection requires no installed skills.
+ * Connect confirmRequest to an actual operator decision; native permissions stay separate.
  */
 export const reviewHandoff = async (input: {
   stateRoot: string;
-  handoffId: string;
-  sourceThreadId: string;
-  commit: string | null;
-  confirmPreview: (preview: IHandoffPreview) => Promise<boolean>;
-  selectFindings: (review: IHandoff) => Promise<{ turnId: string; itemId: string }>;
-}): Promise<IHandoff> => {
-  const { stateRoot, handoffId: id } = input;
-  const status = await requestAgentHq(stateRoot, { kind: 'status' });
-  if (status.kind !== 'status') throw new Error('Expected runtime status');
-  await requestAgentHq(stateRoot, {
-    kind: 'handoff',
-    command: {
-      kind: 'create',
-      id,
-      runtimeEpoch: status.result.runtimeEpoch,
-      sourceThreadId: input.sourceThreadId,
-      purpose: 'review',
-      commit: input.commit,
-    },
-  });
-
-  /** Reads exact durable handoff identity without resending native input. */
-  const show = async (): Promise<IHandoff> => {
-    const response = await requestAgentHq(stateRoot, {
-      kind: 'handoff',
-      command: { kind: 'show', id },
+  operatorRef: string;
+  taskId: string;
+  streamId: string;
+  requestIds: { review: string; feedback: string };
+  dispatchIds: { review: string; feedback: string };
+  review: IRequestSpecification;
+  feedback: Omit<IRequestSpecification, 'targetReferences'>;
+  confirmRequest: (
+    phase: 'review' | 'feedback',
+    specification: IRequestSpecification,
+  ) => Promise<boolean>;
+}): Promise<{
+  review: ICollaborationRequestRecord | null;
+  feedback: ICollaborationRequestRecord | null;
+}> => {
+  const call = async (command: ICollaborationCommand): Promise<ICollaborationResponse> => {
+    const response = await requestAgentHq(input.stateRoot, {
+      kind: 'collaboration',
+      actor: { kind: 'host', operatorRef: input.operatorRef },
+      command,
     });
-    if (response.kind !== 'handoff' || response.result.kind !== 'handoff')
-      throw new Error('Expected handoff');
-    return response.result.handoff;
+    if (response.kind !== 'collaboration') throw new Error('Expected collaboration response');
+    return response.result;
   };
-  await waitUntil(
+  const read = async (requestId: string): Promise<ICollaborationRequestRecord> => {
+    const result = await call({ kind: 'request-read', taskId: input.taskId, requestId });
+    if (result.kind !== 'request') throw new Error('Expected request');
+    return result.request;
+  };
+  const send = async (phase: 'review' | 'feedback', specification: IRequestSpecification) => {
+    if (!(await input.confirmRequest(phase, specification))) return null;
+    const id = input.requestIds[phase];
+    await call({
+      kind: 'message-publish',
+      id,
+      taskId: input.taskId,
+      streamId: input.streamId,
+      messageKind: 'request',
+      summary: phase === 'review' ? 'Review the selected work' : 'Assess the review findings',
+      body: specification.arguments,
+      references: specification.targetReferences,
+      replyToMessageId: null,
+      request: specification,
+    });
+    await call({
+      kind: 'request-dispatch',
+      id: input.dispatchIds[phase],
+      taskId: input.taskId,
+      requestId: id,
+    });
+    return read(id);
+  };
+  let review = await send('review', input.review);
+  if (review === null) return { review: null, feedback: null };
+  // These are bounded host reads, with no inference or replacement request on timeout.
+  review = await waitUntil(
     async () => {
-      const handoff = await show();
-      if (['uncertain', 'failed', 'canceled'].includes(handoff.creation.delivery))
-        throw new Error(`Inspect handoff ${id}: ${handoff.creation.delivery}`);
-      return handoff.creation.delivery === 'delivered' ? handoff : undefined;
+      const current = await read(input.requestIds.review);
+      return ['resolved', 'canceled', 'interrupted', 'waiting-input'].includes(current.state)
+        ? current
+        : undefined;
     },
     { timeoutSeconds: 30, intervalSeconds: 0.1 },
   );
-
-  /** A changed source invalidates this preview; the host must present any replacement. */
-  const sendConfirmed = async (phase: 'review' | 'feedback'): Promise<boolean> => {
-    const response = await requestAgentHq(stateRoot, {
-      kind: 'handoff',
-      command: { kind: 'preview', id, phase },
-    });
-    if (response.kind !== 'handoff' || response.result.kind !== 'preview')
-      throw new Error('Expected handoff preview');
-    const preview = response.result.preview;
-    if (preview.state !== 'ready') throw new Error(`Handoff preview: ${preview.state}`);
-    if (!(await input.confirmPreview(preview))) return false;
-    await requestAgentHq(stateRoot, {
-      kind: 'handoff',
-      command: { kind: 'send', id, phase, expectedPreviewDigest: preview.digest },
-    });
-    return true;
-  };
-  if (!(await sendConfirmed('review'))) return show();
-  const selection = await input.selectFindings(await show());
-  // HQ validates that the selected item belongs to this completed reviewer turn.
-  await requestAgentHq(stateRoot, {
-    kind: 'handoff',
-    command: { kind: 'collect', id, ...selection },
+  if (review.state !== 'resolved' || review.outcome !== 'completed' || !review.lastReportId)
+    return { review, feedback: null };
+  const report = await call({
+    kind: 'report-read',
+    taskId: input.taskId,
+    reportId: review.lastReportId,
   });
-  await sendConfirmed('feedback');
-  return show();
+  if (report.kind !== 'report') throw new Error('Expected report reference');
+  const feedback = await send('feedback', {
+    ...input.feedback,
+    targetReferences: [
+      { kind: 'report', reportId: report.result.report.id, sha256: report.result.report.sha256 },
+    ],
+  });
+  return { review, feedback };
 };

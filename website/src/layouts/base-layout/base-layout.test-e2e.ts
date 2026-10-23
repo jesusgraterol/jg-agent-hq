@@ -215,11 +215,11 @@ for (const walkthrough of [
   {
     id: 'review-handoff',
     title: 'Get another agent’s perspective',
-    category: 'Cross-provider review',
+    category: 'Agent review',
     link: 'Read the review walkthrough',
     helper: 'reviewHandoff',
     boundary: 'Feedback may still be queued or in flight.',
-    callback: 'selectFindings',
+    callback: 'confirmRequest',
   },
   {
     id: 'revise-plan',

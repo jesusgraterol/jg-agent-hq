@@ -234,10 +234,13 @@ export const createSkills = (
      */
     async prepare(
       threadId: string,
-      input: IMessageInput,
+      input: IMessageInput | { kind: 'skill-name'; name: string; arguments: string },
     ): Promise<{ text: string; skill: INativeSkillInput | null }> {
       if (input.kind === 'text') return { text: input.text, skill: null };
-      const preview = await this.preview(threadId, input.skillId, input.arguments);
+      const preview =
+        input.kind === 'skill-name'
+          ? await this.previewName(threadId, input.name, input.arguments)
+          : await this.preview(threadId, input.skillId, input.arguments);
       if (preview.state !== 'ready' || !preview.skill || !preview.text)
         throw new Exception('The HQ skill is unavailable', {
           code: 'JG_AGENT_HQ_SKILL_UNAVAILABLE',

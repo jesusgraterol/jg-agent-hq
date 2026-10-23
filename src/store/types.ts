@@ -45,21 +45,8 @@ import {
   type ILifecycleEvent,
   HqRequestSchema,
   type IActionPlanContext,
-  HandoffFindingsSchema,
-  HandoffPhaseSchema,
   type IHistoryProvenance,
-  type IHandoffFindings,
-  type IHandoffPhase,
-  type IHandoffSummary,
 } from '../contracts/index.js';
-import {
-  HandoffRecordSchema,
-  HandoffDispatchSchema,
-  HandoffPageRequestSchema,
-  type IHandoffRecord,
-  type IHandoffDispatch,
-  type IHandoffPageRequest,
-} from '../handoffs/index.js';
 import type { IHistoryRequest } from '../sessions/index.js';
 import {
   EvidenceOriginsRequestSchema,
@@ -141,20 +128,6 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     operatorId: z.string().min(1).max(256),
     state: BrowserReceiptSchema.shape.state.exclude(['submitted']),
   }),
-  z.strictObject({ kind: z.literal('handoff-read'), id: z.uuid() }),
-  z.strictObject({ kind: z.literal('handoff-prepare'), record: HandoffRecordSchema }),
-  z.strictObject({
-    kind: z.literal('handoff-dispatch-read'),
-    id: z.uuid(),
-    phase: HandoffPhaseSchema,
-  }),
-  z.strictObject({ kind: z.literal('handoff-dispatch-prepare'), dispatch: HandoffDispatchSchema }),
-  z.strictObject({
-    kind: z.literal('handoff-collect'),
-    id: z.uuid(),
-    findings: HandoffFindingsSchema,
-  }),
-  z.strictObject({ kind: z.literal('handoff-list'), page: HandoffPageRequestSchema }),
   z.strictObject({ kind: z.literal('claude-history'), request: HqRequestSchema }),
   z.strictObject({
     kind: z.literal('remember'),
@@ -369,46 +342,6 @@ export type IStore = {
     operatorId: string,
     state: 'acknowledged' | 'uncertain',
   ): Promise<IBrowserReceipt | null>;
-  /** Reads a bounded handoff intent.
-   * @returns The selected record, or null.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  getHandoff(id: string): Promise<IHandoffRecord | null>;
-  /** Persists creation intent before native admission.
-   * @returns The first identical intent.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-   */
-  prepareHandoff(record: IHandoffRecord): Promise<IHandoffRecord>;
-  /** Reads a phase's immutable native action.
-   * @returns The saved dispatch, or null.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  getHandoffDispatch(id: string, phase: IHandoffPhase): Promise<IHandoffDispatch | null>;
-  /** Persists explicit delivery before native admission.
-   * @returns The first identical preview's dispatch.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-   */
-  prepareHandoffDispatch(dispatch: IHandoffDispatch): Promise<IHandoffDispatch>;
-  /** Retains one bounded authoritative native message.
-   * @returns The updated handoff.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-   */
-  collectHandoff(id: string, findings: IHandoffFindings): Promise<IHandoffRecord>;
-  /** Reads a seek page from indexed handoff metadata.
-   * @returns One bounded page with continuation state.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  listHandoffs(page: IHandoffPageRequest): Promise<{ data: IHandoffSummary[]; hasMore: boolean }>;
-
   /** Refreshes one selected coordination-file projection.
    * @returns A promise resolved after projection commit.
    * @throws

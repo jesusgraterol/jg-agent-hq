@@ -35,8 +35,6 @@ import {
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, PUBLIC_ERROR_MESSAGES } from './constants.js';
 import { SkillIdSchema, SkillPageSchema, SkillPreviewSchema } from './skills/index.js';
 
-import { HandoffCommandSchema, HandoffResultSchema } from './handoffs/index.js';
-
 import { NativeIdSchema, CursorSchema, NativeLineageSchema } from './identities/index.js';
 import { ProviderModelPageSchema, ProviderModelsRequestSchema } from './models/index.js';
 import { ConfigurationRequestSchema, SessionConfigurationSchema } from './configuration/index.js';
@@ -79,7 +77,6 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     threadId: z.uuid().optional(),
   }),
   z.strictObject({ kind: z.literal('plan'), command: PlanCommandSchema }),
-  z.strictObject({ kind: z.literal('handoff'), command: HandoffCommandSchema }),
   z.strictObject({ kind: z.literal('stop') }),
   z.strictObject({
     kind: z.literal('threads'),
@@ -251,7 +248,6 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('status'), result: RuntimeStatusSchema }),
   z.object({ kind: z.literal('capabilities'), result: ProviderCapabilitiesSchema }),
   z.object({ kind: z.literal('plan'), result: PlanResultSchema }),
-  z.object({ kind: z.literal('handoff'), result: HandoffResultSchema }),
   z.object({ kind: z.literal('collaboration'), result: CollaborationResponseSchema }),
   z.object({
     kind: z.literal('stop'),

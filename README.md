@@ -85,19 +85,17 @@ Coordinators can retain revision-bound compatibility reviews in that same file. 
 
 Begin a revision before native planning. HQ stops bound implementation threads and their owned background work, captures partial-work evidence, and keeps execution paused while the CLI revises the plan and regenerates milestones. The finalizer carries exact matches automatically and asks for one confirmation covering every unmatched completed or partial milestone. Equivalent rewording preserves the original completion evidence. Changed requirements remain pending. Present and approve the canonical sequence, then explicitly authorize the new execution scope and mode. Neither approval nor restart resumes implementation. Whole-plan checkpoints and completion evidence also work without a milestone file. Removing a sequence requires explicit confirmation covering its retained milestone evidence before whole-plan execution can begin. See the [revision recovery contract](api/README.md#revision-and-progress-recovery).
 
-## Cross-provider feedback
+## Agent review and feedback
 
-Create a handoff with the JSON request interface: `kind: 'handoff'` and a `create` command containing a UUID, current `runtimeEpoch`, managed `sourceThreadId` and `purpose: 'challenge' | 'review'`. Creation opens a short-named reviewer session with the opposite provider, without sending a prompt. Preview the exact native skill invocation, then explicitly send its digest. Both CLIs keep their own skills, tool permissions and conversation histories.
+Choose any managed reviewer and author, including the same provider, and send task-scoped stream requests. Optional native skills use exact host-issued grants: jg-review-session can read the selected evidence, and jg-feedback can assess an exact report reference. HQ selects the installed native skill and verifies the invocation before dispatch. Missing or unavailable skills remain blocked; no copied workflow is substituted.
 
-Collect one completed reviewer message by its exact native turn/item reference. Preview and explicitly send it through `jg-feedback` to the original author. Feedback remains untrusted advice; delivery and native turn completion grant no plan approval, execution authority or acceptance of recommendations. Busy authors receive queued feedback through the existing action ledger. An uncertain send is never automatically retried.
-
-`handoff-show --id <uuid>` reads one handoff; `handoffs --workspace-root <path>` pages the inbox. The [handoff reference](api/README.md#cross-provider-handoffs) describes creation, preview, send and native findings collection through the same CLI's JSON request interface.
+Reports return through HQ storage and delivery without manual copying or another reviewer turn. Feedback is untrusted advice and grants no plan approval, execution authority or acceptance of recommendations. Parent work can yield for child results and continue through its existing authority. Busy agents queue; uncertainty never causes automatic resending. See [native skill delegation](api/README.md#native-skill-delegation) and [task collaboration](api/README.md#task-collaboration).
 
 ## Source examples
 
 Follow the [three complete walkthroughs](https://jg-agent-hq.jesusgraterol.dev/examples/), with copyable source, visual results and explicit host decisions.
 
-`examples/control-session.ts` creates a native session and reads its actual delivery, output, permission and usage observations. `examples/review-handoff.ts` presents exact cross-provider review/feedback previews and delivers selected findings. `examples/revise-plan.ts` runs the planning skills through the revision lease, retains verified work through explicit correspondence, and obtains fresh approvals and execution scope.
+`examples/control-session.ts` creates a native session and reads its actual delivery, output, permission and usage observations. `examples/review-handoff.ts` confirms stream review/assessment requests and returns exact report references, with optional skills and host-selected agents. `examples/revise-plan.ts` runs the planning skills through the revision lease, retains verified work through explicit correspondence, and obtains fresh approvals and execution scope.
 
 These complete TypeScript examples use the public client and contracts. Start the local controller, sign in to the native CLIs, and install the required skills and supported project-local jg-plans CLI first. The host supplies actual user decisions and keeps native permission handling separate. Retain request identities before submission; after an interrupted client call, inspect those receipts instead of rerunning a whole example. Examples are development sources, not package exports or automatic website actions.
 
@@ -116,7 +114,6 @@ These complete TypeScript examples use the public client and contracts. Start th
 - `src/plans/`: execution digests, milestone finalization, revision checkpoints, retained verification and explicit plan authority.
 - `src/skills/`: bounded native catalogs, invocation previews and explicit input preparation.
 - `src/accounts/` and `src/extensions/`: safe account observations and authorized, bounded native MCP inventories.
-- `src/handoffs/`: explicit cross-provider challenges, selected native findings and author assessment links.
 - `src/collaboration/`: host-owned tasks, streams, scoped skill-grant admission and event-driven directed request dispatch.
 - `src/collaboration/identity/` and `src/agent-tools/`: native-bound identity, private bridge credentials, shared agent tools and the stdio MCP entry.
 - `src/actions/`: durable action dispatch, native input routing and bounded live presentation.

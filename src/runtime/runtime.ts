@@ -6,7 +6,6 @@ import { HqRequestSchema, type IHqRequestInput, type IHqResponse } from '../cont
 import { createActions, readControl } from '../actions/index.js';
 import { createAccounts } from '../accounts/index.js';
 import { createExtensions } from '../extensions/index.js';
-import { createHandoffs } from '../handoffs/index.js';
 import { createCollaboration } from '../collaboration/index.js';
 import { createDispatch } from '../collaboration/dispatch/index.js';
 import { createAgentTools } from '../agent-tools/index.js';
@@ -297,8 +296,6 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           ).readConfiguration({ ...command, workspaceRoot }, thread?.nativeId ?? undefined),
         };
       }
-      case 'handoff':
-        return { kind: 'handoff', result: await handoffs.handle(command.command) };
       case 'collaboration':
         return { kind: 'collaboration', result: await collaboration.handle(command) };
       case 'plan':
@@ -364,15 +361,6 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   collaboration.setWakeHandler(dispatch.wake, dispatch.failure);
   actions.setChangeHandler(dispatch.wake);
   dispatch.wake();
-  const handoffs = createHandoffs(
-    projection,
-    actions,
-    skills,
-    plans,
-    request,
-    allowedRoots,
-    ownership.owner.nonce,
-  );
   try {
     ipc = await createIpcServer(join(stateRoot, CONTROL_SOCKET), ownership.owner.nonce, request);
   } catch (error) {

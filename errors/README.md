@@ -51,8 +51,6 @@ These contracts use the named codes below. An Exception's `data.kind` classifies
 | JG_AGENT_HQ_SKILL_UNAVAILABLE          | The HQ skill is unavailable                                      |
 | JG_AGENT_HQ_PLAN_INVALID               | The HQ plan is invalid                                           |
 | JG_AGENT_HQ_PLAN_FAILED                | The HQ plan operation failed                                     |
-| JG_AGENT_HQ_HANDOFF_UNAVAILABLE        | The HQ handoff is unavailable                                    |
-| JG_AGENT_HQ_HANDOFF_FAILED             | The HQ handoff operation failed                                  |
 
 State safety rejects non-private ownership, symlinks and non-regular files. Runtime ownership is never reclaimed automatically. Transport failure includes malformed, oversized or incomplete frames and bounded-request/lifecycle failures. Native history and subscription failures remain unavailable, never successful empty results. Claude control rejects missing or non-idle initialization, invalid native session identities and malformed lifecycle evidence. Failed delivery remains uncertain when no exact native rejection or acknowledgement establishes its outcome.
 
@@ -90,8 +88,6 @@ The local client translates a remote failure into an Exception with the named cl
 | `agent-unavailable`       | JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE       | Coding agent is unavailable.              |
 | `operation-failed`        | JG_AGENT_HQ_CLIENT_OPERATION_FAILED        | Operation could not be completed.         |
 
-Handoff lookup uses the unavailable contract for an unknown identity. Git attribution failures use the handoff operation contract with private diagnostic causes. Stale previews, changed source contracts, wrong native targets, mismatched replay identities and invalid or overwritten finding references use the existing action-state conflict contract. Delivery outcomes come from the action ledger and do not imply feedback acceptance.
-
 ## Website tooling
 
 | Code                                   | Stable message                               |
@@ -116,3 +112,5 @@ Browser host admission reuses the existing invalid-request, action-state conflic
 Directed dispatch uses COLLABORATION_CONFLICT for stale checkpoint/action/lifecycle selections and delegated resolution bypasses. COLLABORATION_FORBIDDEN covers wrong task/action bindings, unauthorized input or resumption and expired selected grants. Report continuation reuses CURSOR_INVALID; unrepresentable response metadata uses REQUEST_INVALID. Invalid native outcomes are retained as explicit request failure reasons with runtime-authored diagnostics rather than thrown success results. Collection storage failures roll back report, reply, request transition and collection receipt together; durable native evidence remains available for recovery. Native delivery uncertainty never causes another automatic send.
 
 Parent delegation reuses COLLABORATION_FORBIDDEN for forged parent links or child scope expansion and COLLABORATION_CONFLICT for stale resumption. Invalid direct-child waits retain an `invalid-child-wait` runtime failure; an attempted completion with unfinished children retains `children-pending`. Neither claim manufactures successful parent completion.
+
+Native skill dispatch reuses SKILL_UNAVAILABLE when the exact catalog selection is missing, disabled, ambiguous or unreadable. Collaboration retains skill-unavailable as a blocked reason and sends no replacement text.

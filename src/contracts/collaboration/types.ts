@@ -74,6 +74,7 @@ export const DispatchBlockedSchema = z.enum([
   'busy',
   'native-approval',
   'provider-unavailable',
+  'skill-unavailable',
   'ownership-uncertain',
   'agent-paused',
   'task-paused',

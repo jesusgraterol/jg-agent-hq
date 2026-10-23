@@ -107,6 +107,7 @@ export const createDispatch = (
           JG_AGENT_HQ_PLAN_FAILED: 'plan-stale',
           JG_AGENT_HQ_PROVIDER_FAILED: 'provider-unavailable',
           JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: 'provider-unavailable',
+          JG_AGENT_HQ_SKILL_UNAVAILABLE: 'skill-unavailable',
           JG_AGENT_HQ_CODEX_FAILED: 'provider-unavailable',
           JG_AGENT_HQ_CLAUDE_FAILED: 'provider-unavailable',
         };

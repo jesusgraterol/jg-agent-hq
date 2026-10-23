@@ -38,11 +38,11 @@ export const HOME_CONTENT = {
     {
       id: 'review-handoff',
       number: '02',
-      title: 'Bring in the other agent',
+      title: 'Bring in another agent',
       description:
-        'Preview a cross-provider review, select completed findings and return them to the author.',
-      flow: ['Author', 'Reviewer', 'Selected feedback'],
-      result: 'A traceable review handoff',
+        'Choose any reviewer, receive its exact report and request a separate author assessment.',
+      flow: ['Request', 'Report', 'Assessment'],
+      result: 'An exact report and a separate assessment',
       href: '/examples/#review-handoff',
       linkLabel: 'Read the review walkthrough',
     },

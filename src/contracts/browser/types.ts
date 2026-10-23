@@ -9,7 +9,6 @@ import {
   NativeApprovalSchema,
 } from '../actions/index.js';
 import { RuntimeStatusSchema, LiveItemsSchema } from '../types.js';
-import { HandoffCommandSchema } from '../handoffs/index.js';
 import {
   PlanCommandSchema,
   PlanStatusSchema,
@@ -23,7 +22,6 @@ import {
 export const BrowserCommandSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('native'), action: ActionEnvelopeSchema }),
   z.strictObject({ kind: z.literal('plan'), command: PlanCommandSchema }),
-  z.strictObject({ kind: z.literal('handoff'), command: HandoffCommandSchema }),
   z.strictObject({
     kind: z.literal('priority'),
     target: PlanTargetSchema,
@@ -105,7 +103,6 @@ export const BrowserSessionSchema = z.object({
   capabilities: z.object({
     native: z.boolean(),
     plans: z.boolean(),
-    handoffs: z.boolean(),
     priorities: z.boolean(),
     errorReservations: z.boolean(),
     publicationRetry: z.boolean(),

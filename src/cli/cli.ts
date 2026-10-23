@@ -37,7 +37,6 @@ const main = async (): Promise<void> => {
       'evidence-kind': { type: 'string', multiple: true },
       'thread-id': { type: 'string' },
       'server-name': { type: 'string' },
-      id: { type: 'string' },
       'skill-id': { type: 'string' },
       arguments: { type: 'string' },
       'codex-extra-skill-root': { type: 'string', multiple: true },
@@ -54,7 +53,7 @@ const main = async (): Promise<void> => {
   const [kind] = positionals;
   if (values.help || !kind || kind === 'help') {
     process.stdout.write(
-      'jg-agent-hq serve|status|stop|capabilities|threads|thread|turns|items|sessions|session-evidence|usage|account|models|configuration|mcp-servers|mcp-tools|mcp-resources|managed-thread-name|suggest-thread-name|skills|skill-preview|plan-status|plan-milestones|handoff-show|handoffs|request --state-root <path> [--provider <provider-id>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--server-name <name>] [--skill-id <id>] [--arguments <text>] [--directory <path>] [--id <uuid>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nsession-evidence accepts --native-item-id and repeated --evidence-kind.\nrequest reads one validated HQ command as JSON from stdin.\n',
+      'jg-agent-hq serve|status|stop|capabilities|threads|thread|turns|items|sessions|session-evidence|usage|account|models|configuration|mcp-servers|mcp-tools|mcp-resources|managed-thread-name|suggest-thread-name|skills|skill-preview|plan-status|plan-milestones|request --state-root <path> [--provider <provider-id>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--server-name <name>] [--skill-id <id>] [--arguments <text>] [--directory <path>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nsession-evidence accepts --native-item-id and repeated --evidence-kind.\nrequest reads one validated HQ command as JSON from stdin.\n',
     );
     return;
   }
@@ -113,7 +112,6 @@ const main = async (): Promise<void> => {
   }
   if (kind === 'serve') {
     if (
-      values.id ||
       values.directory ||
       values['native-id'] ||
       values['turn-id'] ||
@@ -212,45 +210,6 @@ const main = async (): Promise<void> => {
     );
     return;
   }
-  if (kind === 'handoff-show' || kind === 'handoffs') {
-    const allowed = new Set([
-      'state-root',
-      ...(kind === 'handoff-show' ? ['id'] : ['workspace-root', 'thread-id', 'limit', 'cursor']),
-    ]);
-    if (Object.keys(values).some((key) => !allowed.has(key)))
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
-        data: { kind: 'invalid-request' },
-      });
-    const parsed = HqRequestSchema.safeParse({
-      kind: 'handoff',
-      command:
-        kind === 'handoff-show'
-          ? { kind: 'show', id: values.id }
-          : {
-              kind: 'list',
-              workspaceRoot: roots[0],
-              sourceThreadId: values['thread-id'],
-              limit: values.limit === undefined ? 32 : Number(values.limit),
-              cursor: values.cursor,
-            },
-    });
-    if (!parsed.success)
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
-        data: { kind: 'invalid-request' },
-        cause: parsed.error,
-      });
-    process.stdout.write(
-      `${JSON.stringify({ schemaVersion: 1, ...(await requestAgentHq(stateRoot, parsed.data)) })}\n`,
-    );
-    return;
-  }
-  if (values.id)
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
-      data: { kind: 'invalid-request' },
-    });
   if (values.directory)
     throw new Exception('The HQ request is invalid', {
       code: 'JG_AGENT_HQ_REQUEST_INVALID',
