@@ -33,6 +33,7 @@ const taskFields = (row: Record<string, unknown>) => ({
   title: row.title,
   ownerOperatorRef: row.owner_operator_ref,
   policyRevision: row.policy_revision,
+  spawnCount: row.spawn_count,
   state: row.state,
   lifecycleRevision: row.lifecycle_revision,
   createdAt: row.created_at,

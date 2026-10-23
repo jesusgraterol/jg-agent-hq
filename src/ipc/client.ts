@@ -39,6 +39,7 @@ import { createLineDecoder } from './framing.js';
 export const requestAgentHq = async (
   stateRoot: string,
   command: IHqRequestInput,
+  signal?: AbortSignal,
 ): Promise<IHqResponse> => {
   const input = HqRequestSchema.safeParse(command);
   if (!input.success || !isAbsolute(stateRoot))
@@ -62,8 +63,23 @@ export const requestAgentHq = async (
       data: { kind: 'invalid-request' },
     });
   const socket = createConnection(path);
+  let onAbort: (() => void) | undefined;
   try {
     return await new Promise<IHqResponse>((resolve, reject) => {
+      onAbort = () => {
+        socket.destroy();
+        reject(
+          new Exception('The HQ transport failed', {
+            code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
+            data: { kind: 'agent-unavailable' },
+          }),
+        );
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
       socket.setTimeout(IPC_TIMEOUT_MS, () =>
         reject(
           new Exception('The HQ transport failed', {
@@ -133,6 +149,7 @@ export const requestAgentHq = async (
       socket.once('connect', () => socket.write(content));
     });
   } finally {
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
     socket.destroy();
   }
 };

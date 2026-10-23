@@ -105,6 +105,7 @@ const unavailableCapabilities = (): IProviderCapabilitySet => {
       accountLogin: unavailable,
       accountLoginCancel: unavailable,
       accountLogout: unavailable,
+      agentTools: unavailable,
     },
     inputSchema: null,
     configurationSchema: null,
@@ -142,6 +143,9 @@ export const createProviderRegistry = (
   const entries = new Map<IProviderId, IProviderEntry>();
   const lifetime = new AbortController();
   let handlers: IProviderRegistryEvents | undefined;
+  let agentTools:
+    | ((provider: IProviderId) => import('../../agent-tools/index.js').IProviderAgentTools)
+    | undefined;
   let closing: Promise<void> | undefined;
   let isClosing = false;
   if (registrations.length > MAX_PROVIDERS)
@@ -329,6 +333,7 @@ export const createProviderRegistry = (
               runtimeEpoch,
               signal: call.signal,
               events: eventsFor(entry),
+              agentTools: agentTools?.(provider),
             }),
           );
           const opened = await entry.opening;
@@ -629,6 +634,10 @@ export const createProviderRegistry = (
     /** Installs runtime-owned callbacks without constructing any adapter. */
     setEvents(events: IProviderRegistryEvents): void {
       handlers = events;
+    },
+    /** Installs provider-bound tool callbacks before lazy adapter construction. */
+    setAgentTools(tools: NonNullable<typeof agentTools>): void {
+      agentTools = tools;
     },
     /** @returns Bounded connection observations without native startup or inference. */
     statuses(): IProviderStatus[] {

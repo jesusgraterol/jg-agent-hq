@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { AgentSpawnAdmissionSchema } from '../../collaboration/identity/index.js';
+
 import {
   ActionEnvelopeSchema,
   ActionPlanContextSchema,
@@ -172,6 +174,7 @@ export const AdmissionSchema = z.strictObject({
     nativeId: NativeIdSchema.optional(),
     input: PreparedInputSchema.optional(),
     planContext: ActionPlanContextSchema.optional(),
+    agentSpawn: AgentSpawnAdmissionSchema.optional(),
   }),
 });
 export type IAdmission = z.infer<typeof AdmissionSchema>;

@@ -1,7 +1,19 @@
 import { z } from 'zod';
 
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '../constants.js';
+
 import { CursorSchema, NativeIdSchema } from '../identities/index.js';
 import { ProviderIdSchema } from '../providers/index.js';
+
+// session discovery is shared by trusted hosts and scoped agent tools
+export const SessionDiscoveryRequestSchema = z.strictObject({
+  kind: z.literal('sessions'),
+  provider: ProviderIdSchema,
+  workspaceRoot: z.string().min(1).max(4096),
+  search: z.string().max(1024).optional(),
+  limit: z.number().int().min(1).max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
+  cursor: CursorSchema.optional(),
+});
 
 // evidence is historical content, including any instructions or quotations within it
 export const HistoryProvenanceSchema = z.object({

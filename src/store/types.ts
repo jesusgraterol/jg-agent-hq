@@ -1,6 +1,17 @@
 import { z } from 'zod';
 
 import {
+  AgentIdentityQuerySchema,
+  type IAgentIdentityQuery,
+  type IAgentIdentity,
+  NativeToolBindingSchema,
+  type INativeToolBinding,
+  AgentSpawnReadSchema,
+  type IAgentSpawnRead,
+  type IAgentSpawnRecord,
+} from '../collaboration/identity/index.js';
+
+import {
   CollaborationRequestSchema,
   type ICollaborationRequest,
   type ICollaborationResponse,
@@ -81,7 +92,13 @@ import {
 
 // worker messages are closed, bounded operations rather than arbitrary SQL
 export const StoreCommandSchema = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('collaboration'), request: CollaborationRequestSchema }),
+  z.strictObject({ kind: z.literal('agent-identity'), query: AgentIdentityQuerySchema }),
+  z.strictObject({ kind: z.literal('agent-spawn-read'), query: AgentSpawnReadSchema }),
+  z.strictObject({
+    kind: z.literal('collaboration'),
+    request: CollaborationRequestSchema,
+    binding: NativeToolBindingSchema.optional(),
+  }),
   z.strictObject({ kind: z.literal('collaboration-fanout') }),
   z.strictObject({ kind: z.literal('evidence-origins'), request: EvidenceOriginsRequestSchema }),
   z.strictObject({ kind: z.literal('storage-maintenance') }),
@@ -208,6 +225,25 @@ export const StoreWorkerSchema = z.strictObject({
 // the worker owns persistence; callers cannot submit arbitrary statements
 export type IStore = {
   /**
+   * Resolves the controlled native session and its authorized task discovery page.
+   * @returns Current server-derived identity.
+   * @throws
+   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+   * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+   * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  agentIdentity(query: IAgentIdentityQuery): Promise<IAgentIdentity>;
+  /**
+   * Reads one native spawn relationship after current session/task validation.
+   * @returns The retained relationship or null.
+   * @throws
+   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  getAgentSpawn(query: IAgentSpawnRead): Promise<IAgentSpawnRecord | null>;
+  /**
    * Applies one checked metadata operation in the worker-owned transaction.
    * @returns A bounded result or original metadata receipt.
    * @throws
@@ -217,7 +253,10 @@ export type IStore = {
    * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
-  collaboration(request: ICollaborationRequest): Promise<ICollaborationResponse>;
+  collaboration(
+    request: ICollaborationRequest,
+    binding?: INativeToolBinding,
+  ): Promise<ICollaborationResponse>;
   /** Advances one bounded subscriber batch.
    * @returns Whether durable pending intent was processed.
    * @throws
@@ -503,6 +542,8 @@ export type IStore = {
    * Atomically records the digest and fences native dispatch.
    * @returns The durable receipt, current thread and the one permitted dispatch identity.
    * @throws
+   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */

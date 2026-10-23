@@ -21,7 +21,8 @@ import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 import type { createSkills } from '../skills/index.js';
 import type { IStore } from '../store/index.js';
 import type { createPlans } from '../plans/index.js';
-import type { INativeOutcome, INativeObservation } from '../store/control/index.js';
+import type { INativeOutcome, INativeObservation, IAdmission } from '../store/control/index.js';
+import type { IAgentSpawnAdmission } from '../collaboration/identity/index.js';
 
 import { LiveItems } from './live/index.js';
 
@@ -655,6 +656,8 @@ export const createActions = (
    * Validates the current target and separates new dispatch from idempotent receipt reads.
    * @returns The durable admission receipt; native work runs independently.
    * @throws
+   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    * - JG_AGENT_HQ_SKILL_UNAVAILABLE: The HQ skill is unavailable
    * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
@@ -666,7 +669,10 @@ export const createActions = (
    * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
-  const admitAndDispatch = async (action: IActionEnvelope): Promise<IActionReceipt> => {
+  const admitAndDispatch = async (
+    action: IActionEnvelope,
+    agentSpawn?: IAgentSpawnAdmission,
+  ): Promise<IActionReceipt> => {
     // The worker verifies the complete digest before returning any existing receipt.
     const existing = await store.getAction(action.id);
     if (existing) {
@@ -674,17 +680,13 @@ export const createActions = (
         const thread = await store.getThread(existing.threadId);
         if (thread) await validateRoot(thread);
       }
-      return (await store.admit({ action, prepared: {} })).receipt;
+      return (await store.admit({ action, prepared: agentSpawn ? { agentSpawn } : {} })).receipt;
     }
     if (closing || unavailable || tasks.size >= 64) agentUnavailable();
     const command = action.command;
     let provider: IManagedThread['provider'] | undefined =
       'provider' in command ? command.provider : undefined;
-    const prepared: {
-      workspaceRoot?: string;
-      nativeId?: string;
-      input?: IPreparedInput;
-    } = {};
+    const prepared: IAdmission['prepared'] = agentSpawn ? { agentSpawn } : {};
     let input: IPreparedInput | undefined;
     if ('threadId' in command) {
       const target = await store.getThread(command.threadId);
@@ -994,6 +996,16 @@ export const createActions = (
 
   return {
     /**
+     * Persists already received native lifecycle evidence before a tool rechecks its session binding.
+     * @returns Completion of the current bounded event lane, without polling native execution.
+     * @throws
+     * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+     */
+    async flushEvents(provider: IManagedThread['provider']): Promise<void> {
+      await lane.catch(() => undefined);
+      if (unavailable || closing || blockedProviders.has(provider)) agentUnavailable();
+    },
+    /**
      * Reads live native authentication presentation without replaying an interrupted action.
      * @returns The exact challenge or its known terminal status; restart loses sensitive presentation.
      * @throws
@@ -1045,6 +1057,8 @@ export const createActions = (
      * Returns after durable admission; the native operation outlives this client request.
      * @returns The durable admission receipt after validation.
      * @throws
+     * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+     * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      * - JG_AGENT_HQ_SKILL_UNAVAILABLE: The HQ skill is unavailable
      * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
@@ -1056,8 +1070,11 @@ export const createActions = (
      * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
      * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
-    async submit(action: IActionEnvelope): Promise<IActionReceipt> {
-      const admission = admitAndDispatch(action);
+    async submit(
+      action: IActionEnvelope,
+      agentSpawn?: IAgentSpawnAdmission,
+    ): Promise<IActionReceipt> {
+      const admission = admitAndDispatch(action, agentSpawn);
       admissions.add(admission);
       try {
         return await admission;

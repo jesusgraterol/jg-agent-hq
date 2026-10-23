@@ -31,7 +31,7 @@ const startWorker = async (): Promise<void> => {
       connectionSettings: STORAGE_CONNECTION_SETTINGS,
     };
     const browser = new BrowserModel(database, options.runtimeEpoch, options.actionKey);
-    const collaboration = new CollaborationModel(database);
+    const collaboration = new CollaborationModel(database, options.runtimeEpoch);
     const plans = new PlansModel(database);
     const handoffs = new HandoffsModel(database);
     const controls = new ControlModel(database, options.runtimeEpoch, options.actionKey, plans);
@@ -61,8 +61,14 @@ const startWorker = async (): Promise<void> => {
         }
         let result: unknown = null;
         switch (command.kind) {
+          case 'agent-identity':
+            result = collaboration.identity(command.query);
+            break;
+          case 'agent-spawn-read':
+            result = collaboration.spawn(command.query);
+            break;
           case 'collaboration':
-            result = collaboration.handle(command.request);
+            result = collaboration.handle(command.request, command.binding);
             break;
           case 'collaboration-fanout':
             result = collaboration.recoverFanout();

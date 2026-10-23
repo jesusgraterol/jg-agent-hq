@@ -264,6 +264,7 @@ CREATE TABLE hq_collaboration_task (
   plan TEXT CHECK (plan IS NULL OR json_valid(plan)),
   policy TEXT NOT NULL CHECK (json_valid(policy)),
   policy_revision INTEGER NOT NULL CHECK (policy_revision > 0),
+  spawn_count INTEGER NOT NULL DEFAULT 0 CHECK (spawn_count >= 0),
   state TEXT NOT NULL CHECK (state IN ('active','paused','stopped')),
   lifecycle_revision INTEGER NOT NULL CHECK (lifecycle_revision > 0),
   created_at INTEGER NOT NULL
@@ -288,6 +289,7 @@ CREATE TABLE hq_task_agent (
 ) STRICT;
 CREATE INDEX hq_idx_ta__task_sequence ON hq_task_agent(task_id, sequence);
 CREATE INDEX hq_idx_ta__agent_task ON hq_task_agent(agent_id, task_id);
+CREATE INDEX hq_idx_ta__agent_sequence ON hq_task_agent(agent_id, sequence);
 CREATE INDEX hq_idx_ta__parent ON hq_task_agent(task_id, parent_agent_id) WHERE parent_agent_id IS NOT NULL;
 
 CREATE TABLE hq_skill_grant (
@@ -440,6 +442,8 @@ CREATE INDEX hq_idx_d__task_sequence ON hq_delivery(task_id, sequence);
 CREATE INDEX hq_idx_d__agent_task_sequence ON hq_delivery(recipient_agent_id, task_id, sequence);
 CREATE INDEX hq_idx_d__agent_pending_sequence ON hq_delivery(recipient_agent_id, task_id, sequence) WHERE delivered_at IS NULL;
 CREATE INDEX hq_idx_d__task_pending_sequence ON hq_delivery(task_id, sequence) WHERE delivered_at IS NULL;
+CREATE INDEX hq_idx_d__agent_unack_sequence ON hq_delivery(recipient_agent_id, task_id, sequence) WHERE acknowledged_at IS NULL;
+CREATE INDEX hq_idx_d__task_unack_sequence ON hq_delivery(task_id, sequence) WHERE acknowledged_at IS NULL;
 
 CREATE TABLE hq_collaboration_operation (
   id TEXT NOT NULL PRIMARY KEY,
@@ -451,3 +455,15 @@ CREATE TABLE hq_collaboration_operation (
   created_at INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX hq_idx_co__task_created_id ON hq_collaboration_operation(task_id, created_at, id);
+
+CREATE TABLE hq_agent_spawn (
+  action_id TEXT NOT NULL PRIMARY KEY REFERENCES hq_action(id),
+  task_id TEXT NOT NULL,
+  parent_agent_id TEXT NOT NULL,
+  child_agent_id TEXT UNIQUE,
+  purpose TEXT NOT NULL CHECK (length(CAST(purpose AS BLOB)) <= 1024),
+  command_digest TEXT NOT NULL CHECK (length(command_digest) = 64),
+  created_at INTEGER NOT NULL,
+  CONSTRAINT hq_fk_as__parent FOREIGN KEY (task_id, parent_agent_id) REFERENCES hq_task_agent(task_id, agent_id),
+  CONSTRAINT hq_fk_as__child FOREIGN KEY (task_id, child_agent_id) REFERENCES hq_task_agent(task_id, agent_id)
+) STRICT;

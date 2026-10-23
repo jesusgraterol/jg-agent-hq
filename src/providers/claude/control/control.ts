@@ -3,6 +3,8 @@ import { Exception, isException } from 'jg-exception';
 import { isEqual } from 'jg-utilities';
 import { z } from 'zod';
 
+import type { IProviderAgentTools } from '../../../agent-tools/index.js';
+
 import type {
   IConfigurationRequest,
   ISessionSettings,
@@ -26,7 +28,10 @@ import { toClaudeSkills } from './skills.js';
  * Owns one persistent native CLI per explicitly controlled Claude session.
  * @returns Controls whose processes outlive client connections and stop at runtime shutdown.
  */
-export const createClaudeControl = (additionalDirectories: string[] = []) => {
+export const createClaudeControl = (
+  additionalDirectories: string[] = [],
+  agentTools?: IProviderAgentTools,
+) => {
   const sessions = new Map<string, IClaudeSession>();
   const extensionRequests = new Map<
     string,
@@ -108,6 +113,8 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
    * Records ownership before startup and permits control only after native idle initialization.
    * @returns The process-bound native identity and workspace.
    * @throws
+   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
    * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
@@ -140,80 +147,93 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     };
     sessions.set(nativeId, session);
     session.opening = (async () => {
-      const connection = await createClaudeRpc(
-        (reason) => {
-          if (reason !== 'unavailable' || session.isClosing) return;
-          if (session.input) {
-            clearTimeout(session.input.timer);
-            session.input.reject(
-              new Exception('The Claude integration failed', {
-                code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-                data: {
-                  kind: 'agent-unavailable',
-                },
-              }),
-            );
-          }
-          events?.unavailable(session.id);
-        },
-        {
-          nativeId,
-          workspaceRoot,
-          additionalDirectories,
-          isResume,
-          settings,
-          ...(forkSourceNativeId ? { forkSourceNativeId } : {}),
-          receive: (raw) => receiveClaudeMessage(session, raw, events),
-          lateResponse(id, result, error) {
-            if (extensionRequests.get(id)?.nativeId === nativeId) {
-              if (error !== undefined) {
-                extensionRequests.delete(id);
-                events?.outcome({ kind: 'failed', requestId: id, failure: 'agent-unavailable' });
+      session.agentBridge = await agentTools?.mcp(nativeId);
+      try {
+        const connection = await createClaudeRpc(
+          (reason) => {
+            if (reason !== 'unavailable' || session.isClosing) return;
+            if (session.input) {
+              clearTimeout(session.input.timer);
+              session.input.reject(
+                new Exception('The Claude integration failed', {
+                  code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+                  data: {
+                    kind: 'agent-unavailable',
+                  },
+                }),
+              );
+            }
+            events?.unavailable(session.id);
+          },
+          {
+            nativeId,
+            workspaceRoot,
+            additionalDirectories,
+            isResume,
+            settings,
+            ...(session.agentBridge
+              ? {
+                  mcpServers: {
+                    [session.agentBridge.serverName]: session.agentBridge.configuration,
+                  },
+                }
+              : {}),
+            ...(forkSourceNativeId ? { forkSourceNativeId } : {}),
+            receive: (raw) => receiveClaudeMessage(session, raw, events),
+            lateResponse(id, result, error) {
+              if (extensionRequests.get(id)?.nativeId === nativeId) {
+                if (error !== undefined) {
+                  extensionRequests.delete(id);
+                  events?.outcome({ kind: 'failed', requestId: id, failure: 'agent-unavailable' });
+                  return;
+                }
+                void (async () => {
+                  try {
+                    const resultState = await completeExtension(id, result);
+                    events?.outcome({ kind: 'control-accepted', requestId: id, ...resultState });
+                  } catch {
+                    events?.unavailable(nativeId);
+                    await session.connection?.close();
+                  }
+                })().catch(() => events?.unavailable(nativeId));
                 return;
               }
-              void (async () => {
-                try {
-                  const resultState = await completeExtension(id, result);
-                  events?.outcome({ kind: 'control-accepted', requestId: id, ...resultState });
-                } catch {
-                  events?.unavailable(nativeId);
-                  await session.connection?.close();
-                }
-              })().catch(() => events?.unavailable(nativeId));
-              return;
-            }
-            if (!/^[a-f0-9-]{36}:(name|interrupt)$/.test(id)) return;
-            if (error !== undefined)
-              events?.outcome({
-                kind: 'failed',
-                requestId: id,
-                failure: 'agent-unavailable',
-              });
-            else
-              events?.outcome({
-                kind: id.endsWith(':name') ? 'renamed' : 'interrupt-accepted',
-                requestId: id,
-              });
+              if (!/^[a-f0-9-]{36}:(name|interrupt)$/.test(id)) return;
+              if (error !== undefined)
+                events?.outcome({
+                  kind: 'failed',
+                  requestId: id,
+                  failure: 'agent-unavailable',
+                });
+              else
+                events?.outcome({
+                  kind: id.endsWith(':name') ? 'renamed' : 'interrupt-accepted',
+                  requestId: id,
+                });
+            },
           },
-        },
-        undefined,
-        signal,
-      );
-      session.connection = connection;
-      if (connection.initialization.session_state !== 'idle') {
-        await connection.close();
-        unavailable();
+          undefined,
+          signal,
+        );
+        session.connection = connection;
+        if (connection.initialization.session_state !== 'idle') {
+          await connection.close();
+          unavailable();
+        }
+        // unsupported optional metadata disables the catalog, without disabling native controls
+        session.skills = null;
+        try {
+          const skills = toClaudeSkills({ skills: connection.initialization.commands });
+          if (Buffer.byteLength(JSON.stringify(skills.skills)) <= 1_048_576)
+            session.skills = { ...skills, observedAt: connection.initializedAt };
+        } catch {
+          /* catalog availability is reported independently */
+        }
+        delete connection.initialization.commands;
+      } catch (error) {
+        await session.agentBridge?.release();
+        throw error;
       }
-      // unsupported optional metadata disables the catalog, without disabling native controls
-      session.skills = null;
-      try {
-        const skills = toClaudeSkills({ skills: connection.initialization.commands });
-        if (Buffer.byteLength(JSON.stringify(skills.skills)) <= 1_048_576)
-          session.skills = { ...skills, observedAt: connection.initializedAt };
-      } catch {
-        /* catalog availability is reported independently */
-      }
-      delete connection.initialization.commands;
     })();
     await session.opening;
     return { id: nativeId, cwd: workspaceRoot, status: { type: 'idle' as const } };
@@ -305,6 +325,8 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
      * Starts an idle native session with normal local instructions and settings.
      * @returns The exact native session identity and workspace.
      * @throws
+     * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+     * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
      * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
@@ -322,6 +344,8 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
      * Uses native resume/fork flags while keeping the source session untouched.
      * @returns The independently verified native fork and its source.
      * @throws
+     * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+     * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
      * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
@@ -341,6 +365,8 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
      * Loads a confirmed handoff and verifies its native session identity.
      * @returns The native idle state after the session-id fence succeeds.
      * @throws
+     * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+     * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
      * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
@@ -533,6 +559,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
           throw cause;
       });
       await session.connection?.close();
+      await session.agentBridge?.release();
     },
     /**
      * Releases a stopped session only after rechecking its shutdown promise.
@@ -545,6 +572,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       const session = sessions.get(nativeId);
       if (!session?.isClosing) conflict();
       await session.connection?.close();
+      await session.agentBridge?.release();
       sessions.delete(nativeId);
     },
     /**
@@ -578,6 +606,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
               throw cause;
           });
           await session.connection?.close();
+          await session.agentBridge?.release();
         }),
       );
       const failure = results.find((result) => result.status === 'rejected');

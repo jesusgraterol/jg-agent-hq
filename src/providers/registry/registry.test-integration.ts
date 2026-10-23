@@ -90,6 +90,7 @@ const createFixtureProvider = () => {
       accountLogin: unsupported,
       accountLoginCancel: unsupported,
       accountLogout: unsupported,
+      agentTools: unsupported,
     },
     inputSchema: z.record(z.string(), z.json()).parse(z.toJSONSchema(MessageInputSchema)),
     configurationSchema: null,

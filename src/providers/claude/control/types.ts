@@ -1,4 +1,5 @@
 import type { IHistoryItem, ISessionSettings } from '../../../contracts/index.js';
+import type { IAgentMcpLease } from '../../../agent-tools/index.js';
 import type { INativeObservation } from '../../../store/control/index.js';
 import type { INativePrompt, IProviderSkills, IAgentProviderOutcome } from '../../index.js';
 
@@ -33,6 +34,7 @@ export type IClaudeSession = {
   scope: string;
   isClosing: boolean;
   connection?: Awaited<ReturnType<typeof import('../rpc.js').createClaudeRpc>>;
+  agentBridge?: IAgentMcpLease;
   opening: Promise<void>;
   skills?: IProviderSkills | null;
   input?: IClaudeInput;

@@ -2,6 +2,7 @@ import type {
   ICollaborationRequest,
   ICollaborationResponse,
 } from '../contracts/collaboration/index.js';
+import type { INativeToolBinding } from './identity/index.js';
 
 // background batches participate individually in the runtime's maintenance admission
 export type ICollaborationBackground = <T>(operation: () => Promise<T>) => Promise<T>;
@@ -17,7 +18,10 @@ export type ICollaboration = {
    * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
-  handle(request: ICollaborationRequest): Promise<ICollaborationResponse>;
+  handle(
+    request: ICollaborationRequest,
+    binding?: INativeToolBinding,
+  ): Promise<ICollaborationResponse>;
   /** Stops new recovery batches and drains the current owned batch.
    * @returns Completion of the owned background loop.
    */

@@ -104,6 +104,8 @@ export const createPlanAdmission = (
      * Validates guided scope and admits under the same short lock as revision gate closure.
      * @returns The existing action owner's receipt and dispatch identity.
      * @throws
+     * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+     * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
      * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid

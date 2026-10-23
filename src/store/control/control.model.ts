@@ -4,6 +4,14 @@ import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import {
+  agentSpawnContext,
+  recordAgentSpawn,
+  reserveAgentChild,
+  readAgentSpawn,
+} from '../collaboration/index.js';
+import { collaborationConflict, collaborationForbidden } from '../../collaboration/grants/index.js';
+
+import {
   LifecycleEventSchema,
   PreparedInputSchema,
   NativeApprovalSummarySchema,
@@ -291,16 +299,37 @@ export class ControlModel {
    * Admits a command exactly once before any native write, with all ownership checks atomic.
    * @returns The durable receipt and the one action permitted to dispatch.
    * @throws
+   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */
   public admit(input: IAdmission): IAdmissionResult {
     return this.__transaction(() => {
       const { action, prepared } = input;
+      const spawnContext = prepared.agentSpawn
+        ? agentSpawnContext(this.__database, prepared.agentSpawn, this.__epoch)
+        : null;
+      if (prepared.agentSpawn && action.command.kind !== 'thread-create')
+        return collaborationForbidden();
       const digest = createHmac('sha256', this.__digestKey)
         .update(JSON.stringify(action))
         .digest('hex');
       const existing = this.__action(action.id);
       if (existing) {
+        if (
+          prepared.agentSpawn &&
+          !readAgentSpawn(
+            this.__database,
+            {
+              binding: prepared.agentSpawn.binding,
+              taskId: prepared.agentSpawn.taskId,
+              actionId: action.id,
+              commandDigest: prepared.agentSpawn.commandDigest,
+            },
+            this.__epoch,
+          )
+        )
+          return collaborationConflict();
         if (existing.digest !== digest) this.__conflict();
         return {
           receipt: toActionReceipt(existing),
@@ -349,6 +378,8 @@ export class ControlModel {
         this.__database
           .prepare('UPDATE hq_action SET input_sha256 = ? WHERE id = ?')
           .run(createHash('sha256').update(inputText).digest('hex'), action.id);
+      if (prepared.agentSpawn && spawnContext)
+        recordAgentSpawn(this.__database, action.id, prepared.agentSpawn, spawnContext);
       this.__database.exec('SAVEPOINT admission');
       let dispatchActionId: string | null = action.id;
       try {
@@ -451,6 +482,14 @@ export class ControlModel {
               name,
               provider,
               action.id,
+            );
+          if (spawnContext)
+            reserveAgentChild(
+              this.__database,
+              spawnContext,
+              action,
+              threadId,
+              prepared.workspaceRoot,
             );
         } else {
           let threadId: string;

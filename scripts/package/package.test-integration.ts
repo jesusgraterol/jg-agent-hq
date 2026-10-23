@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -43,6 +43,7 @@ test(
       expect(paths).toContain('dist/cli/cli.js');
       expect(paths).toContain('dist/store/schema.sql');
       expect(paths).toContain('dist/contracts/index.js');
+      expect(paths).toContain('dist/agent-tools/mcp/mcp.js');
       expect(paths).toContain('LICENSE');
       expect(
         paths.filter((path) => /(?:test-|node_modules|website|\.runtime|\.map$)/.test(path)),
@@ -152,6 +153,28 @@ test(
       expect(help).toContain(
         'serve|status|stop|capabilities|threads|thread|turns|items|sessions|session-evidence|usage',
       );
+      const installedManifest = JSON.parse(
+        await readFile(join(scratch, 'node_modules/jg-agent-hq/package.json'), 'utf8'),
+      ) as { dependencies: Record<string, string> };
+      expect(installedManifest.dependencies['@modelcontextprotocol/server']).toBe('2.3.1');
+      const bridge = spawnSync(
+        process.execPath,
+        [join(scratch, 'node_modules/jg-agent-hq/dist/cli/cli.js'), 'agent-bridge'],
+        {
+          cwd: scratch,
+          env: { ...env, JG_AGENT_HQ_BRIDGE_FILE: join(scratch, 'missing-credential.json') },
+          encoding: 'utf8',
+          timeout: 10_000,
+          maxBuffer: 65_536,
+        },
+      );
+      expect(bridge.error).toBeUndefined();
+      expect(bridge.status).toBe(1);
+      expect(bridge.stdout).toBe('');
+      expect(JSON.parse(bridge.stderr)).toMatchObject({
+        success: false,
+        error: { kind: 'access-denied' },
+      });
       const contractRoot = join(ROOT, 'dist/contracts');
       const pending = [join(contractRoot, 'index.js')];
       const visited = new Set<string>();

@@ -9,9 +9,21 @@ import { toPublicError } from '../errors/index.js';
 import { requestAgentHq } from '../ipc/index.js';
 import { createAgentHq } from '../runtime/index.js';
 import { readRuntimeOwner } from '../runtime/state/index.js';
+import { serveAgentBridge } from '../agent-tools/mcp/index.js';
+import { AGENT_BRIDGE_FILE_ENV } from '../agent-tools/index.js';
 
 /** Runs the installed CLI without creating provider work merely to read history. */
 const main = async (): Promise<void> => {
+  if (process.argv[2] === 'agent-bridge') {
+    const credentialPath = process.env[AGENT_BRIDGE_FILE_ENV];
+    if (process.argv.length !== 3 || !credentialPath)
+      throw new Exception('The HQ request is invalid', {
+        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+        data: { kind: 'invalid-request' },
+      });
+    await serveAgentBridge(credentialPath);
+    return;
+  }
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {

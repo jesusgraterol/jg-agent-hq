@@ -1,6 +1,6 @@
 // explicit projections keep bodies and authority scopes out of collection reads
 export const TASK_METADATA_COLUMNS =
-  'sequence, id, workspace_root, owner_operator_ref, title, policy_revision, state, lifecycle_revision, created_at';
+  'sequence, id, workspace_root, owner_operator_ref, title, policy_revision, spawn_count, state, lifecycle_revision, created_at';
 export const TASK_COLUMNS = `${TASK_METADATA_COLUMNS}, policy, plan`;
 export const AGENT_METADATA_COLUMNS =
   'a.sequence, a.task_id, a.agent_id, a.parent_agent_id, a.role, t.provider, t.workspace_root, a.revision, a.state, a.is_revoked, a.created_at';

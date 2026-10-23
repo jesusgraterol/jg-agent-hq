@@ -71,6 +71,7 @@ export type IAgentProviderEvents = {
 
 // factories receive trusted configuration and runtime lifetime ownership
 export type IAgentProviderContext = {
+  agentTools?: import('../agent-tools/index.js').IProviderAgentTools;
   allowedRoots: string[];
   runtimeEpoch: string;
   signal: AbortSignal;

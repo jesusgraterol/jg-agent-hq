@@ -2,6 +2,8 @@ import { Worker } from 'node:worker_threads';
 import { Exception, extractMessage } from 'jg-exception';
 import { z } from 'zod';
 
+import { AgentIdentitySchema, AgentSpawnRecordSchema } from '../collaboration/identity/index.js';
+
 import { CollaborationResponseSchema } from '../contracts/collaboration/index.js';
 
 import {
@@ -228,8 +230,11 @@ export const createStore = async (
   };
   return {
     storage: storage!,
-    collaboration: (command) =>
-      request({ kind: 'collaboration', request: command }, CollaborationResponseSchema),
+    agentIdentity: (query) => request({ kind: 'agent-identity', query }, AgentIdentitySchema),
+    getAgentSpawn: (query) =>
+      request({ kind: 'agent-spawn-read', query }, AgentSpawnRecordSchema.nullable()),
+    collaboration: (command, binding) =>
+      request({ kind: 'collaboration', request: command, binding }, CollaborationResponseSchema),
     recoverCollaborationFanout: () => request({ kind: 'collaboration-fanout' }, z.boolean()),
     prepareStorageMaintenance: () => request({ kind: 'storage-maintenance' }, z.boolean()),
     getBrowserAction: (id, operatorId) =>

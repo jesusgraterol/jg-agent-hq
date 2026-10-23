@@ -3,6 +3,7 @@ export {
   HistoryKindSchema,
   HistoryProvenanceSchema,
   EvidenceRequestSchema,
+  SessionDiscoveryRequestSchema,
   EvidenceItemSchema,
   EvidencePageSchema,
 } from './types.js';

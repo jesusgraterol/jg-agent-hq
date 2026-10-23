@@ -377,7 +377,12 @@ export const queryCollaboration = (
       if (actor.kind === 'agent' && recipient !== actor.agentId) return collaborationForbidden();
       if (recipient !== undefined) readMember(database, task.id, recipient);
       const parameters: SQLInputValue[] = [task.id];
-      let filter = command.pendingOnly ? ' AND delivered_at IS NULL' : '';
+      let filter =
+        command.state === 'undelivered'
+          ? ' AND delivered_at IS NULL'
+          : command.state === 'unacknowledged'
+            ? ' AND acknowledged_at IS NULL'
+            : '';
       if (recipient !== undefined) {
         filter += ' AND recipient_agent_id = ?';
         parameters.push(recipient);
@@ -423,6 +428,11 @@ export const queryCollaboration = (
           pendingDeliveries: cappedCount(
             database,
             `SELECT 1 FROM hq_delivery WHERE task_id = ? AND delivered_at IS NULL ${recipient === null ? '' : 'AND recipient_agent_id = ?'} LIMIT 129`,
+            recipient === null ? [task.id] : [task.id, recipient],
+          ),
+          unacknowledgedDeliveries: cappedCount(
+            database,
+            `SELECT 1 FROM hq_delivery WHERE task_id = ? AND acknowledged_at IS NULL ${recipient === null ? '' : 'AND recipient_agent_id = ?'} LIMIT 129`,
             recipient === null ? [task.id] : [task.id, recipient],
           ),
           pendingFanout: cappedCount(

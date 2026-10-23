@@ -1,7 +1,9 @@
 import { Exception, isException } from 'jg-exception';
 import { z } from 'zod';
+import { abortable, createDeadline } from 'jg-utilities';
 
 import type { IUsageSnapshot, ISessionSettings, IOutputSchema } from '../../contracts/index.js';
+import type { IProviderAgentTools } from '../../agent-tools/index.js';
 
 import { createCodexRpc } from './rpc.js';
 import { createCodexExtensions } from './extensions/index.js';
@@ -38,6 +40,7 @@ import {
  */
 export const createCodexProvider = async (
   extraSkillRoots: string[] = [],
+  agentTools?: IProviderAgentTools,
 ): Promise<ICodexProvider> => {
   let latest: IUsageSnapshot = {
     provider: 'codex',
@@ -51,6 +54,10 @@ export const createCodexProvider = async (
   let refresh: Promise<IUsageSnapshot> | undefined;
   let accountGeneration = 0;
   let events: ICodexEvents | undefined;
+  const toolLifetime = new AbortController();
+  const toolCalls = new Set<Promise<void>>();
+  const controlled = new Set<string>();
+  const toolSessions = new Set<string>();
   let authentication: ReturnType<typeof createCodexAuthentication> | undefined;
   const extensionRequests = new Map<string, 'skills-reload' | 'mcp-reload'>();
   const outputSchemas = new Map<string, IOutputSchema>();
@@ -70,8 +77,97 @@ export const createCodexProvider = async (
   };
   // an uncertain idle-control release requires recovery before further input
   const releaseControlState = (nativeId: string): void => {
+    controlled.delete(nativeId);
+    toolSessions.delete(nativeId);
     outputSchemas.delete(nativeId);
     events?.forgetTurn(nativeId);
+  };
+  /** Routes verifiable native children through their owning managed session's identity. */
+  const performTool = async (
+    id: string | number,
+    params: unknown,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    if (!agentTools || toolCalls.size >= 32 || toolLifetime.signal.aborted) {
+      await rpc?.reject(id);
+      return;
+    }
+    const parsed = z
+      .object({
+        threadId: z.string().min(1).max(4096),
+        turnId: z.string().min(1).max(4096),
+        callId: z.string().min(1).max(4096),
+        namespace: z.null().optional(),
+        tool: z.string().min(1).max(128),
+        arguments: z.json(),
+      })
+      .safeParse(params);
+    if (!parsed.success) {
+      await rpc?.reject(id);
+      return;
+    }
+    let nativeId = parsed.data.threadId;
+    const isChild = !controlled.has(nativeId);
+    let childRoot: string | undefined;
+    const visited = new Set<string>();
+    while (!controlled.has(nativeId) && visited.size < 32 && !visited.has(nativeId)) {
+      visited.add(nativeId);
+      const child = parseNative(
+        z.object({ thread: NativeThreadSchema }),
+        await abortable(rpc!.request('thread/read', { threadId: nativeId, includeTurns: false }), {
+          signal,
+        }),
+      ).thread;
+      if (
+        child.id !== nativeId ||
+        !child.parentThreadId ||
+        (childRoot && child.cwd !== childRoot)
+      ) {
+        await rpc?.reject(id);
+        return;
+      }
+      childRoot = child.cwd;
+      nativeId = child.parentThreadId;
+      signal.throwIfAborted();
+    }
+    if (!controlled.has(nativeId)) {
+      await rpc?.reject(id);
+      return;
+    }
+    if (isChild) {
+      const owner = parseNative(
+        z.object({ thread: NativeThreadSchema }),
+        await abortable(rpc!.request('thread/read', { threadId: nativeId, includeTurns: false }), {
+          signal,
+        }),
+      ).thread;
+      if (owner.id !== nativeId || owner.cwd !== childRoot) {
+        await rpc?.reject(id);
+        return;
+      }
+    }
+    const result = await agentTools.call(
+      nativeId,
+      isChild ? undefined : parsed.data.turnId,
+      parsed.data.tool,
+      parsed.data.arguments,
+      signal,
+    );
+    toolSessions.add(nativeId);
+    await rpc?.reply(id, {
+      contentItems: result.content.map((item) => ({ type: 'inputText', text: item.text })),
+      success: !result.isError,
+    });
+  };
+  /** Bounds the complete native lineage lookup and tool call under one owned deadline. */
+  const callTool = async (id: string | number, params: unknown): Promise<void> => {
+    const deadline = createDeadline({ timeoutSeconds: 30, signal: toolLifetime.signal });
+    try {
+      deadline.throwIfStopped();
+      await performTool(id, params, deadline.signal);
+    } finally {
+      deadline.dispose();
+    }
   };
   /** Keeps bounded startup evidence for fields omitted by the native history read. */
   const rememberConfiguration = (
@@ -120,6 +216,15 @@ export const createCodexProvider = async (
   rpc = await createCodexRpc(
     {
       request: (id, method, params) => {
+        if (method === 'item/tool/call') {
+          const operation = callTool(id, params);
+          toolCalls.add(operation);
+          void operation
+            .catch(() => rpc?.reject(id))
+            .finally(() => toolCalls.delete(operation))
+            .catch(() => undefined);
+          return;
+        }
         if (events) events.request(id, method, params);
         else void rpc?.reject(id).catch(() => undefined);
       },
@@ -181,6 +286,7 @@ export const createCodexProvider = async (
     events?.controlOutcome(outcome),
   );
   return {
+    hasAgentTools: (nativeId) => toolSessions.has(nativeId),
     ...createCodexExtensions(connection),
     ...createCodexAccounts(connection),
     readLogin: authentication.readLogin,
@@ -285,6 +391,8 @@ export const createCodexProvider = async (
           requestId,
         ),
       );
+      controlled.add(result.thread.id);
+      if (toolSessions.has(nativeId)) toolSessions.add(result.thread.id);
       return result.thread;
     },
     async archiveThread(requestId, nativeId) {
@@ -411,10 +519,22 @@ export const createCodexProvider = async (
       const selected = { ...settings };
       const response = await connection.request(
         'thread/start',
-        { cwd: workspaceRoot, ...toCodexSessionSettings(selected) },
+        {
+          cwd: workspaceRoot,
+          ...toCodexSessionSettings(selected),
+          ...(agentTools
+            ? {
+                dynamicTools: agentTools
+                  .definitions()
+                  .map((tool) => ({ type: 'function', ...tool })),
+              }
+            : {}),
+        },
         requestId,
       );
       const thread = parseNative(z.object({ thread: NativeThreadSchema }), response).thread;
+      controlled.add(thread.id);
+      if (agentTools) toolSessions.add(thread.id);
       if (selected.outputSchema) outputSchemas.set(thread.id, selected.outputSchema);
       rememberConfiguration(thread.id, response, selected);
       return thread;
@@ -446,6 +566,7 @@ export const createCodexProvider = async (
         z.object({ thread: NativeThreadSchema.refine((thread) => thread.id === nativeId) }),
         response,
       );
+      controlled.add(nativeId);
       if (selected.outputSchema) outputSchemas.set(nativeId, selected.outputSchema);
       else outputSchemas.delete(nativeId);
       rememberConfiguration(nativeId, response, selected);
@@ -563,6 +684,12 @@ export const createCodexProvider = async (
     },
     reply: connection.reply,
     reject: connection.reject,
-    close: connection.close,
+    close: async () => {
+      toolLifetime.abort();
+      await connection.close();
+      await Promise.allSettled([...toolCalls]);
+      controlled.clear();
+      toolSessions.clear();
+    },
   };
 };

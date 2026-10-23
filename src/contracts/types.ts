@@ -1,9 +1,12 @@
 import { z } from 'zod';
 
+import { AgentToolRequestSchema, AgentToolResultSchema } from './agent-tools/index.js';
+
 import { CollaborationRequestSchema, CollaborationResponseSchema } from './collaboration/index.js';
 
 import {
   EvidenceRequestSchema,
+  SessionDiscoveryRequestSchema,
   EvidencePageSchema,
   HistoryKindSchema,
   HistoryProvenanceSchema,
@@ -61,15 +64,10 @@ const TargetFields = {
 
 // only implemented operations can be admitted; native RPC is never exposed
 export const HqRequestSchema = z.discriminatedUnion('kind', [
+  AgentToolRequestSchema,
   CollaborationRequestSchema,
   EvidenceRequestSchema,
-  z.strictObject({
-    kind: z.literal('sessions'),
-    provider: TargetFields.provider,
-    workspaceRoot: TargetFields.workspaceRoot,
-    search: z.string().max(1024).optional(),
-    ...PageFields,
-  }),
+  SessionDiscoveryRequestSchema,
   AccountRequestSchema,
   ...McpRequestSchema.options,
   ProviderModelsRequestSchema,
@@ -225,6 +223,7 @@ export const RuntimeStatusSchema = z.object({
 export type IRuntimeStatus = z.infer<typeof RuntimeStatusSchema>;
 const PageResultFields = { nextCursor: CursorSchema.nullable(), source: z.literal('native') };
 export const HqResponseSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('agent-tool'), result: AgentToolResultSchema }),
   z.object({ kind: z.literal('session-evidence'), result: EvidencePageSchema }),
   z.object({
     kind: z.literal('sessions'),

@@ -8,6 +8,7 @@ import { createAccounts } from '../accounts/index.js';
 import { createExtensions } from '../extensions/index.js';
 import { createHandoffs } from '../handoffs/index.js';
 import { createCollaboration } from '../collaboration/index.js';
+import { createAgentTools } from '../agent-tools/index.js';
 import { CONTROL_SOCKET, createIpcServer } from '../ipc/index.js';
 import { createCodexProviderFactory, createClaudeProviderFactory } from '../providers/index.js';
 import { createProviderRegistry } from '../providers/registry/index.js';
@@ -187,9 +188,11 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     (closing ??= (async () => {
       try {
         await browser.close();
+        const toolCleanup = await Promise.allSettled([agentTools.close()]);
         await collaboration.close();
         await Promise.allSettled([...revisionJobs.values()]);
         const results = await Promise.allSettled([ipc?.close(), actions.close()]);
+        results.push(...toolCleanup);
         const storeCleanup = await Promise.allSettled([projection.close()]);
         results.push(...storeCleanup);
         const failure = results.find((result) => result.status === 'rejected');
@@ -223,6 +226,8 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       });
     const command = result.data;
     switch (command.kind) {
+      case 'agent-tool':
+        return { kind: 'agent-tool', result: await agentTools.handleBridge(command) };
       case 'status':
         return {
           kind: 'status',
@@ -336,6 +341,17 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const request = (input: IHqRequestInput): Promise<IHqResponse> =>
     storage.run(() => handleRequest(input));
   const collaboration = createCollaboration(projection, allowedRoots, storage.background);
+  const agentTools = createAgentTools({
+    stateRoot,
+    runtimeEpoch: ownership.owner.nonce,
+    allowedRoots,
+    store: projection,
+    collaboration,
+    actions,
+    run: storage.run,
+    read: (command) => readNativeHistory(command, providers, projection, allowedRoots),
+  });
+  providers.setAgentTools(agentTools.forProvider);
   const handoffs = createHandoffs(
     projection,
     actions,

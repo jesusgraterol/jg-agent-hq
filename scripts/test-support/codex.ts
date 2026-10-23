@@ -30,6 +30,7 @@ else {
   const respond = (id,result) => process.stdout.write(JSON.stringify({ id,result })+'\n');
   const notify = (method,params) => process.stdout.write(JSON.stringify({ method,params })+'\n');
   const managed = new Map();
+  const toolCalls = new Map();
   let threadSequence = 0;
   let turnSequence = 0;
   const interrupts = [];
@@ -45,6 +46,11 @@ else {
     const control = controls();
     if (!request.method) {
       appendFileSync(join(directory,'replies.jsonl'),JSON.stringify(request)+'\n');
+      if(toolCalls.has(request.id)) {
+        const {threadId,turnId}=toolCalls.get(request.id);toolCalls.delete(request.id);
+        notify('item/completed',{threadId,turnId,item:{id:'tool-result-'+turnId,type:'agentMessage',text:JSON.stringify(request.result??request.error)}});
+        complete(threadId);return;
+      }
       const threadId = control.promptThread || [...managed.keys()].at(-1);
       if (control.replyResolutionDelay) setTimeout(() => notify('serverRequest/resolved',{threadId,requestId:request.id}),control.replyResolutionDelay);
       else notify('serverRequest/resolved',{threadId,requestId:request.id});
@@ -115,6 +121,7 @@ else {
       const thread = { ...threads[0],id:nativeId,sessionId:'session-for-'+nativeId,parentThreadId:null,forkedFromId:null,cwd:params.cwd,name:null,status:{type:'idle'},activeTurn:null };
       thread.model=params.model??'model-0000';thread.reasoningEffort=params.config?.model_reasoning_effort??'native-effort';
       managed.set(thread.id,thread);
+      if(control.suppressStartAck)return;
       respond(request.id,{thread,model:thread.model,reasoningEffort:thread.reasoningEffort,approvalPolicy:params.approvalPolicy??'on-request',sandbox:{type:params.sandbox??'read-only'},instructionSources:[]});return;
     }
     if (method === 'thread/fork') {
@@ -162,7 +169,17 @@ else {
       if (control.loseOutput) { process.stdout.end();return; }
       const acknowledge = () => respond(request.id,{turn});
       if (control.lateTurnAck) setTimeout(acknowledge,31_000); else acknowledge();
-      if (!control.holdTurn && !control.prompt) {
+      if(control.toolCall) {
+        const callId='tool-call-'+turnSequence;
+        let callbackThreadId=thread.id;
+        if(control.toolChild) {
+          callbackThreadId='child-'+thread.id;
+          managed.set(callbackThreadId,{...thread,id:callbackThreadId,parentThreadId:control.toolParent??thread.id,cwd:control.toolRoot??thread.cwd});
+        }
+        toolCalls.set(callId,{threadId:thread.id,turnId:turn.id});
+        process.stdout.write(JSON.stringify({id:callId,method:'item/tool/call',params:{threadId:callbackThreadId,turnId:control.toolTurnId??turn.id,callId,namespace:null,...control.toolCall}})+'\n');
+      }
+      if (!control.holdTurn && !control.prompt && !control.toolCall) {
         const text=control.outputText??(control.outputSize?'x'.repeat(control.outputSize):control.structuredOutput!==undefined?JSON.stringify(control.structuredOutput):'Live response');
         notify('item/completed',{threadId:thread.id,turnId:turn.id,item:{...item,text}});
         notify('thread/tokenUsage/updated',{threadId:thread.id,turnId:turn.id,tokenUsage:control.usageMalformed?'unknown-usage':{last:{inputTokens:7,outputTokens:3,cachedInputTokens:2}}});
@@ -208,7 +225,7 @@ else {
       const profiles=Object.fromEntries(Array.from({length:control.profileCount??4},(_,index)=>['profile-'+String(index).padStart(4,'0'),{description:control.configRevision?'Updated profile':'Native profile',model:'model-0000'}]));
       respond(request.id,{config:control.configMalformed?{model:42}:{model:'model-0000',model_reasoning_effort:'native-effort',profile:null,profiles,agents:{max_threads:4,explore:{description:'Read native code',model:'model-0000'}},approval_policy:'on-request',sandbox_mode:'read-only',secret:'must-not-leak'}});return;
     }
-    if (method === 'thread/read') { respond(request.id,{ thread: { ...threads[0],...managed.get(params.threadId),...(control.unavailableSettings?{model:null,reasoningEffort:null}:{}),id: params.threadId,cwd: control.wrongRoot || workspaceRoot } });return; }
+    if (method === 'thread/read') { respond(request.id,{ thread: { ...threads[0],...managed.get(params.threadId),...(control.unavailableSettings?{model:null,reasoningEffort:null}:{}),id: params.threadId,cwd: control.wrongRoot || managed.get(params.threadId)?.cwd || workspaceRoot } });return; }
     if (method === 'thread/turns/list') { respond(request.id,{ data: [{ id: 'turn-a',status: 'completed',startedAt: 1_700_000_000,completedAt: 1_700_000_001 }],nextCursor: null });return; }
     if (method === 'thread/items/list') {
       const text = control.largeItem ? 'a'.repeat(1_048_576) : 'Hello from the native history';

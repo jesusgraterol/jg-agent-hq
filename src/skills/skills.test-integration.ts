@@ -462,7 +462,13 @@ test('trusted extra roots reach native loaders without becoming browser configur
           .split('\n')
           .map((line) => JSON.parse(line)),
       );
-      expect(starts[0]!.args.slice(-2)).toStrictEqual(['--add-dir', extra]);
+      const directoryFlag = starts[0]!.args.indexOf('--add-dir');
+      expect(directoryFlag).toBeGreaterThanOrEqual(0);
+      expect(starts[0]!.args.slice(directoryFlag, directoryFlag + 2)).toStrictEqual([
+        '--add-dir',
+        extra,
+      ]);
+      expect(starts[0]!.args).not.toContain('--strict-mcp-config');
       await expectToRejectCode(
         runtime.request(
           JSON.parse(

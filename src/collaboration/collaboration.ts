@@ -39,7 +39,7 @@ export const createCollaboration = (
     })();
   };
 
-  const handle: ICollaboration['handle'] = async (input) => {
+  const handle: ICollaboration['handle'] = async (input, binding) => {
     const request = structuredClone(input);
     const { command } = request;
     const roots = new Map<string, Promise<string>>();
@@ -65,11 +65,14 @@ export const createCollaboration = (
         }
     };
     if ('taskId' in command) {
-      const current = await store.collaboration({
-        kind: 'collaboration',
-        actor: request.actor,
-        command: { kind: 'task-read', taskId: command.taskId },
-      });
+      const current = await store.collaboration(
+        {
+          kind: 'collaboration',
+          actor: request.actor,
+          command: { kind: 'task-read', taskId: command.taskId },
+        },
+        binding,
+      );
       if (current.kind === 'task') await root(current.task.workspaceRoot);
     }
     if ('workspaceRoot' in command) command.workspaceRoot = await root(command.workspaceRoot);
@@ -89,7 +92,7 @@ export const createCollaboration = (
       if (command.request.plan !== null)
         command.request.plan.directory = await root(command.request.plan.directory);
     }
-    const response = await store.collaboration(request);
+    const response = await store.collaboration(request, binding);
     if (command.kind === 'fanout-recover') {
       failure = null;
       recover();

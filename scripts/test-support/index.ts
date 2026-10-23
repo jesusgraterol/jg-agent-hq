@@ -10,3 +10,6 @@ export { writeFixtureControl } from './controls.js';
 // collaboration integration setup
 export { withCollaboration } from './collaboration.js';
 export type { ICollaborationFixture } from './collaboration.js';
+
+// native tool connections
+export { callCodexTool, withAgentBridge } from './agent-tools.js';

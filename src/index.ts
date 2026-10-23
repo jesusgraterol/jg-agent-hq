@@ -35,6 +35,11 @@ export type {
   IProviderMcpResources,
 } from './providers/index.js';
 export type {
+  IProviderAgentTools,
+  IAgentToolDefinition,
+  IAgentMcpLease,
+} from './agent-tools/index.js';
+export type {
   IProviderId,
   IProviderCapability,
   IProviderCapabilitySet,

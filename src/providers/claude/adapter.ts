@@ -35,7 +35,7 @@ export const createClaudeProviderFactory = (
   async create(context) {
     const reader = createClaudeProvider(store);
     const authentication = createClaudeAuthentication();
-    const control = createClaudeControl(additionalDirectories);
+    const control = createClaudeControl(additionalDirectories, context.agentTools);
     control.setEvents(context.events);
     return {
       get state() {
@@ -147,6 +147,16 @@ export const createClaudeProviderFactory = (
               },
             },
             accountLogout: SUPPORTED_PROVIDER_OPERATION,
+            agentTools: context.agentTools
+              ? SUPPORTED_PROVIDER_OPERATION
+              : {
+                  state: 'unavailable',
+                  changeMode: null,
+                  reason: {
+                    code: 'agent-tools-unavailable',
+                    message: 'The session tool bridge is unavailable.',
+                  },
+                },
             mcpServers: SUPPORTED_PROVIDER_OPERATION,
             mcpTools: SUPPORTED_PROVIDER_OPERATION,
             mcpResources: {

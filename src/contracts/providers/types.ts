@@ -64,6 +64,7 @@ export const ProviderCapabilitySetSchema = z.object({
     accountLogin: ProviderCapabilitySchema,
     accountLoginCancel: ProviderCapabilitySchema,
     accountLogout: ProviderCapabilitySchema,
+    agentTools: ProviderCapabilitySchema,
   }),
   inputSchema: z.record(z.string(), z.json()).nullable(),
   configurationSchema: z.record(z.string(), z.json()).nullable(),

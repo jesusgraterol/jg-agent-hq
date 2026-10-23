@@ -166,6 +166,9 @@ importers:
 
   .:
     dependencies:
+      '@modelcontextprotocol/server':
+        specifier: 2.3.1
+        version: 2.3.1
       jg-crypto:
         specifier: 0.3.0
         version: 0.3.0
@@ -772,6 +775,14 @@ packages:
     resolution: {integrity: sha512-3NLpxklfMVWYDaSZ84TXqjw8eAB4iCe5l2oA1RN75zULwtLYgDKCi//fHvw65DOgy8lPeO5X2piT+S7rn3dITw==}
     peerDependencies:
       astro: ^4 || ^5 || ^6 || ^7
+
+  '@modelcontextprotocol/core@2.3.1':
+    resolution: {integrity: sha512-laVmIhPGpWi7rG9q+0UigblRN0Hws/Yjlb6qLFtVqryXVLkc4h+yN8z731POD2LnAGQlFe7/tXhUm7Bi0YB91g==}
+    engines: {node: '>=20'}
+
+  '@modelcontextprotocol/server@2.3.1':
+    resolution: {integrity: sha512-e59MfWuSssj6DoQ96JCTqdW1AXT5/XtnTl0WWd6MU1Ka434fFUGGosCLJbGNySDhHGvxQWoRWK137FXYFkYNWw==}
+    engines: {node: '>=20'}
 
   '@napi-rs/wasm-runtime@1.2.4':
     resolution: {integrity: sha512-AJxoUD2/15ESHbvpcyjU274nsAPLuOtPHCk0vKJM5pj//Fg/B1FXNWjPnXTT9PymCYYiHo4zPj0ZomXBKhoy7g==}
@@ -3278,6 +3289,15 @@ snapshots:
   '@lucide/astro@1.58.0(astro@7.4.0(@types/node@24.12.0)(jiti@2.7.0)(yaml@2.9.1))':
     dependencies:
       astro: 7.4.0(@types/node@24.12.0)(jiti@2.7.0)(yaml@2.9.1)
+
+  '@modelcontextprotocol/core@2.3.1':
+    dependencies:
+      zod: 4.3.6
+
+  '@modelcontextprotocol/server@2.3.1':
+    dependencies:
+      '@modelcontextprotocol/core': 2.3.1
+      zod: 4.3.6
 
   '@napi-rs/wasm-runtime@1.2.4(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)':
     dependencies:

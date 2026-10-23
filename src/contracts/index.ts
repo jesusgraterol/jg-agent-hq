@@ -368,3 +368,19 @@ export type {
   ICollaborationOperation,
   ICollaborationResponse,
 } from './collaboration/index.js';
+// native agent tools
+export {
+  AgentIdentityArgumentsSchema,
+  AgentSpawnArgumentsSchema,
+  AgentToolCallSchema,
+  AgentToolRequestSchema,
+  AgentToolResultSchema,
+} from './agent-tools/index.js';
+export type {
+  IAgentSpawnArguments,
+  IAgentToolCall,
+  IAgentToolName,
+  IAgentToolRequest,
+  IAgentToolResult,
+} from './agent-tools/index.js';
+export { SessionDiscoveryRequestSchema } from './evidence/index.js';

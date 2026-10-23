@@ -36,6 +36,7 @@ export const createClaudeRpc = async (
     isResume: boolean;
     forkSourceNativeId?: string;
     settings?: ISessionSettings;
+    mcpServers?: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
     receive(message: unknown): void;
     lateResponse(id: string, result: unknown, error: unknown): void;
   },
@@ -91,6 +92,9 @@ export const createClaudeRpc = async (
               : [control.isResume ? '--resume' : '--session-id', control.nativeId]),
             ...control.additionalDirectories.flatMap((directory) => ['--add-dir', directory]),
             ...toClaudeSessionFlags(control.settings ?? {}),
+            ...(control.mcpServers
+              ? ['--mcp-config', JSON.stringify({ mcpServers: control.mcpServers })]
+              : []),
           ]
         : []),
     ],

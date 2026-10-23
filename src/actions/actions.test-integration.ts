@@ -538,6 +538,9 @@ test('atomic admission deduplicates UUIDs, suffixes names and rejects competing 
     expect(calls.filter((call) => call.method === 'turn/start')).toHaveLength(1);
     expect(calls.find((call) => call.method === 'thread/start')!.params).toStrictEqual({
       cwd: fixture.workspaceRoot,
+      dynamicTools: expect.arrayContaining([
+        expect.objectContaining({ type: 'function', name: 'hq_identity' }),
+      ]),
     });
   } finally {
     await fixture.close();
