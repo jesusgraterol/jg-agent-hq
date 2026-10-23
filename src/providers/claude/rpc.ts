@@ -219,7 +219,7 @@ export const createClaudeRpc = async (
         cause: initialized.error,
       });
     return {
-      version: initialized.data.claude_code_version,
+      version: initialized.data.claude_code_version ?? null,
       initialization: initialized.data,
       initializedAt: Date.now(),
       requestControl: request,

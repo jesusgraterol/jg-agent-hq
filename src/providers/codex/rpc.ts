@@ -146,12 +146,14 @@ export const createCodexRpc = async (
     });
   };
   try {
-    const initialized = z.object({ userAgent: z.string() }).safeParse(
-      await request('initialize', {
-        clientInfo: { name: 'jg_agent_hq', title: 'JG Agent HQ', version: manifest.version },
-        capabilities: { experimentalApi: true },
-      }),
-    );
+    const initialized = z
+      .object({ userAgent: z.string().max(4096).nullable().optional().catch(null) })
+      .safeParse(
+        await request('initialize', {
+          clientInfo: { name: 'jg_agent_hq', title: 'JG Agent HQ', version: manifest.version },
+          capabilities: { experimentalApi: true },
+        }),
+      );
     if (!initialized.success)
       throw new Exception('The Codex integration failed', {
         code: 'JG_AGENT_HQ_CODEX_FAILED',
@@ -171,7 +173,7 @@ export const createCodexRpc = async (
         });
     }
     return {
-      userAgent: initialized.data.userAgent,
+      userAgent: initialized.data.userAgent ?? null,
       get isAvailable() {
         return transport.isRunning;
       },

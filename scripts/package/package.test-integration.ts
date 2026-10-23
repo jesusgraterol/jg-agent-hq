@@ -149,7 +149,7 @@ test(
         encoding: 'utf8',
         timeout: 10_000,
       });
-      expect(help).toContain('serve|status|stop|threads|thread|turns|items|usage');
+      expect(help).toContain('serve|status|stop|capabilities|threads|thread|turns|items|usage');
       const contractRoot = join(ROOT, 'dist/contracts');
       const pending = [join(contractRoot, 'index.js')];
       const visited = new Set<string>();

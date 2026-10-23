@@ -123,6 +123,15 @@ export const toClaudeItem = (record: IRecord, turnId: string): IHistoryItem => {
         kind: 'agent-unavailable',
       },
     });
+  if (record.type !== 'user' && record.type !== 'assistant')
+    return {
+      nativeId: record.uuid,
+      turnId,
+      nativeType: record.type,
+      kind: 'unsupported',
+      text: '[Unsupported native content]',
+      isTruncated: false,
+    };
   const content = record.message?.content;
   let text = '[Unsupported native content]';
   let isToolResult = false;

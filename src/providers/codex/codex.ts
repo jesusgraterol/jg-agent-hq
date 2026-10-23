@@ -133,16 +133,9 @@ export const createCodexProvider = async (
     },
     async readThread(nativeId) {
       const result = parseNative(
-        z.object({ thread: NativeThreadSchema }),
+        z.object({ thread: NativeThreadSchema.refine((thread) => thread.id === nativeId) }),
         await connection.request('thread/read', { threadId: nativeId, includeTurns: false }),
       );
-      if (result.thread.id !== nativeId)
-        throw new Exception('The Codex integration failed', {
-          code: 'JG_AGENT_HQ_CODEX_FAILED',
-          data: {
-            kind: 'agent-unavailable',
-          },
-        });
       return toThreadSummary(result.thread);
     },
     async listTurns(nativeId, limit, cursor) {
@@ -231,20 +224,13 @@ export const createCodexProvider = async (
     },
     async resumeThread(requestId, nativeId) {
       const result = parseNative(
-        z.object({ thread: NativeThreadSchema }),
+        z.object({ thread: NativeThreadSchema.refine((thread) => thread.id === nativeId) }),
         await connection.request(
           'thread/resume',
           { threadId: nativeId, excludeTurns: true },
           requestId,
         ),
       );
-      if (result.thread.id !== nativeId)
-        throw new Exception('The Codex integration failed', {
-          code: 'JG_AGENT_HQ_CODEX_FAILED',
-          data: {
-            kind: 'agent-unavailable',
-          },
-        });
       return result.thread;
     },
     async nameThread(requestId, nativeId, name) {
@@ -271,20 +257,13 @@ export const createCodexProvider = async (
     },
     async steer(requestId, nativeId, expectedTurnId, text) {
       const result = parseNative(
-        z.object({ turnId: z.string().min(1).max(4096) }),
+        z.object({ turnId: z.literal(expectedTurnId) }),
         await connection.request(
           'turn/steer',
           { threadId: nativeId, expectedTurnId, input: [{ type: 'text', text }] },
           requestId,
         ),
       );
-      if (result.turnId !== expectedTurnId)
-        throw new Exception('The Codex integration failed', {
-          code: 'JG_AGENT_HQ_CODEX_FAILED',
-          data: {
-            kind: 'agent-unavailable',
-          },
-        });
       return result.turnId;
     },
     async interrupt(requestId, nativeId, nativeTurnId) {

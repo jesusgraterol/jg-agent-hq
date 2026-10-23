@@ -35,12 +35,11 @@ export const EntryRowSchema = z.object({
   is_visible: z.number(),
 });
 export const RecordSchema = z.object({
-  type: z.string(),
+  type: z.string().min(1).max(256),
   uuid: z.string().min(1).max(4096).optional(),
   parentUuid: z.string().nullable().optional(),
   sessionId: z.string().optional(),
   cwd: z.string().optional(),
-  version: z.string().optional(),
   timestamp: z.string().optional(),
   isSidechain: z.boolean().optional(),
   isMeta: z.boolean().optional(),

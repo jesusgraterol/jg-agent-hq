@@ -20,7 +20,7 @@ lines.on('line',line=>{
  if(message.type!=='control_request')return;
  const control=JSON.parse(readFileSync(join(root,'claude-control.json'),'utf8'));
  const response=(body)=>process.stdout.write(JSON.stringify({type:'control_response',response:{subtype:'success',request_id:message.request_id,response:body}})+'\n');
- if(message.request.subtype==='initialize') {response({claude_code_version:control.version??'2.1.304'});return;}
+ if(message.request.subtype==='initialize') {response({...(control.omitVersion?{}:{claude_code_version:control.version??'2.1.304'}),futureMetadata:control.futureMetadata});return;}
  if(message.request.subtype==='get_usage') {
   if(control.hold)return;
   if(control.malformed){process.stdout.write(JSON.stringify({type:'control_response',response:{subtype:'success',request_id:42}})+'\n');return;}

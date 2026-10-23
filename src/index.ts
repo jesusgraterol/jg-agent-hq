@@ -18,6 +18,27 @@ export { createAgentHq } from './runtime/index.js';
 export type { IAgentHq, IAgentHqOptions } from './runtime/index.js';
 export { requestAgentHq } from './ipc/index.js';
 
+// trusted native provider adapters
+export type {
+  IAgentProvider,
+  IAgentProviderFactory,
+  IAgentProviderContext,
+  IAgentProviderEvents,
+  IAgentProviderOutcome,
+  INativePrompt,
+  IProviderCall,
+  IProviderThread,
+  IProviderInspection,
+  IProviderSkills,
+} from './providers/index.js';
+export type {
+  IProviderId,
+  IProviderCapability,
+  IProviderCapabilitySet,
+  IProviderCapabilities,
+  IProviderStatus,
+} from './contracts/providers/index.js';
+
 // trusted host storage
 export type { IStorageDescriptor, IStorageMaintenanceOperation } from './storage/index.js';
 

@@ -442,6 +442,12 @@ test('trusted extra roots reach native loaders without becoming browser configur
         if (Date.now() > deadline) throw new Error('Creation timed out');
         await wait(10);
       }
+      expect(await readFile(join(fixture.root, 'calls.jsonl'), 'utf8')).toBe('');
+      await runtime.request({
+        kind: 'threads',
+        provider: 'codex',
+        workspaceRoot: fixture.workspaceRoot,
+      });
       const calls = (await readFile(join(fixture.root, 'calls.jsonl'), 'utf8'))
         .trim()
         .split('\n')

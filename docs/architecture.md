@@ -1,4 +1,12 @@
-# Storage ownership and maintenance
+# Runtime ownership
+
+## Providers
+
+The runtime registers built-in and trusted Node-supplied provider factories at construction. It creates each adapter only when that provider is selected. Status and database-backed reads do not require a native CLI. Provider IDs flow through contracts, cursors and persistence; core actions, sessions and skills route through the registry. Native protocol parsing and invocation spelling stay with each adapter.
+
+The registry binds callback identity, bounds operations, and validates consumed evidence. Optional capability failures remain separate from session control. Invalid control state or identity quarantines its source, and bounded per-provider lifecycle queues contain overload. A store failure affects shared persistence. Adapters own partial-startup cleanup and native process lifetime; runtime shutdown confirms cleanup before releasing ownership. Version labels are diagnostic metadata, never admission gates. Native input, settings, permissions and authentication remain with the installed harness.
+
+## Storage
 
 One SQLite worker owns HQ persistence. The complete definition, including provider history indexes, is src/store/schema.sql. Fresh initialization creates the schema and its singleton hq_schema hash in one transaction. Reopening validates that stamp through a read-only connection before opening a writer. This preserves rejected database bytes and their WAL instead of triggering SQLite's close-time checkpoint. Application-owned objects are outside this stamp. HQ does not modify user_version or convert persisted state between schema definitions; use a fresh development state root after an HQ schema change.
 

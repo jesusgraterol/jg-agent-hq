@@ -512,6 +512,7 @@ Worker.prototype.postMessage=function(message,...args){
   return post.call(this,message,...args);
 };
 const runtime=await createAgentHq({stateRoot:input.stateRoot,allowedRoots:input.allowedRoots});
+await runtime.request({kind:'threads',provider:'codex',workspaceRoot:input.allowedRoots[0]});
 await runtime.request({kind:'plan',command:input.command});
 await runtime.close();
 process.exit(75);

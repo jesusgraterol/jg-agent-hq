@@ -39,7 +39,7 @@ const main = async (): Promise<void> => {
   const [kind] = positionals;
   if (values.help || !kind || kind === 'help') {
     process.stdout.write(
-      'jg-agent-hq serve|status|stop|threads|thread|turns|items|usage|managed-thread-name|suggest-thread-name|skills|skill-preview|plan-status|plan-milestones|handoff-show|handoffs|request --state-root <path> [--provider codex|claude] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--skill-id <id>] [--arguments <text>] [--directory <path>] [--id <uuid>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nrequest reads one validated HQ command as JSON from stdin.\n',
+      'jg-agent-hq serve|status|stop|capabilities|threads|thread|turns|items|usage|managed-thread-name|suggest-thread-name|skills|skill-preview|plan-status|plan-milestones|handoff-show|handoffs|request --state-root <path> [--provider <provider-id>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--skill-id <id>] [--arguments <text>] [--directory <path>] [--id <uuid>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nrequest reads one validated HQ command as JSON from stdin.\n',
     );
     return;
   }
@@ -244,7 +244,7 @@ const main = async (): Promise<void> => {
       ['kind', kind],
       [
         'provider',
-        ['threads', 'thread', 'turns', 'items', 'usage'].includes(kind)
+        ['threads', 'thread', 'turns', 'items', 'usage', 'capabilities'].includes(kind)
           ? (values.provider ?? 'codex')
           : values.provider,
       ],

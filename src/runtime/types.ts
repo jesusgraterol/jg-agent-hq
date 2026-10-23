@@ -1,6 +1,8 @@
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 
+import { MAX_PROVIDERS, ProviderIdSchema } from '../contracts/index.js';
+
 import type {
   IHqRequestInput,
   IHqResponse,
@@ -9,9 +11,19 @@ import type {
 } from '../contracts/index.js';
 import type { IPlanContractParser } from '../plans/index.js';
 import type { IStorageDescriptor, IStorageMaintenanceOperation } from '../storage/index.js';
+import type { IAgentProviderFactory } from '../providers/index.js';
 
 // construction receives trusted operator configuration, never a browser-selected root
 export const AgentHqOptionsSchema = z.strictObject({
+  providerFactories: z
+    .array(
+      z.object({
+        id: ProviderIdSchema,
+        create: z.custom<IAgentProviderFactory['create']>((input) => typeof input === 'function'),
+      }),
+    )
+    .max(MAX_PROVIDERS)
+    .optional(),
   stateRoot: z.string().min(1).refine(isAbsolute),
   coordinationRoot: z.string().min(1).refine(isAbsolute).optional(),
   parsePlanContract: z
@@ -78,6 +90,8 @@ export type IAgentHq = {
    * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
    * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
    * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+   * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+   * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
    * - JG_AGENT_HQ_PLAN_FAILED: The HQ plan operation failed

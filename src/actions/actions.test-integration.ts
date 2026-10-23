@@ -97,6 +97,7 @@ const setup = async () => {
         (await readFile(join(root, 'calls.jsonl'), 'utf8'))
           .trim()
           .split('\n')
+          .filter(Boolean)
           .map((line) => JSON.parse(line) as { method: string; params: Record<string, unknown> }),
       async close() {
         try {
@@ -1259,19 +1260,10 @@ test.each([
       'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
       'Coding agent is unavailable.',
     );
-    if (scenario === 'overflow') {
-      await expectToRejectCode(
-        fixture.runtime.close(),
-        'JG_AGENT_HQ_TRANSPORT_FAILED',
-        'The Codex integration failed',
-      );
-      expect(await readFile(join(fixture.stateRoot, 'hq-owner.json'), 'utf8')).toContain('serve');
-    } else {
-      await fixture.runtime.close();
-      await expect(readFile(join(fixture.stateRoot, 'hq-owner.json'))).rejects.toThrow('ENOENT');
-    }
+    await fixture.runtime.close();
+    await expect(readFile(join(fixture.stateRoot, 'hq-owner.json'))).rejects.toThrow('ENOENT');
   } finally {
-    // This scenario deliberately retains the owner after an observed failure. Remove only the disposable fixture after proving native exit.
+    // remove only the disposable fixture after proving native exit, including after a failed assertion
     await fixture.runtime.close().catch(() => undefined);
     try {
       const pids = z

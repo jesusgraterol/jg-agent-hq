@@ -109,7 +109,14 @@ const actions = async (fixture: IClaudeFixture) => {
 test('Claude creates and names an idle native session, deduplicates input and reconciles live items with native history', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture);
-    expect(api.status.result.claude.steering).toBe('unavailable');
+    const capabilities = await fixture.runtime.request({
+      kind: 'capabilities',
+      provider: 'claude',
+    });
+    expect(capabilities).toMatchObject({
+      kind: 'capabilities',
+      result: { operations: { steer: { state: 'unsupported' } } },
+    });
     const created = await api.create();
     expect(created.thread).toMatchObject({ provider: 'claude', name: 'fix-login', state: 'idle' });
     expect((await api.submit(created.action)).threadId).toBe(created.thread.id);
@@ -224,16 +231,19 @@ test('Claude rejects steering and stale interruptions without substituting anoth
     await fixture.control({ holdTurn: true });
     const input = await api.message(thread.id),
       accepted = await api.settled(input.id);
-    await expect(
-      api.submit(
-        api.envelope({
+    await expectToRejectCode(
+      fixture.runtime.request({
+        kind: 'action',
+        action: api.envelope({
           kind: 'steer',
           threadId: thread.id,
           expectedTurnId: accepted.nativeTurnId!,
           text: 'Change direction',
         }),
-      ),
-    ).rejects.toThrow('State changed');
+      }),
+      'JG_AGENT_HQ_CAPABILITY_UNAVAILABLE',
+      'The HQ capability is unavailable',
+    );
     const stale = await api.submit(
       api.envelope({ kind: 'interrupt', threadId: thread.id, expectedTurnId: 'different-turn' }),
     );

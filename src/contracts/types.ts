@@ -1,5 +1,12 @@
 import { z } from 'zod';
 
+import {
+  MAX_PROVIDERS,
+  ProviderCapabilitiesSchema,
+  ProviderIdSchema,
+  ProviderStatusSchema,
+} from './providers/index.js';
+
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, PUBLIC_ERROR_MESSAGES } from './constants.js';
 import { SkillIdSchema, SkillPageSchema, SkillPreviewSchema } from './skills/index.js';
 
@@ -24,7 +31,7 @@ const PageFields = {
   cursor: CursorSchema.optional(),
 };
 const TargetFields = {
-  provider: z.enum(['codex', 'claude']),
+  provider: ProviderIdSchema,
   workspaceRoot: z.string().min(1).max(4096),
   nativeId: NativeIdSchema,
 };
@@ -32,6 +39,11 @@ const TargetFields = {
 // only implemented operations can be admitted; native RPC is never exposed
 export const HqRequestSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('status') }),
+  z.strictObject({
+    kind: z.literal('capabilities'),
+    provider: ProviderIdSchema,
+    threadId: z.uuid().optional(),
+  }),
   z.strictObject({ kind: z.literal('plan'), command: PlanCommandSchema }),
   z.strictObject({ kind: z.literal('handoff'), command: HandoffCommandSchema }),
   z.strictObject({ kind: z.literal('stop') }),
@@ -96,7 +108,7 @@ export type IHqRequestInput = z.input<typeof HqRequestSchema>;
 
 // native discovery is external/read-only until explicitly adopted for control
 export const ThreadSummarySchema = z.object({
-  provider: z.enum(['codex', 'claude']),
+  provider: ProviderIdSchema,
   nativeId: NativeIdSchema,
   workspaceRoot: z.string(),
   name: z.string().nullable(),
@@ -145,7 +157,7 @@ export const UsageWindowSchema = z.object({
   resetsAt: z.number().int().nullable(),
 });
 export const UsageSnapshotSchema = z.object({
-  provider: z.enum(['codex', 'claude']),
+  provider: ProviderIdSchema,
   state: z.enum(['available', 'exhausted', 'stale', 'unavailable']),
   source: z.literal('native'),
   observedAt: z.number().int().nullable(),
@@ -159,22 +171,14 @@ export const RuntimeStatusSchema = z.object({
   pid: z.number().int().positive(),
   startedAt: z.number().int(),
   store: z.enum(['ready', 'unavailable']),
-  codex: z.object({
-    state: z.enum(['ready', 'unavailable']),
-    userAgent: z.string(),
-    steering: z.literal('available'),
-  }),
-  claude: z.object({
-    state: z.enum(['idle', 'ready', 'unavailable']),
-    version: z.string().nullable(),
-    steering: z.literal('unavailable'),
-  }),
+  providers: z.array(ProviderStatusSchema).max(MAX_PROVIDERS),
 });
 export type IRuntimeStatus = z.infer<typeof RuntimeStatusSchema>;
 const PageResultFields = { nextCursor: CursorSchema.nullable(), source: z.literal('native') };
 export const HqResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('thread-plan'), result: ActionPlanContextSchema.nullable() }),
   z.object({ kind: z.literal('status'), result: RuntimeStatusSchema }),
+  z.object({ kind: z.literal('capabilities'), result: ProviderCapabilitiesSchema }),
   z.object({ kind: z.literal('plan'), result: PlanResultSchema }),
   z.object({ kind: z.literal('handoff'), result: HandoffResultSchema }),
   z.object({

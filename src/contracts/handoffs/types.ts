@@ -1,12 +1,14 @@
 import { z } from 'zod';
 
+import { ProviderIdSchema } from '../providers/index.js';
+
 import { ActionPlanContextSchema, ActionReceiptSchema } from '../actions/index.js';
 import { NativeIdSchema } from '../identities/index.js';
 
 // handoffs retain exact native identities; names are presentation only
 export const HandoffSourceSchema = z.object({
   threadId: z.uuid(),
-  provider: z.enum(['codex', 'claude']),
+  provider: ProviderIdSchema,
   nativeId: NativeIdSchema,
   workspaceRoot: z.string().min(1).max(4096),
   plan: ActionPlanContextSchema.nullable(),
@@ -81,7 +83,7 @@ export const HandoffSummarySchema = z.object({
   source: HandoffSourceSchema,
   targetThreadId: z.uuid().nullable(),
   targetNativeId: NativeIdSchema.nullable(),
-  targetProvider: z.enum(['codex', 'claude']),
+  targetProvider: ProviderIdSchema,
   creation: HandoffDeliverySchema,
   review: HandoffDeliverySchema,
   feedback: HandoffDeliverySchema,

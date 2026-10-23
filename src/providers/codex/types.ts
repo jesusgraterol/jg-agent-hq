@@ -76,7 +76,7 @@ export type ICodexEvents = {
 
 // native read models and explicit control operations; execution settings remain with Codex
 export type ICodexProvider = {
-  userAgent: string;
+  userAgent: string | null;
   readonly isAvailable: boolean;
   listThreads(
     workspaceRoot: string,

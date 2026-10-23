@@ -15,8 +15,6 @@ import {
   type IHistoryRequest,
 } from '../../../sessions/index.js';
 
-import { ClaudeHistoryRecordVersionSchema } from '../types.js';
-
 import {
   EntryRowSchema,
   EntrySeekSchema,
@@ -244,11 +242,7 @@ export class ClaudeHistoryModel {
         const record = RecordSchema.parse(
           JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
         );
-        if (
-          record.uuid !== entry.uuid ||
-          !ClaudeHistoryRecordVersionSchema.safeParse(record.version).success ||
-          !isClaudeWorkspaceCwd(record.cwd, root)
-        )
+        if (record.uuid !== entry.uuid || !isClaudeWorkspaceCwd(record.cwd, root))
           this.__unavailable();
         const item = toClaudeItem(record, entry.turn_id);
         const itemSize = Buffer.byteLength(JSON.stringify(item));
@@ -318,7 +312,7 @@ export class ClaudeHistoryModel {
     if (!stat.isFile()) this.__unavailable();
     const bytes = Buffer.alloc(Math.min(stat.size, 256));
     readSync(fd, bytes, 0, bytes.length, 0);
-    return `${HISTORY_PROJECTION_VERSION}:${ClaudeHistoryRecordVersionSchema.options.join(',')}:${stat.dev}:${stat.ino}:${stat.birthtimeMs}:${createHash('sha256').update(bytes).digest('hex')}`;
+    return `${HISTORY_PROJECTION_VERSION}:${stat.dev}:${stat.ino}:${stat.birthtimeMs}:${createHash('sha256').update(bytes).digest('hex')}`;
   }
 
   private __refresh(directory: string, root: string): boolean {
@@ -519,19 +513,18 @@ export class ClaudeHistoryModel {
       row.name = record.customTitle;
       return;
     }
-    if (
-      record.version !== undefined &&
-      !ClaudeHistoryRecordVersionSchema.safeParse(record.version).success
-    )
-      this.__unavailable();
-    if (record.isSidechain || !record.uuid) return;
+    if (record.isSidechain) return;
+    if (!record.uuid) {
+      if (record.message !== undefined || record.type === 'user' || record.type === 'assistant')
+        this.__unavailable();
+      return;
+    }
     if (
       (record.type === 'user' || record.type === 'assistant') &&
       record.message?.role !== record.type
     )
       this.__unavailable();
     if (
-      !ClaudeHistoryRecordVersionSchema.safeParse(record.version).success ||
       record.sessionId !== nativeId ||
       !isClaudeWorkspaceCwd(record.cwd, root) ||
       record.timestamp === undefined ||
@@ -560,10 +553,7 @@ export class ClaudeHistoryModel {
       : typeof parent?.turn_id === 'string'
         ? parent.turn_id
         : record.uuid;
-    const visible =
-      (record.type === 'user' || record.type === 'assistant') &&
-      record.message !== undefined &&
-      !record.isMeta;
+    const visible = record.message !== undefined && !record.isMeta;
     if (record.parentUuid === record.uuid) this.__unavailable();
     if (record.parentUuid && !parent) this.__unavailable();
     const previous = this.__database

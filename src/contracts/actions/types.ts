@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { ProviderIdSchema } from '../providers/index.js';
+
 import { MessageInputSchema, NativeSkillInputSchema } from '../skills/index.js';
 
 import { NativeIdSchema } from '../identities/index.js';
@@ -14,13 +16,13 @@ const ActiveTargetFields = { threadId: ThreadIdSchema, expectedTurnId: NativeIdS
 export const ActionCommandSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('thread-create'),
-    provider: z.enum(['codex', 'claude']),
+    provider: ProviderIdSchema,
     workspaceRoot: z.string().min(1).max(4096),
     name: NameSchema,
   }),
   z.strictObject({
     kind: z.literal('thread-adopt'),
-    provider: z.enum(['codex', 'claude']),
+    provider: ProviderIdSchema,
     workspaceRoot: z.string().min(1).max(4096),
     nativeId: NativeIdSchema,
     name: NameSchema,
@@ -151,7 +153,7 @@ export type IActionSummary = z.infer<typeof ActionSummarySchema>;
 // control is separate from the native thread's discovery title and historical visibility
 export const ManagedThreadSchema = z.object({
   id: ThreadIdSchema,
-  provider: z.enum(['codex', 'claude']),
+  provider: ProviderIdSchema,
   nativeId: NativeIdSchema.nullable(),
   name: NameSchema,
   workspaceRoot: z.string(),

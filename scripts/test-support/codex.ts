@@ -57,7 +57,7 @@ else {
       if (control.mode === 'oversized') { process.stdout.write('x'.repeat(8_388_609));return; }
       if (control.mode === 'partial') { process.stdout.end('{"id":1,"result":');return; }
       if (control.mode === 'empty') { process.stdout.end();return; }
-      respond(request.id,{ userAgent: 'codex-cli/fixture' });return;
+      respond(request.id,{ ...(control.omitVersion?{}:{userAgent:control.version??'codex-cli/fixture'}), futureMetadata:control.futureMetadata });return;
     }
     const { method,params = {} } = request;
     if (control.emit) for (const event of control.emit) notify(event.method,event.params);

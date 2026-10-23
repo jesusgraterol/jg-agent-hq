@@ -78,6 +78,8 @@ const withRuntime = async (
       const pids = PidsSchema.parse(JSON.parse(await readFile(join(root, 'pids.json'), 'utf8')));
       expect(isAlive(pids.parent)).toBe(false);
       expect(isAlive(pids.child)).toBe(false);
+    } catch (cause) {
+      if (!hasErrorCode(cause, 'ENOENT')) throw cause;
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -90,7 +92,10 @@ test('owner-only IPC survives abandoned clients; shutdown releases SQLite and th
     expect(first.kind).toBe('status');
     if (first.kind !== 'status') throw new Error('wrong response');
     expect(first.result.store).toBe('ready');
-    expect(first.result.codex.state).toBe('ready');
+    expect(first.result.providers).toStrictEqual([
+      { provider: 'codex', state: 'idle', version: null },
+      { provider: 'claude', state: 'idle', version: null },
+    ]);
     const abandoned = connect(join(stateRoot, 'hq.sock'));
     await new Promise<void>((resolve, reject) => {
       abandoned.once('connect', resolve);
@@ -405,7 +410,11 @@ test('malformed native items and cursors return a safe integration failure witho
     });
     expect(await request({ kind: 'status' })).toMatchObject({
       kind: 'status',
-      result: { codex: { state: 'ready' } },
+      result: {
+        providers: expect.arrayContaining([
+          { provider: 'codex', state: 'ready', version: 'codex-cli/fixture' },
+        ]),
+      },
     });
   });
 });
@@ -426,25 +435,33 @@ test('a quota response from before an account change cannot restore that account
 });
 
 test.each(['malformed', 'oversized', 'partial', 'empty'])(
-  'a %s native frame fails startup and cleans its worker, owner and children',
+  'a %s native frame fails lazy initialization while the host remains usable and cleanup is confirmed',
   { timeout: 15_000 },
   async (mode) => {
     const root = await mkdtemp(join(tmpdir(), 'jg-hq-bad-frame-'));
     const stateRoot = join(root, 'state');
+    let runtime: IAgentHq | undefined;
     try {
       const bin = await installCodexFixture(root);
       await writeFile(join(root, 'control.json'), JSON.stringify({ mode }));
       vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
       vi.stubEnv('JG_HQ_FIXTURE_DIRECTORY', root);
       vi.stubEnv('JG_HQ_FIXTURE_WORKSPACE', root);
-      await expect(createAgentHq({ stateRoot, allowedRoots: [root] })).rejects.toThrow(
-        /The (HQ transport|Codex integration) failed/,
-      );
+      runtime = await createAgentHq({ stateRoot, allowedRoots: [root] });
+      await expect(
+        runtime.request({ kind: 'threads', provider: 'codex', workspaceRoot: root }),
+      ).rejects.toThrow(/The (HQ transport|Codex integration) failed/);
       const pids = PidsSchema.parse(JSON.parse(await readFile(join(root, 'pids.json'), 'utf8')));
       expect(isAlive(pids.parent)).toBe(false);
       expect(isAlive(pids.child)).toBe(false);
+      expect(await runtime.request({ kind: 'status' })).toMatchObject({
+        kind: 'status',
+        result: { store: 'ready' },
+      });
+      await runtime.close();
       expect(await readdir(stateRoot)).toStrictEqual(['action.key', 'hq.sqlite']);
     } finally {
+      await runtime?.close();
       vi.unstubAllEnvs();
       await rm(root, { recursive: true, force: true });
     }
@@ -536,7 +553,12 @@ test('lost native output makes the provider unavailable while the independent ho
     );
     expect(await request({ kind: 'status' })).toMatchObject({
       kind: 'status',
-      result: { store: 'ready', codex: { state: 'unavailable' } },
+      result: {
+        store: 'ready',
+        providers: expect.arrayContaining([
+          { provider: 'codex', state: 'unavailable', version: 'codex-cli/fixture' },
+        ]),
+      },
     });
   });
 });
@@ -548,12 +570,14 @@ test(
     const root = await mkdtemp(join(tmpdir(), 'jg-hq-cleanup-'));
     const stateRoot = join(root, 'state');
     const realKill = process.kill.bind(process);
+    let runtime: IAgentHq | undefined;
     try {
       const bin = await installCodexFixture(root);
       await writeFile(join(root, 'control.json'), JSON.stringify({ mode: 'malformed' }));
       vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
       vi.stubEnv('JG_HQ_FIXTURE_DIRECTORY', root);
       vi.stubEnv('JG_HQ_FIXTURE_WORKSPACE', root);
+      runtime = await createAgentHq({ stateRoot, allowedRoots: [root] });
       // only the OS termination-observation boundary is uncertain; actual signals still run
       const probe = vi
         .spyOn(process, 'kill')
@@ -562,10 +586,11 @@ test(
         );
       try {
         await expectToRejectCode(
-          createAgentHq({ stateRoot, allowedRoots: [root] }),
+          runtime.request({ kind: 'threads', provider: 'codex', workspaceRoot: root }),
           'JG_AGENT_HQ_CODEX_FAILED',
           'The Codex integration failed',
         );
+        await expectToRejectCode(runtime.close(), 'JG_AGENT_HQ_TRANSPORT_FAILED');
         expect(JSON.parse(await readFile(join(stateRoot, 'hq-owner.json'), 'utf8'))).toMatchObject({
           command: 'serve',
           pid: process.pid,

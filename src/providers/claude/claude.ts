@@ -7,12 +7,12 @@ import type { IStore } from '../../store/index.js';
 import type { IHistoryRequest } from '../../sessions/index.js';
 
 import { createClaudeRpc } from './rpc.js';
-import { ClaudeHistoryCliVersionSchema, ClaudeUsageSchema } from './types.js';
+import { ClaudeUsageSchema } from './types.js';
 import { toClaudeUsageSnapshot } from './transformers.js';
 
 /**
  * Lazily connects read-only Claude capabilities; Codex needs no Claude installation.
- * @returns The read adapter with explicit unavailable usage and version-gated history.
+ * @returns The read adapter with independent usage and transcript availability.
  */
 export const createClaudeProvider = (store: IStore) => {
   let connection: Awaited<ReturnType<typeof createClaudeRpc>> | undefined;
@@ -49,6 +49,16 @@ export const createClaudeProvider = (store: IStore) => {
     return (opening ??= connect());
   };
   return {
+    /**
+     * Verifies native initialization without requesting usage or starting inference.
+     * @returns Confirmation that the read connection is ready.
+     * @throws
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+     */
+    async ensureReady(): Promise<void> {
+      await open();
+    },
     get version() {
       return connection?.version ?? null;
     },
@@ -69,14 +79,7 @@ export const createClaudeProvider = (store: IStore) => {
      */
     async readHistory(command: IHistoryRequest): Promise<IHqResponse> {
       const deadline = Date.now() + 30_000;
-      const native = await open();
-      if (!ClaudeHistoryCliVersionSchema.safeParse(native.version).success)
-        throw new Exception('The Claude history is unavailable', {
-          code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
-          data: {
-            kind: 'agent-unavailable',
-          },
-        });
+      await open();
       while (!isClosing && Date.now() < deadline) {
         const result = await store.readClaudeHistory(command);
         if (result.kind !== 'indexing') return result;

@@ -21,6 +21,23 @@ export {
   IpcRequestSchema,
   IpcResponseSchema,
 } from './types.js';
+
+// provider identity and capability discovery
+export {
+  ProviderIdSchema,
+  ProviderCapabilitySchema,
+  ProviderCapabilitySetSchema,
+  ProviderCapabilitiesSchema,
+  ProviderStatusSchema,
+  MAX_PROVIDERS,
+} from './providers/index.js';
+export type {
+  IProviderId,
+  IProviderCapability,
+  IProviderCapabilitySet,
+  IProviderCapabilities,
+  IProviderStatus,
+} from './providers/index.js';
 export type {
   IHqRequest,
   IHqRequestInput,
