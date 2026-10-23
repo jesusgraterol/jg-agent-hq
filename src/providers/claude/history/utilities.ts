@@ -108,6 +108,8 @@ const BlockSchema = z.object({
   type: z.string(),
   text: z.string().optional(),
   content: z.unknown().optional(),
+  name: z.string().optional(),
+  input: z.unknown().optional(),
 });
 
 /**
@@ -135,6 +137,7 @@ export const toClaudeItem = (record: IRecord, turnId: string): IHistoryItem => {
   const content = record.message?.content;
   let text = '[Unsupported native content]';
   let isToolResult = false;
+  let hasToolUse = false;
   if (typeof content === 'string') text = content;
   else if (Array.isArray(content)) {
     isToolResult =
@@ -146,6 +149,10 @@ export const toClaudeItem = (record: IRecord, turnId: string): IHistoryItem => {
       .map((block: unknown) => {
         const parsed = BlockSchema.safeParse(block);
         if (!parsed.success) return '[Unsupported native content]';
+        if (parsed.data.type === 'tool_use' && parsed.data.name) {
+          hasToolUse = true;
+          return `${parsed.data.name}\n${JSON.stringify(parsed.data.input ?? {})}`;
+        }
         if (parsed.data.type === 'text') return parsed.data.text ?? '';
         if (parsed.data.type === 'tool_result' && typeof parsed.data.content === 'string')
           return parsed.data.content;
@@ -159,7 +166,12 @@ export const toClaudeItem = (record: IRecord, turnId: string): IHistoryItem => {
     nativeId: record.uuid,
     turnId,
     nativeType: isToolResult ? 'tool-result' : record.type,
-    kind: isToolResult ? 'command' : record.type === 'user' ? 'user-message' : 'agent-message',
+    kind:
+      isToolResult || hasToolUse
+        ? 'tool'
+        : record.type === 'user'
+          ? 'user-message'
+          : 'agent-message',
     text: text.slice(0, end),
     isTruncated: end < text.length,
   };

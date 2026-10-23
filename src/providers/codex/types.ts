@@ -12,7 +12,9 @@ import {
   type ISessionConfiguration,
   type ISessionSettings,
   type ITurnSettings,
+  type IOutputSchema,
 } from '../../contracts/index.js';
+import type { IProviderInputFile } from '../inputs/index.js';
 import type { IProviderSkills } from '../types.js';
 
 // additive native responses are narrowed to fields this adapter actually uses
@@ -76,6 +78,8 @@ export type INativePage<T> = { data: T[]; nextCursor: string | null };
 
 // callbacks are owned by the runtime, independently of connected clients
 export type ICodexEvents = {
+  forgetTurn(nativeId: string): void;
+  prepareTurn(nativeId: string, outputSchema: IOutputSchema | undefined): void;
   notify(method: string, params: unknown): void;
   request(id: string | number, method: string, params: unknown): void;
   lateResponse(id: string, result: unknown, error: unknown): void;
@@ -204,6 +208,7 @@ export type ICodexProvider = {
     text: string,
     skill?: INativeSkillInput | null,
     settings?: ITurnSettings,
+    files?: IProviderInputFile[],
   ): Promise<INativeTurn>;
   /**
    * Steers only the required active native turn and verifies its response identity.

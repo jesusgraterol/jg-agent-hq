@@ -53,6 +53,12 @@ const OUTCOME_PHASES = {
 export const parseProviderObservation = (input: unknown): INativeObservation => {
   const parsed = ObservationSchema.safeParse(input);
   if (!parsed.success) throw normalizeProviderError(parsed.error, false);
+  if (
+    parsed.data.kind === 'turn-completed' &&
+    parsed.data.result &&
+    parsed.data.result.state !== parsed.data.state
+  )
+    rejectProviderResponse();
   return parsed.data;
 };
 

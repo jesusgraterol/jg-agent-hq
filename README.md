@@ -39,7 +39,7 @@ Install the providers you want and sign in through their native CLIs, then start
 
 The Node API exposes `createAgentHq({ stateRoot, allowedRoots })` and `requestAgentHq(stateRoot, command)`. Configuration comes from these trusted operator inputs. Coding-instruction files are not runtime configuration.
 
-The controller owns its SQLite worker and native connections independently of client connections. Its provider registry starts each native integration only when selected. Storage and managed-session reads work without an installed coding CLI; an unavailable provider does not disable another provider. Private state contains the lifetime owner, Unix socket and SQLite discovery metadata. Conversation bodies remain in the native providers' storage. Browsing never resumes an external session or starts inference. Quota windows come from native account observations, with explicit stale and unavailable states.
+The controller owns its SQLite worker and native connections independently of client connections. Its provider registry starts each native integration only when selected. Storage and managed-session reads work without an installed coding CLI; an unavailable provider does not disable another provider. Private state contains the lifetime owner, Unix socket and SQLite discovery metadata. Conversation histories remain in native storage; HQ retains complete bounded final results on their action receipts. Browsing never resumes an external session or starts inference. Quota windows come from native account observations, with explicit stale and unavailable states.
 
 Trusted Node hosts can open the database described by `hq.storage` and keep application tables under their own prefix. HQ reserves `hq_`, validates its current schema stamp on startup, and leaves application schema ownership and `user_version` with the host. Use `hq.withStorageMaintenance(callback)` for host schema changes; it drains admitted work and rejects active native execution before the callback. Start with a fresh development state root when the HQ schema changes. See the [shared storage contract](api/README.md#shared-storage).
 
@@ -55,7 +55,9 @@ Use `models --provider <id>` for native model and effort choices, and `configura
 
 Native execution settings, instructions, skills and tool permissions remain with each CLI. Claude uses an owned structured process per controlled session and reports immediate steering as unavailable. Plan approval grants no native tool permission. Close other CLI controllers before confirming adoption, resume or recovery. HQ coordinates sessions sharing one state directory; it cannot lock independently running native CLIs. Integrating browser hosts can use durable host-action admission and operator-scoped reconciliation through the programmatic API; see the [browser host contract](api/README.md#browser-host-integration). The standalone CLI advertises only commands it implements.
 
-Durable state includes `action.key`, which must stay private and accompany its SQLite database. Queued undelivered text is saved; ordinary message bodies and question answers are not.
+Durable state includes `action.key`, which must stay private and accompany its SQLite database. Queued undelivered inputs and complete bounded final results are saved; ordinary input bodies and question answers are not.
+
+Text and skill inputs can attach bounded workspace files by path and media type. HQ verifies their content hashes again before queued delivery. Output schemas use native Codex turn parameters or Claude's structured-session flag; complete validated results and known token usage remain available on selected receipts after reconnect. Live previews stay bounded and explicitly mark truncation. See [file inputs and complete results](api/README.md#file-inputs-and-complete-results).
 
 Use `suggest-thread-name --topic "Build usage" --state-root <directory>` for an editable label and `managed-thread-name --name build-usage --state-root <directory>` to resolve it. Creation adds a short ordinal suffix when a name is occupied. Actions and relationships retain immutable IDs.
 
@@ -98,6 +100,7 @@ These complete TypeScript examples use the public client and contracts. Start th
 - `src/providers/codex/`: native history and account protocol.
 - `src/providers/claude/`: native structured control and usage, plus the identity-validated, worker-owned local history reader.
 - `src/providers/registry/`: lazy factories, normalized provider evidence, bounded lifecycle and source isolation.
+- `src/providers/inputs/` and `src/providers/results/`: checked file delivery and complete native result validation.
 - `src/providers/configuration/` and `src/providers/lineage/`: bounded native choices and confirmed immutable session relationships.
 - `src/sessions/`: authorized, cursor-bound history reads and short label suggestions.
 - `src/plans/`: execution digests, milestone finalization, revision checkpoints, retained verification and explicit plan authority.

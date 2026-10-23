@@ -20,6 +20,8 @@ export type IClaudeInput = {
   isAcknowledged: boolean;
   interruptRequested: boolean;
   hasInterruptionMarker: boolean;
+  finalText: string | null;
+  isOutputOversized: boolean;
   resolve(turn: { id: string }): void;
   reject(error: unknown): void;
   timer: ReturnType<typeof setTimeout>;

@@ -684,7 +684,7 @@ test('queued text cannot answer native questions; secret answers are absent from
     const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
     try {
       const saved = JSON.stringify(
-        database.prepare('SELECT id, digest, queued_text FROM hq_action').all(),
+        database.prepare('SELECT id, digest, queued_input FROM hq_action').all(),
       );
       expect(saved).not.toContain('fictional-answer-for-the-test');
       expect(saved).toContain('Next task after the question');
@@ -1360,14 +1360,14 @@ test('control seek pages preserve tied ordering, reject changed filters and omit
     );
     const actions = await fixture.request({ kind: 'actions', threadId: first.id, limit: 128 });
     expect(JSON.stringify(actions)).not.toContain('A selected queue body');
-    expect((await fixture.receipt(queued.id)).queuedText).toBe('A selected queue body');
+    expect((await fixture.receipt(queued.id)).queuedInput?.text).toBe('A selected queue body');
     const cancel = await fixture.submit(
       fixture.envelope({ kind: 'queue-cancel', queuedActionId: queued.id }),
     );
     expect(cancel.delivery).toBe('acknowledged');
     expect(await fixture.receipt(queued.id)).toMatchObject({
       delivery: 'canceled',
-      queuedText: null,
+      queuedInput: null,
     });
   } finally {
     await fixture.close();

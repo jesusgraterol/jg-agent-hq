@@ -367,7 +367,7 @@ test('hidden native records preserve turn grouping and repeated message identiti
     ).toStrictEqual([
       ['prompt', prompt.uuid, 'user-message'],
       ['initial answer', prompt.uuid, 'agent-message'],
-      ['command output', prompt.uuid, 'command'],
+      ['command output', prompt.uuid, 'tool'],
     ]);
     await appendFile(
       transcript(nativeId),

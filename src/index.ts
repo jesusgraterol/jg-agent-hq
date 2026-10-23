@@ -58,3 +58,14 @@ export type { IStorageDescriptor, IStorageMaintenanceOperation } from './storage
 // pure execution revision contracts
 export { computePlanRevision } from './plans/index.js';
 export type { IPlanContract, IPlanContractParser } from './plans/index.js';
+
+// native media transport and results
+export type { IProviderInputFile } from './providers/index.js';
+export type {
+  IInputFile,
+  IBoundInputFile,
+  IOutputSchema,
+  ITurnUsage,
+  ITurnResult,
+  IPreparedInput,
+} from './contracts/index.js';

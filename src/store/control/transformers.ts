@@ -1,5 +1,6 @@
 import {
-  NativeSkillInputSchema,
+  PreparedInputSchema,
+  TurnResultSchema,
   NativeLineageSchema,
   ActionPlanContextSchema,
   type IActionReceipt,
@@ -32,7 +33,7 @@ export const toManagedThread = (thread: IThreadRow): IManagedThread => ({
 
 /** Converts bounded action metadata without loading its pending message body. */
 export const toActionSummary = (
-  action: Omit<IActionRow, 'queued_text' | 'queued_skill'>,
+  action: Omit<IActionRow, 'queued_input' | 'result'>,
 ): IActionSummary => ({
   id: action.id,
   digest: action.digest,
@@ -53,12 +54,12 @@ export const toActionSummary = (
   updatedAt: action.updated_at,
 });
 
-/** Includes recoverable queued text only for a selected receipt. */
+/** Includes recoverable queued input and complete native output only for a selected receipt. */
 export const toActionReceipt = (action: IActionRow): IActionReceipt => ({
   ...toActionSummary(action),
-  queuedText: action.queued_text,
-  queuedSkill:
-    action.queued_skill === null
+  queuedInput:
+    action.queued_input === null
       ? null
-      : NativeSkillInputSchema.parse(JSON.parse(action.queued_skill)),
+      : PreparedInputSchema.parse(JSON.parse(action.queued_input)),
+  result: action.result === null ? null : TurnResultSchema.parse(JSON.parse(action.result)),
 });

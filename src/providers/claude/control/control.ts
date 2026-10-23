@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Exception, isException } from 'jg-exception';
+import { isEqual } from 'jg-utilities';
 import { z } from 'zod';
 
 import type {
@@ -7,6 +8,8 @@ import type {
   ISessionSettings,
   ITurnSettings,
 } from '../../../contracts/index.js';
+import type { IProviderInputFile } from '../../inputs/index.js';
+import { capabilityUnavailable } from '../../registry/index.js';
 import { toClaudeConfiguration } from '../configuration/index.js';
 
 import { createClaudeRpc } from '../rpc.js';
@@ -41,6 +44,19 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     const session = sessions.get(id);
     if (!session?.connection?.isAvailable || session.isClosing) unavailable();
     return session;
+  };
+  /**
+   * Checks the process-bound output format without restarting a controlled session.
+   * @throws
+   * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+   * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
+   */
+  const validateInput = (nativeId: string, settings: ITurnSettings): void => {
+    if (
+      settings.outputSchema &&
+      !isEqual(settings.outputSchema, get(nativeId).settings.outputSchema)
+    )
+      capabilityUnavailable();
   };
   /**
    * Records ownership before startup and permits control only after native idle initialization.
@@ -271,12 +287,14 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
         requestId,
       );
     },
+    validateInput,
     /**
      * Writes idle input once and waits for its matching native echo or result.
      * @returns The native user-message identity after acknowledgement.
      * @throws
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
      */
     async startTurn(
       requestId: string,
@@ -284,11 +302,13 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       text: string,
       settings: ITurnSettings = {},
       signal?: AbortSignal,
+      files: IProviderInputFile[] = [],
     ): Promise<{ id: string }> {
       const session = get(nativeId);
+      validateInput(nativeId, settings);
       if (signal?.aborted) unavailable();
       if (session.input) conflict();
-      if (Object.keys(settings).length)
+      if (settings.model || settings.effort)
         await session.connection!.requestControl({
           subtype: 'apply_flag_settings',
           settings: {
@@ -316,6 +336,8 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
           isAcknowledged: false,
           interruptRequested: false,
           hasInterruptionMarker: false,
+          finalText: null,
+          isOutputOversized: false,
           resolve,
           reject,
           timer,
@@ -325,7 +347,34 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
             type: 'user',
             uuid: id,
             session_id: nativeId,
-            message: { role: 'user', content: text },
+            message: {
+              role: 'user',
+              content: files.length
+                ? [
+                    { type: 'text', text },
+                    ...files.map((file) =>
+                      file.mediaType === 'text/plain'
+                        ? {
+                            type: 'document',
+                            source: {
+                              type: 'text',
+                              media_type: 'text/plain',
+                              data: new TextDecoder('utf-8', { fatal: true }).decode(file.content),
+                            },
+                            title: file.path,
+                          }
+                        : {
+                            type: file.mediaType.startsWith('image/') ? 'image' : 'document',
+                            source: {
+                              type: 'base64',
+                              media_type: file.mediaType,
+                              data: Buffer.from(file.content).toString('base64'),
+                            },
+                          },
+                    ),
+                  ]
+                : text,
+            },
             parent_tool_use_id: null,
           })
           .catch(reject);

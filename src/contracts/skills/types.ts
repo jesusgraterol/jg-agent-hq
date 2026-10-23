@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { InputFileSchema, MAX_INPUT_FILES } from '../inputs/index.js';
+
 // identifiers bind selections to the provider's exact native name and source
 export const SkillIdSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const NativeSkillInputSchema = z.object({
@@ -49,11 +51,16 @@ export type ISkillPreview = z.infer<typeof SkillPreviewSchema>;
 
 // explicit skill input is user intent; native agents retain workflow and permission ownership
 export const MessageInputSchema = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('text'), text: z.string().min(1).max(65_536) }),
+  z.strictObject({
+    kind: z.literal('text'),
+    text: z.string().min(1).max(65_536),
+    files: z.array(InputFileSchema).max(MAX_INPUT_FILES).optional(),
+  }),
   z.strictObject({
     kind: z.literal('skill'),
     skillId: SkillIdSchema,
     arguments: z.string().max(16_384),
+    files: z.array(InputFileSchema).max(MAX_INPUT_FILES).optional(),
   }),
 ]);
 export type IMessageInput = z.infer<typeof MessageInputSchema>;

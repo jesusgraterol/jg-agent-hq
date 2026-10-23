@@ -356,7 +356,7 @@ test('Claude permissions preserve native input and cannot grant a session-wide a
       kind: 'live-items',
       result: {
         data: expect.arrayContaining([
-          expect.objectContaining({ kind: 'command', text: 'Tool failed' }),
+          expect.objectContaining({ kind: 'tool', text: 'Tool failed' }),
         ]),
       },
     });

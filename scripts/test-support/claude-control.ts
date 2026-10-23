@@ -29,7 +29,7 @@ export const startClaudeControl = () => {
  const complete=(interrupted=false)=>{
   if(!input)return;
   if(!interrupted){
-   const uuid=randomUUID(),text='Native response to '+input.message.content;
+   const uuid=randomUUID(),text=control().outputText??(control().outputSize?'x'.repeat(control().outputSize):'Native response to '+input.message.content);
    out({type:'stream_event',event:{type:'message_start',message:{id:'api-message'}}});
    out({type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'text'}}});
    out({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text}}});
@@ -38,7 +38,7 @@ export const startClaudeControl = () => {
    out({type:'stream_event',event:{type:'message_delta',delta:{stop_reason:'end_turn',stop_sequence:null}}});
   }
   if(interrupted){const uuid=randomUUID(),content=[{type:'text',text:'[Request interrupted by user]'}];record(uuid,'user',content,leaf);leaf=uuid;out({type:'user',uuid,message:{role:'user',content}});}
-  out({type:'result',subtype:interrupted?'error_during_execution':'success',is_error:interrupted,user_message_uuid:input.uuid,errors:interrupted?['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null']:undefined});
+  out({type:'result',subtype:interrupted?'error_during_execution':'success',is_error:interrupted,user_message_uuid:input.uuid,structured_output:control().structuredOutput,usage:control().usageMalformed?'unknown-usage':{input_tokens:7,output_tokens:3,cache_read_input_tokens:2},errors:interrupted?['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null']:undefined});
   input=null;hasPrompt=false;
  };
  const lines=createInterface({input:process.stdin});

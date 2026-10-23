@@ -2,12 +2,14 @@ import { z } from 'zod';
 
 import { CursorSchema, NativeIdSchema } from '../identities/index.js';
 import { ProviderIdSchema } from '../providers/index.js';
+import { OutputSchemaSchema } from '../results/index.js';
 
 // native model and effort names are discovered rather than fixed to a vendor release
 const SelectionSchema = z.string().min(1).max(256);
 export const TurnSettingsSchema = z.strictObject({
   model: NativeIdSchema.optional(),
   effort: z.string().min(1).max(64).optional(),
+  outputSchema: OutputSchemaSchema.optional(),
 });
 export type ITurnSettings = z.infer<typeof TurnSettingsSchema>;
 export const SessionSettingsSchema = TurnSettingsSchema.extend({

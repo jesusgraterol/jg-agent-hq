@@ -138,7 +138,7 @@ export const HistoryItemSchema = z.object({
   nativeId: NativeIdSchema,
   turnId: NativeIdSchema,
   nativeType: z.string(),
-  kind: z.enum(['user-message', 'agent-message', 'command', 'file-change', 'unsupported']),
+  kind: z.enum(['user-message', 'agent-message', 'command', 'tool', 'file-change', 'unsupported']),
   text: z.string(),
   isTruncated: z.boolean(),
 });

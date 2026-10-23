@@ -8,12 +8,12 @@ import type {
   IActionReceipt,
   IManagedThread,
   INativeApproval,
-  INativeSkillInput,
+  IPreparedInput,
   IPlanRevisionWorkflow,
 } from '../contracts/index.js';
 import { getErrorKind } from '../errors/index.js';
 import type { INativePrompt, IProviderThread } from '../providers/index.js';
-import { retainNativeLineage } from '../providers/index.js';
+import { retainNativeLineage, readInputFiles } from '../providers/index.js';
 import { capabilityUnavailable, type createProviderRegistry } from '../providers/registry/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 import type { createSkills } from '../skills/index.js';
@@ -232,8 +232,13 @@ export const createActions = (
         await dispatch(
           next.receipt,
           next.thread,
-          { kind: 'message', threadId, input: { kind: 'text', text: next.text } },
-          { text: next.text, skill: next.skill },
+          {
+            kind: 'message',
+            threadId,
+            input: { kind: 'text', text: next.input.text },
+            settings: next.input.settings,
+          },
+          next.input,
         );
     }, threadId);
   };
@@ -280,7 +285,7 @@ export const createActions = (
     initial: IActionReceipt,
     originalThread: IManagedThread,
     command: IActionEnvelope['command'],
-    input?: { text: string; skill: INativeSkillInput | null },
+    input?: IPreparedInput,
   ): Promise<void> => {
     let receipt = initial;
     let thread = originalThread;
@@ -389,12 +394,17 @@ export const createActions = (
         });
       } else if (requestId.endsWith(':turn')) {
         if (!nativeId || !input) conflict();
+        hasDispatched = false;
+        const files = await readInputFiles(input.files, thread.workspaceRoot, roots);
+        await control.validateInput(nativeId, input);
+        hasDispatched = true;
         const turn = await control.startTurn(
           requestId,
           nativeId,
           input.text,
           input.skill,
-          command.kind === 'message' ? (command.settings ?? {}) : {},
+          input.settings,
+          files,
         );
         await apply({
           kind: 'turn-accepted',
@@ -630,10 +640,9 @@ export const createActions = (
     const prepared: {
       workspaceRoot?: string;
       nativeId?: string;
-      text?: string;
-      skill?: INativeSkillInput | null;
+      input?: IPreparedInput;
     } = {};
-    let input: { text: string; skill: INativeSkillInput | null } | undefined;
+    let input: IPreparedInput | undefined;
     if ('threadId' in command) {
       const target = await store.getThread(command.threadId);
       if (target) {
@@ -732,9 +741,16 @@ export const createActions = (
       prompt.native.validate(command.response);
     }
     if (command.kind === 'message' || command.kind === 'queue') {
-      input = await skills.prepare(command.threadId, command.input);
-      prepared.text = input.text;
-      prepared.skill = input.skill;
+      const thread = await store.getThread(command.threadId);
+      if (!thread?.nativeId) conflict();
+      const files = await readInputFiles(command.input.files ?? [], thread.workspaceRoot, roots);
+      input = {
+        ...(await skills.prepare(command.threadId, command.input)),
+        files: files.map(({ content: _content, ...reference }) => reference),
+        settings: command.settings ?? {},
+      };
+      await control.validateInput(thread.nativeId, input);
+      prepared.input = input;
     }
     const admitted = await plans.admitNative(action, prepared);
     if (
@@ -753,13 +769,14 @@ export const createActions = (
       if (!receipt) conflict();
       let dispatchedCommand = command;
       if (command.kind === 'queue-send') {
-        if (!receipt.queuedText) conflict();
+        if (!receipt.queuedInput) conflict();
         dispatchedCommand = {
           kind: 'message',
           threadId: admitted.thread.id,
-          input: { kind: 'text', text: receipt.queuedText },
+          input: { kind: 'text', text: receipt.queuedInput.text },
+          settings: receipt.queuedInput.settings,
         };
-        input = { text: receipt.queuedText, skill: receipt.queuedSkill };
+        input = receipt.queuedInput;
       }
       runOwned(
         () => dispatch(receipt, admitted.thread!, dispatchedCommand, input),

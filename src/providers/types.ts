@@ -18,7 +18,9 @@ import type {
   ITurnSettings,
   IConfigurationRequest,
   ISessionConfiguration,
+  IPreparedInput,
 } from '../contracts/index.js';
+import type { IProviderInputFile } from './inputs/index.js';
 import type { IHistoryRequest } from '../sessions/index.js';
 import type { INativeObservation, INativeOutcome } from '../store/control/index.js';
 
@@ -159,6 +161,15 @@ export type IAgentProvider = {
   ): Promise<IProviderThread>;
   /** @returns Native acknowledgement of the selected session's name change. */
   nameThread(requestId: string, nativeId: string, name: string, call: IProviderCall): Promise<void>;
+  /**
+   * Checks media and output options before action admission and dispatch.
+   * @returns Confirmation that the selected native control supports the input.
+   * @throws
+   * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
+   * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+   * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+   */
+  validateInput(nativeId: string, input: IPreparedInput, call: IProviderCall): Promise<void>;
   /** @returns The acknowledged native turn identity; completion arrives separately. */
   startTurn(
     requestId: string,
@@ -166,6 +177,7 @@ export type IAgentProvider = {
     text: string,
     skill: INativeSkillInput | null,
     settings: ITurnSettings,
+    files: IProviderInputFile[],
     call: IProviderCall,
   ): Promise<{ id: string }>;
   /** @returns The acknowledged active turn identity, without creating a new turn. */

@@ -65,6 +65,7 @@ export type { IProviderModel, IProviderModelsRequest, IProviderModelPage } from 
 
 // managed control and durable delivery
 export {
+  PreparedInputSchema,
   ActionCommandSchema,
   ActionEnvelopeSchema,
   ActionReceiptSchema,
@@ -74,6 +75,7 @@ export {
   LifecycleEventSchema,
 } from './actions/index.js';
 export type {
+  IPreparedInput,
   IActionCommand,
   IActionEnvelope,
   IActionReceipt,
@@ -233,3 +235,20 @@ export {
   PublicationStatusSchema,
 } from './browser/index.js';
 export type { IPublicationStatus } from './browser/index.js';
+
+// bounded file inputs and complete native results
+export {
+  InputFileSchema,
+  BoundInputFileSchema,
+  MAX_INPUT_FILES,
+  MAX_INPUT_FILE_BYTES,
+  MAX_TEXT_FILE_BYTES,
+} from './inputs/index.js';
+export type { IInputFile, IBoundInputFile } from './inputs/index.js';
+export {
+  MAX_RESULT_BYTES,
+  OutputSchemaSchema,
+  TurnUsageSchema,
+  TurnResultSchema,
+} from './results/index.js';
+export type { IOutputSchema, ITurnUsage, ITurnResult } from './results/index.js';

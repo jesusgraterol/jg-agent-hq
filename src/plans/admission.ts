@@ -169,7 +169,7 @@ export const createPlanAdmission = (
             !!action.expectedPlan &&
             (command.kind === 'message' || command.kind === 'queue') &&
             command.input.kind === 'skill' &&
-            prepared.skill?.name === 'jg-feedback';
+            prepared.input?.skill?.name === 'jg-feedback';
           // current-turn permission replies and labels do not start another implementation unit
           const isSeparateNativeControl =
             command.kind === 'native-reply' || command.kind === 'thread-rename';
@@ -201,7 +201,7 @@ export const createPlanAdmission = (
                 command.input.kind === 'skill'
               ) {
                 if (
-                  prepared.skill?.name !==
+                  prepared.input?.skill?.name !==
                   selected.artifacts.coordination.revision!.invocation!.skill
                 )
                   conflict();

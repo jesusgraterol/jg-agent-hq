@@ -66,8 +66,8 @@ CREATE TABLE hq_action (
   completion TEXT CHECK (completion IS NULL OR completion IN ('completed', 'failed', 'interrupted')),
   failure TEXT CHECK (failure IS NULL OR failure IN ('state-conflict', 'access-denied', 'agent-unavailable', 'operation-failed')),
   related_action_id TEXT,
-  queued_text TEXT,
-  queued_skill TEXT,
+  queued_input TEXT,
+  result TEXT,
   plan_context TEXT,
   queue_ready INTEGER NOT NULL DEFAULT 0 CHECK (queue_ready IN (0, 1)),
   requested_name TEXT,
@@ -76,9 +76,8 @@ CREATE TABLE hq_action (
   CONSTRAINT hq_pk_a__id PRIMARY KEY (id),
   CONSTRAINT hq_fk_a__thread_id FOREIGN KEY (thread_id) REFERENCES hq_thread(id),
   CONSTRAINT hq_fk_a__related_action_id FOREIGN KEY (related_action_id) REFERENCES hq_action(id),
-  CONSTRAINT hq_chk_a__queued_skill_kind CHECK (queued_skill IS NULL OR kind = 'queue'),
-  CONSTRAINT hq_chk_a__queued_text_kind CHECK (queued_text IS NULL OR kind = 'queue'),
-  CONSTRAINT hq_chk_a__queued_body_required CHECK (delivery != 'queued' OR (kind = 'queue' AND queued_text IS NOT NULL))
+  CONSTRAINT hq_chk_a__queued_input_kind CHECK (queued_input IS NULL OR kind = 'queue'),
+  CONSTRAINT hq_chk_a__queued_body_required CHECK (delivery != 'queued' OR (kind = 'queue' AND queued_input IS NOT NULL))
 ) STRICT;
 
 CREATE INDEX hq_idx_a__thread_id_created_at_id_desc ON hq_action (thread_id, created_at DESC, id DESC);

@@ -99,6 +99,24 @@ export const toHistoryItem = ({ turnId, item }: INativeItem): IHistoryItem => {
       text = `${command.command}\n${command.aggregatedOutput ?? ''}`;
       break;
     }
+    case 'mcpToolCall':
+    case 'dynamicToolCall': {
+      kind = 'tool';
+      const tool = parseNative(
+        z.object({
+          tool: z.string(),
+          server: z.string().optional(),
+          status: z.string(),
+          arguments: z.unknown(),
+          result: z.unknown().optional(),
+          error: z.unknown().optional(),
+          contentItems: z.unknown().optional(),
+        }),
+        item,
+      );
+      text = `${tool.server ? tool.server + '/' : ''}${tool.tool} (${tool.status})\n${JSON.stringify(tool.arguments)}\n${JSON.stringify(tool.result ?? tool.contentItems ?? tool.error ?? null)}`;
+      break;
+    }
     case 'fileChange':
       kind = 'file-change';
       text = parseNative(ChangesSchema, item)

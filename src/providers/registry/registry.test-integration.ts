@@ -229,7 +229,7 @@ const createFixtureProvider = () => {
           return { ...thread, nativeState: 'idle' };
         },
         compactThread: (requestId, nativeId, call) =>
-          adapter.startTurn(requestId, nativeId, '/compact', null, {}, call),
+          adapter.startTurn(requestId, nativeId, '/compact', null, {}, [], call),
         async resumeThread(_requestId, nativeId, workspaceRoot) {
           requireThread(nativeId).nativeState = 'idle';
           return {
@@ -243,6 +243,7 @@ const createFixtureProvider = () => {
           names += 1;
           requireThread(nativeId).name = name;
         },
+        async validateInput() {},
         async startTurn(_requestId, nativeId, text, skill) {
           inputs.push({ text, skill });
           const turnId = 'fixture-turn-' + randomUUID();

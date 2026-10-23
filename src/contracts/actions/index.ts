@@ -1,5 +1,6 @@
 // action and control contracts
 export {
+  PreparedInputSchema,
   ActionCommandSchema,
   ActionEnvelopeSchema,
   ActionReceiptSchema,
@@ -9,6 +10,7 @@ export {
   LifecycleEventSchema,
 } from './types.js';
 export type {
+  IPreparedInput,
   IActionCommand,
   IActionEnvelope,
   IActionReceipt,

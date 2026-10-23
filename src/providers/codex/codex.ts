@@ -1,7 +1,7 @@
 import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
-import type { IUsageSnapshot, ISessionSettings } from '../../contracts/index.js';
+import type { IUsageSnapshot, ISessionSettings, IOutputSchema } from '../../contracts/index.js';
 
 import { createCodexRpc } from './rpc.js';
 import {
@@ -47,6 +47,7 @@ export const createCodexProvider = async (
   let refresh: Promise<IUsageSnapshot> | undefined;
   let accountGeneration = 0;
   let events: ICodexEvents | undefined;
+  const outputSchemas = new Map<string, IOutputSchema>();
   const configurations = new Map<
     string,
     {
@@ -60,6 +61,11 @@ export const createCodexProvider = async (
         code: 'JG_AGENT_HQ_CODEX_FAILED',
         data: { kind: 'agent-unavailable' },
       });
+  };
+  // an uncertain idle-control release requires recovery before further input
+  const releaseControlState = (nativeId: string): void => {
+    outputSchemas.delete(nativeId);
+    events?.forgetTurn(nativeId);
   };
   /** Keeps bounded startup evidence for fields omitted by the native history read. */
   const rememberConfiguration = (
@@ -207,10 +213,14 @@ export const createCodexProvider = async (
       return result.thread;
     },
     async archiveThread(requestId, nativeId) {
-      parseNative(
-        z.object({}),
-        await connection.request('thread/archive', { threadId: nativeId }, requestId),
-      );
+      try {
+        parseNative(
+          z.object({}),
+          await connection.request('thread/archive', { threadId: nativeId }, requestId),
+        );
+      } finally {
+        releaseControlState(nativeId);
+      }
     },
     async unarchiveThread(requestId, nativeId) {
       return parseNative(
@@ -327,6 +337,7 @@ export const createCodexProvider = async (
         requestId,
       );
       const thread = parseNative(z.object({ thread: NativeThreadSchema }), response).thread;
+      if (selected.outputSchema) outputSchemas.set(thread.id, selected.outputSchema);
       rememberConfiguration(thread.id, response, selected);
       return thread;
     },
@@ -357,6 +368,8 @@ export const createCodexProvider = async (
         z.object({ thread: NativeThreadSchema.refine((thread) => thread.id === nativeId) }),
         response,
       );
+      if (selected.outputSchema) outputSchemas.set(nativeId, selected.outputSchema);
+      else outputSchemas.delete(nativeId);
       rememberConfiguration(nativeId, response, selected);
       return result.thread;
     },
@@ -366,7 +379,9 @@ export const createCodexProvider = async (
         await connection.request('thread/name/set', { threadId: nativeId, name }, requestId),
       );
     },
-    async startTurn(requestId, nativeId, text, skill, settings = {}) {
+    async startTurn(requestId, nativeId, text, skill, settings = {}, files = []) {
+      const outputSchema = settings.outputSchema ?? outputSchemas.get(nativeId);
+      events?.prepareTurn(nativeId, outputSchema);
       return parseNative(
         z.object({ turn: NativeTurnSchema }),
         await connection.request(
@@ -374,9 +389,21 @@ export const createCodexProvider = async (
           {
             threadId: nativeId,
             ...settings,
+            ...(outputSchema ? { outputSchema } : {}),
             input: [
               { type: 'text', text },
               ...(skill ? [{ type: 'skill', name: skill.name, path: skill.path }] : []),
+              ...files.map((file) =>
+                file.mediaType === 'text/plain'
+                  ? {
+                      type: 'text',
+                      text: `File ${file.path} (SHA-256 ${file.sha256}):\n${new TextDecoder('utf-8', { fatal: true }).decode(file.content)}`,
+                    }
+                  : {
+                      type: 'image',
+                      url: `data:${file.mediaType};base64,${Buffer.from(file.content).toString('base64')}`,
+                    },
+              ),
             ],
           },
           requestId,
@@ -434,17 +461,21 @@ export const createCodexProvider = async (
         });
     },
     async unsubscribe(requestId, nativeId) {
-      const result = parseNative(
-        z.object({ status: z.string() }),
-        await connection.request('thread/unsubscribe', { threadId: nativeId }, requestId),
-      );
-      if (!['unsubscribed', 'notSubscribed', 'notLoaded'].includes(result.status))
-        throw new Exception('The Codex integration failed', {
-          code: 'JG_AGENT_HQ_CODEX_FAILED',
-          data: {
-            kind: 'agent-unavailable',
-          },
-        });
+      try {
+        const result = parseNative(
+          z.object({ status: z.string() }),
+          await connection.request('thread/unsubscribe', { threadId: nativeId }, requestId),
+        );
+        if (!['unsubscribed', 'notSubscribed', 'notLoaded'].includes(result.status))
+          throw new Exception('The Codex integration failed', {
+            code: 'JG_AGENT_HQ_CODEX_FAILED',
+            data: {
+              kind: 'agent-unavailable',
+            },
+          });
+      } finally {
+        releaseControlState(nativeId);
+      }
     },
     reply: connection.reply,
     reject: connection.reject,

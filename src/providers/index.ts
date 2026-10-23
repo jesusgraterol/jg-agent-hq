@@ -37,3 +37,8 @@ export { createClaudeProvider, createClaudeProviderFactory } from './claude/inde
 
 // Claude control
 export { createClaudeControl } from './claude/control/index.js';
+
+// bounded native inputs and complete results
+export { readInputFiles } from './inputs/index.js';
+export type { IProviderInputFile } from './inputs/index.js';
+export { toTurnResult } from './results/index.js';

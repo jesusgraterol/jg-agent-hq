@@ -7,6 +7,17 @@ import { MessageInputSchema, NativeSkillInputSchema } from '../skills/index.js';
 
 import { NativeIdSchema, NativeLineageSchema } from '../identities/index.js';
 import { PlanRevisionSchema } from '../plans/index.js';
+import { BoundInputFileSchema, MAX_INPUT_FILES } from '../inputs/index.js';
+import { TurnResultSchema } from '../results/index.js';
+
+// queue payloads preserve the exact native selection, content hashes and turn options
+export const PreparedInputSchema = z.object({
+  text: z.string().min(1).max(65_536),
+  skill: NativeSkillInputSchema.nullable(),
+  files: z.array(BoundInputFileSchema).max(MAX_INPUT_FILES),
+  settings: TurnSettingsSchema,
+});
+export type IPreparedInput = z.infer<typeof PreparedInputSchema>;
 
 // explicit local intent; native RPC methods and arbitrary configuration are never accepted
 const ThreadIdSchema = z.uuid();
@@ -64,7 +75,12 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
     settings: TurnSettingsSchema.optional(),
   }),
   z.strictObject({ kind: z.literal('steer'), ...ActiveTargetFields, text: TextSchema }),
-  z.strictObject({ kind: z.literal('queue'), ...ActiveTargetFields, input: MessageInputSchema }),
+  z.strictObject({
+    kind: z.literal('queue'),
+    ...ActiveTargetFields,
+    input: MessageInputSchema,
+    settings: TurnSettingsSchema.optional(),
+  }),
   z.strictObject({ kind: z.literal('interrupt'), ...ActiveTargetFields }),
   z.strictObject({ kind: z.literal('queue-send'), queuedActionId: z.uuid() }),
   z.strictObject({ kind: z.literal('queue-cancel'), queuedActionId: z.uuid() }),
@@ -149,17 +165,17 @@ export const ActionReceiptSchema = z.object({
     .nullable(),
   relatedActionId: z.uuid().nullable(),
   planContext: ActionPlanContextSchema.nullable(),
-  queuedText: TextSchema.nullable(),
-  queuedSkill: NativeSkillInputSchema.nullable(),
+  queuedInput: PreparedInputSchema.nullable(),
+  result: TurnResultSchema.nullable(),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
 });
 export type IActionReceipt = z.infer<typeof ActionReceiptSchema>;
 
-// collections omit pending message bodies; the selected receipt retains its recoverable text
+// collections omit queued input and final result bodies; selected receipts retain them
 export const ActionSummarySchema = ActionReceiptSchema.omit({
-  queuedText: true,
-  queuedSkill: true,
+  queuedInput: true,
+  result: true,
 });
 export type IActionSummary = z.infer<typeof ActionSummarySchema>;
 

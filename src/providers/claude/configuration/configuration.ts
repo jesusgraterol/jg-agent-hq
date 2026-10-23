@@ -39,6 +39,7 @@ export const toClaudeSessionFlags = (settings: ISessionSettings): string[] => {
   if (settings.sandbox !== undefined) capabilityUnavailable();
   return [
     ...(settings.model ? ['--model', settings.model] : []),
+    ...(settings.outputSchema ? ['--json-schema', JSON.stringify(settings.outputSchema)] : []),
     ...(settings.effort ? ['--effort', settings.effort] : []),
     ...(settings.nativeAgent ? ['--agent', settings.nativeAgent] : []),
     ...(settings.permissionMode ? ['--permission-mode', settings.permissionMode] : []),

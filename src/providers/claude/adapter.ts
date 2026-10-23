@@ -4,6 +4,9 @@ import { z } from 'zod';
 
 import {
   SessionSettingsSchema,
+  MAX_INPUT_FILES,
+  MAX_INPUT_FILE_BYTES,
+  MAX_TEXT_FILE_BYTES,
   TurnSettingsSchema,
   type IProviderCapabilitySet,
 } from '../../contracts/index.js';
@@ -127,12 +130,26 @@ export const createClaudeProviderFactory = (
             },
             skills,
           },
-          inputSchema: PROVIDER_INPUT_SCHEMA,
+          inputSchema: {
+            ...PROVIDER_INPUT_SCHEMA,
+            supportedMediaTypes: [
+              'image/png',
+              'image/jpeg',
+              'image/webp',
+              'image/gif',
+              'application/pdf',
+              'text/plain',
+            ],
+            maxFiles: MAX_INPUT_FILES,
+            maxFileBytes: MAX_INPUT_FILE_BYTES,
+            maxTextFileBytes: MAX_TEXT_FILE_BYTES,
+          },
           configurationSchema: {
             session: z.json().parse(z.toJSONSchema(SessionSettingsSchema.omit({ sandbox: true }))),
-            turn: z.json().parse(z.toJSONSchema(TurnSettingsSchema)),
+            turn: z.json().parse(z.toJSONSchema(TurnSettingsSchema.omit({ outputSchema: true }))),
             sessionChangeMode: 'idle-restart',
             turnChangeMode: 'live',
+            outputSchemaChangeMode: 'idle-restart',
             permissionModes: [
               'default',
               'acceptEdits',
@@ -213,8 +230,11 @@ export const createClaudeProviderFactory = (
         };
       },
       nameThread: (requestId, nativeId, name) => control.nameThread(requestId, nativeId, name),
-      startTurn: (requestId, nativeId, text, _skill, settings, call) =>
-        control.startTurn(requestId, nativeId, text, settings, call.signal),
+      async validateInput(nativeId, input) {
+        control.validateInput(nativeId, input.settings);
+      },
+      startTurn: (requestId, nativeId, text, _skill, settings, files, call) =>
+        control.startTurn(requestId, nativeId, text, settings, call.signal, files),
       steer: async () => capabilityUnavailable(),
       interrupt: (requestId, nativeId, nativeTurnId) =>
         control.interrupt(requestId, nativeId, nativeTurnId),

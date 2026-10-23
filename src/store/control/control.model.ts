@@ -5,7 +5,7 @@ import { z } from 'zod';
 
 import {
   LifecycleEventSchema,
-  NativeSkillInputSchema,
+  PreparedInputSchema,
   type IActionReceipt,
   type IActionSummary,
   type IManagedThread,
@@ -42,7 +42,7 @@ import {
 const FailureSchema = z.object({
   kind: z.enum(['state-conflict', 'access-denied', 'agent-unavailable', 'operation-failed']),
 });
-const ActionMetadataSchema = ActionRowSchema.omit({ queued_text: true, queued_skill: true });
+const ActionMetadataSchema = ActionRowSchema.omit({ queued_input: true, result: true });
 
 /** Owns synchronous control-ledger transactions inside the dedicated SQLite worker. */
 export class ControlModel {
@@ -347,7 +347,7 @@ export class ControlModel {
           if (command.kind === 'queue-cancel') {
             this.__database
               .prepare(
-                "UPDATE hq_action SET delivery = 'canceled', queued_text = NULL, queued_skill = NULL, queue_ready = 0, updated_at = ? WHERE id = ?",
+                "UPDATE hq_action SET delivery = 'canceled', queued_input = NULL, queue_ready = 0, updated_at = ? WHERE id = ?",
               )
               .run(now, queued!.id);
             this.__database
@@ -481,15 +481,9 @@ export class ControlModel {
                 this.__requireTurn(thread, command.expectedTurnId);
                 this.__database
                   .prepare(
-                    "UPDATE hq_action SET delivery = 'queued', queued_text = ?, queued_skill = ? WHERE id = ?",
+                    "UPDATE hq_action SET delivery = 'queued', queued_input = ? WHERE id = ?",
                   )
-                  .run(
-                    command.input.kind === 'text'
-                      ? command.input.text
-                      : (prepared.text ?? this.__conflict()),
-                    prepared.skill ? JSON.stringify(prepared.skill) : null,
-                    action.id,
-                  );
+                  .run(JSON.stringify(prepared.input ?? this.__conflict()), action.id);
                 dispatchActionId = null;
                 break;
               case 'queue-send':
@@ -657,7 +651,7 @@ export class ControlModel {
           thread?.last_turn_id === nativeTurnId ? thread.last_turn_state : action.completion;
         this.__database
           .prepare(
-            "UPDATE hq_action SET delivery = 'acknowledged', native_turn_id = ?, completion = ?, failure = NULL, queued_text = NULL, queued_skill = NULL, updated_at = ? WHERE id = ?",
+            "UPDATE hq_action SET delivery = 'acknowledged', native_turn_id = ?, completion = ?, failure = NULL, queued_input = NULL, updated_at = ? WHERE id = ?",
           )
           .run(nativeTurnId, completion, now, action.id);
         if (ownsThread) {
@@ -767,7 +761,7 @@ export class ControlModel {
       if (
         !queued.queue_ready ||
         queued.runtime_epoch !== this.__epoch ||
-        queued.queued_text === null
+        queued.queued_input === null
       )
         return null;
       this.__beginTurn(queued.id, threadId);
@@ -775,11 +769,7 @@ export class ControlModel {
       return {
         receipt: this.getAction(queued.id)!,
         thread: this.getThread(threadId)!,
-        text: queued.queued_text,
-        skill:
-          queued.queued_skill === null
-            ? null
-            : NativeSkillInputSchema.parse(JSON.parse(queued.queued_skill)),
+        input: PreparedInputSchema.parse(JSON.parse(queued.queued_input)),
       };
     });
   }
@@ -951,6 +941,22 @@ export class ControlModel {
             thread.id,
           );
       } else if (observation.kind === 'turn-completed') {
+        if (observation.result) {
+          const encoded = JSON.stringify(observation.result);
+          this.__database
+            .prepare(
+              "UPDATE hq_action SET result = ?, updated_at = ? WHERE thread_id = ? AND kind IN ('message', 'queue', 'thread-compact') AND (native_turn_id = ? OR (id = ? AND native_turn_id IS NULL AND ? = ?))",
+            )
+            .run(
+              encoded,
+              now,
+              thread.id,
+              observation.nativeTurnId,
+              thread.pending_action_id,
+              thread.active_turn_id,
+              observation.nativeTurnId,
+            );
+        }
         this.__database
           .prepare(
             'UPDATE hq_action SET completion = ?, updated_at = ? WHERE thread_id = ? AND native_turn_id = ?',

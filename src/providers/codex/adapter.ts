@@ -4,6 +4,9 @@ import { z } from 'zod';
 
 import {
   SessionSettingsSchema,
+  MAX_INPUT_FILES,
+  MAX_INPUT_FILE_BYTES,
+  MAX_TEXT_FILE_BYTES,
   TurnSettingsSchema,
   type IProviderCapabilitySet,
 } from '../../contracts/index.js';
@@ -16,6 +19,8 @@ import {
   SUPPORTED_PROVIDER_OPERATION,
   type IAgentProviderFactory,
 } from '../index.js';
+
+import { capabilityUnavailable } from '../registry/index.js';
 
 import { createCodexProvider } from './codex.js';
 import { createCodexEvents, toProviderThread } from './events.js';
@@ -147,7 +152,13 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
             revert: SUPPORTED_PROVIDER_OPERATION,
             configuration: SUPPORTED_PROVIDER_OPERATION,
           },
-          inputSchema: PROVIDER_INPUT_SCHEMA,
+          inputSchema: {
+            ...PROVIDER_INPUT_SCHEMA,
+            supportedMediaTypes: ['image/png', 'image/jpeg', 'image/webp', 'text/plain'],
+            maxFiles: MAX_INPUT_FILES,
+            maxFileBytes: MAX_INPUT_FILE_BYTES,
+            maxTextFileBytes: MAX_TEXT_FILE_BYTES,
+          },
           configurationSchema: {
             session: z
               .json()
@@ -211,8 +222,16 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
       resumeThread: async (requestId, nativeId, _workspaceRoot, _name, settings, call) =>
         toProviderThread(await native.resumeThread(requestId, nativeId, settings, call.signal)),
       nameThread: (requestId, nativeId, name) => native.nameThread(requestId, nativeId, name),
-      startTurn: (requestId, nativeId, text, skill, settings) =>
-        native.startTurn(requestId, nativeId, text, skill, settings),
+      async validateInput(_nativeId, input) {
+        if (
+          input.files.some(
+            (file) => file.mediaType === 'application/pdf' || file.mediaType === 'image/gif',
+          )
+        )
+          capabilityUnavailable();
+      },
+      startTurn: (requestId, nativeId, text, skill, settings, files) =>
+        native.startTurn(requestId, nativeId, text, skill, settings, files),
       steer: (requestId, nativeId, expectedTurnId, text) =>
         native.steer(requestId, nativeId, expectedTurnId, text),
       interrupt: (requestId, nativeId, nativeTurnId) =>

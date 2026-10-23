@@ -3,7 +3,8 @@ import { z } from 'zod';
 import {
   ActionEnvelopeSchema,
   ActionPlanContextSchema,
-  NativeSkillInputSchema,
+  PreparedInputSchema,
+  TurnResultSchema,
   ActionReceiptSchema,
   ActionSummarySchema,
   ManagedThreadSchema,
@@ -48,8 +49,8 @@ export const ActionRowSchema = z.object({
   completion: ActionReceiptSchema.shape.completion,
   failure: ActionReceiptSchema.shape.failure,
   related_action_id: z.uuid().nullable(),
-  queued_text: ActionReceiptSchema.shape.queuedText,
-  queued_skill: z.string().nullable(),
+  queued_input: z.string().nullable(),
+  result: z.string().nullable(),
   plan_context: z.string().nullable(),
   requested_name: ManagedThreadSchema.shape.name.nullable(),
   queue_ready: z.number().int().min(0).max(1),
@@ -117,6 +118,7 @@ export const NativeObservationSchema = z.discriminatedUnion('kind', [
     kind: z.literal('turn-completed'),
     ...NativeTurnFields,
     state: ActionReceiptSchema.shape.completion.unwrap(),
+    result: TurnResultSchema.optional(),
   }),
   z.strictObject({
     kind: z.literal('item-started'),
@@ -154,8 +156,7 @@ export const AdmissionSchema = z.strictObject({
   prepared: z.strictObject({
     workspaceRoot: z.string().optional(),
     nativeId: NativeIdSchema.optional(),
-    text: z.string().min(1).max(65_536).optional(),
-    skill: NativeSkillInputSchema.nullable().optional(),
+    input: PreparedInputSchema.optional(),
     planContext: ActionPlanContextSchema.optional(),
   }),
 });
@@ -170,8 +171,7 @@ export type IAdmissionResult = z.infer<typeof AdmissionResultSchema>;
 export const DispatchSchema = z.object({
   receipt: ActionReceiptSchema,
   thread: ManagedThreadSchema,
-  text: z.string().max(65_536),
-  skill: NativeSkillInputSchema.nullable(),
+  input: PreparedInputSchema,
 });
 export type IDispatch = z.infer<typeof DispatchSchema>;
 export const ObservationResultSchema = z.object({

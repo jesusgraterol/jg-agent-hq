@@ -283,7 +283,7 @@ test.each(['codex', 'claude'] as const)(
       });
       expect(await api.submit(queued)).toMatchObject({
         delivery: 'queued',
-        queuedSkill: { name: skill.name, path: skill.path },
+        queuedInput: { skill: { name: skill.name, path: skill.path } },
       });
       expect(await api.inputs()).toHaveLength(1);
       await api.control({});
@@ -308,7 +308,7 @@ test.each(['codex', 'claude'] as const)(
         { type: 'text', text: `${provider === 'codex' ? '$' : '/'}${skill.name} after this turn` },
         ...(provider === 'codex' ? [{ type: 'skill', name: skill.name, path: skill.path }] : []),
       ]);
-      expect(await api.receipt(queued.id)).toMatchObject({ queuedText: null, queuedSkill: null });
+      expect(await api.receipt(queued.id)).toMatchObject({ queuedInput: null });
     });
   },
 );

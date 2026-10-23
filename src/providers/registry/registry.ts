@@ -517,11 +517,15 @@ export const createProviderRegistry = (
             }),
           nameThread: (requestId, nativeId, name) =>
             invokeControl((call) => adapter.nameThread(requestId, nativeId, name, call)),
-          startTurn: (requestId, nativeId, text, skill, settings) =>
+          validateInput: (nativeId, input) =>
+            invoke((call) => adapter.validateInput(nativeId, input, call)),
+          startTurn: (requestId, nativeId, text, skill, settings, files) =>
             invokeControl(async (call) =>
               z
                 .object({ id: NativeIdSchema })
-                .parse(await adapter.startTurn(requestId, nativeId, text, skill, settings, call)),
+                .parse(
+                  await adapter.startTurn(requestId, nativeId, text, skill, settings, files, call),
+                ),
             ),
           steer: (requestId, nativeId, expectedTurnId, text) =>
             invokeControl(async (call) =>
