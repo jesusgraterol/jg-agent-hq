@@ -7,6 +7,7 @@ import { createActions, readControl } from '../actions/index.js';
 import { createAccounts } from '../accounts/index.js';
 import { createExtensions } from '../extensions/index.js';
 import { createHandoffs } from '../handoffs/index.js';
+import { createCollaboration } from '../collaboration/index.js';
 import { CONTROL_SOCKET, createIpcServer } from '../ipc/index.js';
 import { createCodexProviderFactory, createClaudeProviderFactory } from '../providers/index.js';
 import { createProviderRegistry } from '../providers/registry/index.js';
@@ -186,6 +187,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     (closing ??= (async () => {
       try {
         await browser.close();
+        await collaboration.close();
         await Promise.allSettled([...revisionJobs.values()]);
         const results = await Promise.allSettled([ipc?.close(), actions.close()]);
         const storeCleanup = await Promise.allSettled([projection.close()]);
@@ -290,6 +292,8 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       }
       case 'handoff':
         return { kind: 'handoff', result: await handoffs.handle(command.command) };
+      case 'collaboration':
+        return { kind: 'collaboration', result: await collaboration.handle(command) };
       case 'plan':
         return { kind: 'plan', result: await plans.handle(command.command) };
       case 'skills':
@@ -331,6 +335,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   };
   const request = (input: IHqRequestInput): Promise<IHqResponse> =>
     storage.run(() => handleRequest(input));
+  const collaboration = createCollaboration(projection, allowedRoots, storage.background);
   const handoffs = createHandoffs(
     projection,
     actions,

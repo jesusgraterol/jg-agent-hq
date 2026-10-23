@@ -2,6 +2,8 @@ import { Worker } from 'node:worker_threads';
 import { Exception, extractMessage } from 'jg-exception';
 import { z } from 'zod';
 
+import { CollaborationResponseSchema } from '../contracts/collaboration/index.js';
+
 import {
   BrowserReceiptSchema,
   ActionReceiptSchema,
@@ -226,6 +228,9 @@ export const createStore = async (
   };
   return {
     storage: storage!,
+    collaboration: (command) =>
+      request({ kind: 'collaboration', request: command }, CollaborationResponseSchema),
+    recoverCollaborationFanout: () => request({ kind: 'collaboration-fanout' }, z.boolean()),
     prepareStorageMaintenance: () => request({ kind: 'storage-maintenance' }, z.boolean()),
     getBrowserAction: (id, operatorId) =>
       request({ kind: 'browser-read', id, operatorId }, BrowserReceiptSchema.nullable()),

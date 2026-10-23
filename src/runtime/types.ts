@@ -85,6 +85,8 @@ export type IAgentHq = {
    * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
    * - JG_AGENT_HQ_HANDOFF_UNAVAILABLE: The HQ handoff is unavailable
    * - JG_AGENT_HQ_HANDOFF_FAILED: The HQ handoff operation failed
+   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
    * - JG_AGENT_HQ_SKILL_UNAVAILABLE: The HQ skill is unavailable
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed

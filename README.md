@@ -71,6 +71,8 @@ Use `skills --thread-id <id> --state-root <directory>` to browse the controlled 
 
 Use `jg-agent-hq request --state-root <directory>` with a closed HQ command on stdin for action and control reads. The [API reference](api/README.md) describes action envelopes, receipts and reconnect reads.
 
+Trusted hosts can create collaboration tasks, add managed agents from any provider, and coordinate them through durable streams. Streams contain small indexed messages and optional directed or claimable requests. Subscription, reading, acknowledgement, assignment and completion are separate records. Metadata operations retain replay receipts and recover notification fan-out after restart. They do not submit native input. Hosts issue exact task-scoped skill grants; role labels and message text grant no authority. See [task collaboration](api/README.md#task-collaboration).
+
 ## Plan coordination
 
 `plan-status --directory <path>` and `plan-milestones --directory <path>` inspect a selected ordinary planning directory. No project registry is required. Mutations use the existing `request` JSON command with `kind: 'plan'`; see the [plan command reference](api/README.md#plan-coordination).
@@ -113,8 +115,9 @@ These complete TypeScript examples use the public client and contracts. Start th
 - `src/skills/`: bounded native catalogs, invocation previews and explicit input preparation.
 - `src/accounts/` and `src/extensions/`: safe account observations and authorized, bounded native MCP inventories.
 - `src/handoffs/`: explicit cross-provider challenges, selected native findings and author assessment links.
+- `src/collaboration/`: host-owned tasks, stream metadata and scoped skill-grant admission.
 - `src/actions/`: durable action dispatch, native input routing and bounded live presentation.
-- `src/store/`: SQLite discovery metadata and the action/control ledger in one worker.
+- `src/store/`: SQLite discovery metadata, collaboration streams and the action/control ledger in one worker.
 - `src/storage/`: trusted host connection metadata and exclusive maintenance admission.
 - `src/contracts/`: browser-safe command and response contracts.
 - `scripts/package/`: build-output cleanup and packed-consumer checks.

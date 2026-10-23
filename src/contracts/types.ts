@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { CollaborationRequestSchema, CollaborationResponseSchema } from './collaboration/index.js';
+
 import {
   EvidenceRequestSchema,
   EvidencePageSchema,
@@ -59,6 +61,7 @@ const TargetFields = {
 
 // only implemented operations can be admitted; native RPC is never exposed
 export const HqRequestSchema = z.discriminatedUnion('kind', [
+  CollaborationRequestSchema,
   EvidenceRequestSchema,
   z.strictObject({
     kind: z.literal('sessions'),
@@ -250,6 +253,7 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('capabilities'), result: ProviderCapabilitiesSchema }),
   z.object({ kind: z.literal('plan'), result: PlanResultSchema }),
   z.object({ kind: z.literal('handoff'), result: HandoffResultSchema }),
+  z.object({ kind: z.literal('collaboration'), result: CollaborationResponseSchema }),
   z.object({
     kind: z.literal('stop'),
     result: z.object({ accepted: z.literal(true), runtimeEpoch: z.uuid() }),

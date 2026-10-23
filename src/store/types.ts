@@ -1,6 +1,12 @@
 import { z } from 'zod';
 
 import {
+  CollaborationRequestSchema,
+  type ICollaborationRequest,
+  type ICollaborationResponse,
+} from '../contracts/collaboration/index.js';
+
+import {
   BrowserActionSchema,
   BrowserReceiptSchema,
   type IBrowserAction,
@@ -75,6 +81,8 @@ import {
 
 // worker messages are closed, bounded operations rather than arbitrary SQL
 export const StoreCommandSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('collaboration'), request: CollaborationRequestSchema }),
+  z.strictObject({ kind: z.literal('collaboration-fanout') }),
   z.strictObject({ kind: z.literal('evidence-origins'), request: EvidenceOriginsRequestSchema }),
   z.strictObject({ kind: z.literal('storage-maintenance') }),
   z.strictObject({
@@ -199,6 +207,23 @@ export const StoreWorkerSchema = z.strictObject({
 
 // the worker owns persistence; callers cannot submit arbitrary statements
 export type IStore = {
+  /**
+   * Applies one checked metadata operation in the worker-owned transaction.
+   * @returns A bounded result or original metadata receipt.
+   * @throws
+   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
+   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
+   * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+   * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  collaboration(request: ICollaborationRequest): Promise<ICollaborationResponse>;
+  /** Advances one bounded subscriber batch.
+   * @returns Whether durable pending intent was processed.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  recoverCollaborationFanout(): Promise<boolean>;
   /** Correlates native input identities and hashes with durable host submissions.
    * @returns Exact historical provenance or null for each selected item.
    * @throws

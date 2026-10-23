@@ -7,6 +7,7 @@ import { STORAGE_CONNECTION_SETTINGS } from '../storage/index.js';
 import { ClaudeHistoryModel } from '../providers/claude/history/index.js';
 
 import { BrowserModel } from './browser/index.js';
+import { CollaborationModel } from './collaboration/index.js';
 import { HandoffsModel } from './handoffs/index.js';
 import { ControlModel } from './control/index.js';
 import { PlansModel } from './plans/index.js';
@@ -30,6 +31,7 @@ const startWorker = async (): Promise<void> => {
       connectionSettings: STORAGE_CONNECTION_SETTINGS,
     };
     const browser = new BrowserModel(database, options.runtimeEpoch, options.actionKey);
+    const collaboration = new CollaborationModel(database);
     const plans = new PlansModel(database);
     const handoffs = new HandoffsModel(database);
     const controls = new ControlModel(database, options.runtimeEpoch, options.actionKey, plans);
@@ -59,6 +61,12 @@ const startWorker = async (): Promise<void> => {
         }
         let result: unknown = null;
         switch (command.kind) {
+          case 'collaboration':
+            result = collaboration.handle(command.request);
+            break;
+          case 'collaboration-fanout':
+            result = collaboration.recoverFanout();
+            break;
           case 'evidence-origins':
             result = controls.getEvidenceOrigins(command.request);
             break;
