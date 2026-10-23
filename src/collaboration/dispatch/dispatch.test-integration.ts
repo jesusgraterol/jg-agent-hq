@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { expectToRejectCode } from 'jg-exception/testing';
 import { createAgentHq } from 'jg-agent-hq';
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
 import type { IDispatchResponse, IRequestSpecification } from 'jg-agent-hq/contracts';
 
@@ -13,6 +13,9 @@ import {
   writeFixtureControl,
   type ICollaborationFixture,
 } from '../../../scripts/test-support/index.js';
+
+// every case starts native processes and collects state through IPC and SQLite
+vi.setConfig({ expect: { poll: { timeout: 30_000 } } });
 
 const readRequest = async (fixture: ICollaborationFixture, requestId: string) => {
   const response = await fixture.call({ kind: 'request-read', taskId: fixture.taskId, requestId });
