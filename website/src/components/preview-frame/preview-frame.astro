@@ -1,0 +1,19 @@
+---
+interface Props {
+  // says what the preview shows and that its content is illustrative
+  caption: string;
+  class?: string | undefined;
+}
+
+const { caption, class: className } = Astro.props;
+---
+
+<figure
+  class:list={[
+    'min-w-0 rounded-2xl border border-border bg-surface p-4 shadow-surface sm:p-6',
+    className,
+  ]}
+>
+  <figcaption class="font-mono text-xs text-muted">{caption}</figcaption>
+  <div class="mt-5 min-w-0"><slot /></div>
+</figure>

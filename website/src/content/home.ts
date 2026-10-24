@@ -1,103 +1,98 @@
 import { SITE_CONFIG } from '../site.config.ts';
 
-import { CONTROL_EXAMPLE } from './examples.ts';
-
 export const HOME_CONTENT = {
-  eyebrow: 'TypeScript SDK + local CLI',
-  title: 'Build your own control room for coding agents.',
-  headline: ['Build your own', 'control room', 'for coding agents.'],
+  eyebrow: 'TypeScript SDK for Claude Code + Codex',
+  title: 'Run coding agents from your app.',
+  headline: ['Run coding agents', 'from your app.'],
   description:
-    'Run Claude Code and Codex from your application. Let agents coordinate through streams and return exact reports while you follow sessions, permissions and results.',
-  visual: {
-    label: 'Illustrative workspace',
-    workspace: 'reports-workspace',
-    session: 'build-reports',
-    prompt: 'Explain how this repository generates reports.',
-    caption:
-      'Your interface sends commands. HQ follows native sessions and returns their observations.',
-    steps: [
-      { title: 'Create a session', detail: 'thread-create → native session' },
-      { title: 'Send the task', detail: 'message → durable receipt' },
-      { title: 'Follow the result', detail: 'live-items · approvals · usage' },
+    'Start sessions, send work, answer permission prompts and let agents hand work to each other. One local API, built on the CLIs you already sign in to.',
+  map: {
+    caption: 'How it fits · everything runs on your machine',
+    app: { title: 'Your app', detail: 'Dashboard, editor or automation' },
+    hq: {
+      title: 'jg-agent-hq',
+      detail: 'Local controller',
+      parts: ['Sessions', 'Prompts', 'Streams', 'Plans'],
+    },
+    agents: ['Claude Code', 'Codex'],
+    agentDetail: 'Native sign-in, tools and skills',
+    // the app-to-HQ link, then the HQ-to-agents link
+    links: [
+      {
+        down: { label: 'Commands', items: ['thread-create', 'message', 'native-reply'] },
+        up: { label: 'Results', items: ['live-items', 'approvals', 'usage'] },
+      },
+      {
+        down: { label: 'Native control', items: [] },
+        up: { label: 'Agent tools', items: ['hq_message_publish', 'hq_agent_spawn'] },
+      },
     ],
   },
-  scenariosTitle: 'One foundation. Different workflows.',
-  scenariosDescription:
-    'Start with a session. Add a second perspective. Keep verified work when the plan changes.',
-  scenarios: [
+  capabilitiesTitle: 'Everything your agent UI needs.',
+  capabilities: [
     {
-      id: 'control-session',
-      number: '01',
-      title: 'Run a native session',
-      description: 'Create a thread, send input and read actual output, permissions and usage.',
-      flow: ['Create', 'Send', 'Observe'],
-      result: 'A session and a durable delivery receipt',
-      href: '/examples/#control-session',
-      linkLabel: 'Read the session walkthrough',
+      id: 'sessions',
+      title: 'Drive native sessions',
+      text: 'Create, resume, fork or close sessions. Send a task, steer the running turn, queue the next one or interrupt.',
+      commands: ['thread-create', 'message', 'steer', 'queue', 'interrupt', 'thread-fork'],
+      link: { href: '/examples/#control-session', label: 'Session walkthrough' },
     },
     {
-      id: 'review-handoff',
-      number: '02',
-      title: 'Bring in another agent',
-      description:
-        'Choose any reviewer, receive its exact report and request a separate author assessment.',
-      flow: ['Request', 'Report', 'Assessment'],
-      result: 'An exact report and a separate assessment',
-      href: '/examples/#review-handoff',
-      linkLabel: 'Read the review walkthrough',
+      id: 'prompts',
+      title: 'Answer prompts from your UI',
+      text: 'Permission requests and agent questions wait in one inbox, across reconnects and restarts. Unknown kinds are denied.',
+      commands: ['approvals', 'native-reply'],
+      link: null,
     },
     {
-      id: 'revise-plan',
-      number: '03',
-      title: 'Change the plan. Keep the work.',
-      description:
-        'Pause execution, revise the documents and retain verified completion through explicit correspondence.',
-      flow: ['Checkpoint', 'Revise', 'Approve'],
-      result: 'Retained evidence and a fresh execution scope',
-      href: '/examples/#revise-plan',
-      linkLabel: 'Read the revision walkthrough',
+      id: 'observe',
+      title: 'See output, history and usage',
+      text: 'Follow live output, browse past sessions without resuming them and read each account’s real quota.',
+      commands: ['live-items', 'sessions', 'session-evidence', 'usage', 'models'],
+      link: null,
+    },
+    {
+      id: 'collaboration',
+      title: 'Let agents work together',
+      text: 'Put Claude Code and Codex agents on one task. They send each other requests, return exact reports and can start helpers within your limits.',
+      commands: [
+        'task-create',
+        'message-publish',
+        'request-dispatch',
+        'report-read',
+        'hq_agent_spawn',
+      ],
+      link: { href: '/examples/#review-handoff', label: 'Review walkthrough' },
+    },
+    {
+      id: 'plans',
+      title: 'Change the plan, keep the work',
+      text: 'Approve a plan, authorize its milestones and revise it mid-flight. Verified milestones carry over; changed ones start again.',
+      commands: ['approve', 'authorize', 'begin-revision', 'finalize'],
+      link: { href: '/examples/#revise-plan', label: 'Revision walkthrough' },
+    },
+    {
+      id: 'storage',
+      title: 'Local, private and recoverable',
+      text: 'Conversations stay in each CLI’s own storage. HQ keeps its records in one private SQLite file your app can share, snapshot and restore.',
+      commands: ['hq.storage', 'createHqSnapshot', 'restoreHqSnapshot'],
+      link: null,
     },
   ],
-  startTitle: 'Your first local connection.',
-  startDescription:
-    'Use the CLIs you already sign in to. Start the controller, then connect through the public API.',
+  startTitle: 'Running in three commands.',
+  requirements: ['Node.js 24.15 or later', 'Linux or macOS', 'Claude Code or Codex, signed in'],
   setup: [
-    {
-      title: 'Install in your project',
-      text: 'The SDK and CLI share one local package.',
-      command: `npm install jg-agent-hq@${SITE_CONFIG.version}`,
-    },
+    { title: 'Install', command: `npm install jg-agent-hq@${SITE_CONFIG.version}` },
     {
       title: 'Start the controller',
-      text: 'Run this in a trusted workspace with your native CLI signed in.',
       command: './node_modules/.bin/jg-agent-hq serve --state-root .runtime --workspace-root .',
     },
     {
-      title: 'Read the connection',
-      text: 'In a second terminal, inspect the local runtime.',
+      title: 'Check it’s running',
       command: './node_modules/.bin/jg-agent-hq status --state-root .runtime',
     },
   ],
-  integrationTitle: 'From your interface to native agents.',
-  integrationDescription: 'You build the experience. HQ supplies the local coordination layer.',
-  integration: [
-    {
-      title: 'Your application',
-      label: 'UI + authentication + hosting',
-      text: 'Build the dashboard, editor integration or workflow your team needs.',
-    },
-    {
-      title: 'jg-agent-hq',
-      label: 'Node API + private local IPC',
-      text: 'Control native sessions, connect agents through streams and retain reports and plan authority.',
-    },
-    {
-      title: 'Native CLIs',
-      label: 'Claude Code + Codex',
-      text: 'Keep native sign-in, instructions, skills, tools and permission decisions.',
-    },
-  ],
-  requirements: 'Node.js 24.15+ · Linux or macOS · Native CLI sign-in',
+  startLink: { href: '/examples/#control-session', label: 'Send your first task' },
 } as const;
 
 /** Generates the homepage counterpart from the same visitor-facing content as its HTML. */
@@ -106,27 +101,19 @@ export const homeMarkdown = (): string =>
     `# ${HOME_CONTENT.title}`,
     HOME_CONTENT.eyebrow,
     HOME_CONTENT.description,
-    `## ${HOME_CONTENT.visual.label}`,
-    HOME_CONTENT.visual.caption,
-    ...HOME_CONTENT.visual.steps.map((step) => `- ${step.title}: ${step.detail}`),
-    `## ${HOME_CONTENT.scenariosTitle}`,
-    HOME_CONTENT.scenariosDescription,
-    ...HOME_CONTENT.scenarios.map(
-      (item) =>
-        `### ${item.title}\n\n${item.description}\n\n${item.flow.join(' → ')}\n\n${item.result}\n\n[${item.linkLabel}](${SITE_CONFIG.url}${item.href})`,
+    HOME_CONTENT.map.caption,
+    `${HOME_CONTENT.map.app.title} → ${HOME_CONTENT.map.hq.title} → ${HOME_CONTENT.map.agents.join(' + ')}`,
+    `## ${HOME_CONTENT.capabilitiesTitle}`,
+    ...HOME_CONTENT.capabilities.map((item) =>
+      [
+        `### ${item.title}`,
+        item.text,
+        item.commands.map((command) => `\`${command}\``).join(' · '),
+        ...(item.link ? [`[${item.link.label}](${SITE_CONFIG.url}${item.link.href})`] : []),
+      ].join('\n\n'),
     ),
     `## ${HOME_CONTENT.startTitle}`,
-    HOME_CONTENT.startDescription,
-    HOME_CONTENT.requirements,
-    ...HOME_CONTENT.setup.map(
-      (item) => `### ${item.title}\n\n${item.text}\n\n\`\`\`sh\n${item.command}\n\`\`\``,
-    ),
-    `## ${HOME_CONTENT.integrationTitle}`,
-    HOME_CONTENT.integrationDescription,
-    ...HOME_CONTENT.integration.map((item) => `### ${item.title}\n\n${item.label}\n\n${item.text}`),
-    `## A session, from code to result`,
-    CONTROL_EXAMPLE.goal,
-    `\`\`\`ts\n${CONTROL_EXAMPLE.call}\n\`\`\``,
-    CONTROL_EXAMPLE.resultNote,
-    `[Getting started](${SITE_CONFIG.url}/docs/) · [API reference](${SITE_CONFIG.url}/docs/api/) · [Source](${SITE_CONFIG.repositoryUrl})`,
+    HOME_CONTENT.requirements.map((item) => `- ${item}`).join('\n'),
+    ...HOME_CONTENT.setup.map((item) => `### ${item.title}\n\n\`\`\`sh\n${item.command}\n\`\`\``),
+    `[${HOME_CONTENT.startLink.label}](${SITE_CONFIG.url}${HOME_CONTENT.startLink.href}) · [API reference](${SITE_CONFIG.url}/docs/api/) · [Source](${SITE_CONFIG.repositoryUrl})`,
   ].join('\n\n') + '\n';

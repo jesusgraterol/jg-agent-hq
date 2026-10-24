@@ -20,11 +20,16 @@ test.each([
   ['Markdown', 'docs/index.md', '# jg-agent-hq', '# Different content'],
   ['404 indexing', '404.html', 'noindex, follow', 'index, follow'],
   ['discovery', 'sitemap-0.xml', '/docs/api/', '/unknown/'],
-  ['example source', 'examples/index.md', 'Caller action IDs retained', 'Silently retry actions'],
+  [
+    'example source',
+    'examples/index.md',
+    'Codex installed and signed in',
+    'Silently retry actions',
+  ],
   [
     'removed Markdown section',
     'index.html',
-    'Your first local connection.',
+    'Running in three commands.',
     'Read this page as Markdown',
   ],
   ['asset', 'index.html', '/favicon.ico', '/missing.ico'],

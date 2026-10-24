@@ -2,26 +2,33 @@ import { SITE_CONFIG } from '../site.config.ts';
 
 import type { IExampleDefinition } from './types.ts';
 
+// the examples page lede, shared by its HTML and Markdown
+export const EXAMPLES_PAGE_LEDE =
+  'Three runnable TypeScript helpers. Each shows its steps, what you get back and the full source.';
+
 export const CONTROL_EXAMPLE = {
   id: 'control-session',
   number: '01',
-  category: 'Native session control',
+  category: 'Session control',
   title: 'Start and follow a native session',
-  goal: 'Open a named Codex session, send a task and read what the native CLI reports back.',
+  goal: 'Open a Codex session, send it a task and read what comes back.',
   install: `npm install jg-agent-hq@${SITE_CONFIG.version} jg-utilities@1.7.0`,
   prerequisites: [
-    'Node.js 24.15+ on Linux or macOS, in an ES module project.',
-    'Codex installed and signed in through its native CLI.',
-    'The local controller running in this workspace.',
-    'Caller action IDs retained before submission for reconnect reads.',
+    'Node.js 24.15+ on Linux or macOS',
+    'Codex installed and signed in',
+    'The controller running in this workspace',
   ],
   steps: [
-    { title: 'Create', text: 'Open a named native session in the selected workspace.' },
-    { title: 'Send', text: 'Submit explicit input and follow its durable receipt.' },
-    { title: 'Observe', text: 'Read live items, native permissions and actual account usage.' },
+    { title: 'Create', commands: ['thread-create'], outcome: 'A named session, idle and ready' },
+    { title: 'Send', commands: ['message', 'receipt'], outcome: 'The task is delivered' },
+    {
+      title: 'Read',
+      commands: ['live-items', 'approvals', 'usage'],
+      outcome: 'Output, open prompts and quota',
+    },
   ],
   setup:
-    'Save the complete helper as control-session.ts and the caller as run-session.ts. Run node run-session.ts while your controller is running.',
+    'Save the helper as control-session.ts and the caller as run-session.ts, then run node run-session.ts.',
   call: `import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { controlSession } from './control-session.ts';
@@ -46,15 +53,15 @@ console.log(session.receipt.delivery);`,
   hostFields: [],
   visual: null,
   result: 'acknowledged',
-  resultLabel: 'Expected delivery output',
+  resultLabel: 'Printed delivery state',
   resultNote:
-    'The receipt confirms delivery. Read native turn completion and handle tool permissions separately.',
+    'Acknowledged means delivered. Turn completion and tool permissions are reported separately.',
   returns: [
-    { name: 'thread', text: 'The managed native session identity.' },
-    { name: 'receipt', text: 'The submitted action and its delivery state.' },
-    { name: 'liveItems', text: 'Output items reported by the native connection.' },
-    { name: 'approvals', text: 'Native questions or permissions waiting for the host.' },
-    { name: 'usage', text: 'The provider’s actual account observation, including availability.' },
+    { name: 'thread', text: 'The managed session.' },
+    { name: 'receipt', text: 'The message action and its delivery state.' },
+    { name: 'liveItems', text: 'Output the session has produced so far.' },
+    { name: 'approvals', text: 'Prompts waiting for your reply.' },
+    { name: 'usage', text: 'The account’s quota windows and availability.' },
   ],
 } as const satisfies IExampleDefinition;
 
@@ -62,84 +69,75 @@ const REVIEW_EXAMPLE = {
   id: 'review-handoff',
   number: '02',
   category: 'Agent review',
-  title: 'Get another agent’s perspective',
-  goal: 'Choose a reviewer, receive its exact report, then ask the author to assess it within a separate read-only request.',
+  title: 'Have another agent review the work',
+  goal: 'A reviewer checks the work, HQ keeps its exact report and the author assesses it.',
   install: `npm install jg-agent-hq@${SITE_CONFIG.version} jg-utilities@1.7.0`,
   prerequisites: [
-    'The local controller and chosen managed sessions, signed in through their native providers.',
-    'An existing task, stream and agent memberships with automatic dispatch disabled.',
-    'Current host-issued grants and native catalogs when selecting skills; null skills need neither.',
-    'Retained request/dispatch IDs and an operator control to confirm each exact specification.',
+    'The controller, with both agents signed in',
+    'A task and stream both agents belong to',
+    'A host control that confirms each request',
+    'Optional: jg-review-session and jg-feedback, with current grants',
   ],
   steps: [
     {
-      title: 'Choose and confirm',
-      text: 'The host selects both agents and confirms the review specification. Either may use any provider.',
+      title: 'Request a review',
+      commands: ['message-publish', 'request-dispatch'],
+      outcome: 'Sent once you confirm it',
     },
     {
-      title: 'Receive the report',
-      text: 'HQ retains the reviewer’s complete structured report and exact ID/hash, without a copying or publishing turn.',
+      title: 'Read the report',
+      commands: ['request-read', 'report-read'],
+      outcome: 'Exact findings, with ID and hash',
     },
     {
-      title: 'Confirm assessment',
-      text: 'The host confirms a separate read-only author request containing that report reference. Findings grant no implementation authority.',
+      title: 'Ask for an assessment',
+      commands: ['message-publish', 'request-dispatch'],
+      outcome: 'The author weighs the findings',
     },
   ],
   setup:
-    'Save the helper as review-handoff.ts. Connect confirmRequest to actual operator decisions. Select read-only specifications and current grants for optional jg-review-session/jg-feedback skills. Handle native permissions separately.',
+    'Save the helper as review-handoff.ts. Connect confirmRequest to a real operator decision and handle native permissions separately.',
   call: null,
   hostFields: [
-    {
-      name: 'stateRoot, operatorRef',
-      text: 'The trusted local controller and authenticated operator attribution supplied by your host.',
-    },
-    {
-      name: 'taskId, streamId',
-      text: 'An existing authorized task and stream; no fixed provider relationship is created.',
-    },
+    { name: 'stateRoot, operatorRef', text: 'Your controller and the signed-in operator.' },
+    { name: 'taskId, streamId', text: 'An existing task and stream.' },
     {
       name: 'requestIds, dispatchIds',
-      text: 'Retain four distinct UUIDs for exact publication and dispatch replay, including after reconnect.',
+      text: 'Four UUIDs saved before sending, so a retry reads the same requests.',
     },
     {
       name: 'review, feedback',
-      text: 'Exact target agent, arguments, read effects, paths, plan and optional selected native skill/grant. Feedback receives the review report reference.',
+      text: 'Who does each step, what to read and an optional skill. Feedback gets the report reference.',
     },
     {
       name: 'confirmRequest',
-      text: 'Present each complete selected specification and return the operator’s decision. A grant cannot replace a later approval.',
+      text: 'Shows each request to the operator and returns their decision.',
     },
   ],
   visual: {
-    caption: 'Illustrative selection · providers are chosen by the host',
+    caption: 'Illustrative · either agent can use either provider',
     groups: [
       {
-        label: 'Request',
-        items: [{ title: 'Codex', detail: 'Confirmed review scope', state: null }],
+        label: 'Review',
+        items: [{ title: 'Claude Code', detail: 'Reviews the selected work', state: null }],
       },
       {
         label: 'Report',
-        items: [{ title: 'Claude Code', detail: 'Exact retained findings', state: null }],
+        items: [{ title: 'report 7f3a', detail: 'Exact findings, kept by HQ', state: 'done' }],
       },
       {
         label: 'Assessment',
-        items: [{ title: 'Codex', detail: 'Separate read-only request', state: null }],
+        items: [{ title: 'Codex', detail: 'Reads the report and responds', state: 'pending' }],
       },
     ],
   },
-  result: 'Review retained; assessment requested',
-  resultLabel: 'After both requests are confirmed',
+  result: 'Report kept. Assessment requested.',
+  resultLabel: 'After you confirm both requests',
   resultNote:
-    'Feedback may still be queued or in flight. A checkpoint returns without assessment. Inspect blocked requests through their retained IDs. The helper waits up to 30 seconds; inspect retained IDs after a timeout. No finding, delivery or completion approves implementation.',
+    'The assessment may still be running when the helper returns; it waits up to 30 seconds. Findings never approve implementation.',
   returns: [
-    {
-      name: 'review',
-      text: 'The retained request, outcome and exact report ID, or null when declined.',
-    },
-    {
-      name: 'feedback',
-      text: 'The separately confirmed author request with report ID/hash, or null when no assessment was sent.',
-    },
+    { name: 'review', text: 'The review request, its outcome and report ID, or null if declined.' },
+    { name: 'feedback', text: 'The assessment request with the report reference, or null.' },
   ],
 } as const satisfies IExampleDefinition;
 
@@ -148,91 +146,69 @@ const REVISION_EXAMPLE = {
   number: '03',
   category: 'Plan revision',
   title: 'Change the plan. Keep verified work.',
-  goal: 'Add a requirement without throwing away completed work. Checkpoint the current scope, revise through native skills and approve the new execution scope.',
+  goal: 'Add a requirement mid-plan without losing finished milestones.',
   install: `npm install jg-agent-hq@${SITE_CONFIG.version} jg-plans@0.2.0 jg-utilities@1.7.0`,
   prerequisites: [
-    'A selected plan and finalized sequence, with actual completion evidence to retain.',
-    'An available unbound planning thread in the same workspace, plus the affected managed thread and checkout identities.',
-    'Native jg-plan and jg-breakdown skills with the supported project-local jg-plans CLI.',
-    'Retained action IDs, actual approval and correspondence controls, and separate handling of native permissions.',
+    'A finalized plan with verified milestones',
+    'A free planning session in the same workspace',
+    'jg-plan, jg-breakdown and the project’s jg-plans CLI',
+    'Host controls for each approval',
   ],
   steps: [
     {
-      title: 'Checkpoint',
-      text: 'Close execution admission and prove the affected native work has stopped before granting an editing lease.',
+      title: 'Pause',
+      commands: ['begin-revision'],
+      outcome: 'Execution stops and running work is checked',
     },
     {
-      title: 'Revise and reconcile',
-      text: 'Run jg-plan, present the changed plan for approval, explicitly request jg-breakdown and confirm unmatched requirement correspondence.',
+      title: 'Revise',
+      commands: ['message', 'approve', 'revision-invoke'],
+      outcome: 'jg-plan and jg-breakdown rewrite the plan',
     },
     {
-      title: 'Approve the new scope',
-      text: 'Present the finalized sequence, retain valid evidence and obtain fresh sequence approval and execution authorization.',
+      title: 'Approve',
+      commands: ['finalize', 'approve', 'authorize'],
+      outcome: 'Verified work kept, new scope authorized',
     },
   ],
   setup:
-    'Save the complete helper as revise-plan.ts. Connect its typed callbacks to real user decisions in your host. The example finishes at authorization; it does not submit an implementation task.',
+    'Save the helper as revise-plan.ts and connect its callbacks to real user decisions. It stops at authorization and starts no implementation.',
   call: null,
   hostFields: [
     {
       name: 'approvePlan',
-      text: 'Present the exact current plan source and return a new operator action only after approval.',
+      text: 'Shows the revised plan and returns an approval only if the user approves.',
     },
-    {
-      name: 'requestBreakdown',
-      text: 'Record the explicit request to invoke jg-breakdown for this revision.',
-    },
-    {
-      name: 'confirmCorrespondence',
-      text: 'Read the paged source/draft/evidence records and confirm equivalent, changed, omitted or reopened requirements against the saved proposal.',
-    },
-    {
-      name: 'approveSequence',
-      text: 'Present the finalized canonical source before issuing sequence approval.',
-    },
-    {
-      name: 'authorize',
-      text: 'Choose the current milestone IDs and supervised or auto mode. Approval alone does not resume execution.',
-    },
+    { name: 'requestBreakdown', text: 'Records the request to run jg-breakdown.' },
+    { name: 'confirmCorrespondence', text: 'Confirms which old milestones match the new ones.' },
+    { name: 'approveSequence', text: 'Shows the final milestones before approving them.' },
+    { name: 'authorize', text: 'Picks the milestones to run, in supervised or auto mode.' },
   ],
   visual: {
-    caption: 'Illustrative revision · confirmed equivalent wording',
+    caption: 'Illustrative revision · one requirement added',
     groups: [
       {
         label: 'Before',
-        items: [{ title: 'Greeting', detail: 'Verified done · original ID', state: 'done' }],
+        items: [{ title: 'Greeting', detail: 'Verified', state: 'done' }],
       },
       {
         label: 'After',
         items: [
-          {
-            title: 'Greeting result',
-            detail: 'Verified done · same ID and evidence',
-            state: 'done',
-          },
-          { title: 'Report', detail: 'Pending · new ID', state: 'pending' },
+          { title: 'Greeting result', detail: 'Verified · same ID and evidence', state: 'done' },
+          { title: 'Report', detail: 'Pending · new milestone', state: 'pending' },
         ],
       },
     ],
   },
-  result: 'Verified work retained. New scope authorized.',
-  resultLabel: 'Illustrative revision · all explicit decisions accepted',
+  result: 'Verified work kept. New scope authorized.',
+  resultLabel: 'Illustrative · every decision accepted',
   resultNote:
-    'Equivalent wording retains the original milestone ID and its evidence only through confirmed correspondence. Changed requirements receive fresh pending identities. Status markers alone never create verified completion. On interruption, inspect retained actions and revision state before continuing.',
+    'A milestone keeps its ID and evidence only when you confirm it matches. Changed requirements start as pending. Editing a status in the file never counts as verified.',
   returns: [
-    { name: 'skillsBinding', text: 'Current after the explicit breakdown refresh.' },
-    {
-      name: 'coordination.completionCount',
-      text: 'Existing verified completion remains available.',
-    },
-    {
-      name: 'coordination.execution',
-      text: 'A fresh authorization for the selected current milestone IDs and mode.',
-    },
-    {
-      name: 'coordination.revision.phase',
-      text: 'Finished after finalization and the accepted approval flow. No implementation has been started by this helper.',
-    },
+    { name: 'skillsBinding', text: 'Current again after the breakdown refresh.' },
+    { name: 'coordination.completionCount', text: 'Verified milestones still counted.' },
+    { name: 'coordination.execution', text: 'The new authorization: milestones and mode.' },
+    { name: 'coordination.revision.phase', text: 'Finished. No implementation has started.' },
   ],
 } as const satisfies IExampleDefinition;
 

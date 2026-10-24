@@ -1,5 +1,6 @@
 ---
 import BrandLogo from 'jg-personal-astro-ui/brand-logo';
+import Button from 'jg-personal-astro-ui/button';
 import DocumentHead from 'jg-personal-astro-ui/document-head';
 import JgMark from 'jg-personal-astro-ui/jg-mark';
 import { buildStructuredData } from 'jg-site';
@@ -9,6 +10,7 @@ import SkipLink from 'jg-personal-astro-ui/skip-link';
 import TextLink from 'jg-personal-astro-ui/text-link';
 import ThemeControl from 'jg-personal-astro-ui/theme-control';
 import ThemeInitScript from 'jg-personal-astro-ui/theme-init-script';
+import { GitBranch } from '@lucide/astro';
 
 import { PAGE_RECORDS, SITE_CONFIG } from '../../site.config.ts';
 import '../../styles/global.css';
@@ -107,14 +109,42 @@ const footerColumns = [
           class="size-8 shrink-0"
         /></BrandLogo
       >
-      <ThemeControl
-        slot="actions"
-        storageKey={SITE_CONFIG.themeKey}
-      />
-      <ThemeControl
-        slot="mobile-actions"
-        storageKey={SITE_CONFIG.themeKey}
-      />
+      <Fragment slot="actions">
+        <Button
+          href={SITE_CONFIG.repositoryUrl}
+          external
+          externalIcon={false}
+          size="icon"
+          variant="ghost"
+          title="Source repository"
+        >
+          <GitBranch
+            class="size-4"
+            aria-hidden="true"
+          />
+          <span class="sr-only">Source repository</span>
+        </Button>
+        <ThemeControl storageKey={SITE_CONFIG.themeKey} />
+      </Fragment>
+      <Fragment slot="mobile-actions">
+        <Button
+          href={SITE_CONFIG.repositoryUrl}
+          external
+          externalIcon={false}
+          size="sm"
+          variant="outline"
+        >
+          <GitBranch
+            class="size-4"
+            aria-hidden="true"
+          />
+          Source
+        </Button>
+        <ThemeControl
+          class="ml-auto"
+          storageKey={SITE_CONFIG.themeKey}
+        />
+      </Fragment>
     </SiteHeader>
     <main
       id="main-content"

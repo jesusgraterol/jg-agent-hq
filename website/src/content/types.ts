@@ -29,7 +29,8 @@ export interface IExampleDefinition {
   goal: string;
   install: string;
   prerequisites: readonly string[];
-  steps: readonly { title: string; text: string }[];
+  // each step names the commands it sends and what the host sees afterwards
+  steps: readonly { title: string; commands: readonly string[]; outcome: string }[];
   setup: string;
   call: string | null;
   hostFields: readonly { name: string; text: string }[];
