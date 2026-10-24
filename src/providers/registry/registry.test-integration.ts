@@ -783,8 +783,9 @@ test.each(['spoofed-identity', 'event-overflow', 'malformed-permission-identity'
             },
           },
         });
+        // an overflow records unavailability only after its 128 queued events commit with full sync
         await expect
-          .poll(() => runtime.request({ kind: 'managed-thread', threadId }))
+          .poll(() => runtime.request({ kind: 'managed-thread', threadId }), { timeout: 4000 })
           .toMatchObject({
             kind: 'managed-thread',
             result: { state: 'unknown', ownership: 'uncertain' },
