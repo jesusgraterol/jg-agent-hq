@@ -1,8 +1,9 @@
-import { copyFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { copyFile, mkdir } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 
-// tsc emits code; the worker reads this fixed, package-owned schema at startup
-await copyFile(
-  resolve(import.meta.dirname, '../../src/store/schema.sql'),
-  resolve(import.meta.dirname, '../../dist/store/schema.sql'),
-);
+// fixed package-owned SQL assets; no test or source-tree discovery
+for (const asset of ['store/schema.sql', 'storage/schema/v1.sql', 'storage/schema/v1-to-v2.sql']) {
+  const destination = resolve(import.meta.dirname, '../../dist', asset);
+  await mkdir(dirname(destination), { recursive: true });
+  await copyFile(resolve(import.meta.dirname, '../../src', asset), destination);
+}

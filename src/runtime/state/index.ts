@@ -1,6 +1,7 @@
 // state ownership and trusted paths
 export {
   prepareStateRoot,
+  readExistingState,
   resolveAllowedRoots,
   isWithinWorkspace,
   resolveWorkspaceTarget,

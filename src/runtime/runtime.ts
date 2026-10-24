@@ -50,6 +50,8 @@ const UnconfirmedCleanupSchema = z.object({ cleanupUnconfirmed: z.literal(true) 
  * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
  * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+ * - JG_AGENT_HQ_STORAGE_UPGRADE_REQUIRED: The HQ storage requires an explicit upgrade
+ * - JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED: The HQ storage version is unsupported
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
  */
 export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq> => {

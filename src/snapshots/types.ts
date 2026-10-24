@@ -98,7 +98,23 @@ export const SnapshotWorkerResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('result'), result: SnapshotInspectionSchema }),
   z.object({
     kind: z.literal('error'),
-    code: z.enum(['JG_AGENT_HQ_SNAPSHOT_INVALID', 'JG_AGENT_HQ_SNAPSHOT_FAILED']),
+    code: z.enum([
+      'JG_AGENT_HQ_SNAPSHOT_INVALID',
+      'JG_AGENT_HQ_SNAPSHOT_FAILED',
+      'JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED',
+    ]),
     message: z.string(),
   }),
 ]);
+
+// both runtime and offline maintenance supply real backup and keyset-page operations
+export type ISnapshotSource = {
+  stateRoot: string;
+  coordinationRoot: string;
+  allowedRoots: string[];
+  actionKeyHash: string;
+  schemaHash: string;
+  backupDatabase: (path: string) => Promise<unknown>;
+  readPlans: (after: string) => Promise<string[]>;
+  verify: (directory: string) => Promise<IHqSnapshotInspection>;
+};

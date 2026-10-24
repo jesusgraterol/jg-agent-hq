@@ -17,7 +17,11 @@ try {
 } catch (cause) {
   const error =
     isException(cause) &&
-    ['JG_AGENT_HQ_SNAPSHOT_INVALID', 'JG_AGENT_HQ_SNAPSHOT_FAILED'].includes(cause.code)
+    [
+      'JG_AGENT_HQ_SNAPSHOT_INVALID',
+      'JG_AGENT_HQ_SNAPSHOT_FAILED',
+      'JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED',
+    ].includes(cause.code)
       ? cause
       : new Exception(`The HQ snapshot operation failed: ${extractMessage(cause)}`, {
           code: 'JG_AGENT_HQ_SNAPSHOT_FAILED',
