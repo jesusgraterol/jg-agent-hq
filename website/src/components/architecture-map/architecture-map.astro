@@ -1,9 +1,11 @@
 ---
 import IconTile from 'jg-personal-astro-ui/icon-tile';
 import InlineCode from 'jg-personal-astro-ui/inline-code';
-import { ArrowDown, ArrowUp, Layers, Monitor, Terminal } from '@lucide/astro';
+import { ArrowDown, ArrowUp, Layers, Monitor } from '@lucide/astro';
 
 import { HOME_CONTENT } from '../../content/index.ts';
+
+import ProviderMark from '../provider-mark/provider-mark.astro';
 
 const map = HOME_CONTENT.map;
 ---
@@ -95,7 +97,7 @@ const map = HOME_CONTENT.map;
             tone="neutral"
             aria-hidden="true"
           >
-            <Terminal />
+            <ProviderMark provider={agent === 'Claude Code' ? 'claude' : 'codex'} />
           </IconTile>
           <span class="min-w-0 font-semibold">{agent}</span>
         </li>

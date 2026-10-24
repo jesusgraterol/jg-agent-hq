@@ -54,12 +54,12 @@ export const HOME_CONTENT = {
     {
       id: 'collaboration',
       title: 'Let agents work together',
-      text: 'Put Claude Code and Codex agents on one task. They send each other requests, return exact reports and can start helpers within your limits.',
+      text: 'Let Codex build a feature, ask Claude Code to review it and continue with the findings, with HQ carrying the request and report between them.',
       commands: [
         'task-create',
-        'message-publish',
-        'request-dispatch',
-        'report-read',
+        'hq_message_publish',
+        'hq_invocation_read',
+        'hq_report_read',
         'hq_agent_spawn',
       ],
       link: { href: '/examples/#review-handoff', label: 'Review walkthrough' },
@@ -79,6 +79,53 @@ export const HOME_CONTENT = {
       link: null,
     },
   ],
+  collaborationExample: {
+    caption: 'Illustrative · build a CSV export, then review it',
+    setup: 'Your app has allowed Codex to build and Claude Code to review this task.',
+    label: 'CSV export review conversation',
+    messages: [
+      {
+        speaker: 'You',
+        provider: null,
+        recipient: 'Codex',
+        recipientProvider: 'codex',
+        kind: 'task',
+        text: 'Add CSV export to reports. Ask Claude to review it before you finish.',
+        command: null,
+        note: 'You give the task once. The agents handle the handoff.',
+      },
+      {
+        speaker: 'Codex',
+        provider: 'codex',
+        recipient: 'Claude Code',
+        recipientProvider: 'claude',
+        kind: 'request',
+        text: 'The exporter is ready. Check quoted fields and empty exports in src/reports/csv.ts.',
+        command: 'hq_message_publish',
+        note: 'HQ delivers the request. Codex waits for the review.',
+      },
+      {
+        speaker: 'Claude Code',
+        provider: 'claude',
+        recipient: 'Codex',
+        recipientProvider: 'codex',
+        kind: 'report',
+        text: 'Quoted fields work. An empty export loses its column headers.',
+        command: null,
+        note: 'HQ saves the full report and resumes Codex.',
+      },
+      {
+        speaker: 'Codex',
+        provider: 'codex',
+        recipient: 'You',
+        recipientProvider: null,
+        kind: 'result',
+        text: 'Empty exports now keep their headers. I added a regression test, and it passes.',
+        command: 'hq_report_read',
+        note: 'Codex reads the report, makes the fix and finishes your original task.',
+      },
+    ],
+  },
   startTitle: 'Running in three commands.',
   requirements: ['Node.js 24.15 or later', 'Linux or macOS', 'Claude Code or Codex, signed in'],
   setup: [
@@ -108,6 +155,19 @@ export const homeMarkdown = (): string =>
       [
         `### ${item.title}`,
         item.text,
+        ...(item.id === 'collaboration'
+          ? [
+              HOME_CONTENT.collaborationExample.caption,
+              HOME_CONTENT.collaborationExample.setup,
+              ...HOME_CONTENT.collaborationExample.messages.map((message) =>
+                [
+                  `**${message.speaker} to ${message.recipient} (${message.kind})**`,
+                  message.text,
+                  `${message.command ? `\`${message.command}\` · ` : ''}${message.note}`,
+                ].join('\n\n'),
+              ),
+            ]
+          : []),
         item.commands.map((command) => `\`${command}\``).join(' · '),
         ...(item.link ? [`[${item.link.label}](${SITE_CONFIG.url}${item.link.href})`] : []),
       ].join('\n\n'),
