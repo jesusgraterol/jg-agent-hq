@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -314,7 +314,8 @@ test(
       const otherRoot = join(root, 'other'),
         coordinationRoot = join(root, 'coordination');
       await mkdir(otherRoot, { mode: 0o700 });
-      await mkdir(coordinationRoot, { mode: 0o700 });
+      await mkdir(coordinationRoot, { mode: 0o755 });
+      await chmod(coordinationRoot, 0o755);
       const flags = [
         '--state-root',
         stateRoot,

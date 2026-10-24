@@ -695,3 +695,15 @@ test('corrupt SQLite storage is refused read-only without replacing source bytes
     await absent(backupDirectory);
   });
 });
+
+test('a public coordination root retains the existing runtime contract and private child lock', async () => {
+  await withLegacyStorage(async ({ root, options }) => {
+    const coordinationRoot = join(root, 'coordination');
+    await mkdir(coordinationRoot, { mode: 0o755 });
+    await chmod(coordinationRoot, 0o755);
+    expect((await upgradeHqStorage({ ...options, coordinationRoot })).state).toBe('upgraded');
+    expect((await lstat(join(coordinationRoot, '.runtime'))).mode & 0o077).toBe(0);
+    expect((await readHqLockState(coordinationRoot)).kind).toBe('free');
+    expect((await upgradeHqStorage({ ...options, coordinationRoot })).state).toBe('current');
+  });
+});

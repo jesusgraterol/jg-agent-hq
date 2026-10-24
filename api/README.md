@@ -51,7 +51,7 @@ interface IHqStorageUpgradeResult {
 // upgradeHqStorage(options): Promise<IHqStorageUpgradeResult>
 ```
 
-Stop HQ and its native children, close independent application database writers and pause independent plan writers first. Supply existing canonical absolute state/workspace paths and an absent backup directory beneath an existing private canonical parent. The backup must not overlap the source state or any registered plan source. coordinationRoot defaults to stateRoot. Inputs are trusted operator selections; stored roots never grant access. Existing live, dead, incomplete or unverifiable lifetime owners block the operation and are never automatically reclaimed.
+Stop HQ and its native children, close independent application database writers and pause independent plan writers first. Supply existing canonical absolute state/workspace paths and an absent backup directory beneath an existing private canonical parent. The backup must not overlap the source state or any registered plan source. coordinationRoot defaults to stateRoot. A separate coordinationRoot may be a normal project directory; its .runtime lock directory remains private. Inputs are trusted operator selections; stored roots never grant access. Existing live, dead, incomplete or unverifiable lifetime owners block the operation and are never automatically reclaimed.
 
 The installed CLI invokes the same API directly without a controller, listening socket or provider:
 

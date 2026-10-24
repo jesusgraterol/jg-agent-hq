@@ -154,14 +154,13 @@ export const upgradeHqStorage = async (
   const selected = parsed.data;
   const state = await readExistingState(selected.stateRoot);
   const allowedRoots = await resolveAllowedRoots(selected.allowedRoots);
-  const coordinationRoot = selected.coordinationRoot ?? state.stateRoot;
+  const coordinationRoot = selected.coordinationRoot
+    ? (await resolveAllowedRoots([selected.coordinationRoot]))[0]!
+    : state.stateRoot;
   try {
-    await assertPrivateDirectory(coordinationRoot);
     await assertPrivateDirectory(dirname(selected.backupDirectory));
     if (
-      (await realpath(coordinationRoot)) !== coordinationRoot ||
       (await realpath(dirname(selected.backupDirectory))) !== dirname(selected.backupDirectory) ||
-      !isPrivateOwner(await lstat(coordinationRoot)) ||
       !isPrivateOwner(await lstat(dirname(selected.backupDirectory))) ||
       isWithinWorkspace(state.stateRoot, selected.backupDirectory) ||
       isWithinWorkspace(selected.backupDirectory, state.stateRoot)
