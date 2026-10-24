@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 import {
   MAX_PAGE_SIZE,
+  UsageCreditsSchema,
+  UsageResetCreditsSchema,
   type IHistoryItem,
   type INativeSkillInput,
   type IThreadSummary,
@@ -69,15 +71,24 @@ const NativeWindowSchema = z.object({
   windowDurationMins: z.number().int().positive().nullable().optional(),
   resetsAt: z.number().int().safe().nullable().optional(),
 });
+// optional billing metadata may be unavailable without invalidating measured quota windows
+const NativeCreditsSchema = z.object({
+  hasCredits: UsageCreditsSchema.shape.hasCredits,
+  unlimited: UsageCreditsSchema.shape.isUnlimited,
+  balance: UsageCreditsSchema.shape.balance,
+});
 export const NativeBucketSchema = z.object({
   limitId: z.string().nullable().optional(),
   limitName: z.string().nullable().optional(),
   primary: NativeWindowSchema.nullable().optional(),
   secondary: NativeWindowSchema.nullable().optional(),
   rateLimitReachedType: z.string().nullable().optional(),
+  credits: NativeCreditsSchema.nullable().optional().catch(null),
 });
 export const NativeUsageSchema = z.object({
-  rateLimitsByLimitId: z.record(z.string(), NativeBucketSchema).nullable(),
+  rateLimitsByLimitId: z.record(z.string(), NativeBucketSchema).nullable().optional(),
+  rateLimits: NativeBucketSchema.nullable().optional(),
+  rateLimitResetCredits: UsageResetCreditsSchema.nullable().optional().catch(null),
   ordinaryUsageAllowed: z.boolean().nullable().optional(),
 });
 

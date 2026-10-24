@@ -190,6 +190,30 @@ export const LiveItemsSchema = z.object({
   hasGap: z.boolean(),
 });
 
+// exact native credit observations; balances have no assumed currency or arithmetic semantics
+export const UsageCreditsSchema = z.object({
+  bucket: z.string().max(256),
+  hasCredits: z.boolean(),
+  isUnlimited: z.boolean(),
+  balance: z.string().max(256).nullable(),
+});
+export type IUsageCredits = z.infer<typeof UsageCreditsSchema>;
+
+// availability is independent of the provider's potentially capped reset-credit detail list
+export const UsageResetCreditsSchema = z.object({
+  availableCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+});
+export type IUsageResetCredits = z.infer<typeof UsageResetCreditsSchema>;
+
+// native model/surface scope identifies independent account meters
+export const UsageWindowScopeSchema = z.object({
+  model: z
+    .object({ id: z.string().max(256).nullable(), displayName: z.string().max(256) })
+    .nullable(),
+  surface: z.string().max(256).nullable(),
+});
+export type IUsageWindowScope = z.infer<typeof UsageWindowScopeSchema>;
+
 export const UsageWindowSchema = z.object({
   id: z.string(),
   bucket: z.string(),
@@ -199,6 +223,10 @@ export const UsageWindowSchema = z.object({
   remainingPercent: z.number().min(0).max(100),
   durationMinutes: z.number().int().positive().nullable(),
   resetsAt: z.number().int().nullable(),
+  period: z.enum(['five-hour', 'seven-day', 'other']).optional(),
+  nativeKind: z.string().max(256).nullable().optional(),
+  group: z.string().max(256).nullable().optional(),
+  scope: UsageWindowScopeSchema.nullable().optional(),
 });
 export const UsageSnapshotSchema = z.object({
   provider: ProviderIdSchema,
@@ -207,6 +235,8 @@ export const UsageSnapshotSchema = z.object({
   observedAt: z.number().int().nullable(),
   ordinaryUsageAllowed: z.boolean().nullable(),
   windows: z.array(UsageWindowSchema).max(MAX_PAGE_SIZE),
+  credits: z.array(UsageCreditsSchema).max(MAX_PAGE_SIZE).nullable().optional(),
+  resetCredits: UsageResetCreditsSchema.nullable().optional(),
 });
 export type IUsageSnapshot = z.infer<typeof UsageSnapshotSchema>;
 

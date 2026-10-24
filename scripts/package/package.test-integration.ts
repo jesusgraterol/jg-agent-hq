@@ -95,11 +95,25 @@ test(
       await mkdir(join(scratch, 'examples'));
       for (const example of sourceExamples)
         await copyFile(join(ROOT, 'examples', example), join(scratch, 'examples', example));
+      const usageContract = join(scratch, 'usage-contract.ts');
+      await writeFile(
+        usageContract,
+        `import type { IAgentProvider } from 'jg-agent-hq';
+import type { IUsageCredits, IUsageResetCredits, IUsageWindowScope } from 'jg-agent-hq/contracts';
+export const legacyReadUsage: IAgentProvider['readUsage'] = async () => ({
+  provider: 'older-provider', source: 'native', state: 'unavailable', observedAt: null,
+  ordinaryUsageAllowed: null, windows: [],
+});
+export const credit: IUsageCredits = { bucket: 'older-provider', hasCredits: true, isUnlimited: false, balance: '0.29000000000000001' };
+export const resets: IUsageResetCredits = { availableCount: 0 };
+export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model' }, surface: null };
+`,
+      );
       const config = ts.readConfigFile(join(ROOT, 'tsconfig.json'), ts.sys.readFile);
       expect(config.error).toBeUndefined();
       const development = ts.parseJsonConfigFileContent(config.config, ts.sys, ROOT);
       const program = ts.createProgram(
-        sourceExamples.map((example) => join(scratch, 'examples', example)),
+        [...sourceExamples.map((example) => join(scratch, 'examples', example)), usageContract],
         {
           ...development.options,
           typeRoots: [join(ROOT, 'node_modules/@types')],
@@ -115,7 +129,11 @@ test(
       ).toBe('');
       const script = `
       import { createAgentHq, requestAgentHq, withHqLock, readHqLockState } from 'jg-agent-hq';
-      import { HqResponseSchema, BrowserActionSchema } from 'jg-agent-hq/contracts';
+      import { HqResponseSchema, BrowserActionSchema, UsageCreditsSchema, UsageResetCreditsSchema, UsageWindowScopeSchema } from 'jg-agent-hq/contracts';
+      const credit = UsageCreditsSchema.parse({bucket:'codex',hasCredits:true,isUnlimited:false,balance:'0.29000000000000001'});
+      if(credit.balance!=='0.29000000000000001') throw new Error('packed credit precision failed');
+      UsageResetCreditsSchema.parse({availableCount:0});
+      UsageWindowScopeSchema.parse({model:{id:null,displayName:'Model'},surface:null});
       import { controlSession } from './examples/control-session.ts';
       import { shareStorage } from './examples/shared-storage.ts';
       import { join } from 'node:path';

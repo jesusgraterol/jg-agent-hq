@@ -31,8 +31,20 @@ export const toClaudeUsageSnapshot = (result: IClaudeUsage, observedAt: number):
       window: row.group === 'session' ? 'primary' : 'secondary',
       usedPercent: row.percent,
       remainingPercent: Math.max(0, 100 - row.percent),
-      durationMinutes: null,
+      durationMinutes: row.group === 'session' ? 300 : row.group === 'weekly' ? 10080 : null,
       resetsAt: row.resets_at === null ? null : Date.parse(row.resets_at),
+      period:
+        row.group === 'session' ? 'five-hour' : row.group === 'weekly' ? 'seven-day' : 'other',
+      nativeKind: row.kind,
+      group: row.group,
+      scope: row.scope
+        ? {
+            model: row.scope.model
+              ? { id: row.scope.model.id, displayName: row.scope.model.display_name }
+              : null,
+            surface: row.scope.surface,
+          }
+        : null,
     });
   }
   return {
@@ -41,6 +53,8 @@ export const toClaudeUsageSnapshot = (result: IClaudeUsage, observedAt: number):
     observedAt,
     ordinaryUsageAllowed: null,
     windows,
+    credits: null,
+    resetCredits: null,
     state:
       !result.rate_limits_available || windows.length === 0
         ? 'unavailable'

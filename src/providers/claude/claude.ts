@@ -37,6 +37,8 @@ export const createClaudeProvider = (store: IStore) => {
     observedAt: null,
     ordinaryUsageAllowed: null,
     windows: [],
+    credits: null,
+    resetCredits: null,
   });
   let latest = unavailable();
   const connect = async () => {

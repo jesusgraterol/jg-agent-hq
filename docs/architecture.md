@@ -2,6 +2,8 @@
 
 ## Providers
 
+Usage observations remain owned by the selected native adapter. Concurrent reads share its pending refresh; failed refreshes retain explicitly stale observations, and account changes discard all quota, credit and reset metadata. HQ stores no derived quota history or second usage cache. Credit balances remain opaque exact strings, and independent account/model meters are never aggregated.
+
 The runtime registers built-in and trusted Node-supplied provider factories at construction. It creates each adapter only when that provider is selected. Status and database-backed reads do not require a native CLI. Provider IDs flow through contracts, cursors and persistence; core actions, sessions and skills route through the registry. Native protocol parsing and invocation spelling stay with each adapter.
 
 The registry binds callback identity, bounds operations, and validates consumed evidence. Optional capability failures remain separate from session control. Invalid control state or identity quarantines its source, and bounded per-provider lifecycle queues contain overload. A store failure affects shared persistence. Adapters own partial-startup cleanup and native process lifetime; runtime shutdown confirms cleanup before releasing ownership. Version labels are diagnostic metadata, never admission gates. Native input, settings, permissions and authentication remain with the installed harness.
