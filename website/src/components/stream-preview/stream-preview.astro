@@ -1,0 +1,70 @@
+---
+import Badge from 'jg-personal-astro-ui/badge';
+import Conversation from 'jg-personal-astro-ui/conversation';
+import ConversationMessage from 'jg-personal-astro-ui/conversation-message';
+import { Bot, UserRound } from '@lucide/astro';
+
+import PreviewFrame from '../preview-frame/preview-frame.astro';
+
+/*
+ * A static review on one task stream: the host asks Claude Code for a review, HQ keeps the exact
+ * report, and Codex receives that report's reference to assess it.
+ */
+const MESSAGES = [
+  {
+    speaker: 'You',
+    kind: 'request',
+    text: 'Claude Code, review the PDF exporter.',
+    reference: null,
+  },
+  {
+    speaker: 'Claude Code',
+    kind: 'report',
+    text: 'Two findings in src/reports/pdf.ts.',
+    reference: 'report 7f3a · sha256 c41e…',
+  },
+  {
+    speaker: 'You',
+    kind: 'request',
+    text: 'Codex, assess report 7f3a.',
+    reference: null,
+  },
+  {
+    speaker: 'Codex',
+    kind: 'report',
+    text: 'One fix to make, one question for you.',
+    reference: 'report 9b20 · sha256 e07d…',
+  },
+] as const;
+---
+
+<PreviewFrame caption="Illustrative stream · review-exporter">
+  <Conversation label="Example review stream">
+    {
+      MESSAGES.map((message) => (
+        <ConversationMessage speaker={message.speaker}>
+          <span
+            slot="avatar"
+            class:list={[
+              'inline-flex size-8 items-center justify-center rounded-xl',
+              message.speaker === 'You'
+                ? 'bg-primary text-primary-foreground'
+                : 'border border-border bg-secondary',
+            ]}
+          >
+            {message.speaker === 'You' ? <UserRound class="size-4" /> : <Bot class="size-4" />}
+          </span>
+          <p class="flex flex-wrap items-center gap-2 text-sm leading-6">
+            <Badge variant={message.kind === 'request' ? 'secondary' : 'success'}>
+              {message.kind}
+            </Badge>
+            {message.text}
+          </p>
+          {message.reference && (
+            <p class="mt-2 font-mono text-xs text-muted">{message.reference}</p>
+          )}
+        </ConversationMessage>
+      ))
+    }
+  </Conversation>
+</PreviewFrame>

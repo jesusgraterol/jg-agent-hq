@@ -1,0 +1,73 @@
+---
+import InstallCommand from 'jg-personal-astro-ui/install-command';
+import Section from 'jg-personal-astro-ui/section';
+import Step from 'jg-personal-astro-ui/step';
+import Steps from 'jg-personal-astro-ui/steps';
+import TextLink from 'jg-personal-astro-ui/text-link';
+import { ArrowRight, Check } from '@lucide/astro';
+
+import { HOME_CONTENT } from '../../content/index.ts';
+
+// each setup command's copy context, in setup order
+const COPY_CONTEXTS = ['install command', 'start command', 'status command'] as const;
+---
+
+<Section
+  id="start"
+  eyebrow="Get started"
+  title={HOME_CONTENT.startTitle}
+  border={false}
+>
+  <div class="mt-10 grid min-w-0 gap-10 lg:grid-cols-[minmax(0,0.7fr)_minmax(0,1.3fr)] lg:gap-16">
+    <div class="min-w-0">
+      <ul
+        class="grid gap-3"
+        aria-label="Requirements"
+      >
+        {
+          HOME_CONTENT.requirements.map((requirement) => (
+            <li class="flex items-center gap-3">
+              <Check
+                class="size-4 shrink-0 text-accent"
+                aria-hidden="true"
+              />
+              {requirement}
+            </li>
+          ))
+        }
+      </ul>
+      <p class="mt-8 text-sm">
+        <TextLink href={HOME_CONTENT.startLink.href}
+          >{HOME_CONTENT.startLink.label}
+          <ArrowRight
+            class="ml-1 inline size-3.5"
+            aria-hidden="true"
+          /></TextLink
+        >
+      </p>
+    </div>
+    <Steps label="Local setup">
+      {
+        HOME_CONTENT.setup.map((step, index) => (
+          <Step
+            title={step.title}
+            number={`0${index + 1}`}
+          >
+            <h3
+              slot="title"
+              class="font-semibold"
+            >
+              {step.title}
+            </h3>
+            <InstallCommand
+              command={step.command}
+              id={index === 0 ? 'install-command' : `setup-command-${index}`}
+              context={COPY_CONTEXTS[index]!}
+              title={step.title}
+            />
+          </Step>
+        ))
+      }
+    </Steps>
+  </div>
+</Section>

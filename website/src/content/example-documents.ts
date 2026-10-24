@@ -1,6 +1,6 @@
 import { Exception } from 'jg-exception';
 
-import { EXAMPLE_DEFINITIONS } from './examples.ts';
+import { EXAMPLE_DEFINITIONS, EXAMPLES_PAGE_LEDE } from './examples.ts';
 import { EXAMPLE_SOURCE_RECORDS, type IExampleSources, type IWorkedExample } from './types.ts';
 
 /**
@@ -27,15 +27,18 @@ export const createExamples = (sources: IExampleSources): IWorkedExample[] =>
 export const examplesMarkdown = (sources: IExampleSources): string =>
   [
     '# Worked examples',
-    'Three complete workflows: control a session, connect a review and revise a plan while retaining verified work.',
+    EXAMPLES_PAGE_LEDE,
     ...createExamples(sources).flatMap((example) => [
       `## ${example.title}`,
       example.goal,
-      '### Before you start',
+      ...example.steps.map(
+        (step) =>
+          `### ${step.title}\n\n${step.commands.map((command) => `\`${command}\``).join(' · ')}\n\n${step.outcome}`,
+      ),
+      '### You need',
       example.prerequisites.map((text) => `- ${text}`).join('\n'),
       `\`\`\`sh\n${example.install}\n\`\`\``,
       example.setup,
-      ...example.steps.map((step) => `### ${step.title}\n\n${step.text}`),
       ...(example.call
         ? ['### Call the helper', `\`\`\`ts\n${example.call}\n\`\`\``]
         : [

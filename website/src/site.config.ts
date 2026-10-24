@@ -37,9 +37,9 @@ export const PAGE_RECORDS = [
     id: 'home',
     path: '/',
     markdown: '/index.md',
-    title: 'jg-agent-hq | Build your coding-agent control room',
+    title: 'jg-agent-hq | Run coding agents from your app',
     description:
-      'Build your own interface for Claude Code and Codex. Control native sessions, follow results, coordinate reviews and retain verified plan progress locally.',
+      'A TypeScript SDK and local controller for Claude Code and Codex. Drive sessions, answer prompts, let agents review each other and keep plans on track.',
   },
   {
     id: 'getting-started',
@@ -63,6 +63,6 @@ export const PAGE_RECORDS = [
     markdown: '/examples/index.md',
     title: 'Worked examples | jg-agent-hq',
     description:
-      'Three complete TypeScript walkthroughs: native session control, cross-provider review and plan revision with retained verification, explicit approvals and real source.',
+      'Three complete TypeScript examples: run a native session, get another agent’s review and revise a plan without losing verified work.',
   },
 ] as const;

@@ -1,0 +1,55 @@
+---
+import Badge from 'jg-personal-astro-ui/badge';
+import InlineCode from 'jg-personal-astro-ui/inline-code';
+
+import PreviewFrame from '../preview-frame/preview-frame.astro';
+
+// a static Codex session; delivery values are the receipt states HQ reports
+const ACTIONS = [
+  {
+    command: 'thread-create',
+    text: 'Open a session in reports-workspace',
+    delivery: 'acknowledged',
+  },
+  {
+    command: 'message',
+    text: 'Explain how this repository generates reports.',
+    delivery: 'acknowledged',
+  },
+  { command: 'steer', text: 'Focus on the PDF exporter.', delivery: 'acknowledged' },
+  { command: 'queue', text: 'Then add a test for it.', delivery: 'queued' },
+] as const;
+---
+
+<PreviewFrame caption="Illustrative session · every action reports its delivery">
+  <div class="flex flex-wrap items-center justify-between gap-2">
+    <p class="text-lg font-semibold tracking-tight">build-reports</p>
+    <Badge variant="outline">Codex</Badge>
+  </div>
+  <ol
+    class="mt-4 divide-y divide-border"
+    aria-label="Session actions"
+  >
+    {
+      ACTIONS.map((action) => (
+        <li class="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 py-4 last:pb-0 sm:grid-cols-[minmax(0,8.5rem)_minmax(0,1fr)_auto]">
+          <span class="text-sm">
+            <InlineCode code={action.command} />
+          </span>
+          {/* phones show the command and its status on one line, with the input below */}
+          <span class="order-last col-span-2 min-w-0 text-sm leading-6 sm:order-none sm:col-span-1">
+            {action.text}
+          </span>
+          <span>
+            <Badge
+              variant={action.delivery === 'acknowledged' ? 'success' : 'secondary'}
+              dot
+            >
+              {action.delivery}
+            </Badge>
+          </span>
+        </li>
+      ))
+    }
+  </ol>
+</PreviewFrame>

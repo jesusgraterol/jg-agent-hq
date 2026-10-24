@@ -1,80 +1,45 @@
 ---
 import Button from 'jg-personal-astro-ui/button';
-import Container from 'jg-personal-astro-ui/container';
-import TextLink from 'jg-personal-astro-ui/text-link';
-import { ArrowDown, ArrowRight } from '@lucide/astro';
+import HeroBackdrop from 'jg-personal-astro-ui/hero-backdrop';
+import { ArrowDown } from '@lucide/astro';
 
 import { HOME_CONTENT } from '../../content/index.ts';
-import { SITE_CONFIG } from '../../site.config.ts';
-import WorkflowExplorer from '../workflow-explorer/workflow-explorer.astro';
+import ArchitectureMap from '../architecture-map/architecture-map.astro';
 ---
 
+{/* the shared jg hero: backdrop, eyebrow, two-part display title, lede and two actions */}
 <section
-  class="hq-hero relative border-b border-border"
+  class="relative isolate overflow-hidden border-b border-border"
   aria-labelledby="home-title"
 >
-  <Container class="relative py-12 sm:py-20 lg:py-24">
-    <div
-      class="grid min-w-0 items-center gap-10 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] lg:gap-16"
-    >
-      <div class="min-w-0">
-        <p class="eyebrow flex items-center gap-3">
-          <span
-            class="h-px w-8 bg-accent"
-            aria-hidden="true"
-          ></span>{HOME_CONTENT.eyebrow}
-        </p>
-        <h1
-          id="home-title"
-          class="mt-6 text-[clamp(2.75rem,5.6vw,4.75rem)] leading-[1.05] font-semibold tracking-[-0.045em]"
+  <HeroBackdrop />
+  <div
+    class="jg-container grid items-center gap-12 pt-14 pb-16 sm:pt-20 sm:pb-20 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:gap-14"
+  >
+    <div class="min-w-0">
+      <p class="eyebrow">{HOME_CONTENT.eyebrow}</p>
+      <h1
+        id="home-title"
+        class="display-title mt-6"
+      >
+        {HOME_CONTENT.headline[0]}{' '}<span class="block text-accent"
+          >{HOME_CONTENT.headline[1]}</span
         >
-          {HOME_CONTENT.headline[0]}{' '}<span class="block text-accent"
-            >{HOME_CONTENT.headline[1]}</span
-          >{' '}{HOME_CONTENT.headline[2]}
-        </h1>
-        <p class="mt-7 max-w-xl text-lg leading-8 text-pretty text-muted">
-          {HOME_CONTENT.description}
-        </p>
-        <div class="mt-8 flex flex-wrap items-center gap-3">
-          <Button
-            href="/examples/"
-            size="lg"
-            >See it in action <ArrowRight
-              class="size-4"
-              aria-hidden="true"
-            /></Button
-          >
-          <Button
-            href="#start"
-            size="lg"
-            variant="outline"
-            >Start locally <ArrowDown
-              class="size-4"
-              aria-hidden="true"
-            /></Button
-          >
-        </div>
-        <div class="mt-7 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
-          <span class="font-mono text-xs text-muted">Open source · Runs on your machine</span>
-          <TextLink
-            href={SITE_CONFIG.repositoryUrl}
-            external
-            >View source</TextLink
-          >
-        </div>
+      </h1>
+      <p class="lede mt-7">{HOME_CONTENT.description}</p>
+      <div class="mt-8 flex flex-wrap gap-3">
+        <Button href="#capabilities"
+          >See what it does <ArrowDown
+            class="size-4"
+            aria-hidden="true"
+          /></Button
+        ><Button
+          href="#start"
+          variant="outline"
+          >Set up locally</Button
+        >
       </div>
-      <WorkflowExplorer />
     </div>
-    <p class="mt-10 border-t border-border pt-6 font-mono text-xs leading-6 text-muted sm:mt-14">
-      Claude Code + Codex <span
-        class="px-2 text-accent"
-        aria-hidden="true"
-        >/</span
-      > Native sign-in, skills and tools <span
-        class="px-2 text-accent"
-        aria-hidden="true"
-        >/</span
-      > An API for your own interface
-    </p>
-  </Container>
+    <ArchitectureMap />
+  </div>
 </section>

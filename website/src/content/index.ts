@@ -10,6 +10,6 @@ export {
 } from './utilities.ts';
 // visitor-facing narrative and source-backed walkthroughs
 export { HOME_CONTENT, homeMarkdown } from './home.ts';
-export { CONTROL_EXAMPLE } from './examples.ts';
+export { CONTROL_EXAMPLE, EXAMPLES_PAGE_LEDE } from './examples.ts';
 export { createExamples, examplesMarkdown } from './example-documents.ts';
 export type { IExampleSources, IWorkedExample } from './types.ts';

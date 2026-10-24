@@ -74,7 +74,7 @@ test('keyboard navigation, menu, theme persistence and reduced motion', async ({
   await expect(page.locator('html')).toHaveAttribute('data-resolved-theme', 'dark');
   expect(
     await page
-      .getByRole('link', { name: 'Read the docs' })
+      .getByRole('link', { name: HOME_CONTENT.startLink.label })
       .evaluate((element) => Number.parseFloat(getComputedStyle(element).transitionDuration)),
   ).toBeLessThanOrEqual(0.001);
 });
@@ -100,7 +100,7 @@ test('copies the exact package command and identifies external destinations', as
   await expect(
     page.getByRole('list', { name: 'Local setup' }).getByRole('heading', { level: 3 }),
   ).toHaveText(HOME_CONTENT.setup.map((step) => step.title));
-  const source = page.getByRole('link', { name: /View source/ });
+  const source = page.getByRole('banner').getByRole('link', { name: /Source repository/ });
   await expect(source).toHaveAttribute('target', '_blank');
   await expect(source).toHaveAttribute('rel', /noreferrer/u);
   await expect(source).toContainText(/new tab/u);
@@ -139,13 +139,36 @@ test('documentation section navigation follows its rendered heading', async ({ p
   await expect(page.getByRole('heading', { name: 'Lock lifecycle', exact: true })).toBeInViewport();
 });
 
-test('the API example copies the visible client code', async ({ page, context }) => {
+test('the session example copies its visible caller code', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  await page.goto('/');
-  const example = page.locator('section#session-code');
-  await example.getByRole('button', { name: 'Copy code', exact: true }).click();
-  await expect(example.getByRole('button', { name: 'Copied code', exact: true })).toBeVisible();
+  await page.goto('/examples/');
+  const example = page.getByRole('article', { name: CONTROL_EXAMPLE.title });
+  await example.getByRole('tab', { name: 'Run it' }).click();
+  const panel = example.getByRole('tabpanel', { name: 'Run it' });
+  await panel.getByRole('button', { name: 'Copy code', exact: true }).click();
+  await expect(panel.getByRole('button', { name: 'Copied code', exact: true })).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(CONTROL_EXAMPLE.call);
+});
+
+test('the homepage shows how HQ fits and previews every capability', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('figure', { name: HOME_CONTENT.map.caption })).toContainText(
+    HOME_CONTENT.map.hq.title,
+  );
+  await page.getByRole('link', { name: 'See what it does' }).click();
+  await expect(page).toHaveURL(/#capabilities$/u);
+  for (const capability of HOME_CONTENT.capabilities) {
+    const article = page.getByRole('article', { name: capability.title });
+    await expect(article.getByRole('figure')).toContainText('Illustrative');
+    await expect(
+      article.getByRole('list', { name: `${capability.title}: commands` }).getByRole('listitem'),
+    ).toHaveText([...capability.commands]);
+    if (capability.link)
+      await expect(article.getByRole('link', { name: capability.link.label })).toHaveAttribute(
+        'href',
+        capability.link.href,
+      );
+  }
 });
 
 test('missing page has useful navigation and no indexing contract', async ({ page }) => {
@@ -170,32 +193,28 @@ test('the session example exposes its result and complete copyable source throug
   await page.setViewportSize({ width: 320, height: 900 });
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/');
-  const demo = page.getByRole('tablist', { name: 'Session example view' });
-  await demo.getByRole('tab', { name: 'Session flow' }).focus();
-  await page.keyboard.press('ArrowRight');
-  await expect(demo.getByRole('tab', { name: 'TypeScript' })).toBeFocused();
-  await expect(demo.getByRole('tab', { name: 'TypeScript' })).toHaveAttribute(
-    'aria-selected',
-    'true',
-  );
-  expect(
-    await demo
-      .getByRole('tab', { name: 'TypeScript' })
-      .evaluate((element) => getComputedStyle(element).outlineStyle),
-  ).not.toBe('none');
-  await page.getByRole('link', { name: 'See it in action' }).click();
-  await expect(page).toHaveURL('/examples/');
+  await page.getByRole('link', { name: 'Session walkthrough' }).click();
+  await expect(page).toHaveURL('/examples/#control-session');
   const example = page.getByRole('article', { name: CONTROL_EXAMPLE.title });
-  const tabs = example.getByRole('tablist', { name: 'Native session control walkthrough' });
+  await expect(
+    example.getByRole('list', { name: `${CONTROL_EXAMPLE.category} steps` }).getByRole('heading'),
+  ).toHaveText(CONTROL_EXAMPLE.steps.map((step) => step.title));
+  const tabs = example.getByRole('tablist', { name: `${CONTROL_EXAMPLE.category} walkthrough` });
   await expect(tabs.getByRole('tab', { name: 'Result' })).toHaveAttribute('aria-selected', 'true');
   await tabs.getByRole('tab', { name: 'Result' }).focus();
   await page.keyboard.press('ArrowRight');
   await expect(tabs.getByRole('tab', { name: 'Run it' })).toBeFocused();
+  await expect(tabs.getByRole('tab', { name: 'Run it' })).toHaveAttribute('aria-selected', 'true');
+  expect(
+    await tabs
+      .getByRole('tab', { name: 'Run it' })
+      .evaluate((element) => getComputedStyle(element).outlineStyle),
+  ).not.toBe('none');
   await page.keyboard.press('ArrowLeft');
   await expect(tabs.getByRole('tab', { name: 'Result' })).toHaveAttribute('aria-selected', 'true');
   await expect(example.getByRole('tabpanel', { name: 'Result' })).toContainText('acknowledged');
   await expect(example.getByRole('tabpanel', { name: 'Result' })).toContainText(
-    'handle tool permissions separately',
+    'Turn completion and tool permissions are reported separately.',
   );
   await tabs.getByRole('tab', { name: 'Source' }).focus();
   await page.keyboard.press('Enter');
@@ -214,20 +233,20 @@ test('the session example exposes its result and complete copyable source throug
 for (const walkthrough of [
   {
     id: 'review-handoff',
-    title: 'Get another agent’s perspective',
+    title: 'Have another agent review the work',
     category: 'Agent review',
-    link: 'Read the review walkthrough',
+    link: 'Review walkthrough',
     helper: 'reviewHandoff',
-    boundary: 'Feedback may still be queued or in flight.',
+    boundary: 'Findings never approve implementation.',
     callback: 'confirmRequest',
   },
   {
     id: 'revise-plan',
     title: 'Change the plan. Keep verified work.',
     category: 'Plan revision',
-    link: 'Read the revision walkthrough',
+    link: 'Revision walkthrough',
     helper: 'revisePlan',
-    boundary: 'Status markers alone never create verified completion.',
+    boundary: 'Editing a status in the file never counts as verified.',
     callback: 'confirmCorrespondence',
   },
 ])

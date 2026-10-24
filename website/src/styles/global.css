@@ -2,12 +2,3 @@
 @import 'jg-personal-astro-ui/styles/contract.css';
 @import 'jg-personal-astro-ui/styles/theme.css';
 @import 'jg-personal-astro-ui/styles/prose.css';
-
-/* A local workspace scene is the product's visual anchor; tokens keep both themes native. */
-.hq-hero {
-  background: radial-gradient(
-    ellipse at 90% 15%,
-    color-mix(in oklab, var(--jg-accent) 9%, transparent),
-    transparent 60%
-  );
-}

@@ -26,10 +26,14 @@ test('all walkthroughs publish their complete tested helpers and honest result b
     expect(markdown).toContain(`\`\`\`ts\n${example.source}\`\`\``);
     if (example.call) expect(markdown).toContain(example.call);
   }
-  expect(markdown).toContain('Read native turn completion and handle tool permissions separately.');
-  expect(markdown).toContain('Feedback may still be queued or in flight.');
-  expect(markdown).toContain('it does not submit an implementation task.');
-  expect(markdown).toContain('Status markers alone never create verified completion.');
+  expect(markdown).toContain(
+    'Acknowledged means delivered. Turn completion and tool permissions are reported separately.',
+  );
+  expect(markdown).toContain('The assessment may still be running when the helper returns');
+  expect(markdown).toContain('Findings never approve implementation.');
+  expect(markdown).toContain('It stops at authorization and starts no implementation.');
+  expect(markdown).toContain('Editing a status in the file never counts as verified.');
+  expect(markdown).toContain('### Read the report\n\n`request-read` · `report-read`');
   expect(markdown).not.toContain('Read this page as Markdown');
   expect(() => createExamples({ ...sources, 'review-handoff': undefined })).toThrow(
     'The HQ website source is invalid',
