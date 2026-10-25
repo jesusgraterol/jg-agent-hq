@@ -9,6 +9,7 @@ import type {
 
 import { isSamePlanRevision } from './utilities.js';
 import { createCompletionLookup } from './reconciliation.js';
+import { invalid } from './documents.js';
 import type { IPlanArtifacts } from './types.js';
 
 const conflict = (): never => {
@@ -141,6 +142,7 @@ export const canExecutePlanUnit = (
   const execution = artifacts.coordination.execution;
   if (
     !execution ||
+    !artifacts.conformance.sequence ||
     !status.isPlanApproved ||
     !status.isFinalized ||
     ['blocked', 'completed', 'revising'].includes(status.state)
@@ -163,9 +165,11 @@ const revokeExecution = (coordination: IPlanCoordination, action: IPlanOperatorA
 
 /**
  * Applies one explicit operator decision without native dispatch or filesystem mutation.
+ * A protocol 0.2 plan must pass the jg-plans check for the decision's stage.
  * @returns Updated current authority records.
  * @throws
  * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+ * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
  */
 export const updatePlanAuthority = (
   artifacts: IPlanArtifacts,
@@ -174,6 +178,7 @@ export const updatePlanAuthority = (
 ): IPlanCoordination => {
   const coordination = structuredClone(artifacts.coordination);
   if (command.kind === 'approve') {
+    if (!artifacts.conformance[command.scope]) invalid();
     const status = describePlan(artifacts);
     if (
       command.scope === 'sequence' &&
@@ -206,6 +211,7 @@ export const updatePlanAuthority = (
       coordination.sequenceApproval.revokedBy = command.action;
     revokeExecution(coordination, command.action);
   } else {
+    if (!artifacts.conformance.sequence) invalid();
     const status = describePlan(artifacts);
     if (
       coordination.revision &&

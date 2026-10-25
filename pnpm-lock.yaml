@@ -179,8 +179,8 @@ importers:
         specifier: 1.7.0
         version: 1.7.0
       jg-plans:
-        specifier: 0.2.0
-        version: 0.2.0
+        specifier: 0.3.0
+        version: 0.3.0
       jg-utilities:
         specifier: 1.7.0
         version: 1.7.0
@@ -1710,8 +1710,8 @@ packages:
       astro: ^7.4.0
       tailwindcss: ^4.3.0
 
-  jg-plans@0.2.0:
-    resolution: {integrity: sha512-IzX1gefbz19ru3RGZ9OGhC3AUQervimo3PeFy1lRe/40YVvuN/Pha4n2Wa1zbzNdZ9b5+gVlomyiLEsuyFKjJw==}
+  jg-plans@0.3.0:
+    resolution: {integrity: sha512-eoDzPSvuXrKwujDe9CEJj+imVe7qgAp1irlMgs3chd8gL+Qh8WZEkpqc/HxYQUQ6IVsWtsEipHuOOJ/qBGhoQA==}
     engines: {node: '>=24.15.0'}
     hasBin: true
 
@@ -4262,7 +4262,7 @@ snapshots:
       shiki: 4.5.0
       tailwindcss: 4.3.3
 
-  jg-plans@0.2.0:
+  jg-plans@0.3.0:
     dependencies:
       jg-crypto: 0.3.0
       jg-exception: 1.7.0

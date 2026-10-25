@@ -1,6 +1,7 @@
 import { hashValue as fingerprintSource } from 'jg-crypto';
 import { Exception } from 'jg-exception';
 import {
+  checkPlan,
   fingerprintPlan,
   parseMilestones,
   parsePlan,
@@ -12,6 +13,8 @@ import { z } from 'zod';
 
 import { PlanMetadataSchema, type IPlanMetadata, type IPlanStatus } from '../contracts/index.js';
 
+import type { IPlanConformance } from './types.js';
+
 const administrativeKeys = ['created_at', 'updated_at', 'revision', 'status'];
 const bindingSchema = z.object({
   plan_id: z.string().refine((value) => value.trim().length > 0),
@@ -20,12 +23,37 @@ const bindingSchema = z.object({
 });
 const metadataSchema = z.record(z.string(), z.json());
 
-const invalid = (cause?: unknown): never => {
+/**
+ * Rejects a plan HQ cannot read or act on.
+ * @param cause The validation failure, when one exists.
+ * @throws
+ * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
+ */
+export const invalid = (cause?: unknown): never => {
   throw new Exception('The HQ plan is invalid', {
     code: 'JG_AGENT_HQ_PLAN_INVALID',
     data: { kind: 'invalid-request' },
     cause,
   });
+};
+
+/**
+ * Checks a protocol 0.2 plan with jg-plans for the stages HQ gates. Plan approval needs plan.md
+ * to conform alone; finalization, sequence approval, authorization, and execution need it to
+ * conform with its milestones. Plans without the 0.2 marker always conform, as before.
+ * @param plan Exact plan.md source.
+ * @param milestones Exact milestones.md source, or null when absent.
+ * @returns The conformance of each stage.
+ */
+export const observePlanConformance = (
+  plan: string,
+  milestones: string | null,
+): IPlanConformance => {
+  if (parsePlan(plan).protocol !== '0.2') return { plan: true, sequence: true };
+  return {
+    plan: checkPlan({ plan }).conforms,
+    sequence: checkPlan({ plan, ...(milestones === null ? {} : { milestones }) }).conforms,
+  };
 };
 
 /** Metadata must be available as plain JSON; absence alone supplies an empty mapping. */

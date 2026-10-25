@@ -16,7 +16,12 @@ import {
   hashPlanContent,
   projectPlanMilestones,
 } from './utilities.js';
-import { observePlanContract, observeSkillsBinding, observeSequence } from './documents.js';
+import {
+  observePlanConformance,
+  observePlanContract,
+  observeSkillsBinding,
+  observeSequence,
+} from './documents.js';
 import type { IPlanArtifacts, IPlanContractParser } from './types.js';
 
 const MAX_PLAN_BYTES = 1_048_576;
@@ -198,6 +203,8 @@ export const readPlanArtifacts = async (
       milestones: milestones === null ? null : hashPlanContent(milestones),
       coordination: coordinationText === null ? null : hashPlanContent(coordinationText),
     },
+    // observed, not enforced: reads and revisions continue while stage gates use the result
+    conformance: observePlanConformance(plan, milestones),
   };
 };
 
