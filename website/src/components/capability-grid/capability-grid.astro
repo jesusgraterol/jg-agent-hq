@@ -1,0 +1,44 @@
+---
+import IconTile from 'jg-personal-astro-ui/icon-tile';
+import InlineCode from 'jg-personal-astro-ui/inline-code';
+import Section from 'jg-personal-astro-ui/section';
+import { AppWindow, Blocks, FileCheck, GitFork, Plug, SlidersHorizontal } from '@lucide/astro';
+
+import { HOME_CONTENT } from '../../content/index.ts';
+
+// the icon that identifies each smaller capability, by its id
+const ICONS = {
+  accounts: Plug,
+  configuration: SlidersHorizontal,
+  files: FileCheck,
+  browser: AppWindow,
+  providers: Blocks,
+  'session-tools': GitFork,
+} as const satisfies Record<(typeof HOME_CONTENT.more.items)[number]['id'], unknown>;
+---
+
+<Section
+  id="more-capabilities"
+  eyebrow={HOME_CONTENT.more.eyebrow}
+  title={HOME_CONTENT.more.title}
+>
+  <ul class="mt-10 grid min-w-0 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    {
+      HOME_CONTENT.more.items.map((item) => {
+        const Icon = ICONS[item.id];
+        return (
+          <li class="flex min-w-0 flex-col gap-3 rounded-2xl border border-border bg-surface p-5">
+            <IconTile tone="accent">
+              <Icon />
+            </IconTile>
+            <h3 class="font-semibold">{item.title}</h3>
+            <p class="text-sm leading-6 text-muted">{item.text}</p>
+            <p class="mt-auto text-sm">
+              <InlineCode code={item.name} />
+            </p>
+          </li>
+        );
+      })
+    }
+  </ul>
+</Section>

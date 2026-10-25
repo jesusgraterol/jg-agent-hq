@@ -1,9 +1,24 @@
 ---
 import Badge from 'jg-personal-astro-ui/badge';
-import { ArrowDown, ArrowRight, Check, Circle } from '@lucide/astro';
+import { ArrowDown, ArrowRight, Check, Circle, CircleX } from '@lucide/astro';
 
 import PreviewFrame from '../preview-frame/preview-frame.astro';
 
+/*
+ * Static approval stages for a protocol 0.2 plan. Plan approval checks plan.md alone; sequence
+ * approval and later stages check plan.md and milestones.md together, so an uncovered criterion
+ * is refused there.
+ */
+const GATES = [
+  { label: 'Plan approved', code: null, note: 'plan.md passes check' },
+  {
+    label: 'Sequence refused',
+    code: 'JG_AGENT_HQ_PLAN_INVALID',
+    note: 'no milestone covers AC-04',
+  },
+  { label: 'Sequence approved', code: null, note: 'the new breakdown covers AC-04' },
+  { label: 'Execution authorized', code: null, note: null },
+] as const;
 // a static revision that adds one requirement; equivalent wording keeps its milestone and evidence
 const COLUMNS = [
   {
@@ -21,7 +36,46 @@ const COLUMNS = [
 const APPROVALS = ['Plan approved', 'Milestones approved', 'Execution authorized'] as const;
 ---
 
-<PreviewFrame caption="Illustrative revision · one requirement added">
+<PreviewFrame caption="Illustrative · checked approvals, then a revision">
+  <p class="font-mono text-xs text-muted">Checked by jg-plans at every approval</p>
+  <ol
+    class="mt-2 grid gap-2"
+    aria-label="Approvals checked by jg-plans"
+  >
+    {
+      GATES.map((gate) => (
+        <li
+          class:list={[
+            'flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border px-3 py-2 text-sm',
+            gate.code === null ? 'border-border' : 'border-danger/35',
+          ]}
+        >
+          {gate.code === null ? (
+            <Check
+              class="size-4 shrink-0 text-success"
+              aria-hidden="true"
+            />
+          ) : (
+            <CircleX
+              class="size-4 shrink-0 text-danger"
+              aria-hidden="true"
+            />
+          )}
+          <span class="font-semibold">{gate.label}</span>
+          {gate.code !== null && (
+            <Badge
+              variant="danger"
+              dot
+            >
+              {gate.code}
+            </Badge>
+          )}
+          {gate.note !== null && <span class="text-xs text-muted">{gate.note}</span>}
+        </li>
+      ))
+    }
+  </ol>
+  <p class="mt-5 mb-2 font-mono text-xs text-muted">Then a revision adds one requirement</p>
   <div class="grid min-w-0 gap-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:items-start">
     {
       COLUMNS.map((column, index) => (
