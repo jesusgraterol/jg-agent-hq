@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.0.0
+
+- Check protocol 0.2 plans with jg-plans 0.3.0 at each stage that grants authority: plan approval requires plan.md to conform, and finalization, sequence approval, authorization and execution require plan.md and milestones.md to conform together. Reading, status and revision workflows are unaffected, and plans without the 0.2 marker keep their current behavior.
+
+- Version HQ storage independently of host user_version. Add explicit offline Node/CLI upgrades with a verified pre-upgrade backup, transactional rollback and uncertainty handling, retaining published 2.0.0 snapshots and version-specific restore fences.
+
+- Expose native Codex credit balances and available earned resets without consuming them. Preserve valid single-bucket quota responses when the multi-bucket view is absent.
+- Identify Claude five-hour and seven-day usage meters with explicit model/surface scopes, preserving independent windows, reset times and account-bound freshness. Keep older provider observations compatible.
+
 ## 2.0.0
 
 - Add provider-neutral session capabilities, native lifecycle/configuration, file inputs, structured results, permissions, account observations and extension controls. Detect usable native contracts instead of restricting CLI version labels; isolate unavailable providers.

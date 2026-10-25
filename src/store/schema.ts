@@ -2,12 +2,15 @@ import { DatabaseSync } from 'node:sqlite';
 import { hashValue } from 'jg-crypto';
 import { Exception, isException } from 'jg-exception';
 
-import { STORAGE_CONNECTION_SETTINGS, StorageStampSchema } from '../storage/index.js';
+import { STORAGE_CONNECTION_SETTINGS } from '../storage/index.js';
+import { CURRENT_SCHEMA_VERSION, readStorageSchema } from '../storage/schema/index.js';
 
 /**
  * Recognizes an empty schema or validates its singleton stamp without issuing writes.
  * @returns Whether initialization is required.
  * @throws
+ * - JG_AGENT_HQ_STORAGE_UPGRADE_REQUIRED: The HQ storage requires an explicit upgrade
+ * - JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED: The HQ storage version is unsupported
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
  * - JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE: The HQ action key is unavailable
  */
@@ -16,31 +19,19 @@ const validateSchemaStamp = (
   schemaHash: string,
   actionKeyHash: string,
 ): boolean => {
-  try {
-    if (!database.prepare('SELECT 1 FROM sqlite_schema LIMIT 1').get()) return true;
-    const rows = database
-      .prepare('SELECT id, schema_hash, action_key_hash FROM hq_schema LIMIT 2')
-      .all();
-    const stamp = StorageStampSchema.safeParse(rows.length === 1 ? rows[0] : null);
-    if (!stamp.success || stamp.data.schema_hash !== schemaHash)
-      throw new Exception('The HQ storage is invalid', {
-        code: 'JG_AGENT_HQ_STORAGE_INVALID',
-        data: { kind: 'state-conflict' },
-      });
-    if (stamp.data.action_key_hash !== actionKeyHash)
-      throw new Exception('The HQ action key is unavailable', {
-        code: 'JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE',
-        data: { kind: 'state-conflict' },
-      });
-    return false;
-  } catch (cause) {
-    if (isException(cause)) throw cause;
+  const observed = readStorageSchema(database, actionKeyHash);
+  if (!observed) return true;
+  if (observed.schema.version !== CURRENT_SCHEMA_VERSION)
+    throw new Exception('The HQ storage requires an explicit upgrade', {
+      code: 'JG_AGENT_HQ_STORAGE_UPGRADE_REQUIRED',
+      data: { kind: 'state-conflict' },
+    });
+  if (observed.schema.hash !== schemaHash)
     throw new Exception('The HQ storage is invalid', {
       code: 'JG_AGENT_HQ_STORAGE_INVALID',
       data: { kind: 'state-conflict' },
-      cause,
     });
-  }
+  return false;
 };
 
 /**
@@ -48,6 +39,8 @@ const validateSchemaStamp = (
  * Fresh schema and stamp creation share one transaction; application objects are not converted.
  * @returns The worker-owned connection and complete HQ schema hash.
  * @throws
+ * - JG_AGENT_HQ_STORAGE_UPGRADE_REQUIRED: The HQ storage requires an explicit upgrade
+ * - JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED: The HQ storage version is unsupported
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
  * - JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE: The HQ action key is unavailable
  */

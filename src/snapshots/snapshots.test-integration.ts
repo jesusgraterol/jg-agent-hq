@@ -5,7 +5,13 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
-import { createAgentHq, createHqSnapshot, inspectHqSnapshot, restoreHqSnapshot } from 'jg-agent-hq';
+import {
+  createAgentHq,
+  createHqSnapshot,
+  inspectHqSnapshot,
+  restoreHqSnapshot,
+  upgradeHqStorage,
+} from 'jg-agent-hq';
 import { hashValue } from 'jg-crypto';
 import { expectToRejectCode } from 'jg-exception/testing';
 import { withPlanDocumentLocks } from 'jg-plans';
@@ -15,6 +21,7 @@ import { z } from 'zod';
 
 import {
   withClaudeRuntime,
+  useLegacyStamp,
   withCollaboration,
   writeFixtureControl,
   type ICollaborationFixture,
@@ -698,111 +705,143 @@ assert.ok(hasErrorCode(failure, 'JG_AGENT_HQ_SNAPSHOT_INVALID'), 'Replaced sourc
   });
 });
 
-test('uncertain native receipts, queued input and live approval metadata are fenced without replay', async () => {
-  await withCollaboration(async (fixture) => {
-    const status = await fixture.native.runtime.request({ kind: 'status' });
-    if (status.kind !== 'status') throw new Error('Missing status');
-    const actionId = randomUUID(),
-      approvalId = randomUUID(),
-      queueId = randomUUID();
-    const queuedInput = JSON.stringify({
-      text: 'Exact queued input',
-      skill: null,
-      files: [],
-      settings: {},
-    });
-    // seed a stopped-controller crash checkpoint, preserving the original native effect classification
-    await fixture.native.runtime.withStorageMaintenance(async (storage) => {
-      const db = new DatabaseSync(storage.databasePath);
+// each version exercises a complete capture/restore and fresh-runtime worker lifecycle
+test.each([1, 2])(
+  'v%s submitted receipts, queued input and live approvals are fenced without replay',
+  { timeout: 15000 },
+  async (version) => {
+    await withCollaboration(async (fixture) => {
+      const status = await fixture.native.runtime.request({ kind: 'status' });
+      if (status.kind !== 'status') throw new Error('Missing status');
+      const actionId = randomUUID(),
+        approvalId = randomUUID(),
+        queueId = randomUUID();
+      const queuedInput = JSON.stringify({
+        text: 'Exact queued input',
+        skill: null,
+        files: [],
+        settings: {},
+      });
+      // seed a stopped-controller crash checkpoint, preserving the original native effect classification
+      await fixture.native.runtime.withStorageMaintenance(async (storage) => {
+        const db = new DatabaseSync(storage.databasePath);
+        try {
+          const now = Date.now();
+          db.prepare(
+            'INSERT INTO hq_action (id,digest,requested_runtime_epoch,runtime_epoch,kind,thread_id,delivery,created_at,updated_at) VALUES (?,?,?,?,?,?,?, ?,?)',
+          ).run(
+            actionId,
+            'a'.repeat(64),
+            status.result.runtimeEpoch,
+            status.result.runtimeEpoch,
+            'message',
+            fixture.agentIds[0]!,
+            version === 1 ? 'submitted' : 'uncertain',
+            now,
+            now,
+          );
+          db.prepare(
+            "INSERT INTO hq_action (id,digest,requested_runtime_epoch,runtime_epoch,kind,thread_id,delivery,queued_input,queue_ready,created_at,updated_at) VALUES (?,?,?,?,?,?,'queued',?,1,?,?)",
+          ).run(
+            queueId,
+            'b'.repeat(64),
+            status.result.runtimeEpoch,
+            status.result.runtimeEpoch,
+            'queue',
+            fixture.agentIds[0]!,
+            queuedInput,
+            now,
+            now,
+          );
+          db.prepare(
+            "INSERT INTO hq_native_approval (id,thread_id,native_turn_id,runtime_epoch,native_request_id,digest,kind,is_blocking,state,created_at,updated_at) VALUES (?,?,?,?,?,?,'command',1,'pending',?,?)",
+          ).run(
+            approvalId,
+            fixture.agentIds[0]!,
+            'stopped-turn',
+            status.result.runtimeEpoch,
+            'native-permission',
+            'c'.repeat(64),
+            now,
+            now,
+          );
+        } finally {
+          db.close();
+        }
+      });
+      const snapshot = await captureVersion(fixture, version);
+      if (version === 2) {
+        // running capture correctly refuses submitted actions; model an offline crash checkpoint in its artifact
+        const checkpoint = new DatabaseSync(join(snapshot.directory, 'hq.sqlite'));
+        try {
+          checkpoint
+            .prepare("UPDATE hq_action SET delivery = 'submitted' WHERE id = ?")
+            .run(actionId);
+        } finally {
+          checkpoint.close();
+        }
+        await refreshDatabaseInventory(snapshot.directory);
+        await inspectHqSnapshot(snapshot.directory);
+      }
+      const restored = await restoreHqSnapshot({
+        snapshotDirectory: snapshot.directory,
+        destination: join(fixture.native.root, 'recovery'),
+      });
+      if (version === 1) {
+        await expectToRejectCode(
+          createAgentHq({
+            stateRoot: restored.stateRoot,
+            allowedRoots: [fixture.native.workspaceRoot],
+          }),
+          'JG_AGENT_HQ_STORAGE_UPGRADE_REQUIRED',
+        );
+        await upgradeHqStorage({
+          stateRoot: restored.stateRoot,
+          allowedRoots: [fixture.native.workspaceRoot],
+          backupDirectory: join(fixture.native.root, 'restored-backup'),
+        });
+      }
+      const db = new DatabaseSync(join(restored.stateRoot, 'hq.sqlite'));
       try {
-        const now = Date.now();
-        db.prepare(
-          "INSERT INTO hq_action (id,digest,requested_runtime_epoch,runtime_epoch,kind,thread_id,delivery,created_at,updated_at) VALUES (?,?,?,?,?,?,'uncertain',?,?)",
-        ).run(
-          actionId,
-          'a'.repeat(64),
-          status.result.runtimeEpoch,
-          status.result.runtimeEpoch,
-          'message',
-          fixture.agentIds[0]!,
-          now,
-          now,
-        );
-        db.prepare(
-          "INSERT INTO hq_action (id,digest,requested_runtime_epoch,runtime_epoch,kind,thread_id,delivery,queued_input,queue_ready,created_at,updated_at) VALUES (?,?,?,?,?,?,'queued',?,1,?,?)",
-        ).run(
-          queueId,
-          'b'.repeat(64),
-          status.result.runtimeEpoch,
-          status.result.runtimeEpoch,
-          'queue',
-          fixture.agentIds[0]!,
-          queuedInput,
-          now,
-          now,
-        );
-        db.prepare(
-          "INSERT INTO hq_native_approval (id,thread_id,native_turn_id,runtime_epoch,native_request_id,digest,kind,is_blocking,state,created_at,updated_at) VALUES (?,?,?,?,?,?,'command',1,'pending',?,?)",
-        ).run(
-          approvalId,
-          fixture.agentIds[0]!,
-          'stopped-turn',
-          status.result.runtimeEpoch,
-          'native-permission',
-          'c'.repeat(64),
-          now,
-          now,
-        );
+        expect(
+          db
+            .prepare('SELECT delivery, native_request_id FROM hq_action WHERE id = ?')
+            .get(actionId),
+        ).toMatchObject({ delivery: 'uncertain', native_request_id: null });
+        expect(
+          db
+            .prepare('SELECT delivery, queued_input, queue_ready FROM hq_action WHERE id = ?')
+            .get(queueId),
+        ).toMatchObject({
+          delivery: 'queued',
+          queued_input: queuedInput,
+          queue_ready: 0,
+        });
+        expect(
+          db.prepare('SELECT state FROM hq_native_approval WHERE id = ?').get(approvalId)?.state,
+        ).toBe('expired');
       } finally {
         db.close();
       }
-    });
-    const snapshot = await createHqSnapshot(
-      fixture.native.runtime,
-      join(fixture.native.root, 'snapshot'),
-    );
-    const restored = await restoreHqSnapshot({
-      snapshotDirectory: snapshot.directory,
-      destination: join(fixture.native.root, 'recovery'),
-    });
-    const db = new DatabaseSync(join(restored.stateRoot, 'hq.sqlite'));
-    try {
-      expect(
-        db.prepare('SELECT delivery, native_request_id FROM hq_action WHERE id = ?').get(actionId),
-      ).toMatchObject({ delivery: 'uncertain', native_request_id: null });
-      expect(
-        db
-          .prepare('SELECT delivery, queued_input, queue_ready FROM hq_action WHERE id = ?')
-          .get(queueId),
-      ).toMatchObject({
-        delivery: 'queued',
-        queued_input: queuedInput,
-        queue_ready: 0,
+      const reopened = await createAgentHq({
+        stateRoot: restored.stateRoot,
+        allowedRoots: [fixture.native.workspaceRoot],
       });
-      expect(
-        db.prepare('SELECT state FROM hq_native_approval WHERE id = ?').get(approvalId)?.state,
-      ).toBe('expired');
-    } finally {
-      db.close();
-    }
-    const reopened = await createAgentHq({
-      stateRoot: restored.stateRoot,
-      allowedRoots: [fixture.native.workspaceRoot],
+      try {
+        const current = await reopened.request({ kind: 'status' });
+        if (current.kind !== 'status') throw new Error('Missing status');
+        expect(current.result.runtimeEpoch).not.toBe(status.result.runtimeEpoch);
+        expect(current.result.providers.every((provider) => provider.state === 'idle')).toBe(true);
+        expect(await reopened.request({ kind: 'receipt', actionId })).toMatchObject({
+          kind: 'receipt',
+          result: { delivery: 'uncertain' },
+        });
+      } finally {
+        await reopened.close();
+      }
     });
-    try {
-      const current = await reopened.request({ kind: 'status' });
-      if (current.kind !== 'status') throw new Error('Missing status');
-      expect(current.result.runtimeEpoch).not.toBe(status.result.runtimeEpoch);
-      expect(current.result.providers.every((provider) => provider.state === 'idle')).toBe(true);
-      expect(await reopened.request({ kind: 'receipt', actionId })).toMatchObject({
-        kind: 'receipt',
-        result: { delivery: 'uncertain' },
-      });
-    } finally {
-      await reopened.close();
-    }
-  });
-});
+  },
+);
 
 const publish = async (
   fixture: ICollaborationFixture,
@@ -890,9 +929,16 @@ const finish = async (
   return result;
 };
 
-test.each(['pending-child', 'returned-child'])(
-  '%s reports and parent waits survive without native histories; restored authority stays paused',
-  async (phase) => {
+// legacy paths also capture a verified upgrade backup and explicitly upgrade the recovered root
+test.each([
+  ['pending-child', 1],
+  ['returned-child', 1],
+  ['pending-child', 2],
+  ['returned-child', 2],
+] as const)(
+  '%s reports and parent waits survive v%s restore without native histories; authority stays paused',
+  { timeout: 20000 },
+  async (phase, version) => {
     await withCollaboration(async (fixture) => {
       await writeFixtureControl(fixture.native.root, 'control.json', { holdTurn: true });
       await writeFixtureControl(fixture.native.root, 'claude-control.json', { holdTurn: true });
@@ -962,16 +1008,19 @@ test.each(['pending-child', 'returned-child'])(
       });
       if (before.kind !== 'request') throw new Error('Missing parent');
       if (phase === 'returned-child') expect(before.request.continuationActionId).not.toBeNull();
-      const snapshot = await createHqSnapshot(
-        fixture.native.runtime,
-        join(fixture.native.root, 'snapshot'),
-      );
+      const snapshot = await captureVersion(fixture, version);
       await fixture.native.runtime.close();
       await rm(fixture.native.configRoot, { recursive: true });
       const restored = await restoreHqSnapshot({
         snapshotDirectory: snapshot.directory,
         destination: join(fixture.native.root, 'recovery'),
       });
+      if (version === 1)
+        await upgradeHqStorage({
+          stateRoot: restored.stateRoot,
+          allowedRoots: [fixture.native.workspaceRoot],
+          backupDirectory: join(fixture.native.root, 'restored-backup'),
+        });
       const reopened = await createAgentHq({
         stateRoot: restored.stateRoot,
         allowedRoots: [fixture.native.workspaceRoot],
@@ -1065,3 +1114,80 @@ test.each(['pending-child', 'returned-child'])(
     });
   },
 );
+
+// actual v1 captures come from the offline upgrader; no test-only schema registration is introduced
+const captureVersion = async (fixture: ICollaborationFixture, version: number) => {
+  const directory = join(fixture.native.root, 'snapshot');
+  if (version === 2) return createHqSnapshot(fixture.native.runtime, directory);
+  await fixture.native.runtime.close();
+  await useLegacyStamp(fixture.native.stateRoot);
+  const upgrade = await upgradeHqStorage({
+    stateRoot: fixture.native.stateRoot,
+    allowedRoots: [fixture.native.workspaceRoot],
+    backupDirectory: directory,
+  });
+  expect(upgrade).toMatchObject({ state: 'upgraded', fromVersion: 1, toVersion: 2 });
+  const source = new DatabaseSync(join(fixture.native.stateRoot, 'hq.sqlite'), { readOnly: true });
+  const captured = new DatabaseSync(join(directory, 'hq.sqlite'), { readOnly: true });
+  try {
+    for (const query of [
+      'SELECT id, state, policy, lifecycle_revision, policy_revision FROM hq_collaboration_task ORDER BY id',
+      'SELECT agent_id, state, revision FROM hq_task_agent ORDER BY agent_id',
+      'SELECT id, revoked_at, revision FROM hq_skill_grant ORDER BY id',
+      'SELECT id, ownership, state FROM hq_thread ORDER BY id',
+      'SELECT id, delivery, queue_ready FROM hq_action ORDER BY id',
+      'SELECT id, state FROM hq_native_approval ORDER BY id',
+      'SELECT id, byte_count, sha256 FROM hq_report ORDER BY id',
+    ])
+      expect(source.prepare(query).all()).toStrictEqual(captured.prepare(query).all());
+  } finally {
+    source.close();
+    captured.close();
+  }
+
+  return inspectHqSnapshot(directory);
+};
+
+// only fixture-owned complete inventories are rewritten; production capture/verification remains real
+const refreshDatabaseInventory = async (directory: string, schemaHash?: string) => {
+  const entries = await readManifest(directory);
+  const database = await readFile(join(directory, 'hq.sqlite'));
+  entries[1].file = { bytes: database.length, sha256: hashValue(database) };
+  if (schemaHash) entries[0].schemaHash = schemaHash;
+  const text = entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n';
+  await writeFile(join(directory, 'manifest.jsonl'), text);
+  await writeFile(
+    join(directory, 'complete.json'),
+    JSON.stringify({ manifestSha256: hashValue(text), records: entries.length }),
+  );
+};
+
+test('a future schema is refused before restore reserves its destination', async () => {
+  await withClaudeRuntime(async ({ runtime, root }) => {
+    const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
+    const database = new DatabaseSync(join(snapshot.directory, 'hq.sqlite'));
+    try {
+      database
+        .prepare('UPDATE hq_schema SET schema_version = ?, schema_hash = ?')
+        .run(99, 'f'.repeat(64));
+    } finally {
+      database.close();
+    }
+    await refreshDatabaseInventory(snapshot.directory, 'f'.repeat(64));
+    const before = hashValue(await readFile(join(snapshot.directory, 'hq.sqlite')));
+    await expectToRejectCode(
+      inspectHqSnapshot(snapshot.directory),
+      'JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED',
+      'The HQ storage version is unsupported',
+    );
+    await expectToRejectCode(
+      restoreHqSnapshot({
+        snapshotDirectory: snapshot.directory,
+        destination: join(root, 'recovery'),
+      }),
+      'JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED',
+    );
+    await expect(lstat(join(root, 'recovery'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(hashValue(await readFile(join(snapshot.directory, 'hq.sqlite')))).toBe(before);
+  });
+});

@@ -60,6 +60,10 @@ export type {
 } from './contracts/configuration/index.js';
 export type { INativeLineage } from './contracts/identities/index.js';
 
+// trusted offline storage upgrades
+export { upgradeHqStorage } from './storage/upgrade/index.js';
+export type { IHqStorageUpgradeOptions, IHqStorageUpgradeResult } from './storage/upgrade/index.js';
+
 // trusted host storage
 export type { IStorageDescriptor, IStorageMaintenanceOperation } from './storage/index.js';
 

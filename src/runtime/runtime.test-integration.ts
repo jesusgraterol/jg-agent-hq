@@ -297,6 +297,199 @@ test('workspace authorization precedes native access and rejects symlink escapes
   });
 });
 
+test.each([
+  ['omitted', undefined],
+  ['null', null],
+  ['empty', {}],
+])('legacy quota remains available when the bucket map is %s', async (_descriptor, map) => {
+  await withRuntime(async ({ control, request }) => {
+    await control({
+      nativeUsage: {
+        rateLimits: {
+          limitId: 'codex',
+          primary: { usedPercent: 25, windowDurationMins: 10080, resetsAt: 2_000_000_000 },
+        },
+        ...(map === undefined ? {} : { rateLimitsByLimitId: map }),
+        ordinaryUsageAllowed: true,
+      },
+    });
+    expect(await request({ kind: 'usage', provider: 'codex' })).toMatchObject({
+      kind: 'usage',
+      result: {
+        state: 'available',
+        windows: [
+          {
+            id: 'codex:primary',
+            usedPercent: 25,
+            durationMinutes: 10080,
+            resetsAt: 2_000_000_000_000,
+          },
+        ],
+      },
+    });
+  });
+});
+
+test('quota map selection retains exact per-bucket credits, periods and reset availability', async () => {
+  await withRuntime(async ({ control, request }) => {
+    const nativeUsage = {
+      rateLimits: { limitId: 'ignored', primary: { usedPercent: 99 } },
+      rateLimitsByLimitId: {
+        codex: {
+          primary: { usedPercent: 25, windowDurationMins: 300 },
+          secondary: { usedPercent: 60, windowDurationMins: 10080 },
+          credits: { hasCredits: true, unlimited: false, balance: '0.29000000000000001' },
+        },
+        model: {
+          primary: { usedPercent: 8, windowDurationMins: 60 },
+          credits: { hasCredits: true, unlimited: true, balance: null },
+        },
+      },
+      rateLimitResetCredits: { availableCount: 7, credits: [] },
+    };
+    await control({ nativeUsage });
+    const observed = await request({ kind: 'usage', provider: 'codex' });
+    if (observed.kind !== 'usage') throw new Error('wrong response');
+    expect(observed.result.state).toBe('available');
+    expect(
+      observed.result.windows.map(({ id, period, durationMinutes }) => ({
+        id,
+        period,
+        durationMinutes,
+      })),
+    ).toStrictEqual([
+      { id: 'codex:primary', period: 'five-hour', durationMinutes: 300 },
+      { id: 'codex:secondary', period: 'seven-day', durationMinutes: 10080 },
+      { id: 'model:primary', period: 'other', durationMinutes: 60 },
+    ]);
+    expect(observed.result.credits).toStrictEqual([
+      {
+        bucket: 'codex',
+        hasCredits: true,
+        isUnlimited: false,
+        balance: '0.29000000000000001',
+      },
+      { bucket: 'model', hasCredits: true, isUnlimited: true, balance: null },
+    ]);
+    expect(observed.result.resetCredits).toStrictEqual({ availableCount: 7 });
+    await control({ quotaFailure: true });
+    expect(await request({ kind: 'usage', provider: 'codex' })).toStrictEqual({
+      kind: 'usage',
+      result: { ...observed.result, state: 'stale' },
+    });
+    await control({
+      nativeUsage: {
+        ...nativeUsage,
+        rateLimitsByLimitId: { malformed: { primary: { usedPercent: 'invalid' } } },
+      },
+    });
+    expect(await request({ kind: 'usage', provider: 'codex' })).toStrictEqual({
+      kind: 'usage',
+      result: { ...observed.result, state: 'stale' },
+    });
+    await control({ nativeUsage, accountChangedDuringRead: true });
+    expect(await request({ kind: 'usage', provider: 'codex' })).toMatchObject({
+      kind: 'usage',
+      result: {
+        state: 'unavailable',
+        observedAt: null,
+        windows: [],
+        credits: null,
+        resetCredits: null,
+      },
+    });
+  });
+});
+
+test.each([
+  ['missing', undefined, undefined],
+  ['null', null, null],
+  ['incomplete', {}, {}],
+  ['invalid types', { hasCredits: true, unlimited: 'yes', balance: '1' }, { availableCount: -1 }],
+  [
+    'unsafe count',
+    { hasCredits: true, unlimited: false, balance: 1 },
+    { availableCount: Number.MAX_SAFE_INTEGER + 1 },
+  ],
+  [
+    'overlong balance',
+    { hasCredits: true, unlimited: false, balance: '1'.repeat(257) },
+    { availableCount: 0.5 },
+  ],
+])(
+  'optional quota metadata %s does not erase measured windows',
+  async (_descriptor, credits, resets) => {
+    await withRuntime(async ({ control, request }) => {
+      await control({
+        nativeUsage: {
+          rateLimits: { primary: { usedPercent: 25 }, credits },
+          rateLimitResetCredits: resets,
+        },
+      });
+      expect(await request({ kind: 'usage', provider: 'codex' })).toMatchObject({
+        kind: 'usage',
+        result: {
+          state: 'available',
+          windows: [{ id: 'legacy:primary', period: 'other', durationMinutes: null }],
+          credits: null,
+          resetCredits: null,
+        },
+      });
+    });
+  },
+);
+
+test.each([
+  { hasCredits: false, unlimited: false, balance: '0' },
+  { hasCredits: true, unlimited: true, balance: null },
+])('credits without quota windows remain observable (%o)', async (credits) => {
+  await withRuntime(async ({ control, request }) => {
+    await control({
+      nativeUsage: {
+        rateLimits: { credits },
+        rateLimitResetCredits: { availableCount: 0, credits: null },
+      },
+    });
+    expect(await request({ kind: 'usage', provider: 'codex' })).toMatchObject({
+      kind: 'usage',
+      result: {
+        state: 'unavailable',
+        observedAt: expect.any(Number),
+        windows: [],
+        credits: [
+          {
+            bucket: 'legacy',
+            hasCredits: credits.hasCredits,
+            isUnlimited: credits.unlimited,
+            balance: credits.balance,
+          },
+        ],
+        resetCredits: { availableCount: 0 },
+      },
+    });
+  });
+});
+
+test('an overlong optional credit bucket does not discard its legacy quota identity', async () => {
+  await withRuntime(async ({ control, request }) => {
+    const bucket = 'x'.repeat(257);
+    await control({
+      nativeUsage: {
+        rateLimitsByLimitId: {
+          [bucket]: {
+            primary: { usedPercent: 25 },
+            credits: { hasCredits: true, unlimited: false, balance: '1' },
+          },
+        },
+      },
+    });
+    expect(await request({ kind: 'usage', provider: 'codex' })).toMatchObject({
+      kind: 'usage',
+      result: { state: 'available', windows: [{ bucket }], credits: null },
+    });
+  });
+});
+
 test('quota uses actual windows; failed refresh retains stale measurements and missing windows stay unavailable', async () => {
   await withRuntime(async ({ control, request }) => {
     const usage = await request({ kind: 'usage', provider: 'codex' });
@@ -338,7 +531,12 @@ test('quota uses actual windows; failed refresh retains stale measurements and m
 test('native quota events coalesce refreshes and an account change discards the prior account measurement', async () => {
   await withRuntime(async ({ root, workspaceRoot, control, request }) => {
     await request({ kind: 'usage', provider: 'codex' });
-    await control({ notifyUsage: true, usedPercent: 75 });
+    await control({
+      notifyUsage: true,
+      usedPercent: 75,
+      credits: { hasCredits: true, unlimited: false, balance: '1.25000000000000001' },
+      resetCredits: { availableCount: 2 },
+    });
     await request({ kind: 'threads', provider: 'codex', workspaceRoot, limit: 1 });
     const deadline = Date.now() + 2000;
     let count = 0;
@@ -356,7 +554,18 @@ test('native quota events coalesce refreshes and an account change discards the 
     expect(count).toBe(2);
     expect(await request({ kind: 'usage', provider: 'codex' })).toMatchObject({
       kind: 'usage',
-      result: { windows: [{ usedPercent: 75 }] },
+      result: {
+        windows: [{ usedPercent: 75 }],
+        credits: [
+          {
+            bucket: 'codex',
+            hasCredits: true,
+            isUnlimited: false,
+            balance: '1.25000000000000001',
+          },
+        ],
+        resetCredits: { availableCount: 2 },
+      },
     });
     await control({ accountChanged: true, quotaFailure: true });
     await request({ kind: 'threads', provider: 'codex', workspaceRoot, limit: 1 });
@@ -369,6 +578,8 @@ test('native quota events coalesce refreshes and an account change discards the 
         observedAt: null,
         ordinaryUsageAllowed: null,
         windows: [],
+        credits: null,
+        resetCredits: null,
       },
     });
   });

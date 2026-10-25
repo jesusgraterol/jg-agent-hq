@@ -49,6 +49,8 @@ export const createCodexProvider = async (
     observedAt: null,
     ordinaryUsageAllowed: null,
     windows: [],
+    credits: null,
+    resetCredits: null,
   };
   let rpc: Awaited<ReturnType<typeof createCodexRpc>> | undefined;
   let refresh: Promise<IUsageSnapshot> | undefined;
@@ -265,6 +267,8 @@ export const createCodexProvider = async (
             observedAt: null,
             ordinaryUsageAllowed: null,
             windows: [],
+            credits: null,
+            resetCredits: null,
           };
         }
         if (

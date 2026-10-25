@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import {
   UsageSnapshotSchema,
+  UsageCreditsSchema,
   ThreadSummarySchema,
   TurnSummarySchema,
   HistoryItemSchema,
@@ -151,9 +152,25 @@ export const toHistoryItem = ({ turnId, item }: INativeItem, fullBody = false): 
  * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
  */
 export const toUsageSnapshot = (usage: INativeUsage, observedAt: number): IUsageSnapshot => {
-  const buckets = usage.rateLimitsByLimitId ?? {};
+  const nativeBuckets = usage.rateLimitsByLimitId;
+  const buckets =
+    nativeBuckets && Object.keys(nativeBuckets).length > 0
+      ? nativeBuckets
+      : usage.rateLimits
+        ? { [usage.rateLimits.limitId ?? 'legacy']: usage.rateLimits }
+        : {};
   const windows: IUsageSnapshot['windows'] = [];
-  for (const [bucketId, bucket] of Object.entries(buckets))
+  const credits: NonNullable<IUsageSnapshot['credits']> = [];
+  for (const [bucketId, bucket] of Object.entries(buckets)) {
+    if (bucket.credits) {
+      const observed = UsageCreditsSchema.safeParse({
+        bucket: bucketId,
+        hasCredits: bucket.credits.hasCredits,
+        isUnlimited: bucket.credits.unlimited,
+        balance: bucket.credits.balance,
+      });
+      if (observed.success) credits.push(observed.data);
+    }
     for (const window of ['primary', 'secondary'] as const) {
       const entry = bucket[window];
       if (entry)
@@ -166,8 +183,18 @@ export const toUsageSnapshot = (usage: INativeUsage, observedAt: number): IUsage
           remainingPercent: Math.max(0, 100 - entry.usedPercent),
           durationMinutes: entry.windowDurationMins ?? null,
           resetsAt: entry.resetsAt == null ? null : entry.resetsAt * 1000,
+          period:
+            entry.windowDurationMins === 300
+              ? 'five-hour'
+              : entry.windowDurationMins === 10080
+                ? 'seven-day'
+                : 'other',
+          nativeKind: null,
+          group: null,
+          scope: null,
         });
     }
+  }
   const reached = Object.values(buckets).some((bucket) => bucket.rateLimitReachedType != null);
   const state =
     windows.length === 0
@@ -182,5 +209,7 @@ export const toUsageSnapshot = (usage: INativeUsage, observedAt: number): IUsage
     observedAt,
     ordinaryUsageAllowed: usage.ordinaryUsageAllowed ?? null,
     windows,
+    credits: credits.length > 0 ? credits : null,
+    resetCredits: usage.rateLimitResetCredits ?? null,
   });
 };

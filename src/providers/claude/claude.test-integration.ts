@@ -20,6 +20,19 @@ test('native usage preserves independent account windows and never sends a user 
         75, 40,
       ]);
       expect(response.result.windows[1]?.resetsAt).toBeNull();
+      expect(response.result.windows.map((window) => window.period)).toStrictEqual([
+        'five-hour',
+        'seven-day',
+      ]);
+      expect(response.result.windows.map((window) => window.durationMinutes)).toStrictEqual([
+        300, 10080,
+      ]);
+      expect(response.result.windows[1]?.scope).toStrictEqual({
+        model: { id: null, displayName: 'Example' },
+        surface: null,
+      });
+      expect(response.result.credits).toBeNull();
+      expect(response.result.resetCredits).toBeNull();
       expect(response.result.ordinaryUsageAllowed).toBeNull();
     }
     const calls = (await readFile(join(root, 'claude-calls.jsonl'), 'utf8'))
@@ -39,6 +52,85 @@ test('native usage preserves independent account windows and never sends a user 
       'get_usage',
     ]);
     expect(calls.slice(1).every((call) => call.request.skip_behaviors === true)).toBe(true);
+  });
+});
+
+test('independent Claude weekly scopes and unknown groups retain native identity', async () => {
+  await withClaudeRuntime(async ({ request, control }) => {
+    await control({
+      rows: [
+        {
+          kind: 'weekly',
+          group: 'weekly',
+          percent: 20,
+          resets_at: '2033-05-18T03:33:20.000Z',
+          scope: null,
+          is_active: true,
+        },
+        {
+          kind: 'weekly_model',
+          group: 'weekly',
+          percent: 60,
+          resets_at: null,
+          scope: { model: { id: 'model-a', display_name: 'Model A' }, surface: 'code' },
+          is_active: false,
+        },
+        {
+          kind: 'future_meter',
+          group: 'future',
+          percent: 120,
+          resets_at: null,
+          scope: { model: null, surface: 'cli' },
+          is_active: false,
+        },
+      ],
+    });
+    const observed = await request({ kind: 'usage', provider: 'claude' });
+    if (observed.kind !== 'usage') throw new Error('wrong response');
+    expect(observed.result.state).toBe('available');
+    expect(
+      observed.result.windows.map(
+        ({ period, group, nativeKind, scope, durationMinutes, resetsAt }) => ({
+          period,
+          group,
+          nativeKind,
+          scope,
+          durationMinutes,
+          resetsAt,
+        }),
+      ),
+    ).toStrictEqual([
+      {
+        period: 'seven-day',
+        group: 'weekly',
+        nativeKind: 'weekly',
+        scope: null,
+        durationMinutes: 10080,
+        resetsAt: 2_000_000_000_000,
+      },
+      {
+        period: 'seven-day',
+        group: 'weekly',
+        nativeKind: 'weekly_model',
+        scope: { model: { id: 'model-a', displayName: 'Model A' }, surface: 'code' },
+        durationMinutes: 10080,
+        resetsAt: null,
+      },
+      {
+        period: 'other',
+        group: 'future',
+        nativeKind: 'future_meter',
+        scope: { model: null, surface: 'cli' },
+        durationMinutes: null,
+        resetsAt: null,
+      },
+    ]);
+    expect(new Set(observed.result.windows.map((window) => window.id)).size).toBe(3);
+    await control({ failure: true });
+    expect(await request({ kind: 'usage', provider: 'claude' })).toStrictEqual({
+      kind: 'usage',
+      result: { ...observed.result, state: 'stale' },
+    });
   });
 });
 

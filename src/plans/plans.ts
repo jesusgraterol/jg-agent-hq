@@ -18,7 +18,7 @@ import type { IStore } from '../store/index.js';
 import { canExecutePlanUnit, describePlan, updatePlanAuthority } from './authority.js';
 import { createPlanAdmission } from './admission.js';
 import { readPlanPage } from './projections.js';
-import { prepareAggregateProgress, prepareSequenceMarkers } from './documents.js';
+import { invalid, prepareAggregateProgress, prepareSequenceMarkers } from './documents.js';
 import { finalizeInitialSequence } from './finalization.js';
 import {
   beginPlanRevision,
@@ -703,6 +703,7 @@ export const createPlans = (
               );
             }
           } else if (command.kind === 'finalize') {
+            if (!artifacts.conformance.sequence) invalid();
             if (artifacts.skillsBinding === 'stale') conflict();
             const workflow = coordination.revision;
             let finalized: { content: string | null; revision: typeof artifacts.revision } | null =

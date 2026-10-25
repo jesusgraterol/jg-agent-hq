@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, readFile, rename, rm } from 'node:fs/promises';
+import { lstat, mkdir, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { hashValue } from 'jg-crypto';
@@ -8,7 +8,9 @@ import { readPrivateFile, writePrivateFile } from 'jg-fs';
 import { z } from 'zod';
 
 import { isWithinWorkspace } from '../runtime/state/index.js';
-import { StorageStampSchema } from '../storage/index.js';
+import { readStorageSchema } from '../storage/schema/index.js';
+
+import { applyRestoreFences, requireRestoreFence } from './fences.js';
 
 import { observeSnapshotPlan } from './artifacts.js';
 import { SNAPSHOT_COMPLETE, SNAPSHOT_COMPANIONS, SNAPSHOT_MANIFEST } from './constants.js';
@@ -31,6 +33,7 @@ import {
  * Memory stays bounded by one manifest line, one plan page and one report payload.
  * @returns Validated metadata without loading the growing inventory into the caller.
  * @throws
+ * - JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED: The HQ storage version is unsupported
  * - JG_AGENT_HQ_SNAPSHOT_INVALID: The HQ snapshot is invalid
  */
 export const verifySnapshot = async (directory: string): Promise<IHqSnapshotInspection> => {
@@ -45,9 +48,6 @@ export const verifySnapshot = async (directory: string): Promise<IHqSnapshotInsp
           })
         ).toString('utf8'),
       ),
-    );
-    const schemaHash = hashValue(
-      await readFile(new URL('../store/schema.sql', import.meta.url), 'utf8'),
     );
     const hash = createHash('sha256');
     let records = 0;
@@ -71,7 +71,7 @@ export const verifySnapshot = async (directory: string): Promise<IHqSnapshotInsp
       hash.update(bytes);
       records++;
       if (records === 1) {
-        if (record.kind !== 'header' || record.schemaHash !== schemaHash) invalidSnapshot();
+        if (record.kind !== 'header') invalidSnapshot();
         header = record;
         continue;
       }
@@ -90,12 +90,9 @@ export const verifySnapshot = async (directory: string): Promise<IHqSnapshotInsp
           readOnly: true,
           enableForeignKeyConstraints: true,
         });
-        const stamps = database
-          .prepare('SELECT id, schema_hash, action_key_hash FROM hq_schema LIMIT 2')
-          .all();
-        const stamp = StorageStampSchema.safeParse(stamps.length === 1 ? stamps[0] : null);
-        if (!stamp.success || stamp.data.schema_hash !== schemaHash) invalidSnapshot();
-        actionKeyHash = stamp.data.action_key_hash;
+        const recognized = readStorageSchema(database);
+        if (!recognized || recognized.schema.hash !== header?.schemaHash) invalidSnapshot();
+        actionKeyHash = recognized.actionKeyHash;
         const integrity = database.prepare('PRAGMA integrity_check').all();
         if (
           integrity.length !== 1 ||
@@ -200,7 +197,13 @@ export const verifySnapshot = async (directory: string): Promise<IHqSnapshotInsp
       pendingWriteCount,
     };
   } catch (cause) {
-    if (isException(cause) && cause.code === 'JG_AGENT_HQ_SNAPSHOT_INVALID') throw cause;
+    if (
+      isException(cause) &&
+      ['JG_AGENT_HQ_SNAPSHOT_INVALID', 'JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED'].includes(
+        cause.code,
+      )
+    )
+      throw cause;
     throw new Exception('The HQ snapshot is invalid', {
       code: 'JG_AGENT_HQ_SNAPSHOT_INVALID',
       data: { kind: 'invalid-request' },
@@ -212,55 +215,11 @@ export const verifySnapshot = async (directory: string): Promise<IHqSnapshotInsp
 };
 
 /**
- * Invalidates current execution authority while retaining immutable receipts, IDs and write intents.
- * Source paths remain evidence and require explicit host root selection on startup.
- */
-const pauseRestoredDatabase = (filename: string): void => {
-  const database = new DatabaseSync(filename, { enableForeignKeyConstraints: true });
-  try {
-    database.exec('PRAGMA synchronous = FULL; BEGIN IMMEDIATE');
-    try {
-      const now = Date.now();
-      database
-        .prepare(
-          "UPDATE hq_collaboration_task SET state = CASE WHEN state = 'stopped' THEN state ELSE 'paused' END, lifecycle_revision = lifecycle_revision + 1, policy_revision = policy_revision + 1, policy = json_set(policy, '$.automaticDispatch', json('false'))",
-        )
-        .run();
-      database
-        .prepare(
-          "UPDATE hq_task_agent SET state = CASE WHEN state = 'stopped' THEN state ELSE 'paused' END, revision = revision + 1",
-        )
-        .run();
-      database.prepare('UPDATE hq_skill_grant SET revoked_at = COALESCE(revoked_at, ?)').run(now);
-      database
-        .prepare("UPDATE hq_thread SET ownership = 'uncertain', state = 'unknown', updated_at = ?")
-        .run(now);
-      database
-        .prepare(
-          "UPDATE hq_action SET delivery = 'uncertain', updated_at = ? WHERE delivery = 'submitted'",
-        )
-        .run(now);
-      database.exec('UPDATE hq_action SET queue_ready = 0');
-      database
-        .prepare(
-          "UPDATE hq_native_approval SET state = 'expired', updated_at = ? WHERE state = 'pending'",
-        )
-        .run(now);
-      database.exec('COMMIT');
-    } catch (cause) {
-      database.exec('ROLLBACK');
-      throw cause;
-    }
-  } finally {
-    database.close();
-  }
-};
-
-/**
  * Validates before reserving a new recovery workspace, then validates the staged copy again.
  * Only this operation's exclusively created destination is removed on a caught failure.
  * @returns The source inspection; the caller derives the fixed state/plans output paths.
  * @throws
+ * - JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED: The HQ storage version is unsupported
  * - JG_AGENT_HQ_SNAPSHOT_INVALID: The HQ snapshot is invalid
  * - JG_AGENT_HQ_SNAPSHOT_FAILED: The HQ snapshot operation failed
  */
@@ -269,6 +228,7 @@ export const restoreSnapshot = async (
   destination: string,
 ): Promise<IHqSnapshotInspection> => {
   const inspection = await verifySnapshot(directory);
+  requireRestoreFence(inspection.header.schemaHash);
   if (isWithinWorkspace(directory, destination)) invalidSnapshot();
   let owned: string | undefined;
   try {
@@ -302,7 +262,7 @@ export const restoreSnapshot = async (
     const staged = await verifySnapshot(staging);
     if (staged.manifestSha256 !== inspection.manifestSha256) invalidSnapshot();
     // the copied manifest remains source evidence; the recovered database deliberately has new fences
-    pauseRestoredDatabase(join(staging, 'hq.sqlite'));
+    applyRestoreFences(join(staging, 'hq.sqlite'), staged.header.schemaHash);
     await mkdir(join(owned, 'state'), { mode: 0o700 });
     for (const name of ['hq.sqlite', 'action.key'])
       await rename(join(staging, name), join(owned, 'state', name));
@@ -333,7 +293,8 @@ export const restoreSnapshot = async (
     }
     if (
       hasErrorCode(cause, 'JG_AGENT_HQ_SNAPSHOT_INVALID') ||
-      hasErrorCode(cause, 'JG_AGENT_HQ_SNAPSHOT_FAILED')
+      hasErrorCode(cause, 'JG_AGENT_HQ_SNAPSHOT_FAILED') ||
+      hasErrorCode(cause, 'JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED')
     )
       throw cause;
     throw new Exception(`The HQ snapshot operation failed: ${extractMessage(cause)}`, {

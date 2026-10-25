@@ -240,8 +240,9 @@ else {
     if (method === 'account/rateLimits/read') {
       if (control.accountChangedDuringRead) process.stdout.write(JSON.stringify({ method: 'account/updated', params: {} })+'\n');
       if (control.quotaFailure) { process.stdout.write(JSON.stringify({ id: request.id,error: { code: -32603,message: 'synthetic account failure' } })+'\n');return; }
-      const bucket = { limitId: 'codex',limitName: 'Codex',primary: { usedPercent: control.usedPercent ?? 25,windowDurationMins: 300,resetsAt: control.expired ? Math.floor(Date.now()/1000)-1 : Math.floor(Date.now()/1000)+3600 },secondary: null,rateLimitReachedType: control.exhausted ? 'reached' : null };
-      respond(request.id,{ rateLimits: bucket, rateLimitsByLimitId: control.noWindows ? null : { codex: bucket },ordinaryUsageAllowed: !control.exhausted });return;
+      if (Object.hasOwn(control,'nativeUsage')) {respond(request.id,control.nativeUsage);return;}
+      const bucket = { limitId: 'codex',limitName: 'Codex',primary: control.noWindows ? null : { usedPercent: control.usedPercent ?? 25,windowDurationMins: 300,resetsAt: control.expired ? Math.floor(Date.now()/1000)-1 : Math.floor(Date.now()/1000)+3600 },secondary: null,rateLimitReachedType: control.exhausted ? 'reached' : null,credits: control.credits??null };
+      respond(request.id,{ rateLimits: bucket, rateLimitsByLimitId: control.noWindows ? null : { codex: bucket },ordinaryUsageAllowed: !control.exhausted,rateLimitResetCredits: control.resetCredits??null });return;
     }
     process.stdout.write(JSON.stringify({ id: request.id,error: { code: -32601,message: 'Unsupported method' } })+'\n');
   });

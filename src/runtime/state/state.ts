@@ -1,7 +1,8 @@
 import { constants } from 'node:fs';
 import { lstat, open, realpath, rm } from 'node:fs/promises';
-import { isAbsolute, join, relative, sep } from 'node:path';
+import { isAbsolute, join, relative, sep, parse, resolve } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { assertNoLinksBelow } from 'jg-fs';
 import { Exception, extractMessage, hasErrorCode, isException } from 'jg-exception';
 
 import {
@@ -230,11 +231,14 @@ export const readRuntimeOwner = async (
  * - JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE: The HQ runtime owner is unverifiable
  * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
  */
-export const claimRuntimeOwner = async (stateRoot: string) => {
+export const claimRuntimeOwner = async (
+  stateRoot: string,
+  command: 'serve' | 'upgrade-storage' = 'serve',
+) => {
   const owner: IHqLockOwner = {
     pid: process.pid,
     nonce: randomUUID(),
-    command: 'serve',
+    command,
     createdAt: new Date().toISOString(),
   };
   const content = `${JSON.stringify(owner)}\n`;
@@ -304,4 +308,94 @@ export const prepareDatabase = async (stateRoot: string): Promise<string> => {
     }
   }
   return path;
+};
+
+/**
+ * Validates existing offline storage without creating directories, database files or keys.
+ * @returns Canonical state and the exact existing private key.
+ * @throws
+ * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
+ * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+ * - JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE: The HQ state directory is unsafe
+ * - JG_AGENT_HQ_STATE_FILE_UNSAFE: The HQ state file is unsafe
+ * - JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE: The HQ action key is unavailable
+ */
+export const readExistingState = async (
+  stateRoot: string,
+): Promise<{ stateRoot: string; databasePath: string; actionKey: Uint8Array }> => {
+  if (process.platform !== 'linux' && process.platform !== 'darwin')
+    throw new Exception('The HQ lock requires Linux or macOS', {
+      code: 'JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM',
+    });
+  if (!isAbsolute(stateRoot) || resolve(stateRoot) !== stateRoot)
+    throw new Exception('The HQ request is invalid', {
+      code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      data: { kind: 'invalid-request' },
+    });
+  try {
+    await assertNoLinksBelow(parse(stateRoot).root, stateRoot);
+    const directory = await lstat(stateRoot);
+    if (
+      !directory.isDirectory() ||
+      !isPrivateOwner(directory) ||
+      (await realpath(stateRoot)) !== stateRoot
+    )
+      throw new Exception('The HQ state directory is unsafe', {
+        code: 'JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE',
+        data: { kind: 'state-conflict' },
+      });
+  } catch (cause) {
+    if (hasErrorCode(cause, 'JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE')) throw cause;
+    throw new Exception(`The HQ state directory is unsafe: ${extractMessage(cause)}`, {
+      code: 'JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE',
+      data: { kind: 'state-conflict' },
+      cause,
+    });
+  }
+  const databasePath = join(stateRoot, DATABASE_FILE);
+  for (const filename of [
+    databasePath,
+    `${databasePath}-wal`,
+    `${databasePath}-shm`,
+    `${databasePath}-journal`,
+  ]) {
+    try {
+      const details = await lstat(filename);
+      if (
+        !details.isFile() ||
+        details.isSymbolicLink() ||
+        details.nlink !== 1 ||
+        !isPrivateOwner(details)
+      )
+        throw new Exception('The HQ state file is unsafe', {
+          code: 'JG_AGENT_HQ_STATE_FILE_UNSAFE',
+          data: { kind: 'state-conflict' },
+        });
+    } catch (cause) {
+      if (filename !== databasePath && hasErrorCode(cause, 'ENOENT')) continue;
+      if (hasErrorCode(cause, 'JG_AGENT_HQ_STATE_FILE_UNSAFE')) throw cause;
+      throw new Exception(`The HQ state file is unsafe: ${extractMessage(cause)}`, {
+        code: 'JG_AGENT_HQ_STATE_FILE_UNSAFE',
+        data: { kind: 'state-conflict' },
+        cause,
+      });
+    }
+  }
+  let actionKey: Buffer;
+  try {
+    actionKey = await readPrivateBytes(join(stateRoot, ACTION_KEY_FILE), 32);
+  } catch (cause) {
+    if (isException(cause)) throw cause;
+    throw new Exception(`The HQ action key is unavailable: ${extractMessage(cause)}`, {
+      code: 'JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE',
+      data: { kind: 'state-conflict' },
+      cause,
+    });
+  }
+  if (actionKey.length !== 32)
+    throw new Exception('The HQ action key is unavailable', {
+      code: 'JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE',
+      data: { kind: 'state-conflict' },
+    });
+  return { stateRoot, databasePath, actionKey };
 };

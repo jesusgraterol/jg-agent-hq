@@ -147,7 +147,7 @@ const REVISION_EXAMPLE = {
   category: 'Plan revision',
   title: 'Change the plan. Keep verified work.',
   goal: 'Add a requirement mid-plan without losing finished milestones.',
-  install: `npm install jg-agent-hq@${SITE_CONFIG.version} jg-plans@0.2.0 jg-utilities@1.7.0`,
+  install: `npm install jg-agent-hq@${SITE_CONFIG.version} jg-plans@0.3.0 jg-utilities@1.7.0`,
   prerequisites: [
     'A finalized plan with verified milestones',
     'A free planning session in the same workspace',

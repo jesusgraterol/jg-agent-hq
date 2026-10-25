@@ -30,8 +30,12 @@ export type IPlanArtifacts = {
   parsed: IParsedMilestone[];
   revision: IPlanRevision;
   hashes: { plan: string; milestones: string | null; coordination: string | null };
+  conformance: IPlanConformance;
 };
 export type IPlanContract = { body: string; metadata: IPlanMetadata; milestones: string | null };
+
+// jg-plans check results for the stages HQ gates; plans without protocol 0.2 always conform
+export type IPlanConformance = { plan: boolean; sequence: boolean };
 
 // persisted intents make an interrupted finalization retry reuse its assigned UUIDs
 export const PlanWriteIntentSchema = z
