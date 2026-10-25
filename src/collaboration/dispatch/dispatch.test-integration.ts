@@ -2356,6 +2356,13 @@ test('a pending continuation survives restart with the same identity and require
           return response.kind === 'request' ? response.request.dispatchCount : null;
         })
         .toBe(2);
+      // the dispatch is counted when the action is reserved; native acceptance acknowledges it later
+      await expect
+        .poll(async () => {
+          const receipt = await runtime.request({ kind: 'receipt', actionId: reservation! });
+          return receipt.kind === 'receipt' ? receipt.result?.delivery : null;
+        })
+        .toBe('acknowledged');
       const restoredReceipt = await runtime.request({ kind: 'receipt', actionId: reservation! });
       expect(restoredReceipt).toMatchObject({
         kind: 'receipt',
