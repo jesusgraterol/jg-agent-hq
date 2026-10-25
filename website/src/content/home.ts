@@ -5,7 +5,7 @@ export const HOME_CONTENT = {
   title: 'Run coding agents from your app.',
   headline: ['Run coding agents', 'from your app.'],
   description:
-    'Start sessions, send work, answer permission prompts and let agents hand work to each other. One local API, built on the CLIs you already sign in to.',
+    'Drive Claude Code and Codex, answer their prompts and let them hand work to each other through one local API.',
   map: {
     caption: 'How it fits · everything runs on your machine',
     app: { title: 'Your app', detail: 'Dashboard, editor or automation' },
@@ -33,28 +33,28 @@ export const HOME_CONTENT = {
     {
       id: 'sessions',
       title: 'Drive native sessions',
-      text: 'Create, resume, fork or close sessions. Send a task, steer the running turn, queue the next one or interrupt.',
+      text: 'Create, resume, fork or close sessions, and steer, queue or interrupt the running turn.',
       commands: ['thread-create', 'message', 'steer', 'queue', 'interrupt', 'thread-fork'],
       link: { href: '/examples/#control-session', label: 'Session walkthrough' },
     },
     {
       id: 'prompts',
       title: 'Answer prompts from your UI',
-      text: 'Permission requests and agent questions wait in one inbox, across reconnects and restarts. Unknown kinds are denied.',
+      text: 'Permission requests and agent questions wait in one inbox across restarts, and unknown kinds are denied.',
       commands: ['approvals', 'native-reply'],
       link: null,
     },
     {
       id: 'observe',
       title: 'See output, history and usage',
-      text: 'Follow live output, browse past sessions without resuming them and read each account’s real quota.',
+      text: 'Follow live output, browse past sessions and read each account’s real quota, credits and earned resets.',
       commands: ['live-items', 'sessions', 'session-evidence', 'usage', 'models'],
       link: null,
     },
     {
       id: 'collaboration',
       title: 'Let agents work together',
-      text: 'Let Codex build a feature, ask Claude Code to review it and continue with the findings, with HQ carrying the request and report between them.',
+      text: 'Codex builds, Claude Code reviews with jg-review-session under an HQ grant, and HQ carries the report back.',
       commands: [
         'task-create',
         'hq_message_publish',
@@ -67,18 +67,61 @@ export const HOME_CONTENT = {
     {
       id: 'plans',
       title: 'Change the plan, keep the work',
-      text: 'Approve a plan, authorize its milestones and revise it mid-flight. Verified milestones carry over; changed ones start again.',
+      text: 'Plans pass jg-plans checks before each approval, and verified milestones carry over when you revise them.',
       commands: ['approve', 'authorize', 'begin-revision', 'finalize'],
       link: { href: '/examples/#revise-plan', label: 'Revision walkthrough' },
     },
     {
       id: 'storage',
       title: 'Local, private and recoverable',
-      text: 'Conversations stay in each CLI’s own storage. HQ keeps its records in one private SQLite file your app can share, snapshot and restore.',
-      commands: ['hq.storage', 'createHqSnapshot', 'restoreHqSnapshot'],
+      text: 'HQ keeps its records in one private SQLite file you can share, snapshot, restore and upgrade offline.',
+      commands: ['hq.storage', 'createHqSnapshot', 'restoreHqSnapshot', 'upgrade-storage'],
       link: null,
     },
   ],
+  // smaller capabilities, each with one real command or API name from the canonical docs
+  more: {
+    eyebrow: 'Also included',
+    title: 'The rest of the toolkit.',
+    items: [
+      {
+        id: 'accounts',
+        title: 'Accounts and MCP',
+        text: 'Read native accounts, start sign-in and list a session’s MCP servers and tools.',
+        name: 'account-login',
+      },
+      {
+        id: 'configuration',
+        title: 'Models and settings',
+        text: 'List models and effort choices, and read a session’s effective settings.',
+        name: 'models',
+      },
+      {
+        id: 'files',
+        title: 'Files and structured results',
+        text: 'Attach verified workspace files and request results that match your schema.',
+        name: 'outputSchema',
+      },
+      {
+        id: 'browser',
+        title: 'Browser hosts',
+        text: 'Closed contracts let a browser app act through your trusted Node host.',
+        name: 'jg-agent-hq/contracts',
+      },
+      {
+        id: 'providers',
+        title: 'Custom providers',
+        text: 'Register another agent CLI behind the same session interface.',
+        name: 'IAgentProvider',
+      },
+      {
+        id: 'session-tools',
+        title: 'Session tools',
+        text: 'Fork, compact, archive, revert and name sessions, each with a durable receipt.',
+        name: 'thread-fork',
+      },
+    ],
+  },
   collaborationExample: {
     caption: 'Illustrative · build a CSV export, then review it',
     setup: 'Your app has allowed Codex to build and Claude Code to review this task.',
@@ -92,6 +135,7 @@ export const HOME_CONTENT = {
         kind: 'task',
         text: 'Add CSV export to reports. Ask Claude to review it before you finish.',
         command: null,
+        skill: null,
         note: 'You give the task once. The agents handle the handoff.',
       },
       {
@@ -102,6 +146,7 @@ export const HOME_CONTENT = {
         kind: 'request',
         text: 'The exporter is ready. Check quoted fields and empty exports in src/reports/csv.ts.',
         command: 'hq_message_publish',
+        skill: null,
         note: 'HQ delivers the request. Codex waits for the review.',
       },
       {
@@ -112,7 +157,9 @@ export const HOME_CONTENT = {
         kind: 'report',
         text: 'Quoted fields work. An empty export loses its column headers.',
         command: null,
-        note: 'HQ saves the full report and resumes Codex.',
+        // the native review skill runs under an exact grant HQ issues for this request
+        skill: 'jg-review-session',
+        note: 'HQ grants the review skill, saves the full report and resumes Codex.',
       },
       {
         speaker: 'Codex',
@@ -122,6 +169,7 @@ export const HOME_CONTENT = {
         kind: 'result',
         text: 'Empty exports now keep their headers. I added a regression test, and it passes.',
         command: 'hq_report_read',
+        skill: null,
         note: 'Codex reads the report, makes the fix and finishes your original task.',
       },
     ],
@@ -163,7 +211,7 @@ export const homeMarkdown = (): string =>
                 [
                   `**${message.speaker} to ${message.recipient} (${message.kind})**`,
                   message.text,
-                  `${message.command ? `\`${message.command}\` · ` : ''}${message.note}`,
+                  `${message.skill ? `\`${message.skill}\` · ` : ''}${message.command ? `\`${message.command}\` · ` : ''}${message.note}`,
                 ].join('\n\n'),
               ),
             ]
@@ -171,6 +219,10 @@ export const homeMarkdown = (): string =>
         item.commands.map((command) => `\`${command}\``).join(' · '),
         ...(item.link ? [`[${item.link.label}](${SITE_CONFIG.url}${item.link.href})`] : []),
       ].join('\n\n'),
+    ),
+    `## ${HOME_CONTENT.more.title}`,
+    ...HOME_CONTENT.more.items.map(
+      (item) => `### ${item.title}\n\n${item.text}\n\n\`${item.name}\``,
     ),
     `## ${HOME_CONTENT.startTitle}`,
     HOME_CONTENT.requirements.map((item) => `- ${item}`).join('\n'),

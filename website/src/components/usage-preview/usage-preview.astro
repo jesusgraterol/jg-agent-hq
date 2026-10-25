@@ -2,11 +2,35 @@
 import Badge from 'jg-personal-astro-ui/badge';
 
 import PreviewFrame from '../preview-frame/preview-frame.astro';
+import ProviderMark from '../provider-mark/provider-mark.astro';
 
-// static quota windows and session rows; HQ reads both from native storage and accounts
-const WINDOWS = [
-  { label: '5-hour window', usedPercent: 38, reset: 'resets 14:20' },
-  { label: 'Weekly window', usedPercent: 12, reset: 'resets Monday' },
+/*
+ * Static meters, credits and session rows. HQ reads each from native accounts and storage:
+ * Claude's windows keep their model scope, and Codex reports credits and earned resets
+ * separately from its windows, without any redemption or purchase operation.
+ */
+const ACCOUNTS = [
+  {
+    provider: 'claude',
+    name: 'Claude Code',
+    windows: [
+      { label: '5-hour window', scope: 'all models', usedPercent: 46, reset: 'resets 15:00' },
+      { label: '7-day window', scope: 'Opus', usedPercent: 21, reset: 'resets Monday' },
+    ],
+    extras: [],
+  },
+  {
+    provider: 'codex',
+    name: 'Codex',
+    windows: [
+      { label: '5-hour window', scope: null, usedPercent: 38, reset: 'resets 14:20' },
+      { label: '7-day window', scope: null, usedPercent: 12, reset: 'resets Monday' },
+    ],
+    extras: [
+      { label: 'Credit balance', value: '120' },
+      { label: 'Earned resets', value: '1 available' },
+    ],
+  },
 ] as const;
 const SESSIONS = [
   { name: 'build-reports', provider: 'Codex', updated: 'Running' },
@@ -15,33 +39,59 @@ const SESSIONS = [
 ] as const;
 ---
 
-<PreviewFrame caption="Illustrative · account usage and session history">
-  <p class="font-semibold">Codex usage</p>
-  <ul class="mt-4 grid gap-4">
+<PreviewFrame caption="Illustrative · usage, credits and session history">
+  <div class="grid min-w-0 gap-5 sm:grid-cols-2">
     {
-      WINDOWS.map((quota) => (
-        <li class="min-w-0">
-          <p class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-sm">
-            <span>{quota.label}</span>
-            <span class="font-mono text-xs text-muted">
-              <span class="font-semibold text-foreground">{quota.usedPercent}% used</span> ·{' '}
-              {quota.reset}
-            </span>
+      ACCOUNTS.map((account) => (
+        <div
+          class="min-w-0"
+          role="group"
+          aria-label={`${account.name} usage`}
+        >
+          <p class="flex items-center gap-2 font-semibold">
+            <ProviderMark provider={account.provider} />
+            {account.name}
           </p>
-          {/* the text above carries the value; the bar only repeats it */}
-          <div
-            class="mt-2 h-2 overflow-hidden rounded-full bg-secondary"
-            aria-hidden="true"
-          >
-            <div
-              class="h-full rounded-full bg-accent"
-              style={`width: ${quota.usedPercent}%`}
-            />
-          </div>
-        </li>
+          <ul class="mt-4 grid gap-4">
+            {account.windows.map((quota) => (
+              <li class="min-w-0">
+                <p class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-sm">
+                  <span class="flex flex-wrap items-center gap-2">
+                    {quota.label}
+                    {quota.scope && <Badge variant="outline">{quota.scope}</Badge>}
+                  </span>
+                  <span class="font-mono text-xs text-muted">
+                    <span class="font-semibold text-foreground">{quota.usedPercent}% used</span> ·{' '}
+                    {quota.reset}
+                  </span>
+                </p>
+                {/* the text above carries the value; the bar only repeats it */}
+                <div
+                  class="mt-2 h-2 overflow-hidden rounded-full bg-secondary"
+                  aria-hidden="true"
+                >
+                  <div
+                    class="h-full rounded-full bg-accent"
+                    style={`width: ${quota.usedPercent}%`}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+          {account.extras.length > 0 && (
+            <dl class="mt-4 grid grid-cols-2 gap-2">
+              {account.extras.map((extra) => (
+                <div class="min-w-0 rounded-lg bg-secondary px-3 py-2">
+                  <dt class="text-xs text-muted">{extra.label}</dt>
+                  <dd class="font-mono text-sm font-semibold">{extra.value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </div>
       ))
     }
-  </ul>
+  </div>
   <div class="mt-6 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-5">
     <p class="font-semibold">Sessions</p>
     <Badge variant="outline">Read-only · nothing resumes</Badge>

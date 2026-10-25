@@ -169,6 +169,36 @@ test('the homepage shows how HQ fits and previews every capability', async ({ pa
         capability.link.href,
       );
   }
+  const usage = page.getByRole('article', { name: 'See output, history and usage' });
+  await expect(usage.getByRole('group', { name: 'Claude Code usage' })).toContainText('Opus');
+  await expect(usage.getByRole('group', { name: 'Codex usage' })).toContainText('Credit balance');
+  await expect(usage.getByRole('group', { name: 'Codex usage' })).toContainText('Earned resets');
+  const collaboration = page.getByRole('article', { name: 'Let agents work together' });
+  await expect(collaboration).toContainText('granted skill jg-review-session');
+  // plan approval checks plan.md alone; the uncovered criterion is refused at sequence approval
+  const gates = page
+    .getByRole('article', { name: 'Change the plan, keep the work' })
+    .getByRole('list', { name: 'Approvals checked by jg-plans' })
+    .getByRole('listitem');
+  await expect(gates).toHaveCount(4);
+  await expect(gates.nth(0)).toContainText('Plan approved');
+  await expect(gates.nth(1)).toContainText('Sequence refused');
+  await expect(gates.nth(1)).toContainText('JG_AGENT_HQ_PLAN_INVALID');
+  await expect(gates.nth(2)).toContainText('Sequence approved');
+  await expect(gates.nth(3)).toContainText('Execution authorized');
+  await expect(
+    page
+      .getByRole('article', { name: 'Local, private and recoverable' })
+      .getByRole('list', { name: 'Offline storage upgrade' })
+      .getByRole('listitem'),
+  ).toHaveText([/HQ stopped/u, /Backup verified/u, /Storage upgraded/u]);
+  const more = page.getByRole('region', { name: HOME_CONTENT.more.title });
+  const items = more.getByRole('listitem');
+  await expect(items).toHaveCount(HOME_CONTENT.more.items.length);
+  for (const [index, item] of HOME_CONTENT.more.items.entries()) {
+    await expect(items.nth(index)).toContainText(item.title);
+    await expect(items.nth(index)).toContainText(item.name);
+  }
 });
 
 test('missing page has useful navigation and no indexing contract', async ({ page }) => {
