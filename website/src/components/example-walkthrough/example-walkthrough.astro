@@ -180,6 +180,7 @@ const tabs = [
           >
             <h3 class="sr-only">{example.call ? 'Call the helper' : 'Your host supplies'}</h3>
             <InstallCommand
+              copyDisplay="icon"
               id={`${example.id}-install`}
               command={example.install}
               context={`${example.category.toLowerCase()} install command`}
@@ -189,6 +190,7 @@ const tabs = [
             {
               example.call ? (
                 <CodeBlock
+                  copyDisplay="icon"
                   code={example.call}
                   lang="ts"
                   title="run-session.ts"
@@ -222,6 +224,7 @@ const tabs = [
               tabindex="0"
             >
               <CodeBlock
+                copyDisplay="icon"
                 code={example.source}
                 lang="ts"
                 title={example.sourcePath}

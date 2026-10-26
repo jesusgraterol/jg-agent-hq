@@ -2,7 +2,7 @@ import { satteri } from '@astrojs/markdown-satteri';
 import sitemap from '@astrojs/sitemap';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'astro/config';
-import { codeWindowPlugin } from 'jg-personal-astro-ui/code-window-plugin';
+import { createCodeWindowPlugin } from 'jg-personal-astro-ui/code-window-plugin';
 import { externalLinkPlugin } from 'jg-personal-astro-ui/external-link-plugin';
 import { SYNTAX_THEME } from 'jg-personal-astro-ui/syntax-theme';
 
@@ -19,7 +19,10 @@ export default defineConfig({
     processor: satteri({
       features: { smartPunctuation: false },
       mdastPlugins: [canonicalMarkdownPlugin],
-      hastPlugins: [codeWindowPlugin, externalLinkPlugin({ siteUrl: SITE_CONFIG.url })],
+      hastPlugins: [
+        createCodeWindowPlugin({ copyDisplay: 'icon' }),
+        externalLinkPlugin({ siteUrl: SITE_CONFIG.url }),
+      ],
     }),
   },
   vite: { plugins: [tailwindcss()] },

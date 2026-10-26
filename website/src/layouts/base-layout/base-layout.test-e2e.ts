@@ -22,6 +22,9 @@ for (const width of [320, 768, 1440]) {
       });
       for (const record of PAGE_RECORDS) {
         await page.goto(record.path);
+        await expect(
+          page.locator('[data-copy-button]:not([data-copy-display="icon"])'),
+        ).toHaveCount(0);
         await waitForPageAssets(page);
         await expect(page).toHaveTitle(record.title);
         await expect(page.getByRole('main').getByRole('heading', { level: 1 })).toHaveCount(1);
