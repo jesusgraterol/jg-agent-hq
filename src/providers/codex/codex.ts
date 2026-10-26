@@ -332,7 +332,9 @@ export const createCodexProvider = async (
         throw error;
       }
     },
-    userAgent: connection.userAgent,
+    get userAgent() {
+      return connection.userAgent;
+    },
     get isAvailable() {
       return connection.isAvailable;
     },
@@ -706,6 +708,11 @@ export const createCodexProvider = async (
     },
     reply: connection.reply,
     reject: connection.reject,
+    // a lost daemon leaves no controlled session; the next request reconnects
+    disconnect: async () => {
+      await connection.disconnect();
+      for (const nativeId of [...controlled]) releaseControlState(nativeId);
+    },
     close: async () => {
       toolLifetime.abort();
       await connection.close();

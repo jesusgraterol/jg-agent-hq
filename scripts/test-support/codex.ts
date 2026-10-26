@@ -120,6 +120,10 @@ else {
       respond(request.id,{ ...(control.omitVersion?{}:{userAgent:control.version??'codex-cli/fixture'}), futureMetadata:control.futureMetadata });return;
     }
     const { method,params = {} } = request;
+    // held interrupts are confirmed together on the first request after releaseInterrupts is set
+    if (control.releaseInterrupts && !control.holdInterrupt) for (const pending of interrupts.splice(0)) { respond(pending.id,{});complete(pending.params.threadId,'interrupted'); }
+    // threadStatuses reports sessions another client drives, by thread ID
+    const statusOf = (thread) => control.threadStatuses?.[thread.id] ?? thread.status;
     if (control.emitOnce) writeFileSync(join(directory,'control.json'),JSON.stringify({...control,emit:undefined,emitOnce:undefined}));
     if (control.emit) for (const event of control.emit) notify(event.method,event.params);
     if (method === 'model/list') {
@@ -246,6 +250,7 @@ else {
       respond(request.id,{turnId:params.expectedTurnId});return;
     }
     if (method === 'turn/interrupt') {
+      if (control.holdInterrupt) { interrupts.push(request);return; }
       if (control.interruptBarrier) {
         interrupts.push(request);
         if (interrupts.length >= control.interruptBarrier) for (const pending of interrupts.splice(0)) {
@@ -271,14 +276,14 @@ else {
       if (control.accountChanged) send(JSON.stringify({ method: 'account/updated', params: {} }));
       const selected = params.searchTerm ? threads.filter((thread) => thread.name.includes(params.searchTerm)) : threads;
       const after = params.cursor ? selected.findIndex((thread) => thread.id === params.cursor) + 1 : 0;
-      const batch = selected.slice(after,after+params.limit);
+      const batch = selected.slice(after,after+params.limit).map((thread) => ({ ...thread,status: statusOf(thread) }));
       respond(request.id,{ data: control.wrongRoot ? batch.map((thread) => ({ ...thread,cwd: control.wrongRoot })) : batch, nextCursor: control.invalidCursor ? 'x'.repeat(8193) : after+batch.length < selected.length ? batch.at(-1).id : null });return;
     }
     if (method === 'config/read') {
       const profiles=Object.fromEntries(Array.from({length:control.profileCount??4},(_,index)=>['profile-'+String(index).padStart(4,'0'),{description:control.configRevision?'Updated profile':'Native profile',model:'model-0000'}]));
       respond(request.id,{config:control.configMalformed?{model:42}:{model:'model-0000',model_reasoning_effort:'native-effort',profile:null,profiles,agents:{max_threads:4,explore:{description:'Read native code',model:'model-0000'}},approval_policy:'on-request',sandbox_mode:'read-only',secret:'must-not-leak'}});return;
     }
-    if (method === 'thread/read') { respond(request.id,{ thread: { ...threads[0],...managed.get(params.threadId),...(control.unavailableSettings?{model:null,reasoningEffort:null}:{}),id: params.threadId,cwd: control.wrongRoot || managed.get(params.threadId)?.cwd || workspaceRoot } });return; }
+    if (method === 'thread/read') { respond(request.id,{ thread: { ...threads[0],...managed.get(params.threadId),status: statusOf({ id: params.threadId,status: managed.get(params.threadId)?.status ?? threads[0].status }),...(control.unavailableSettings?{model:null,reasoningEffort:null}:{}),id: params.threadId,cwd: control.wrongRoot || managed.get(params.threadId)?.cwd || workspaceRoot } });return; }
     if (method === 'thread/turns/list') { respond(request.id,{ data: [{ id: 'turn-a',status: 'completed',startedAt: 1_700_000_000,completedAt: 1_700_000_001 }],nextCursor: null });return; }
     if (method === 'thread/items/list') {
       const text = control.largeItem ? 'a'.repeat(1_048_576) : 'Hello from the native history';

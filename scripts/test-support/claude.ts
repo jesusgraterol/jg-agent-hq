@@ -11,6 +11,14 @@ import {createInterface} from 'node:readline';
 import {startClaudeControl} from './claude-control.mjs';
 if(process.argv[2]==='auth'&&process.argv[3]==='logout'){const root=process.env.JG_HQ_FIXTURE_DIRECTORY;writeFileSync(join(root,'claude-logout-pid.json'),JSON.stringify({pid:process.pid}));appendFileSync(join(root,'claude-read-pids.jsonl'),JSON.stringify({pid:process.pid})+'\n');const file=join(root,'claude-control.json');const control=JSON.parse(readFileSync(file,'utf8'));appendFileSync(join(root,'claude-calls.jsonl'),JSON.stringify({kind:'native-logout'})+'\n');writeFileSync(file,JSON.stringify({...control,accountUnavailable:true}));}
 else if(process.argv.includes('--permission-prompt-tool=stdio'))startClaudeControl();
+else if(process.argv[2]==='agents'&&process.argv[3]==='--json'){
+ // claude-agents.json holds the reported sessions and optional delay, oversized and malformed output
+ let control={};
+ try{control=JSON.parse(readFileSync(join(process.env.JG_HQ_FIXTURE_DIRECTORY,'claude-agents.json'),'utf8'));}catch{}
+ const output=control.malformed?'not json':control.oversized?JSON.stringify([{sessionId:'x'.repeat(70000),cwd:'/'}]):JSON.stringify(control.agents??[]);
+ appendFileSync(join(process.env.JG_HQ_FIXTURE_DIRECTORY,'claude-agents-runs.jsonl'),JSON.stringify({delayMs:control.delayMs??0,malformed:!!control.malformed,oversized:!!control.oversized,count:(control.agents??[]).length})+'\n');
+ setTimeout(()=>process.stdout.write(output),control.delayMs??0);
+}
 else {
 const root=process.env.JG_HQ_FIXTURE_DIRECTORY;
 writeFileSync(join(root,'claude-pid.json'),JSON.stringify({pid:process.pid}));

@@ -129,6 +129,14 @@ export const readNativeHistory = async (
         )
       ).map((thread) => [thread.nativeId, thread]),
     );
+    const states = new Map(
+      (
+        await projection.getSessionStates(
+          command.provider,
+          threads.map((thread) => thread.nativeId),
+        )
+      ).map((session) => [session.nativeId, session.state]),
+    );
     for (const thread of threads) {
       const control = managed.get(thread.nativeId);
       if (control) {
@@ -137,6 +145,7 @@ export const readNativeHistory = async (
         thread.name = control.name;
         thread.nativeLineage = retainNativeLineage(control.nativeLineage, thread.nativeLineage);
       }
+      thread.state = states.get(thread.nativeId) ?? thread.state;
     }
     await projection.remember(
       threads,

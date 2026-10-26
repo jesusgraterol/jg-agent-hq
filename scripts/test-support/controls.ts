@@ -8,7 +8,7 @@ import { join } from 'node:path';
  */
 export const writeFixtureControl = async (
   directory: string,
-  filename: 'control.json' | 'claude-control.json',
+  filename: 'control.json' | 'claude-control.json' | 'claude-agents.json',
   settings: object,
 ): Promise<void> => {
   const temporary = join(directory, `${randomUUID()}.json`);

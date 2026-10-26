@@ -45,6 +45,9 @@ import {
   HqRequestSchema,
   type IActionPlanContext,
   type IHistoryProvenance,
+  SessionStateSchema,
+  type ISessionState,
+  type ISessionTransition,
 } from '../contracts/index.js';
 import type { IHistoryRequest } from '../sessions/index.js';
 import {
@@ -133,6 +136,25 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     observedAt: z.number().int(),
   }),
   z.strictObject({ kind: z.literal('plan-register'), directory: z.string() }),
+  z.strictObject({
+    kind: z.literal('sessions-observe'),
+    provider: z.string(),
+    sessions: z
+      .array(z.strictObject({ nativeId: z.string().min(1), state: SessionStateSchema }))
+      .max(1024),
+    isComplete: z.boolean(),
+  }),
+  z.strictObject({ kind: z.literal('sessions-unknown'), provider: z.string() }),
+  z.strictObject({
+    kind: z.literal('sessions-states'),
+    provider: z.string(),
+    nativeIds: z.array(z.string()).max(MAX_PAGE_SIZE),
+  }),
+  z.strictObject({
+    kind: z.literal('session-transitions'),
+    afterSequence: z.number().int().nonnegative(),
+    limit: z.number().int().min(1).max(128),
+  }),
   z.strictObject({ kind: z.literal('thread-plan-read'), threadId: z.uuid() }),
   z.strictObject({ kind: z.literal('plan-threads'), directory: z.string() }),
   z.strictObject({ kind: z.literal('queue-peek'), threadId: z.uuid() }),
@@ -355,6 +377,40 @@ export type IStore = {
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   registerPlan(directory: string): Promise<void>;
+  /** Records observed states of sessions HQ doesn't manage; complete observations close omissions.
+   * @returns A promise resolved after the transaction commits.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  observeSessions(
+    provider: string,
+    sessions: { nativeId: string; state: ISessionState }[],
+    isComplete: boolean,
+  ): Promise<void>;
+  /** Marks a provider's open observed sessions unknown after its native connection was lost.
+   * @returns A promise resolved after the update commits.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  markSessionsUnknown(provider: string): Promise<void>;
+  /** Reads the live states of selected native sessions, managed or observed.
+   * @returns The sessions HQ manages or has observed, without the others.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  getSessionStates(
+    provider: string,
+    nativeIds: string[],
+  ): Promise<{ nativeId: string; state: ISessionState }[]>;
+  /** Reads session transitions after a sequence, in order.
+   * @returns A bounded page and whether more transitions follow.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  listSessionTransitions(
+    afterSequence: number,
+    limit: number,
+  ): Promise<{ data: ISessionTransition[]; hasMore: boolean }>;
   /** Reads a thread's exact current plan binding.
    * @returns Its guided context, or null.
    * @throws

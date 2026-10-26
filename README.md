@@ -49,6 +49,8 @@ Trusted Node hosts can open the database described by `hq.storage` and keep appl
 
 `createHqSnapshot(hq, destination)` captures local state through SQLite's backup API while agents keep working, including host tables, stored reports, action.key and registered plan companions. HQ-mediated plan writes wait for it; the host keeps its own connections from writing host tables until it resolves. A plan that changed during capture is marked, and restore withholds its execution authority. `inspectHqSnapshot(directory)` verifies the complete snapshot; `restoreHqSnapshot({ snapshotDirectory, destination })` validates and stages it into a new private recovery workspace. `packHqSnapshot(snapshotDirectory, archivePath, key)` encrypts a snapshot into one AES-256-GCM file for off-machine copies, and `unpackHqSnapshot(archivePath, destination, key)` verifies and writes it back as a snapshot directory. Snapshots from another schema are refused by the package version that wrote them. Restored automation is paused, skill grants are revoked, native ownership needs reconciliation and allowed roots must be selected explicitly. Hosts own the key and remote backups; a failed disk can lose changes since the last successful off-machine backup. See [snapshot and restore](api/README.md#snapshot-and-restore) and [recovery](docs/recovery.md).
 
+Sessions started in a terminal show up too. Codex sessions on the shared daemon and Claude sessions from `claude agents --json` report a live state (`running`, `waiting`, `idle`, `closed`, `failed` or `unknown`) with external ownership, and HQ sends them no input until they are closed there and handed over with `thread-adopt`. Every state change of a managed or observed session is recorded in order; read them with `{ kind: 'session-states', afterSequence }` or `session-states`. See [session states](api/README.md#session-states).
+
 Provider IDs are bounded lowercase identifiers. Codex and Claude are built in; trusted Node hosts can register additional `IAgentProviderFactory` implementations through `providerFactories`. Capabilities report current operation support, provider/session scope and unavailable reasons. Native version labels are diagnostic metadata and never determine admission. Unknown essential control data fails explicitly. `jg-agent-hq/contracts` contains browser-safe schemas and types; importing it does not import the host runtime.
 
 Use `--provider claude` for Claude history and usage; the default is `codex`. Claude connects lazily through its native structured CLI, with normal settings enabled and no user prompt. Usage requests explicitly disable the optional transcript-behavior scan. Its local history reader validates required identity, workspace and chain fields, tolerates additive fields and mixed version labels, and keeps byte locations rather than conversation bodies in SQLite. Unknown ordered content is presented as unsupported; untrustworthy identity or ordering makes the affected read unavailable. File history cannot establish current execution state. See the [reader limits and freshness contract](api/README.md#claude-history).
@@ -113,18 +115,18 @@ The [qualification matrix](api/README.md#qualification) records native journeys,
 - `src/runtime/`: trusted configuration and lifetime ownership.
 - `src/ipc/` and `src/cli/`: private local commands and the installed executable.
 - `src/providers/codex/`: the shared app-server daemon connection, native history and account protocol.
-- `src/providers/claude/`: native structured control and usage, plus the identity-validated, worker-owned local history reader.
+- `src/providers/claude/`: native structured control and usage, the identity-validated, worker-owned local history reader and the active-session poll.
 - `src/providers/registry/`: lazy factories, normalized provider evidence, bounded lifecycle and source isolation.
 - `src/providers/inputs/` and `src/providers/results/`: checked file delivery and complete native result validation.
 - `src/providers/configuration/` and `src/providers/lineage/`: bounded native choices and confirmed immutable session relationships.
-- `src/sessions/`: authorized discovery, bounded evidence and provenance, cursor-bound history reads and short label suggestions.
+- `src/sessions/`: authorized discovery with live session states, bounded evidence and provenance, cursor-bound history reads and short label suggestions.
 - `src/plans/`: execution digests, milestone finalization, revision checkpoints, retained verification and explicit plan authority.
 - `src/skills/`: bounded native catalogs, invocation previews and explicit input preparation.
 - `src/accounts/` and `src/extensions/`: safe account observations and authorized, bounded native MCP inventories.
 - `src/collaboration/`: host-owned tasks, streams, scoped skill-grant admission and event-driven directed request dispatch.
 - `src/collaboration/identity/` and `src/agent-tools/`: native-bound identity, private bridge credentials, shared agent tools and the stdio MCP entry.
 - `src/actions/`: durable action dispatch, native input routing and bounded live presentation.
-- `src/store/`: SQLite discovery metadata, collaboration streams and the action/control ledger in one worker.
+- `src/store/`: SQLite discovery metadata, observed sessions and state transitions, collaboration streams and the action/control ledger in one worker.
 - `src/storage/`: trusted host metadata, exclusive maintenance and the current schema stamp.
 - `src/snapshots/`: capture while agents work, streamed inventory validation and offline recovery with execution paused.
 - `src/contracts/`: browser-safe command and response contracts.

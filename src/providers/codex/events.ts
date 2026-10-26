@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
-import { MAX_RESULT_BYTES, type IOutputSchema, type ITurnUsage } from '../../contracts/index.js';
+import {
+  MAX_RESULT_BYTES,
+  type IOutputSchema,
+  type ISessionState,
+  type ITurnUsage,
+} from '../../contracts/index.js';
 import { toTurnResult } from '../results/index.js';
 
 import { NativeIdSchema } from '../../contracts/identities/index.js';
@@ -9,7 +14,7 @@ import type { IAgentProviderOutcome, IAgentProviderEvents, IProviderThread } fro
 import type { ICodexEvents, ICodexProvider, INativeThread } from './types.js';
 import { NativeItemSchema, NativeThreadSchema, NativeTurnSchema } from './types.js';
 import { parseNative } from './validations.js';
-import { toHistoryItem, toNativeLineage } from './transformers.js';
+import { toHistoryItem, toNativeLineage, toSessionState } from './transformers.js';
 import { buildCodexReply, parseCodexPrompt, toApprovalPresentation } from './approvals/index.js';
 
 const TargetSchema = z.object({ threadId: NativeIdSchema, turnId: NativeIdSchema });
@@ -35,6 +40,7 @@ export const toProviderThread = (thread: INativeThread): IProviderThread => ({
 export const createCodexEvents = (
   native: ICodexProvider,
   events: IAgentProviderEvents,
+  observeSession: (nativeId: string, state: ISessionState) => void,
 ): ICodexEvents => {
   const turns = new Map<
     string,
@@ -147,6 +153,13 @@ export const createCodexEvents = (
           if (captured?.turnId === usage.data.turnId)
             captured.usage = { ...usage.data.tokenUsage.last, scope: 'turn' };
         }
+      } else if (method === 'thread/status/changed') {
+        // the daemon broadcasts every thread's status, including sessions other clients drive
+        const { threadId, status } = parseNative(
+          z.object({ threadId: NativeIdSchema, status: NativeThreadSchema.shape.status }),
+          params,
+        );
+        observeSession(threadId, toSessionState(status));
       } else if (method === 'serverRequest/resolved') {
         const { threadId, requestId } = parseNative(
           z.object({

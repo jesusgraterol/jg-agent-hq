@@ -358,3 +358,16 @@ export type {
   IAgentToolResult,
 } from './agent-tools/index.js';
 export { SessionDiscoveryRequestSchema } from './evidence/index.js';
+
+// session states and transitions
+export {
+  SessionStateSchema,
+  SessionTransitionReasonSchema,
+  SessionTransitionSchema,
+  SessionTransitionPageSchema,
+} from './sessions/index.js';
+export type {
+  ISessionState,
+  ISessionTransitionReason,
+  ISessionTransition,
+} from './sessions/index.js';

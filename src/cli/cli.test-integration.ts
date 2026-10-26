@@ -216,6 +216,56 @@ test.each([
   }
 });
 
+test('session-states reads transitions after a sequence through the installed command', async () => {
+  await withClaudeRuntime(async ({ runtime, stateRoot, workspaceRoot }) => {
+    const status = await runtime.request({ kind: 'status' });
+    if (status.kind !== 'status') throw new Error('Missing runtime status');
+    const created = await runtime.request({
+      kind: 'action',
+      action: {
+        id: randomUUID(),
+        runtimeEpoch: status.result.runtimeEpoch,
+        command: { kind: 'thread-create', provider: 'codex', workspaceRoot, name: 'cli-states' },
+      },
+    });
+    if (created.kind !== 'action' || !created.result.threadId) throw new Error('Missing thread');
+    const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
+    const run = promisify(execFile);
+    const read = async (...args: string[]) =>
+      JSON.parse(
+        (await run(process.execPath, [cli, 'session-states', '--state-root', stateRoot, ...args]))
+          .stdout,
+      );
+    await expect.poll(async () => (await read()).result.data.length).toBe(1);
+    const first = await read('--limit', '1');
+    expect(first).toMatchObject({
+      schemaVersion: 1,
+      kind: 'session-states',
+      result: {
+        data: [{ threadId: created.result.threadId, state: 'idle', reason: 'opened' }],
+        hasMore: false,
+      },
+    });
+    expect(
+      await read('--after-sequence', String(first.result.data[0].sequence), '--limit', '1'),
+    ).toStrictEqual({
+      schemaVersion: 1,
+      kind: 'session-states',
+      result: { data: [], hasMore: false },
+    });
+    await expect(
+      run(process.execPath, [
+        cli,
+        'session-states',
+        '--state-root',
+        stateRoot,
+        '--provider',
+        'codex',
+      ]),
+    ).rejects.toThrow();
+  });
+});
+
 test('installed plan commands and stdin finalization work without a private plan registry', async () => {
   await withClaudeRuntime(async ({ stateRoot, workspaceRoot }) => {
     const directory = join(workspaceRoot, 'ordinary-plan');

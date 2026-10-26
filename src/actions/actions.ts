@@ -64,6 +64,8 @@ export const createActions = (
   let lane = Promise.resolve();
   const eventCounts = new Map<IManagedThread['provider'], number>();
   const blockedProviders = new Set<IManagedThread['provider']>();
+  // providers whose connection reports the sessions other clients drive
+  const observingProviders = new Set<IManagedThread['provider']>();
   let closing = false;
   let unavailable = false;
   let eventFailure: unknown;
@@ -572,6 +574,15 @@ export const createActions = (
     gap(provider, nativeId) {
       if (controlled.has(key(provider, nativeId))) live.markGap(key(provider, nativeId));
     },
+    session(provider, nativeId, state) {
+      observingProviders.add(provider);
+      // a session this runtime controls reports its transitions through its own thread state
+      if (controlled.has(key(provider, nativeId))) return;
+      enqueue(provider, async () => {
+        await store.observeSessions(provider, [{ nativeId, state }], false);
+        onChange();
+      });
+    },
     delta(provider, nativeId, turnId, itemId, text) {
       if (controlled.has(key(provider, nativeId)))
         live.append(key(provider, nativeId), turnId, itemId, text);
@@ -662,6 +673,9 @@ export const createActions = (
           provider,
           ...(nativeId ? { nativeThreadId: nativeId } : {}),
         });
+        // only sessions observed through the lost connection lose their known state
+        if (!nativeId && observingProviders.has(provider))
+          await store.markSessionsUnknown(provider);
         onChange();
         for (const [id, prompt] of prompts)
           if (

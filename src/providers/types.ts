@@ -24,6 +24,7 @@ import type {
   IExtensionControlCommand,
   ILoginObservation,
   INativeControlResult,
+  ISessionState,
 } from '../contracts/index.js';
 import type { IProviderInputFile } from './inputs/index.js';
 import type {
@@ -66,6 +67,8 @@ export type IAgentProviderEvents = {
   delta(nativeId: string, turnId: string, itemId: string, text: string): void;
   prompt(prompt: INativePrompt): void;
   outcome(outcome: IAgentProviderOutcome, thread?: IProviderThread): void;
+  // the live state of a session another client drives, inside the allowed workspaces
+  session(nativeId: string, state: ISessionState): void;
   unavailable(nativeId?: string): void;
 };
 

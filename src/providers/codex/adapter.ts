@@ -9,6 +9,7 @@ import {
   MAX_TEXT_FILE_BYTES,
   TurnSettingsSchema,
   type IProviderCapabilitySet,
+  type ISessionState,
 } from '../../contracts/index.js';
 import { resolveWorkspaceTarget } from '../../runtime/state/index.js';
 import { decodeHistoryCursor, encodeHistoryCursor } from '../../sessions/index.js';
@@ -38,7 +39,28 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
   id: 'codex',
   async create(context) {
     const native = await createCodexProvider(extraSkillRoots, context.agentTools);
-    native.setEvents(createCodexEvents(native, context.events));
+    // whether each observed session's workspace is allowed, read once per session
+    const allowedSessions = new Map<string, boolean>();
+    let observations = Promise.resolve();
+    const observeSession = (nativeId: string, state: ISessionState): void => {
+      observations = observations
+        .then(async () => {
+          let isAllowed = allowedSessions.get(nativeId);
+          if (isAllowed === undefined) {
+            const thread = await native.readThread(nativeId);
+            isAllowed = await resolveWorkspaceTarget(thread.workspaceRoot, context.allowedRoots)
+              .then(() => true)
+              .catch(() => false);
+            if (allowedSessions.size >= 1024)
+              allowedSessions.delete(allowedSessions.keys().next().value!);
+            allowedSessions.set(nativeId, isAllowed);
+          }
+          if (isAllowed) context.events.session(nativeId, state);
+        })
+        // an unreadable session stays unobserved until its next status change
+        .catch(() => undefined);
+    };
+    native.setEvents(createCodexEvents(native, context.events, observeSession));
     const verifyRoot = async (workspaceRoot: string, expectedRoot: string): Promise<void> => {
       if ((await resolveWorkspaceTarget(workspaceRoot, context.allowedRoots)) !== expectedRoot)
         throw new Exception('The HQ target is outside the allowed workspaces', {
@@ -277,6 +299,7 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
         await verifyRoot(thread.workspaceRoot, workspaceRoot);
         return {
           thread,
+          // handover: a session another client drives becomes adoptable once it is closed there
           canAdopt: thread.nativeState === 'notLoaded',
           canResume: thread.nativeState === 'idle',
         };
@@ -322,7 +345,7 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
         await native.cleanTerminals(`${randomUUID()}:shutdown-clean`, nativeId);
         await native.verifyTerminalsClosed(nativeId);
       },
-      stopControl: () => native.close(),
+      stopControl: () => native.disconnect(),
       close: () => native.close(),
     };
   },
