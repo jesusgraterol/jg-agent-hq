@@ -157,7 +157,7 @@ export const toUsageSnapshot = (usage: INativeUsage, observedAt: number): IUsage
     nativeBuckets && Object.keys(nativeBuckets).length > 0
       ? nativeBuckets
       : usage.rateLimits
-        ? { [usage.rateLimits.limitId ?? 'legacy']: usage.rateLimits }
+        ? { [usage.rateLimits.limitId ?? 'single']: usage.rateLimits }
         : {};
   const windows: IUsageSnapshot['windows'] = [];
   const credits: NonNullable<IUsageSnapshot['credits']> = [];

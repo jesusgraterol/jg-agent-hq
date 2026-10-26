@@ -84,14 +84,6 @@ export const PlanProjectionResultSchema = z.object({
   hasMore: z.boolean(),
 });
 
-// the private host owns its frontmatter policy; the core supplies exact current file contents
-export type IPlanContractParser = (input: {
-  directory: string;
-  content: string;
-}) =>
-  | { body: string; metadata: IPlanMetadata }
-  | Promise<{ body: string; metadata: IPlanMetadata }>;
-
 // a selected coordination file supplies replaceable, bounded seek projections
 export const PlanRevisionProjectionSchema = z.strictObject({
   directory: z.string(),

@@ -1,7 +1,7 @@
 import { MAX_PAGE_SIZE, UsageSnapshotSchema, type IUsageSnapshot } from 'jg-agent-hq/contracts';
 import { expect, test } from 'vitest';
 
-const legacy: IUsageSnapshot = {
+const minimal: IUsageSnapshot = {
   provider: 'custom-provider',
   source: 'native',
   state: 'available',
@@ -21,18 +21,18 @@ const legacy: IUsageSnapshot = {
   ],
 };
 
-test('legacy provider observations remain valid without injecting new required properties', () => {
-  expect(UsageSnapshotSchema.parse(legacy)).toStrictEqual(legacy);
+test('observations without optional metadata remain valid without injecting required properties', () => {
+  expect(UsageSnapshotSchema.parse(minimal)).toStrictEqual(minimal);
 });
 
 test('usage retains exact credit strings and scoped meters while accepting additive metadata', () => {
   const snapshot = {
-    ...legacy,
+    ...minimal,
     credits: [
       { bucket: 'custom', hasCredits: true, isUnlimited: false, balance: '0.29000000000000001' },
     ],
     resetCredits: { availableCount: 0 },
-    windows: legacy.windows.map((window) => ({
+    windows: minimal.windows.map((window) => ({
       ...window,
       period: 'seven-day',
       nativeKind: 'weekly_model',
@@ -47,7 +47,7 @@ test.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1, Infinity, NaN])(
   'usage rejects invalid reset availability %s',
   (availableCount) => {
     expect(
-      UsageSnapshotSchema.safeParse({ ...legacy, resetCredits: { availableCount } }).success,
+      UsageSnapshotSchema.safeParse({ ...minimal, resetCredits: { availableCount } }).success,
     ).toBe(false);
   },
 );
@@ -55,15 +55,17 @@ test.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1, Infinity, NaN])(
 test('credit inventories and new native strings retain explicit public bounds', () => {
   const credit = { bucket: 'custom', hasCredits: false, isUnlimited: false, balance: '0' };
   expect(
-    UsageSnapshotSchema.safeParse({ ...legacy, credits: Array(MAX_PAGE_SIZE).fill(credit) })
+    UsageSnapshotSchema.safeParse({ ...minimal, credits: Array(MAX_PAGE_SIZE).fill(credit) })
       .success,
   ).toBe(true);
   expect(
-    UsageSnapshotSchema.safeParse({ ...legacy, credits: Array(MAX_PAGE_SIZE + 1).fill(credit) })
+    UsageSnapshotSchema.safeParse({ ...minimal, credits: Array(MAX_PAGE_SIZE + 1).fill(credit) })
       .success,
   ).toBe(false);
   expect(
-    UsageSnapshotSchema.safeParse({ ...legacy, credits: [{ ...credit, balance: '1'.repeat(257) }] })
-      .success,
+    UsageSnapshotSchema.safeParse({
+      ...minimal,
+      credits: [{ ...credit, balance: '1'.repeat(257) }],
+    }).success,
   ).toBe(false);
 });

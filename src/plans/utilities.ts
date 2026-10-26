@@ -56,25 +56,13 @@ export const computeObservedPlanRevision = (
   input: Omit<IPlanContract, 'milestones'> & { milestones: IParsedMilestone[] | null },
 ): IPlanRevision => {
   const parsed = PlanMetadataSchema.safeParse(input.metadata);
-  if (
-    !parsed.success ||
-    new Set(input.metadata.repositories).size !== input.metadata.repositories.length
-  )
+  if (!parsed.success)
     throw new Exception('The HQ plan is invalid', {
       code: 'JG_AGENT_HQ_PLAN_INVALID',
       data: { kind: 'invalid-request' },
       cause: parsed.error,
     });
-  const metadata = {
-    ...parsed.data,
-    repositories: [...parsed.data.repositories].sort(),
-    errorReservations: [...parsed.data.errorReservations].sort((left, right) => {
-      const a = serialize(left),
-        b = serialize(right);
-      return a < b ? -1 : a > b ? 1 : 0;
-    }),
-  };
-  const planDigest = hashPlanContent(serialize([input.body, metadata]));
+  const planDigest = hashPlanContent(serialize([input.body, parsed.data]));
   const milestones = input.milestones;
   const breakdownDigest = milestones?.every((milestone) => milestone.id)
     ? hashPlanContent(

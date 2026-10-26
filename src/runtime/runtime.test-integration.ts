@@ -301,7 +301,7 @@ test.each([
   ['omitted', undefined],
   ['null', null],
   ['empty', {}],
-])('legacy quota remains available when the bucket map is %s', async (_descriptor, map) => {
+])('the single quota remains available when the bucket map is %s', async (_descriptor, map) => {
   await withRuntime(async ({ control, request }) => {
     await control({
       nativeUsage: {
@@ -430,7 +430,7 @@ test.each([
         kind: 'usage',
         result: {
           state: 'available',
-          windows: [{ id: 'legacy:primary', period: 'other', durationMinutes: null }],
+          windows: [{ id: 'single:primary', period: 'other', durationMinutes: null }],
           credits: null,
           resetCredits: null,
         },
@@ -458,7 +458,7 @@ test.each([
         windows: [],
         credits: [
           {
-            bucket: 'legacy',
+            bucket: 'single',
             hasCredits: credits.hasCredits,
             isUnlimited: credits.unlimited,
             balance: credits.balance,
@@ -470,7 +470,7 @@ test.each([
   });
 });
 
-test('an overlong optional credit bucket does not discard its legacy quota identity', async () => {
+test('an overlong optional credit bucket does not discard its single quota identity', async () => {
   await withRuntime(async ({ control, request }) => {
     const bucket = 'x'.repeat(257);
     await control({

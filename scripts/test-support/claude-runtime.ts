@@ -28,10 +28,7 @@ export type IClaudeFixture = {
 /** Runs the real runtime and verifies native process teardown before deleting its fixture. */
 export const withClaudeRuntime = async (
   run: (fixture: IClaudeFixture) => Promise<void>,
-  options: Pick<
-    IAgentHqOptions,
-    'parsePlanContract' | 'coordinationRoot' | 'providerFactories'
-  > = {},
+  options: Pick<IAgentHqOptions, 'coordinationRoot' | 'providerFactories'> = {},
 ): Promise<void> => {
   const root = await mkdtemp(join(tmpdir(), 'jg-hq-claude-'));
   const stateRoot = join(root, 'state');

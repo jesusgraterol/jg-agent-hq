@@ -8,7 +8,6 @@ export {
 export { observePlanContract } from './documents.js';
 export type {
   IPlanContract,
-  IPlanContractParser,
   IPlanStopJob,
   IParsedMilestone,
   IPlanArtifacts,

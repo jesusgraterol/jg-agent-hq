@@ -114,7 +114,6 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     allowedRoots,
     projection,
     ownership.owner.nonce,
-    parsed.data.parsePlanContract,
   );
   const skills = createSkills(providers, projection, allowedRoots);
   const accounts = createAccounts(providers);

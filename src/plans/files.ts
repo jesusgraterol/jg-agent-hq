@@ -22,7 +22,7 @@ import {
   observeSkillsBinding,
   observeSequence,
 } from './documents.js';
-import type { IPlanArtifacts, IPlanContractParser } from './types.js';
+import type { IPlanArtifacts } from './types.js';
 
 const MAX_PLAN_BYTES = 1_048_576;
 
@@ -90,7 +90,6 @@ export const parsePlanCoordination = (coordinationText: string | null): IPlanCoo
     return coordinationText === null
       ? {
           schemaVersion: 1 as const,
-          comparisons: [],
           finalized: null,
           planApproval: null,
           sequenceApproval: null,
@@ -167,7 +166,6 @@ export const resolvePlanDirectory = async (selected: string, roots: string[]): P
 export const readPlanArtifacts = async (
   target: IPlanTarget,
   roots: string[],
-  parseContract?: IPlanContractParser,
 ): Promise<IPlanArtifacts> => {
   const directory = await resolvePlanDirectory(target.directory, roots);
   const [plan, milestones, coordinationText] = await Promise.all([
@@ -180,10 +178,7 @@ export const readPlanArtifacts = async (
       code: 'JG_AGENT_HQ_PLAN_INVALID',
       data: { kind: 'invalid-request' },
     });
-  const contract = observePlanContract(
-    plan,
-    parseContract ? await parseContract({ directory, content: plan }) : undefined,
-  );
+  const contract = observePlanContract(plan);
   const sequence = milestones === null ? null : observeSequence(milestones);
   const skillsBinding = observeSkillsBinding(plan, sequence);
   const coordination = parsePlanCoordination(coordinationText);

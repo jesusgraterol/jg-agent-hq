@@ -140,7 +140,6 @@ export {
   PlanApprovalSchema,
   PlanExecutionSchema,
   PlanFinalizationSchema,
-  PlanComparisonSchema,
   PlanCoordinationSchema,
   PlanMilestoneSchema,
   PlanStatusSchema,
@@ -154,7 +153,6 @@ export type {
   IPlanCommand,
   IPlanCommandInput,
   IPlanCoordination,
-  IPlanComparison,
   IPlanMilestone,
   IPlanStatus,
   IPlanResult,
@@ -222,23 +220,8 @@ export type {
   ISessionConfiguration,
 } from './configuration/index.js';
 
-// host read models
-export {
-  BrowserRepositorySchema,
-  BrowserPlanSummarySchema,
-  BrowserPlanPageSchema,
-  BrowserPlanDetailSchema,
-  BrowserSessionSchema,
-} from './browser/index.js';
-
 // bounded host views
-export {
-  BrowserRepositoryPageSchema,
-  BrowserSystemSchema,
-  BrowserThreadDetailSchema,
-  PublicationStatusSchema,
-} from './browser/index.js';
-export type { IPublicationStatus } from './browser/index.js';
+export { BrowserThreadDetailSchema } from './browser/index.js';
 
 // bounded file inputs and complete native results
 export {

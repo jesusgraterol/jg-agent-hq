@@ -79,35 +79,20 @@ export const observePlanId = (source: string): string | null => {
 };
 
 /**
- * The default HQ profile keeps unknown contract fields, including the plan identity.
+ * Keeps the body and every frontmatter field except the administrative keys, including the plan
+ * identity, as the execution contract.
  * @throws
  * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
  */
-export const observePlanContract = (
-  source: string,
-  custom?: { body: string; metadata: IPlanMetadata },
-): { body: string; metadata: IPlanMetadata } => {
+export const observePlanContract = (source: string): { body: string; metadata: IPlanMetadata } => {
   const document = parsePlan(source);
   const raw = metadataOf(document);
   if (!document.body || ('id' in raw && !z.string().trim().min(1).safeParse(raw.id).success))
     return invalid();
-  if (custom) {
-    const parsed = PlanMetadataSchema.safeParse(custom.metadata);
-    if (!parsed.success || custom.body !== document.body) return invalid(parsed.error);
-    return { body: document.body, metadata: parsed.data };
-  }
   const extensions = Object.fromEntries(
-    Object.entries(raw).filter(
-      ([key]) =>
-        ![...administrativeKeys, 'scope', 'repositories', 'errorReservations'].includes(key),
-    ),
+    Object.entries(raw).filter(([key]) => !administrativeKeys.includes(key)),
   );
-  const parsed = PlanMetadataSchema.safeParse({
-    scope: 'scope' in raw ? raw.scope : 'local',
-    repositories: 'repositories' in raw ? raw.repositories : [],
-    errorReservations: 'errorReservations' in raw ? raw.errorReservations : [],
-    extensions,
-  });
+  const parsed = PlanMetadataSchema.safeParse({ extensions });
   if (!parsed.success) return invalid(parsed.error);
   return { body: document.body, metadata: parsed.data };
 };

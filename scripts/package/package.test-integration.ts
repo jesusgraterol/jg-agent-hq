@@ -108,11 +108,11 @@ test(
         usageContract,
         `import type { IAgentProvider } from 'jg-agent-hq';
 import type { IUsageCredits, IUsageResetCredits, IUsageWindowScope } from 'jg-agent-hq/contracts';
-export const legacyReadUsage: IAgentProvider['readUsage'] = async () => ({
-  provider: 'older-provider', source: 'native', state: 'unavailable', observedAt: null,
+export const minimalReadUsage: IAgentProvider['readUsage'] = async () => ({
+  provider: 'minimal-provider', source: 'native', state: 'unavailable', observedAt: null,
   ordinaryUsageAllowed: null, windows: [],
 });
-export const credit: IUsageCredits = { bucket: 'older-provider', hasCredits: true, isUnlimited: false, balance: '0.29000000000000001' };
+export const credit: IUsageCredits = { bucket: 'minimal-provider', hasCredits: true, isUnlimited: false, balance: '0.29000000000000001' };
 export const resets: IUsageResetCredits = { availableCount: 0 };
 export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model' }, surface: null };
 `,
@@ -139,7 +139,11 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
       import * as packed from 'jg-agent-hq';
       import { createAgentHq, requestAgentHq, withHqLock, readHqLockState } from 'jg-agent-hq';
       if ('upgradeHqStorage' in packed) throw new Error('packed storage upgrade remains');
-      import { HqResponseSchema, BrowserActionSchema, UsageCreditsSchema, UsageResetCreditsSchema, UsageWindowScopeSchema } from 'jg-agent-hq/contracts';
+      import * as contracts from 'jg-agent-hq/contracts';
+      import { HqResponseSchema, BrowserActionSchema, BrowserCommandSchema, UsageCreditsSchema, UsageResetCreditsSchema, UsageWindowScopeSchema } from 'jg-agent-hq/contracts';
+      for (const name of ['BrowserRepositorySchema','BrowserRepositoryPageSchema','BrowserPlanSummarySchema','BrowserPlanPageSchema','BrowserPlanDetailSchema','BrowserSessionSchema','BrowserSystemSchema','PublicationStatusSchema','PlanComparisonSchema'])
+        if (name in contracts) throw new Error('packed contract remains: ' + name);
+      if (BrowserCommandSchema.options.map((command) => command.shape.kind.value).join() !== 'native,plan') throw new Error('packed browser commands changed');
       const credit = UsageCreditsSchema.parse({bucket:'codex',hasCredits:true,isUnlimited:false,balance:'0.29000000000000001'});
       if(credit.balance!=='0.29000000000000001') throw new Error('packed credit precision failed');
       UsageResetCreditsSchema.parse({availableCount:0});
@@ -157,7 +161,7 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
         const response = HqResponseSchema.parse(await requestAgentHq(runtime.stateRoot, { kind: 'threads', provider: 'codex', workspaceRoot: process.cwd(), limit: 1 }));
         if (response.kind !== 'threads' || response.result.data.length !== 1) throw new Error('packed runtime failed');
         const status = await runtime.request({kind:'status'});
-        const input = BrowserActionSchema.parse({id:crypto.randomUUID(),runtimeEpoch:status.result.runtimeEpoch,command:{kind:'publication-retry',publicationId:crypto.randomUUID(),expectedCommit:null}});
+        const input = BrowserActionSchema.parse({id:crypto.randomUUID(),runtimeEpoch:status.result.runtimeEpoch,command:{kind:'plan',command:{kind:'status',target:{directory:'/packed-plan'}}}});
         let effects = 0;
         await runtime.performBrowserAction(input,'packed-operator',async()=>{effects++;});
         await runtime.performBrowserAction(input,'packed-operator',async()=>{effects++;});

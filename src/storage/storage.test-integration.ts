@@ -26,11 +26,8 @@ const createHostAction = (runtimeEpoch: string): IBrowserAction => ({
   id: randomUUID(),
   runtimeEpoch,
   command: {
-    kind: 'priority',
-    target: { directory: '/selected-plan' },
-    expectedRevision: { planDigest: 'a'.repeat(64), breakdownDigest: null },
-    priority: 'P1',
-    reason: 'Host choice',
+    kind: 'plan',
+    command: { kind: 'status', target: { directory: '/selected-plan' } },
   },
 });
 

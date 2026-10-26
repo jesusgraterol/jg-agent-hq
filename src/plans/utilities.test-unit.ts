@@ -13,19 +13,7 @@ const sequence = (first = block(1, 'First', idA), second = block(2, 'Second', id
 const input = (): IPlanContract => ({
   body: '# Plan\nImplement a native workspace.\n',
   metadata: {
-    scope: 'cross-repo',
-    extensions: {},
-    repositories: ['b', 'a'],
-    errorReservations: [
-      {
-        repository: 'a',
-        namespace: 'api',
-        start: 100,
-        end: 104,
-        registryPath: 'errors/index.ts',
-        purpose: 'Workspace errors',
-      },
-    ],
+    extensions: { id: 'workspace-plan', owner: { team: 'core', reviewers: ['a', 'b'] } },
   },
   milestones: sequence(),
 });
@@ -34,7 +22,11 @@ test('execution digests preserve only documented administrative and ordinal diff
   const baseline = input();
   const expected = computePlanRevision(baseline);
   const changed = input();
-  changed.metadata.repositories.reverse();
+  // extension key order is not contractual
+  changed.metadata.extensions = {
+    owner: { reviewers: ['a', 'b'], team: 'core' },
+    id: 'workspace-plan',
+  };
   changed.milestones = sequence(
     block(11, 'First', idA, 'in progress'),
     block(12, 'Second', idB),
@@ -75,22 +67,26 @@ test('shared sequence rules, milestone ordering and immutable IDs are contractua
     );
 });
 
-test.each(['scope', 'repository', 'reservation'] as const)(
-  'changing %s metadata invalidates execution',
-  (kind) => {
-    const baseline = input();
-    const changed = input();
-    if (kind === 'scope') changed.metadata.scope = 'single-repo';
-    if (kind === 'repository') changed.metadata.repositories.push('c');
-    if (kind === 'reservation') changed.metadata.errorReservations[0]!.end++;
-    expect(computePlanRevision(changed).planDigest).not.toBe(
-      computePlanRevision(baseline).planDigest,
-    );
-    expect(computePlanRevision(changed).breakdownDigest).not.toBe(
-      computePlanRevision(baseline).breakdownDigest,
-    );
-  },
-);
+test.each([
+  ['the body', (contract: IPlanContract) => (contract.body += 'Also document it.\n')],
+  ['an extension value', (contract: IPlanContract) => (contract.metadata.extensions.id = 'other')],
+  [
+    'array order inside an extension',
+    (contract: IPlanContract) =>
+      (contract.metadata.extensions.owner = { team: 'core', reviewers: ['b', 'a'] }),
+  ],
+  ['a new extension', (contract: IPlanContract) => (contract.metadata.extensions.protocol = '0.2')],
+])('changing %s invalidates execution', (_label, change) => {
+  const baseline = input();
+  const changed = input();
+  change(changed);
+  expect(computePlanRevision(changed).planDigest).not.toBe(
+    computePlanRevision(baseline).planDigest,
+  );
+  expect(computePlanRevision(changed).breakdownDigest).not.toBe(
+    computePlanRevision(baseline).breakdownDigest,
+  );
+});
 
 test.each([
   sequence().replace(idB, idA),

@@ -79,7 +79,7 @@ export type {
 
 // pure execution revision contracts
 export { computePlanRevision } from './plans/index.js';
-export type { IPlanContract, IPlanContractParser } from './plans/index.js';
+export type { IPlanContract } from './plans/index.js';
 
 // native media transport and results
 export type { IProviderInputFile } from './providers/index.js';

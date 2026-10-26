@@ -1,7 +1,5 @@
 import { z } from 'zod';
 
-import { ProviderIdSchema } from '../providers/index.js';
-
 // execution revisions are independent of exact file inspection hashes
 export const PlanDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const PlanRevisionSchema = z.strictObject({
@@ -10,24 +8,8 @@ export const PlanRevisionSchema = z.strictObject({
 });
 export type IPlanRevision = z.infer<typeof PlanRevisionSchema>;
 
-// JSON-only contract metadata remains safe in the browser contracts entry point.
+// plan frontmatter beyond the administrative keys, kept as JSON-safe extensions
 export const PlanMetadataSchema = z.strictObject({
-  scope: z.string().min(1).max(128),
-  repositories: z.array(z.string().min(1).max(128)).max(128),
-  errorReservations: z
-    .array(
-      z
-        .strictObject({
-          repository: z.string().min(1).max(128),
-          namespace: z.string().min(1).max(256),
-          start: z.number().int().safe(),
-          end: z.number().int().safe(),
-          registryPath: z.string().min(1).max(4096),
-          purpose: z.string().min(1).max(4096),
-        })
-        .refine((reservation) => reservation.end >= reservation.start),
-    )
-    .max(128),
   extensions: z.record(z.string(), z.json()).default({}),
 });
 export type IPlanMetadata = z.infer<typeof PlanMetadataSchema>;
@@ -302,26 +284,8 @@ export const PlanFinalizationSchema = z.strictObject({
   fileHash: PlanDigestSchema.nullable(),
   createdAt: z.number().int(),
 });
-// coordinators own semantic review; the core preserves its exact revision-bound evidence
-export const PlanComparisonSchema = z.strictObject({
-  sourceRevision: PlanRevisionSchema,
-  targetDirectory: z.string().min(1).max(4096),
-  targetRevision: PlanRevisionSchema,
-  verdict: z.enum(['compatible', 'contradiction']),
-  reason: z.string().min(1).max(4096),
-  reviewer: z.strictObject({
-    provider: ProviderIdSchema,
-    cliVersion: z.string().min(1).max(128),
-    model: z.string().min(1).max(256).nullable(),
-    reference: z.string().min(1).max(4096),
-  }),
-  reviewedAt: z.number().int().nonnegative(),
-});
-export type IPlanComparison = z.infer<typeof PlanComparisonSchema>;
-
 export const PlanCoordinationSchema = z.strictObject({
   schemaVersion: z.literal(1),
-  comparisons: z.array(PlanComparisonSchema).max(1024),
   finalized: PlanFinalizationSchema.nullable(),
   planApproval: PlanApprovalSchema.nullable(),
   sequenceApproval: PlanApprovalSchema.nullable(),
@@ -346,13 +310,11 @@ export type IPlanCoordination = z.infer<typeof PlanCoordinationSchema>;
 
 // collection bodies remain in the file owner and paged SQLite projections
 export const PlanCoordinationSummarySchema = PlanCoordinationSchema.omit({
-  comparisons: true,
   completions: true,
   correspondences: true,
   revision: true,
   baseline: true,
 }).extend({
-  comparisonCount: z.number().int().nonnegative(),
   completionCount: z.number().int().nonnegative(),
   revision: PlanRevisionWorkflowSchema.omit({
     checkpoint: true,

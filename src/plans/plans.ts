@@ -47,13 +47,7 @@ import {
   computePlanRevision,
   parsePlanMilestones,
 } from './utilities.js';
-import type {
-  IPlanArtifacts,
-  IPlanWriteIntent,
-  IPlanContractParser,
-  IPlanStopJob,
-  IApplyPlanIntent,
-} from './types.js';
+import type { IPlanArtifacts, IPlanWriteIntent, IPlanStopJob, IApplyPlanIntent } from './types.js';
 
 const conflict = (): never => {
   throw new Exception('The HQ action conflicts with its recorded state', {
@@ -73,7 +67,6 @@ export const createPlans = (
   roots: string[],
   store: IStore,
   runtimeEpoch: string,
-  parseContract?: IPlanContractParser,
 ) => {
   const assertWriteBounds = (intent: IPlanWriteIntent): void => {
     const markdown = [
@@ -122,7 +115,7 @@ export const createPlans = (
     apply: IApplyPlanIntent,
   ): Promise<IPlanArtifacts> => {
     try {
-      return await readPlanArtifacts({ directory }, roots, parseContract);
+      return await readPlanArtifacts({ directory }, roots);
     } catch (cause) {
       if (
         stopHandler &&
@@ -392,7 +385,7 @@ export const createPlans = (
         phaseActionId: id,
         controls: observedConflict.controls,
       });
-    return readPlanArtifacts({ directory: artifacts.directory }, roots, parseContract);
+    return readPlanArtifacts({ directory: artifacts.directory }, roots);
   };
   const implementationDigest = (action: IActionEnvelope) =>
     hashPlanContent(JSON.stringify(['implementation-progress', action]));
@@ -482,7 +475,7 @@ export const createPlans = (
      * - JG_AGENT_HQ_PLAN_FAILED: The HQ plan operation failed
      */
     async stopPhase(target: IPlanCommand['target']): Promise<IPlanRevisionWorkflow | null> {
-      return (await readPlanArtifacts(target, roots, parseContract)).coordination.revision;
+      return (await readPlanArtifacts(target, roots)).coordination.revision;
     },
     /**
      * Retains failed quiescence/checkpoint work without releasing the editing gate.
@@ -515,7 +508,7 @@ export const createPlans = (
     ): Promise<void> {
       await withHqLock(coordinationRoot, 'plan-revision-blocked', () =>
         withDocuments(target.directory, async (apply) => {
-          const artifacts = await readPlanArtifacts(target, roots, parseContract);
+          const artifacts = await readPlanArtifacts(target, roots);
           const workflow = artifacts.coordination.revision;
           if (
             !workflow ||
@@ -615,7 +608,7 @@ export const createPlans = (
             if (previous.digest !== digest || previous.directory !== artifacts.directory)
               conflict();
             await apply(previous);
-            artifacts = await readPlanArtifacts(command.target, roots, parseContract);
+            artifacts = await readPlanArtifacts(command.target, roots);
             const current = describeCurrent(
               artifacts,
               await store.getPendingPlanOperationId(artifacts.directory),
@@ -808,7 +801,7 @@ export const createPlans = (
             state: 'prepared',
           });
           await apply(intent);
-          artifacts = await readPlanArtifacts(command.target, roots, parseContract);
+          artifacts = await readPlanArtifacts(command.target, roots);
           await store.projectPlan({
             directory: artifacts.directory,
             sourceHash: artifacts.hashes.milestones,
@@ -931,14 +924,14 @@ export const createPlans = (
       revisionId: string,
       phaseActionId: string,
     ): Promise<void> {
-      const selected = await readPlanArtifacts(target, roots, parseContract);
+      const selected = await readPlanArtifacts(target, roots);
       const current = selected.coordination.revision;
       if (!current || current.id !== revisionId || current.phaseActionId !== phaseActionId)
         conflict();
       const proofs = await capturePlanWorktrees(current!.checkouts, roots);
       await withHqLock(coordinationRoot, 'plan-checkpoint', () =>
         withDocuments(target.directory, async (apply) => {
-          const artifacts = await readPlanArtifacts(target, roots, parseContract);
+          const artifacts = await readPlanArtifacts(target, roots);
           const workflow = artifacts.coordination.revision;
           if (!workflow || workflow.id !== revisionId || workflow.phaseActionId !== phaseActionId)
             conflict();
