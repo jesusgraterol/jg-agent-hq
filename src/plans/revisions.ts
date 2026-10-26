@@ -12,7 +12,7 @@ import {
 } from '../contracts/index.js';
 
 import { isSamePlanRevision, parsePlanMilestones } from './utilities.js';
-import type { IPlanArtifacts, IPlanRevisionProjection } from './types.js';
+import type { IPlanArtifacts } from './types.js';
 
 const conflict = (): never => {
   throw new Exception('The HQ action conflicts with its recorded state', {
@@ -24,7 +24,7 @@ const conflict = (): never => {
 };
 
 /**
- * Saves contract identity before any planning skill can remove the milestone file.
+ * Saves the current contract, milestone identities and progress before planning edits begin.
  * @returns A durable snapshot; native quiescence and worktree evidence are recorded separately.
  * @throws
  * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
@@ -100,7 +100,6 @@ export const beginPlanRevision = (
     checkouts: input.checkouts,
     checkpoint,
     invocation: null,
-    proposal: null,
     createdAt: Date.now(),
     hasUncertainEffects:
       !!artifacts.coordination.observedConflict ||
@@ -183,7 +182,7 @@ export const recordPlanCompletion = (
       checkouts,
       checks: input.checks,
       completedAt: Date.now(),
-      reopenActionId: null,
+      reopenedBy: null,
     };
   }
   const milestone =
@@ -192,13 +191,6 @@ export const recordPlanCompletion = (
       (entry) => entry.id === input.milestoneId,
     );
   if (!milestone?.id || !milestone.contractDigest) conflict();
-  const reopened = [...artifacts.coordination.correspondences]
-    .reverse()
-    .find(
-      (record) =>
-        record.relation === 'reopened' &&
-        record.targets.some((target) => target.id === input.milestoneId),
-    );
   return {
     id: input.action.id,
     action: input.action,
@@ -211,12 +203,13 @@ export const recordPlanCompletion = (
     checkouts,
     checks: input.checks,
     completedAt: Date.now(),
-    reopenActionId: reopened?.action.id ?? null,
+    reopenedBy: null,
   };
 };
 
 /**
- * Retains the latest canonical identities for reconciliation of directly edited/deleted files.
+ * Retains the latest finalized identities and progress, so a later checkpoint starts from them
+ * even after the files were edited directly.
  * @returns A new baseline without changing original completion receipts.
  * @throws
  * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
@@ -240,40 +233,4 @@ export const refreshPlanBaseline = (
     isQuiescent: previous?.isQuiescent ?? true,
     capturedAt: Date.now(),
   };
-};
-
-/** Builds indexed retained evidence without exposing whole coordination collections to clients. */
-export const projectPlanRevision = (artifacts: IPlanArtifacts): IPlanRevisionProjection => {
-  const records: IPlanRevisionProjection['records'] = [];
-  const sources = new Map<string, IPlanCheckpoint['entries'][number]>();
-  for (const correspondence of artifacts.coordination.correspondences) {
-    for (const source of correspondence.sources)
-      sources.set(`${source.id}:${source.contractDigest}`, source);
-    records.push({
-      collection: 'correspondences',
-      id: correspondence.id,
-      entry: {
-        kind: 'correspondence',
-        entry: {
-          ...correspondence,
-          sources: correspondence.sources.map(({ id, contractDigest, status }) => ({
-            id,
-            contractDigest,
-            status,
-          })),
-        },
-      },
-    });
-  }
-  for (const source of artifacts.coordination.revision?.checkpoint?.entries ?? [])
-    sources.set(`${source.id}:${source.contractDigest}`, source);
-  for (const source of artifacts.coordination.baseline?.entries ?? [])
-    sources.set(`${source.id}:${source.contractDigest}`, source);
-  for (const [id, entry] of sources)
-    records.push({ collection: 'sources', id, entry: { kind: 'source', entry } });
-  for (const entry of artifacts.coordination.revision?.proposal?.drafts ?? [])
-    records.push({ collection: 'drafts', id: entry.id, entry: { kind: 'draft', entry } });
-  for (const entry of artifacts.coordination.completions)
-    records.push({ collection: 'evidence', id: entry.id, entry: { kind: 'evidence', entry } });
-  return { directory: artifacts.directory, sourceHash: artifacts.hashes.coordination, records };
 };

@@ -37,7 +37,6 @@ import {
   ErrorKindSchema,
   type IThreadSummary,
   type IPlanMilestone,
-  type IPlanReconciliationEntry,
   type IActionReceipt,
   type IManagedThread,
   type IActionSummary,
@@ -46,6 +45,9 @@ import {
   HqRequestSchema,
   type IActionPlanContext,
   type IHistoryProvenance,
+  SessionStateSchema,
+  type ISessionState,
+  type ISessionTransition,
 } from '../contracts/index.js';
 import type { IHistoryRequest } from '../sessions/index.js';
 import {
@@ -59,9 +61,6 @@ import {
   PlanWriteIntentSchema,
   PlanProjectionSchema,
   PlanProjectionPageSchema,
-  PlanRevisionProjectionSchema,
-  PlanRevisionPageSchema,
-  type IPlanRevisionProjection,
   type IPlanWriteIntent,
   type IPlanProjection,
 } from '../plans/index.js';
@@ -111,8 +110,7 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     actionId: z.uuid(),
   }),
   z.strictObject({ kind: z.literal('evidence-origins'), request: EvidenceOriginsRequestSchema }),
-  z.strictObject({ kind: z.literal('storage-maintenance'), isSnapshot: z.boolean() }),
-  z.strictObject({ kind: z.literal('snapshot-plans'), after: z.string() }),
+  z.strictObject({ kind: z.literal('storage-maintenance') }),
   z.strictObject({ kind: z.literal('snapshot-backup'), destination: z.string() }),
   z.strictObject({
     kind: z.literal('browser-read'),
@@ -137,11 +135,26 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     nextCursor: z.string().max(16_384).nullable(),
     observedAt: z.number().int(),
   }),
+  z.strictObject({ kind: z.literal('plan-register'), directory: z.string() }),
   z.strictObject({
-    kind: z.literal('plan-revision-project'),
-    projection: PlanRevisionProjectionSchema,
+    kind: z.literal('sessions-observe'),
+    provider: z.string(),
+    sessions: z
+      .array(z.strictObject({ nativeId: z.string().min(1), state: SessionStateSchema }))
+      .max(1024),
+    isComplete: z.boolean(),
   }),
-  z.strictObject({ kind: z.literal('plan-revision-page'), page: PlanRevisionPageSchema }),
+  z.strictObject({ kind: z.literal('sessions-unknown'), provider: z.string() }),
+  z.strictObject({
+    kind: z.literal('sessions-states'),
+    provider: z.string(),
+    nativeIds: z.array(z.string()).max(MAX_PAGE_SIZE),
+  }),
+  z.strictObject({
+    kind: z.literal('session-transitions'),
+    afterSequence: z.number().int().nonnegative(),
+    limit: z.number().int().min(1).max(128),
+  }),
   z.strictObject({ kind: z.literal('thread-plan-read'), threadId: z.uuid() }),
   z.strictObject({ kind: z.literal('plan-threads'), directory: z.string() }),
   z.strictObject({ kind: z.literal('queue-peek'), threadId: z.uuid() }),
@@ -314,14 +327,13 @@ export type IStore = {
    * @throws
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
-  prepareStorageMaintenance(isSnapshot: boolean): Promise<boolean>;
+  prepareStorageMaintenance(): Promise<boolean>;
   /**
    * Reads one seek page of registered plan directories while maintenance holds admission.
    * @returns At most 128 ordered directories.
    * @throws
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
-  snapshotPlans(after: string): Promise<string[]>;
   /**
    * Copies the worker's database through SQLite's WAL-aware backup API.
    * Local backup completion has no metadata-command deadline; maintenance stays held until it settles.
@@ -359,23 +371,46 @@ export type IStore = {
     operatorId: string,
     state: 'acknowledged' | 'uncertain',
   ): Promise<IBrowserReceipt | null>;
-  /** Refreshes one selected coordination-file projection.
-   * @returns A promise resolved after projection commit.
+  /** Records a resolved plan directory so snapshots capture its files.
+   * @returns A promise resolved after the idempotent insert commits.
    * @throws
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
-  projectPlanRevision(projection: IPlanRevisionProjection): Promise<void>;
-  /** Reads a bounded revision/evidence seek page.
-   * @returns A page within the response byte budget.
+  registerPlan(directory: string): Promise<void>;
+  /** Records observed states of sessions HQ doesn't manage; complete observations close omissions.
+   * @returns A promise resolved after the transaction commits.
    * @throws
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
-  listPlanRevision(page: {
-    directory: string;
-    collection: 'sources' | 'drafts' | 'evidence' | 'correspondences';
-    after: string;
-    limit: number;
-  }): Promise<{ data: IPlanReconciliationEntry[]; lastId: string | null; hasMore: boolean }>;
+  observeSessions(
+    provider: string,
+    sessions: { nativeId: string; state: ISessionState }[],
+    isComplete: boolean,
+  ): Promise<void>;
+  /** Marks a provider's open observed sessions unknown after its native connection was lost.
+   * @returns A promise resolved after the update commits.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  markSessionsUnknown(provider: string): Promise<void>;
+  /** Reads the live states of selected native sessions, managed or observed.
+   * @returns The sessions HQ manages or has observed, without the others.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  getSessionStates(
+    provider: string,
+    nativeIds: string[],
+  ): Promise<{ nativeId: string; state: ISessionState }[]>;
+  /** Reads session transitions after a sequence, in order.
+   * @returns A bounded page and whether more transitions follow.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  listSessionTransitions(
+    afterSequence: number,
+    limit: number,
+  ): Promise<{ data: ISessionTransition[]; hasMore: boolean }>;
   /** Reads a thread's exact current plan binding.
    * @returns Its guided context, or null.
    * @throws

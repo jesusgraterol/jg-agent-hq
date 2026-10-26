@@ -11,6 +11,7 @@ import {
   type ITurnSummary,
   type IUsageSnapshot,
   type INativeLineage,
+  type ISessionState,
 } from '../../contracts/index.js';
 
 import type { INativeItem, INativeThread, INativeTurn, INativeUsage } from './types.js';
@@ -23,6 +24,20 @@ export const toNativeLineage = (thread: INativeThread): INativeLineage => ({
   parentThreadId: thread.parentThreadId ?? null,
   forkedFromId: thread.forkedFromId ?? null,
 });
+
+/** Maps a native thread status to the shared session state; an active thread can wait on the operator. */
+export const toSessionState = (status: INativeThread['status']): ISessionState =>
+  status.type === 'active'
+    ? status.activeFlags?.some(
+        (flag) => flag === 'waitingOnApproval' || flag === 'waitingOnUserInput',
+      )
+      ? 'waiting'
+      : 'running'
+    : status.type === 'idle'
+      ? 'idle'
+      : status.type === 'notLoaded'
+        ? 'closed'
+        : 'failed';
 
 /**
  * Converts native seconds to the public millisecond-based metadata contract.
@@ -39,6 +54,7 @@ export const toThreadSummary = (thread: INativeThread): IThreadSummary =>
     createdAt: thread.createdAt * 1000,
     updatedAt: thread.updatedAt * 1000,
     nativeState: thread.status.type,
+    state: toSessionState(thread.status),
     ownership: 'external',
     managedId: null,
     historyState: 'available',
@@ -157,7 +173,7 @@ export const toUsageSnapshot = (usage: INativeUsage, observedAt: number): IUsage
     nativeBuckets && Object.keys(nativeBuckets).length > 0
       ? nativeBuckets
       : usage.rateLimits
-        ? { [usage.rateLimits.limitId ?? 'legacy']: usage.rateLimits }
+        ? { [usage.rateLimits.limitId ?? 'single']: usage.rateLimits }
         : {};
   const windows: IUsageSnapshot['windows'] = [];
   const credits: NonNullable<IUsageSnapshot['credits']> = [];

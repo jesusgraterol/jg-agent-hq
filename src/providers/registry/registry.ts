@@ -15,6 +15,7 @@ import {
   ProviderStatusSchema,
   ProviderModelPageSchema,
   SessionConfigurationSchema,
+  SessionStateSchema,
   UsageSnapshotSchema,
   type IManagedThread,
   type IProviderCapabilities,
@@ -228,6 +229,14 @@ export const createProviderRegistry = (
           );
         }),
       gap: (nativeId) => deliver(() => handlers?.gap(provider, NativeIdSchema.parse(nativeId))),
+      session: (nativeId, state) =>
+        deliver(() =>
+          handlers?.session(
+            provider,
+            NativeIdSchema.parse(nativeId),
+            SessionStateSchema.parse(state),
+          ),
+        ),
       delta: (nativeId, turnId, itemId, text) =>
         deliver(() => {
           handlers?.delta(

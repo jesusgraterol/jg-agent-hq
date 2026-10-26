@@ -1,6 +1,7 @@
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 
+import { PlanRevisionSchema } from '../contracts/index.js';
 import type { IAgentHq } from '../runtime/index.js';
 import type { IStore } from '../store/index.js';
 import type { createStorage } from '../storage/index.js';
@@ -14,6 +15,7 @@ export const SnapshotHeaderSchema = z.strictObject({
   format: z.literal(1),
   createdAt: z.iso.datetime(),
   schemaHash: HashSchema,
+  packageVersion: z.string().min(1).max(64),
   sourceStateRoot: PathSchema,
   sourceCoordinationRoot: PathSchema,
   sourceAllowedRoots: z.array(PathSchema).min(1).max(128),
@@ -31,13 +33,23 @@ export const SnapshotPlanSchema = z.strictObject({
   key: HashSchema,
   sourceDirectory: PathSchema,
   planId: z.string().max(4096).nullable(),
-  revision: z.number().int().nonnegative().nullable(),
+  // computed from the copied files, next to the revisions the captured database records
+  revision: PlanRevisionSchema.nullable(),
+  recordedRevisions: z.array(PlanRevisionSchema).max(32),
   plan: SnapshotFileSchema.nullable(),
   milestones: SnapshotFileSchema.nullable(),
   coordination: SnapshotFileSchema.nullable(),
   diagnostics: z
-    .array(z.enum(['plan-missing', 'plan-unavailable', 'plan-diagnostics', 'coordination-invalid']))
-    .max(3),
+    .array(
+      z.enum([
+        'plan-missing',
+        'plan-unavailable',
+        'plan-diagnostics',
+        'coordination-invalid',
+        'plan-changed',
+      ]),
+    )
+    .max(4),
 });
 export type ISnapshotPlan = z.infer<typeof SnapshotPlanSchema>;
 
@@ -61,6 +73,7 @@ export const SnapshotInspectionSchema = z.object({
   header: SnapshotHeaderSchema,
   planCount: z.number().int().nonnegative(),
   diagnosticPlanCount: z.number().int().nonnegative(),
+  changedPlanCount: z.number().int().nonnegative(),
   pendingWriteCount: z.number().int().nonnegative(),
 });
 export type IHqSnapshotInspection = z.infer<typeof SnapshotInspectionSchema>;
@@ -85,7 +98,7 @@ export type ISnapshotContext = {
   coordinationRoot: string;
   allowedRoots: string[];
   store: IStore;
-  maintenance: ReturnType<typeof createStorage>['withStorageMaintenance'];
+  admit: ReturnType<typeof createStorage>['run'];
   isClosing: () => boolean;
 };
 
@@ -101,7 +114,7 @@ export const SnapshotWorkerResponseSchema = z.discriminatedUnion('kind', [
     code: z.enum([
       'JG_AGENT_HQ_SNAPSHOT_INVALID',
       'JG_AGENT_HQ_SNAPSHOT_FAILED',
-      'JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED',
+      'JG_AGENT_HQ_STORAGE_INVALID',
     ]),
     message: z.string(),
   }),
@@ -115,6 +128,5 @@ export type ISnapshotSource = {
   actionKeyHash: string;
   schemaHash: string;
   backupDatabase: (path: string) => Promise<unknown>;
-  readPlans: (after: string) => Promise<string[]>;
   verify: (directory: string) => Promise<IHqSnapshotInspection>;
 };

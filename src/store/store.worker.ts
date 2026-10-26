@@ -11,6 +11,7 @@ import { BrowserModel } from './browser/index.js';
 import { CollaborationModel } from './collaboration/index.js';
 import { ControlModel } from './control/index.js';
 import { PlansModel } from './plans/index.js';
+import { SessionsModel } from './sessions/index.js';
 import { StoreRequestSchema, StoreWorkerSchema } from './types.js';
 import { openDatabase } from './schema.js';
 
@@ -34,6 +35,7 @@ const startWorker = async (): Promise<void> => {
     const browser = new BrowserModel(database, options.runtimeEpoch, options.actionKey);
     const collaboration = new CollaborationModel(database, options.runtimeEpoch);
     const plans = new PlansModel(database);
+    const sessions = new SessionsModel(database);
     const controls = new ControlModel(database, options.runtimeEpoch, options.actionKey, plans);
     const claudeHistory = new ClaudeHistoryModel(database);
     const remember = database.prepare(`INSERT INTO hq_native_history_index
@@ -61,14 +63,6 @@ const startWorker = async (): Promise<void> => {
         }
         let result: unknown = null;
         switch (command.kind) {
-          case 'snapshot-plans':
-            result = database
-              .prepare(
-                'SELECT directory FROM hq_plan_registration WHERE directory > ? ORDER BY directory LIMIT 128',
-              )
-              .all(command.after)
-              .map((row) => row.directory);
-            break;
           case 'snapshot-backup': {
             await backup(database, command.destination);
             const copy = new DatabaseSync(command.destination);
@@ -128,7 +122,7 @@ const startWorker = async (): Promise<void> => {
             const pendingPlan = database
               .prepare("SELECT 1 FROM hq_plan_operation WHERE state = 'prepared' LIMIT 1")
               .get();
-            result = !activeThread && !activeAction && (command.isSnapshot || !pendingPlan);
+            result = !activeThread && !activeAction && !pendingPlan;
             break;
           }
           case 'browser-read':
@@ -140,11 +134,20 @@ const startWorker = async (): Promise<void> => {
           case 'browser-settle':
             result = browser.settle(command.id, command.operatorId, command.state);
             break;
-          case 'plan-revision-project':
-            plans.projectRevision(command.projection);
+          case 'plan-register':
+            plans.register(command.directory);
             break;
-          case 'plan-revision-page':
-            result = plans.listRevision(command.page);
+          case 'sessions-observe':
+            sessions.observe(command.provider, command.sessions, command.isComplete);
+            break;
+          case 'sessions-unknown':
+            sessions.markUnknown(command.provider);
+            break;
+          case 'sessions-states':
+            result = sessions.states(command.provider, command.nativeIds);
+            break;
+          case 'session-transitions':
+            result = sessions.transitions(command.afterSequence, command.limit);
             break;
           case 'thread-plan-read':
             result = plans.getThreadPlan(command.threadId);

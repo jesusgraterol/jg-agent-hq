@@ -3,7 +3,7 @@ export { createCodexProvider } from './codex.js';
 export { createCodexProviderFactory } from './adapter.js';
 export type { ICodexProvider, ICodexEvents } from './types.js';
 export { NativeThreadSchema, NativeTurnSchema, NativeItemSchema } from './types.js';
-export { toHistoryItem } from './transformers.js';
+export { toHistoryItem, toSessionState } from './transformers.js';
 export { parseNative } from './validations.js';
 export { parseCodexPrompt, buildCodexReply, toApprovalPresentation } from './approvals/index.js';
 export type { ICodexPrompt } from './approvals/index.js';

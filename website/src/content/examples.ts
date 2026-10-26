@@ -180,7 +180,6 @@ const REVISION_EXAMPLE = {
       text: 'Shows the revised plan and returns an approval only if the user approves.',
     },
     { name: 'requestBreakdown', text: 'Records the request to run jg-breakdown.' },
-    { name: 'confirmCorrespondence', text: 'Confirms which old milestones match the new ones.' },
     { name: 'approveSequence', text: 'Shows the final milestones before approving them.' },
     { name: 'authorize', text: 'Picks the milestones to run, in supervised or auto mode.' },
   ],
@@ -203,7 +202,7 @@ const REVISION_EXAMPLE = {
   result: 'Verified work kept. New scope authorized.',
   resultLabel: 'Illustrative · every decision accepted',
   resultNote:
-    'A milestone keeps its ID and evidence only when you confirm it matches. Changed requirements start as pending. Editing a status in the file never counts as verified.',
+    'A milestone keeps its evidence when jg-breakdown keeps its ID. Work the new breakdown reopens needs a new completion. Editing a status in the file never counts as verified.',
   returns: [
     { name: 'skillsBinding', text: 'Current again after the breakdown refresh.' },
     { name: 'coordination.completionCount', text: 'Verified milestones still counted.' },

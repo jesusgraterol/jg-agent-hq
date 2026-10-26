@@ -4,31 +4,83 @@ import { join } from 'node:path';
 // a synthetic external CLI boundary; the actual runtime/IPC/worker remain real in tests
 const FIXTURE_SOURCE = String.raw`#!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
-import { createInterface } from 'node:readline';
 import { join } from 'node:path';
-if (process.argv.includes('--version')) { process.stdout.write('codex-cli 0.163.0\n'); }
+const args = process.argv.slice(2);
+if (args.includes('--version')) { process.stdout.write('codex-cli 0.163.0\n'); }
+else if (args.join(' ') === 'app-server daemon start') {
+  const directory = process.env.JG_HQ_FIXTURE_DIRECTORY;
+  appendFileSync(join(directory,'commands.jsonl'),JSON.stringify(args)+'\n');
+  if (JSON.parse(readFileSync(join(directory,'control.json'),'utf8')).daemonFailure) { process.stderr.write('daemon unavailable\n');process.exitCode = 1; }
+  else process.stdout.write(JSON.stringify({ status: 'alreadyRunning' })+'\n');
+}
 else {
   const directory = process.env.JG_HQ_FIXTURE_DIRECTORY;
   const workspaceRoot = process.env.JG_HQ_FIXTURE_WORKSPACE;
+  appendFileSync(join(directory,'commands.jsonl'),JSON.stringify(args)+'\n');
   const nativeChild = spawn(process.execPath,['-e','setInterval(() => {},60000)'],{ stdio: 'ignore' });
   writeFileSync(join(directory,'pids.json'),JSON.stringify({ parent: process.pid, child: nativeChild.pid }));
-  const input = createInterface({ input: process.stdin });
   let shuttingDown = false;
   const shutdown = () => {
     if (shuttingDown) return;
     shuttingDown = true;
-    input.close();process.stdin.destroy();
+    process.stdin.destroy();
     if (nativeChild.exitCode !== null || nativeChild.signalCode !== null) return;
     nativeChild.once('close',() => { process.exitCode = 0; });
     nativeChild.kill('SIGTERM');
   };
   process.on('SIGTERM',shutdown);
-  input.on('close',shutdown);
+  process.stdin.on('end',shutdown);
   const controls = () => JSON.parse(readFileSync(join(directory,'control.json'),'utf8'));
+  // the daemon control socket speaks WebSocket; the proxy forwards its bytes unchanged
+  const frame = (text,opcode = 1,isFinal = true) => {
+    const payload = Buffer.from(text);
+    const header = payload.length < 126 ? Buffer.from([0,payload.length]) : payload.length < 65536 ? Buffer.from([0,126,payload.length >> 8,payload.length & 255]) : Buffer.concat([Buffer.from([0,127]),Buffer.alloc(8)]);
+    if (payload.length >= 65536) header.writeBigUInt64BE(BigInt(payload.length),2);
+    header[0] = (isFinal ? 0x80 : 0) | opcode;
+    return Buffer.concat([header,payload]);
+  };
+  // framing options come from the settings read for the current request, not a file read per message
+  let requestControl = {};
+  const send = (text) => {
+    if (requestControl.fragmentFrames && text.length > 1) { process.stdout.write(frame(text.slice(0,1),1,false));process.stdout.write(frame(text.slice(1),0,true)); }
+    else process.stdout.write(frame(text));
+  };
+  let inbound = Buffer.alloc(0);
+  let isOpen = false;
+  process.stdin.on('data',(chunk) => {
+    inbound = Buffer.concat([inbound,chunk]);
+    if (!isOpen) {
+      const end = inbound.indexOf('\r\n\r\n');
+      if (end < 0) return;
+      const key = /sec-websocket-key:\s*(\S+)/i.exec(inbound.subarray(0,end).toString('latin1'))[1];
+      inbound = inbound.subarray(end+4);
+      isOpen = true;
+      const accept = controls().wrongAccept ? 'invalid' : createHash('sha1').update(key+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+      process.stdout.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: '+accept+'\r\n\r\n');
+      if (controls().ping) process.stdout.write(frame('keepalive',9));
+    }
+    while (inbound.length >= 2) {
+      let length = inbound[1] & 127;
+      let offset = 2;
+      if (length === 126) { if (inbound.length < 4) return; length = inbound.readUInt16BE(2);offset = 4; }
+      else if (length === 127) { if (inbound.length < 10) return; length = Number(inbound.readBigUInt64BE(2));offset = 10; }
+      // a real server closes the connection on an unmasked client frame
+      if (!(inbound[1] & 128)) { process.stdout.end();return; }
+      if (inbound.length < offset+4+length) return;
+      const mask = inbound.subarray(offset,offset+4);
+      const payload = Buffer.from(inbound.subarray(offset+4,offset+4+length)).map((byte,index) => byte ^ mask[index & 3]);
+      const opcode = inbound[0] & 15;
+      inbound = inbound.subarray(offset+4+length);
+      if (opcode === 1) handle(payload.toString('utf8'));
+      else if (opcode === 9 && !controls().ignorePings) process.stdout.write(frame(payload.toString('utf8'),10));
+      else if (opcode === 10) appendFileSync(join(directory,'pongs.jsonl'),payload.toString('utf8')+'\n');
+    }
+  });
   const threads = Array.from({ length: 1024 },(_,index) => ({ id: 'thread-'+String(index).padStart(4,'0'), cwd: workspaceRoot, name: 'Task '+index, createdAt: 1_700_000_000 + Math.floor(index/2), updatedAt: 1_700_000_100, status: { type: 'notLoaded' } })).reverse();
-  const respond = (id,result) => process.stdout.write(JSON.stringify({ id,result })+'\n');
-  const notify = (method,params) => process.stdout.write(JSON.stringify({ method,params })+'\n');
+  const respond = (id,result) => send(JSON.stringify({ id,result }));
+  const notify = (method,params) => send(JSON.stringify({ method,params }));
   const managed = new Map();
   const toolCalls = new Map();
   let threadSequence = 0;
@@ -41,9 +93,10 @@ else {
     notify('turn/completed',{threadId,turn:{id:thread.activeTurn,status}});
     thread.activeTurn = null;
   };
-  input.on('line',(line) => {
+  const handle = (line) => {
     const request = JSON.parse(line);
     const control = controls();
+    requestControl = control;
     if (!request.method) {
       appendFileSync(join(directory,'replies.jsonl'),JSON.stringify(request)+'\n');
       if(toolCalls.has(request.id)) {
@@ -60,13 +113,17 @@ else {
     appendFileSync(join(directory,'calls.jsonl'),JSON.stringify({ method: request.method, params: request.params })+'\n');
     if (request.id === undefined) return;
     if (request.method === 'initialize') {
-      if (control.mode === 'malformed') { process.stdout.write('invalid JSON\n');return; }
-      if (control.mode === 'oversized') { process.stdout.write('x'.repeat(8_388_609));return; }
-      if (control.mode === 'partial') { process.stdout.end('{"id":1,"result":');return; }
+      if (control.mode === 'malformed') { send('invalid JSON');return; }
+      if (control.mode === 'oversized') { send('x'.repeat(8_388_609));return; }
+      if (control.mode === 'partial') { const partial = frame('{"id":1,"result":null}');process.stdout.end(partial.subarray(0,partial.length-5));return; }
       if (control.mode === 'empty') { process.stdout.end();return; }
       respond(request.id,{ ...(control.omitVersion?{}:{userAgent:control.version??'codex-cli/fixture'}), futureMetadata:control.futureMetadata });return;
     }
     const { method,params = {} } = request;
+    // held interrupts are confirmed together on the first request after releaseInterrupts is set
+    if (control.releaseInterrupts && !control.holdInterrupt) for (const pending of interrupts.splice(0)) { respond(pending.id,{});complete(pending.params.threadId,'interrupted'); }
+    // threadStatuses reports sessions another client drives, by thread ID
+    const statusOf = (thread) => control.threadStatuses?.[thread.id] ?? thread.status;
     if (control.emitOnce) writeFileSync(join(directory,'control.json'),JSON.stringify({...control,emit:undefined,emitOnce:undefined}));
     if (control.emit) for (const event of control.emit) notify(event.method,event.params);
     if (method === 'model/list') {
@@ -75,7 +132,6 @@ else {
       const offset=params.cursor?Number(params.cursor.split(':')[1]):0;
       respond(request.id,{data:choices.slice(offset,offset+params.limit),nextCursor:offset+params.limit<choices.length?'models:'+String(offset+params.limit):null});return;
     }
-    if (method === 'skills/extraRoots/set') {respond(request.id,{});return;}
     if (method === 'skills/list') {
       if(control.releaseThreadId)complete(control.releaseThreadId);
       if(control.skillsFailure){respond(request.id,{data:'invalid'});return;}
@@ -86,7 +142,7 @@ else {
       respond(request.id,{data:[{cwd:control.wrongSkillRoot??params.cwds[0],skills,errors:control.skillErrors?[{}]:[]}]});return;
     }
     if(method==='account/login/start'||method==='mcpServer/oauth/login'){
-      if(control.rejectAuth){process.stdout.write(JSON.stringify({id:request.id,error:{code:-32603,message:'Sensitive native failure must not escape'}})+'\n');return;}
+      if(control.rejectAuth){send(JSON.stringify({id:request.id,error:{code:-32603,message:'Sensitive native failure must not escape'}}));return;}
       const loginId=control.sharedMcpLoginId&&method==='mcpServer/oauth/login'?'shared-native-login':'login-'+request.id;
       const kind=method==='account/login/start'?'account':'mcp';
       logins.set(loginId,{kind,threadId:params.threadId,name:params.name});
@@ -106,12 +162,12 @@ else {
       notify('account/updated',{authMode:null});respond(request.id,{});return;
     }
     if(method==='config/mcpServer/reload'){
-      if(control.rejectExtension){process.stdout.write(JSON.stringify({id:request.id,error:{code:-32602,message:'Sensitive native failure must not escape'}})+'\n');return;}
+      if(control.rejectExtension){send(JSON.stringify({id:request.id,error:{code:-32602,message:'Sensitive native failure must not escape'}}));return;}
       if(control.lateExtension)setTimeout(()=>respond(request.id,{}),31000);else respond(request.id,{});return;
     }
     if (method === 'account/read') {respond(request.id,control.accountUnavailable?{}:{account:Object.hasOwn(control,'account')?control.account:{type:'chatgpt',email:'fixture@example.com',planType:'pro',token:'credential-must-not-be-returned'},requiresOpenaiAuth:true,credential:'credential-must-not-be-returned'});return;}
     if (method === 'mcpServerStatus/list') {
-      if(control.mcpFailure){process.stdout.write(JSON.stringify({id:request.id,error:{code:-32603,message:'Native catalog unavailable'}})+'\n');return;}
+      if(control.mcpFailure){send(JSON.stringify({id:request.id,error:{code:-32603,message:'Native catalog unavailable'}}));return;}
       const servers=control.mcpServers??[{name:'fixture-server',runtimeStatus:'connected',authStatus:'oAuth',pluginId:null,serverInfo:{name:'Fixture MCP',version:'1'},tools:{inspect:{name:'inspect',description:'Fixture native tool',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true}}},toolsError:null,resources:[{uri:'fixture://readme',name:'Fixture readme',mimeType:'text/plain'}],resourceTemplates:[{uriTemplate:'fixture://{name}',name:'Fixture template'}],config:{headers:{authorization:'credential-must-not-be-returned'}}}];
       const selected=params.serverName?servers.filter(server=>server.name===params.serverName):servers;
       const offset=Number(params.cursor??0),limit=params.limit??32;
@@ -126,7 +182,7 @@ else {
       respond(request.id,{thread,model:thread.model,reasoningEffort:thread.reasoningEffort,approvalPolicy:params.approvalPolicy??'on-request',sandbox:{type:params.sandbox??'read-only'},instructionSources:[]});return;
     }
     if (method === 'thread/fork') {
-      if(control.rejectFork){process.stdout.write(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic fork rejection'}})+'\n');return;}
+      if(control.rejectFork){send(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic fork rejection'}}));return;}
       const source=managed.get(params.threadId)||{...threads[0],id:params.threadId};
       const nativeId='native-'+(++threadSequence);
       const thread={...source,id:nativeId,sessionId:'session-for-'+nativeId,forkedFromId:control.wrongForkSource??params.threadId,parentThreadId:null,status:{type:'idle'},activeTurn:null};
@@ -157,7 +213,7 @@ else {
           if (documents[filename] !== undefined)
             writeFileSync(join(workspaceRoot, 'example-plan', filename), documents[filename]);
       }
-      if (control.rejectTurn) { process.stdout.write(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic input rejection'}})+'\n');return; }
+      if (control.rejectTurn) { send(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic input rejection'}}));return; }
       const thread = managed.get(params.threadId);
       thread.model=params.model??thread.model;thread.reasoningEffort=params.effort??thread.reasoningEffort;
       const turn = {id:(control.turnPrefix??'')+'native-turn-'+(++turnSequence),status:'inProgress'};
@@ -166,7 +222,7 @@ else {
       const item = {id:'live-'+turnSequence,type:'agentMessage',text:''};
       notify('item/started',{threadId:thread.id,turnId:turn.id,item});
       notify('item/agentMessage/delta',{threadId:thread.id,turnId:turn.id,itemId:item.id,delta:'Live response'});
-      if (control.prompt) process.stdout.write(JSON.stringify({id:'native-approval-'+turnSequence,method:control.prompt.method,params:{threadId:thread.id,turnId:turn.id,...(control.prompt.method==='mcpServer/elicitation/request'?{}:{itemId:'tool-'+turnSequence}),...control.prompt.params}})+'\n');
+      if (control.prompt) send(JSON.stringify({id:'native-approval-'+turnSequence,method:control.prompt.method,params:{threadId:thread.id,turnId:turn.id,...(control.prompt.method==='mcpServer/elicitation/request'?{}:{itemId:'tool-'+turnSequence}),...control.prompt.params}}));
       if (control.loseOutput) { process.stdout.end();return; }
       const acknowledge = () => respond(request.id,{turn});
       if (control.lateTurnAck) setTimeout(acknowledge,31_000); else acknowledge();
@@ -178,7 +234,7 @@ else {
           managed.set(callbackThreadId,{...thread,id:callbackThreadId,parentThreadId:control.toolParent??thread.id,cwd:control.toolRoot??thread.cwd});
         }
         toolCalls.set(callId,{threadId:thread.id,turnId:turn.id});
-        process.stdout.write(JSON.stringify({id:callId,method:'item/tool/call',params:{threadId:callbackThreadId,turnId:control.toolTurnId??turn.id,callId,namespace:null,...control.toolCall}})+'\n');
+        send(JSON.stringify({id:callId,method:'item/tool/call',params:{threadId:callbackThreadId,turnId:control.toolTurnId??turn.id,callId,namespace:null,...control.toolCall}}));
       }
       if (!control.holdTurn && !control.prompt && !control.toolCall) {
         const text=control.outputText??(control.outputSize?'x'.repeat(control.outputSize):control.structuredOutput!==undefined?JSON.stringify(control.structuredOutput):'Live response');
@@ -190,10 +246,11 @@ else {
     }
     if (method === 'turn/steer') {
       if (control.completeOnSteer) complete(params.threadId);
-      if (managed.get(params.threadId)?.activeTurn !== params.expectedTurnId) { process.stdout.write(JSON.stringify({id:request.id,error:{code:-32602,message:'Turn no longer active'}})+'\n');return; }
+      if (managed.get(params.threadId)?.activeTurn !== params.expectedTurnId) { send(JSON.stringify({id:request.id,error:{code:-32602,message:'Turn no longer active'}}));return; }
       respond(request.id,{turnId:params.expectedTurnId});return;
     }
     if (method === 'turn/interrupt') {
+      if (control.holdInterrupt) { interrupts.push(request);return; }
       if (control.interruptBarrier) {
         interrupts.push(request);
         if (interrupts.length >= control.interruptBarrier) for (const pending of interrupts.splice(0)) {
@@ -213,20 +270,20 @@ else {
       if (control.mode === 'exit-on-list') { process.stdout.end();return; }
       if (control.notifyUsage) {
         const params = { rateLimits: { primary: { usedPercent: control.usedPercent ?? 25 } } };
-        process.stdout.write(JSON.stringify({ method: 'account/rateLimits/updated', params })+'\n');
-        process.stdout.write(JSON.stringify({ method: 'account/rateLimits/updated', params })+'\n');
+        send(JSON.stringify({ method: 'account/rateLimits/updated', params }));
+        send(JSON.stringify({ method: 'account/rateLimits/updated', params }));
       }
-      if (control.accountChanged) process.stdout.write(JSON.stringify({ method: 'account/updated', params: {} })+'\n');
+      if (control.accountChanged) send(JSON.stringify({ method: 'account/updated', params: {} }));
       const selected = params.searchTerm ? threads.filter((thread) => thread.name.includes(params.searchTerm)) : threads;
       const after = params.cursor ? selected.findIndex((thread) => thread.id === params.cursor) + 1 : 0;
-      const batch = selected.slice(after,after+params.limit);
+      const batch = selected.slice(after,after+params.limit).map((thread) => ({ ...thread,status: statusOf(thread) }));
       respond(request.id,{ data: control.wrongRoot ? batch.map((thread) => ({ ...thread,cwd: control.wrongRoot })) : batch, nextCursor: control.invalidCursor ? 'x'.repeat(8193) : after+batch.length < selected.length ? batch.at(-1).id : null });return;
     }
     if (method === 'config/read') {
       const profiles=Object.fromEntries(Array.from({length:control.profileCount??4},(_,index)=>['profile-'+String(index).padStart(4,'0'),{description:control.configRevision?'Updated profile':'Native profile',model:'model-0000'}]));
       respond(request.id,{config:control.configMalformed?{model:42}:{model:'model-0000',model_reasoning_effort:'native-effort',profile:null,profiles,agents:{max_threads:4,explore:{description:'Read native code',model:'model-0000'}},approval_policy:'on-request',sandbox_mode:'read-only',secret:'must-not-leak'}});return;
     }
-    if (method === 'thread/read') { respond(request.id,{ thread: { ...threads[0],...managed.get(params.threadId),...(control.unavailableSettings?{model:null,reasoningEffort:null}:{}),id: params.threadId,cwd: control.wrongRoot || managed.get(params.threadId)?.cwd || workspaceRoot } });return; }
+    if (method === 'thread/read') { respond(request.id,{ thread: { ...threads[0],...managed.get(params.threadId),status: statusOf({ id: params.threadId,status: managed.get(params.threadId)?.status ?? threads[0].status }),...(control.unavailableSettings?{model:null,reasoningEffort:null}:{}),id: params.threadId,cwd: control.wrongRoot || managed.get(params.threadId)?.cwd || workspaceRoot } });return; }
     if (method === 'thread/turns/list') { respond(request.id,{ data: [{ id: 'turn-a',status: 'completed',startedAt: 1_700_000_000,completedAt: 1_700_000_001 }],nextCursor: null });return; }
     if (method === 'thread/items/list') {
       const text = control.largeItem ? 'a'.repeat(1_048_576) : 'Hello from the native history';
@@ -238,14 +295,14 @@ else {
       respond(request.id,{data:batch,nextCursor:after+batch.length<selected.length?batch.at(-1).item.id:null});return;
     }
     if (method === 'account/rateLimits/read') {
-      if (control.accountChangedDuringRead) process.stdout.write(JSON.stringify({ method: 'account/updated', params: {} })+'\n');
-      if (control.quotaFailure) { process.stdout.write(JSON.stringify({ id: request.id,error: { code: -32603,message: 'synthetic account failure' } })+'\n');return; }
+      if (control.accountChangedDuringRead) send(JSON.stringify({ method: 'account/updated', params: {} }));
+      if (control.quotaFailure) { send(JSON.stringify({ id: request.id,error: { code: -32603,message: 'synthetic account failure' } }));return; }
       if (Object.hasOwn(control,'nativeUsage')) {respond(request.id,control.nativeUsage);return;}
       const bucket = { limitId: 'codex',limitName: 'Codex',primary: control.noWindows ? null : { usedPercent: control.usedPercent ?? 25,windowDurationMins: 300,resetsAt: control.expired ? Math.floor(Date.now()/1000)-1 : Math.floor(Date.now()/1000)+3600 },secondary: null,rateLimitReachedType: control.exhausted ? 'reached' : null,credits: control.credits??null };
       respond(request.id,{ rateLimits: bucket, rateLimitsByLimitId: control.noWindows ? null : { codex: bucket },ordinaryUsageAllowed: !control.exhausted,rateLimitResetCredits: control.resetCredits??null });return;
     }
-    process.stdout.write(JSON.stringify({ id: request.id,error: { code: -32601,message: 'Unsupported method' } })+'\n');
-  });
+    send(JSON.stringify({ id: request.id,error: { code: -32601,message: 'Unsupported method' } }));
+  };
 }
 `;
 

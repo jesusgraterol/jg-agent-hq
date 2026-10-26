@@ -1,6 +1,6 @@
 ---
 import InlineCode from 'jg-personal-astro-ui/inline-code';
-import { ArrowRight, Check, Database, KeyRound } from '@lucide/astro';
+import { ArrowRight, Database, KeyRound } from '@lucide/astro';
 
 import PreviewFrame from '../preview-frame/preview-frame.astro';
 
@@ -10,14 +10,8 @@ const TABLES = [
   { prefix: 'app_*', text: 'Your app’s own tables' },
 ] as const;
 const RECOVERY = [
-  { command: 'createHqSnapshot', text: 'Captured while idle' },
+  { command: 'createHqSnapshot', text: 'Captured while agents work' },
   { command: 'restoreHqSnapshot', text: 'New folder, automation paused' },
-] as const;
-// the offline upgrade of HQ 2.0.0 data, which writes a verified backup before changing anything
-const UPGRADE = [
-  { title: 'HQ stopped', text: 'Nothing writes during the upgrade' },
-  { title: 'Backup verified', text: 'A private copy comes first' },
-  { title: 'Storage upgraded', text: 'Ready for HQ 3.0.0' },
 ] as const;
 ---
 
@@ -73,28 +67,4 @@ const UPGRADE = [
       ))
     }
   </ol>
-  <div class="mt-3 min-w-0 rounded-xl border border-border bg-background p-4">
-    <p class="text-sm">
-      <InlineCode code="upgrade-storage" />
-    </p>
-    <ol
-      class="mt-3 grid min-w-0 gap-2 sm:grid-cols-3"
-      aria-label="Offline storage upgrade"
-    >
-      {
-        UPGRADE.map((step) => (
-          <li class="flex min-w-0 gap-2">
-            <Check
-              class="mt-0.5 size-4 shrink-0 text-success"
-              aria-hidden="true"
-            />
-            <span class="min-w-0">
-              <span class="block text-sm font-semibold">{step.title}</span>
-              <span class="block text-xs text-muted">{step.text}</span>
-            </span>
-          </li>
-        ))
-      }
-    </ol>
-  </div>
 </PreviewFrame>

@@ -11,7 +11,11 @@ import { createCollaboration } from '../collaboration/index.js';
 import { createDispatch } from '../collaboration/dispatch/index.js';
 import { createAgentTools } from '../agent-tools/index.js';
 import { CONTROL_SOCKET, createIpcServer } from '../ipc/index.js';
-import { createCodexProviderFactory, createClaudeProviderFactory } from '../providers/index.js';
+import {
+  createCodexProviderFactory,
+  createClaudeProviderFactory,
+  observeClaudeAgents,
+} from '../providers/index.js';
 import { createProviderRegistry } from '../providers/registry/index.js';
 import { readNativeHistory } from '../sessions/index.js';
 import { suggestThreadName } from '../sessions/names/index.js';
@@ -50,8 +54,6 @@ const UnconfirmedCleanupSchema = z.object({ cleanupUnconfirmed: z.literal(true) 
  * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
  * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
- * - JG_AGENT_HQ_STORAGE_UPGRADE_REQUIRED: The HQ storage requires an explicit upgrade
- * - JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED: The HQ storage version is unsupported
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
  */
 export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq> => {
@@ -116,9 +118,13 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     allowedRoots,
     projection,
     ownership.owner.nonce,
-    parsed.data.parsePlanContract,
   );
   const skills = createSkills(providers, projection, allowedRoots);
+  // terminal and background Claude sessions are observed while the runtime runs
+  const claudeAgents = observeClaudeAgents(
+    (sessions) => storage.background(() => projection.observeSessions('claude', sessions, true)),
+    allowedRoots,
+  );
   const accounts = createAccounts(providers);
   const extensions = createExtensions(providers, projection, allowedRoots);
   const actions = createActions(
@@ -192,6 +198,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     (closing ??= (async () => {
       try {
         await browser.close();
+        await claudeAgents.close();
         const toolCleanup = await Promise.allSettled([agentTools.close()]);
         await dispatch.close();
         await collaboration.close();
@@ -330,6 +337,11 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       case 'approvals':
       case 'live-items':
         return readControl(command, projection, actions, allowedRoots);
+      case 'session-states':
+        return {
+          kind: 'session-states',
+          result: await projection.listSessionTransitions(command.afterSequence, command.limit),
+        };
       default: {
         const response = await readNativeHistory(command, providers, projection, allowedRoots);
         if (command.kind === 'items' && response.kind === 'items')
@@ -398,7 +410,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     coordinationRoot: coordinationRoot ?? stateRoot,
     allowedRoots,
     store: projection,
-    maintenance: storage.withStorageMaintenance,
+    admit: storage.run,
     isClosing: () => Boolean(closing),
   });
   return runtime;

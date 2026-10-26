@@ -5,7 +5,6 @@ import {
   PlanDigestSchema,
   PlanMilestoneSchema,
   PlanRevisionSchema,
-  PlanReconciliationEntrySchema,
   type IActionEnvelope,
   type IPlanMetadata,
   type IPlanStatus,
@@ -37,7 +36,7 @@ export type IPlanContract = { body: string; metadata: IPlanMetadata; milestones:
 // jg-plans check results for the stages HQ gates; plans without protocol 0.2 always conform
 export type IPlanConformance = { plan: boolean; sequence: boolean };
 
-// persisted intents make an interrupted finalization retry reuse its assigned UUIDs
+// persisted intents let an interrupted plan write retry with its exact prepared bytes
 export const PlanWriteIntentSchema = z
   .strictObject({
     id: z.uuid(),
@@ -82,47 +81,6 @@ export const PlanProjectionPageSchema = z.strictObject({
 export const PlanProjectionResultSchema = z.object({
   data: z.array(PlanMilestoneSchema).max(128),
   hasMore: z.boolean(),
-});
-
-// the private host owns its frontmatter policy; the core supplies exact current file contents
-export type IPlanContractParser = (input: {
-  directory: string;
-  content: string;
-}) =>
-  | { body: string; metadata: IPlanMetadata }
-  | Promise<{ body: string; metadata: IPlanMetadata }>;
-
-// a selected coordination file supplies replaceable, bounded seek projections
-export const PlanRevisionProjectionSchema = z.strictObject({
-  directory: z.string(),
-  sourceHash: PlanDigestSchema.nullable(),
-  records: z
-    .array(
-      z.strictObject({
-        collection: z.enum(['sources', 'drafts', 'evidence', 'correspondences']),
-        id: z.string().min(1).max(128),
-        entry: PlanReconciliationEntrySchema,
-      }),
-    )
-    .max(65_536),
-});
-export type IPlanRevisionProjection = z.infer<typeof PlanRevisionProjectionSchema>;
-export const PlanRevisionPageSchema = z.strictObject({
-  directory: z.string(),
-  collection: z.enum(['sources', 'drafts', 'evidence', 'correspondences']),
-  after: z.string().max(128),
-  limit: z.number().int().min(1).max(128),
-});
-export const PlanRevisionPageResultSchema = z.object({
-  data: z.array(PlanReconciliationEntrySchema).max(128),
-  lastId: z.string().nullable(),
-  hasMore: z.boolean(),
-});
-
-// continuations bind every inspected coordination revision and selected collection
-export const PlanRevisionPositionSchema = z.strictObject({
-  id: z.string().min(1).max(128),
-  inspection: PlanDigestSchema.nullable(),
 });
 
 // one owned stop phase, without an agent execution loop or client-supplied quiescence evidence

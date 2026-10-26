@@ -13,6 +13,3 @@ export type { ICollaborationFixture } from './collaboration.js';
 
 // native tool connections
 export { callCodexTool, withAgentBridge } from './agent-tools.js';
-
-// immutable offline storage fixtures
-export { withLegacyStorage, useLegacyStamp } from './storage.js';

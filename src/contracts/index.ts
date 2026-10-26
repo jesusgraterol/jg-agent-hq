@@ -140,7 +140,6 @@ export {
   PlanApprovalSchema,
   PlanExecutionSchema,
   PlanFinalizationSchema,
-  PlanComparisonSchema,
   PlanCoordinationSchema,
   PlanMilestoneSchema,
   PlanStatusSchema,
@@ -154,7 +153,6 @@ export type {
   IPlanCommand,
   IPlanCommandInput,
   IPlanCoordination,
-  IPlanComparison,
   IPlanMilestone,
   IPlanStatus,
   IPlanResult,
@@ -167,11 +165,7 @@ export {
   PlanWorktreeProofSchema,
   PlanCompletionSchema,
   PlanSnapshotMilestoneSchema,
-  PlanCorrespondenceSchema,
-  PlanDraftMilestoneSchema,
-  PlanProposalSchema,
   PlanRevisionWorkflowSchema,
-  PlanCorrespondenceRecordSchema,
   PlanCoordinationSummarySchema,
 } from './plans/index.js';
 export type {
@@ -179,20 +173,12 @@ export type {
   IPlanWorktreeProof,
   IPlanCompletion,
   IPlanSnapshotMilestone,
-  IPlanCorrespondence,
-  IPlanDraftMilestone,
-  IPlanProposal,
   IPlanRevisionWorkflow,
-  IPlanCorrespondenceRecord,
 } from './plans/index.js';
 
 // saved revision baseline
 export { PlanCheckpointSchema } from './plans/index.js';
 export type { IPlanCheckpoint } from './plans/index.js';
-
-// bounded revision reads
-export { PlanCorrespondenceSummarySchema, PlanReconciliationEntrySchema } from './plans/index.js';
-export type { IPlanReconciliationEntry } from './plans/index.js';
 
 // guided plan scope
 export { PlanActionScopeSchema, ActionPlanContextSchema } from './actions/index.js';
@@ -222,23 +208,8 @@ export type {
   ISessionConfiguration,
 } from './configuration/index.js';
 
-// host read models
-export {
-  BrowserRepositorySchema,
-  BrowserPlanSummarySchema,
-  BrowserPlanPageSchema,
-  BrowserPlanDetailSchema,
-  BrowserSessionSchema,
-} from './browser/index.js';
-
 // bounded host views
-export {
-  BrowserRepositoryPageSchema,
-  BrowserSystemSchema,
-  BrowserThreadDetailSchema,
-  PublicationStatusSchema,
-} from './browser/index.js';
-export type { IPublicationStatus } from './browser/index.js';
+export { BrowserThreadDetailSchema } from './browser/index.js';
 
 // bounded file inputs and complete native results
 export {
@@ -387,3 +358,16 @@ export type {
   IAgentToolResult,
 } from './agent-tools/index.js';
 export { SessionDiscoveryRequestSchema } from './evidence/index.js';
+
+// session states and transitions
+export {
+  SessionStateSchema,
+  SessionTransitionReasonSchema,
+  SessionTransitionSchema,
+  SessionTransitionPageSchema,
+} from './sessions/index.js';
+export type {
+  ISessionState,
+  ISessionTransitionReason,
+  ISessionTransition,
+} from './sessions/index.js';

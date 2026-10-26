@@ -40,7 +40,10 @@ export const NativeThreadSchema = z.object({
   name: z.string().nullable().optional(),
   createdAt: z.number().int().safe(),
   updatedAt: z.number().int().safe(),
-  status: z.object({ type: z.enum(['notLoaded', 'idle', 'systemError', 'active']) }),
+  status: z.object({
+    type: z.enum(['notLoaded', 'idle', 'systemError', 'active']),
+    activeFlags: z.array(z.string()).optional(),
+  }),
 });
 export const NativeTurnSchema = z.object({
   id: z.string().min(1).max(4096),
@@ -308,6 +311,8 @@ export type ICodexProvider = {
    * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
    */
   reject(id: string | number): Promise<void>;
+  /** Stops the current daemon connection without closing the provider; the next request reconnects. */
+  disconnect(): Promise<void>;
   close(): Promise<void>;
 };
 

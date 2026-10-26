@@ -1,14 +1,17 @@
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, open, realpath, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { hashValue } from 'jg-crypto';
 import { hasErrorCode } from 'jg-exception';
 import { writePrivateFile } from 'jg-fs';
 import { withPlanDocumentLocks } from 'jg-plans';
+import { z } from 'zod';
 
 import { isWithinWorkspace } from '../runtime/state/index.js';
+import { PACKAGE_VERSION } from '../storage/schema/index.js';
 
-import { observeSnapshotPlan } from './artifacts.js';
+import { observeSnapshotPlan, readRecordedRevisions } from './artifacts.js';
 import {
   SNAPSHOT_COMPLETE,
   SNAPSHOT_COMPANIONS,
@@ -43,6 +46,7 @@ const capturePlan = async (
   context: ISnapshotSource,
   directory: string,
   snapshot: string,
+  database: DatabaseSync,
 ): Promise<ISnapshotPlan> => {
   const record: ISnapshotPlan = {
     kind: 'plan',
@@ -50,6 +54,7 @@ const capturePlan = async (
     sourceDirectory: directory,
     planId: null,
     revision: null,
+    recordedRevisions: [],
     plan: null,
     milestones: null,
     coordination: null,
@@ -80,14 +85,18 @@ const capturePlan = async (
           true,
         );
     });
-  Object.assign(record, await observeSnapshotPlan(output, record));
+  Object.assign(
+    record,
+    await observeSnapshotPlan(output, record, readRecordedRevisions(database, directory)),
+  );
   await syncSnapshotDirectory(output);
   return record;
 };
 
 /**
  * Streams the shared format-1 capture and verifies it before transferring destination ownership.
- * The caller must hold its database/metadata checkpoint; no cache or full inventory is retained.
+ * The caller holds the coordination metadata lock; native work continues during the database
+ * backup, and each plan is copied under its own document locks. No full inventory is retained.
  * @returns The fully verified snapshot, retained by the caller after this resolves.
  * @throws
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
@@ -95,7 +104,7 @@ const capturePlan = async (
  * - JG_PLANS_LOCK_FAILED: The plan document lock operation failed
  * - JG_AGENT_HQ_SNAPSHOT_INVALID: The HQ snapshot is invalid
  * - JG_AGENT_HQ_SNAPSHOT_FAILED: The HQ snapshot operation failed
- * - JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED: The HQ storage version is unsupported
+ * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
  */
 export const captureSnapshot = async (
   context: ISnapshotSource,
@@ -122,6 +131,7 @@ export const captureSnapshot = async (
           format: 1,
           createdAt: new Date().toISOString(),
           schemaHash: context.schemaHash,
+          packageVersion: PACKAGE_VERSION,
           sourceStateRoot: context.stateRoot,
           sourceCoordinationRoot: context.coordinationRoot,
           sourceAllowedRoots: context.allowedRoots,
@@ -140,14 +150,25 @@ export const captureSnapshot = async (
       );
       if (key?.bytes !== 32 || key.sha256 !== context.actionKeyHash) invalidSnapshot();
       await append({ kind: 'action-key', file: key });
-      let after = '';
-      for (;;) {
-        const page = await context.readPlans(after);
-        for (const directory of page) {
-          await append(await capturePlan(context, directory, owned));
-          after = directory;
+      // plans registered after the backup belong to the next capture, so page the captured copy
+      const captured = new DatabaseSync(join(owned, 'hq.sqlite'), { readOnly: true });
+      try {
+        let after = '';
+        for (;;) {
+          const page = captured
+            .prepare(
+              'SELECT directory FROM hq_plan_registration WHERE directory > ? ORDER BY directory LIMIT 128',
+            )
+            .all(after)
+            .map((row) => z.string().parse(row.directory));
+          for (const directory of page) {
+            await append(await capturePlan(context, directory, owned, captured));
+            after = directory;
+          }
+          if (page.length < 128) break;
         }
-        if (page.length < 128) break;
+      } finally {
+        captured.close();
       }
       await manifest.sync();
       await syncSnapshotDirectory(join(owned, 'plans'));

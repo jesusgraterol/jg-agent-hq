@@ -2,20 +2,5 @@
 export { BrowserCommandSchema, BrowserActionSchema, BrowserReceiptSchema } from './types.js';
 export type { IBrowserAction, IBrowserReceipt } from './types.js';
 
-// host read models
-export {
-  BrowserRepositorySchema,
-  BrowserPlanSummarySchema,
-  BrowserPlanPageSchema,
-  BrowserPlanDetailSchema,
-  BrowserSessionSchema,
-} from './types.js';
-
 // bounded host views
-export {
-  BrowserRepositoryPageSchema,
-  BrowserSystemSchema,
-  BrowserThreadDetailSchema,
-  PublicationStatusSchema,
-} from './types.js';
-export type { IPublicationStatus } from './types.js';
+export { BrowserThreadDetailSchema } from './types.js';

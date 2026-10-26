@@ -4,7 +4,6 @@ import type {
   IPlanActionScope,
   IPlanCommandInput,
   IPlanCheckout,
-  IPlanCorrespondence,
   IPlanOperatorAction,
   IPlanStatus,
   IPlanTarget,
@@ -29,16 +28,9 @@ export const revisePlan = async (input: {
   threadIds: string[];
   checkouts: IPlanCheckout[];
   finalize: IPlanOperatorAction;
-  confirmFinalization: IPlanOperatorAction;
   nativeActionIds: { plan: string; resume: string; breakdown: string; close: string };
   approvePlan: (source: string, status: IPlanStatus) => Promise<IPlanOperatorAction | null>;
   requestBreakdown: (status: IPlanStatus) => Promise<IPlanOperatorAction | null>;
-  confirmCorrespondence: (
-    status: IPlanStatus,
-    read: (
-      command: Extract<IPlanCommandInput, { kind: 'reconciliation' }>,
-    ) => ReturnType<typeof requestAgentHq>,
-  ) => Promise<IPlanCorrespondence[] | null>;
   approveSequence: (
     source: string | null,
     status: IPlanStatus,
@@ -195,27 +187,13 @@ export const revisePlan = async (input: {
   });
 
   current = await status();
-  let finalized = await plan({
+  // finalization records jg-breakdown's milestone IDs and carries completion evidence by ID
+  const finalized = await plan({
     kind: 'finalize',
     target,
     action: input.finalize,
     expected: current.revision,
   });
-  if (finalized.kind !== 'plan') throw new Error('Expected finalization result');
-  if (finalized.result.kind === 'reconciliation-required') {
-    const proposal = finalized.result.result;
-    const decisions = await input.confirmCorrespondence(proposal, (command) => plan(command));
-    if (!decisions) return proposal;
-    const proposalId = proposal.coordination.revision?.proposalId;
-    if (!proposalId) throw new Error('Expected saved correspondence proposal');
-    finalized = await plan({
-      kind: 'finalize',
-      target,
-      action: input.confirmFinalization,
-      expected: proposal.revision,
-      confirmation: { proposalId, decisions },
-    });
-  }
   if (finalized.kind !== 'plan' || finalized.result.kind !== 'finalized')
     throw new Error('Expected finalized presentation');
   current = finalized.result.result;

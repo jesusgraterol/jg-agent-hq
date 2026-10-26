@@ -24,6 +24,7 @@ import type {
   IExtensionControlCommand,
   ILoginObservation,
   INativeControlResult,
+  ISessionState,
 } from '../contracts/index.js';
 import type { IProviderInputFile } from './inputs/index.js';
 import type {
@@ -66,6 +67,8 @@ export type IAgentProviderEvents = {
   delta(nativeId: string, turnId: string, itemId: string, text: string): void;
   prompt(prompt: INativePrompt): void;
   outcome(outcome: IAgentProviderOutcome, thread?: IProviderThread): void;
+  // the live state of a session another client drives, inside the allowed workspaces
+  session(nativeId: string, state: ISessionState): void;
   unavailable(nativeId?: string): void;
 };
 
@@ -273,6 +276,22 @@ export type IProviderProcess = {
   readonly isRunning: boolean;
   write(message: unknown): Promise<void>;
   close(): Promise<void>;
+};
+
+/*
+ * How messages travel over an owned native process's pipes. A preamble is written first, and
+ * messages wait until the decoder reports the native answer to it. A decoder may probe the
+ * connection itself, failing the transport when it stops answering, until it is stopped.
+ */
+export type IProviderFraming = {
+  preamble: Buffer | null;
+  createDecoder(handlers: {
+    receive(message: unknown): void;
+    reply(bytes: Buffer): void;
+    open(): void;
+    fail(cause: unknown): void;
+  }): { push(chunk: Buffer): void; end(): void; stop(): void };
+  encode(message: unknown): Buffer;
 };
 
 // a native request owns its validation and exact response channel; bodies remain in memory

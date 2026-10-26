@@ -20,7 +20,7 @@ try {
     [
       'JG_AGENT_HQ_SNAPSHOT_INVALID',
       'JG_AGENT_HQ_SNAPSHOT_FAILED',
-      'JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED',
+      'JG_AGENT_HQ_STORAGE_INVALID',
     ].includes(cause.code)
       ? cause
       : new Exception(`The HQ snapshot operation failed: ${extractMessage(cause)}`, {

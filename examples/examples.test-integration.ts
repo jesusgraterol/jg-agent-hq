@@ -465,7 +465,6 @@ test('the revision source retains verified work and obtains current approval thr
       threadIds: [],
       checkouts: [],
       finalize: operator(),
-      confirmFinalization: operator(),
       nativeActionIds: {
         plan: randomUUID(),
         resume: randomUUID(),
@@ -489,25 +488,6 @@ test('the revision source retains verified work and obtains current approval thr
         });
         return operator();
       },
-      confirmCorrespondence: async (state, read) => {
-        confirmations.push('correspondence');
-        expect(state.coordination.revision?.proposalId).toMatch(/^[a-f0-9-]{36}$/);
-        const page = await read({ kind: 'reconciliation', target, collection: 'drafts' });
-        if (page.kind !== 'plan' || page.result.kind !== 'reconciliation')
-          throw new Error('Missing proposal drafts');
-        const draft = page.result.result.data.find(
-          (row) => row.kind === 'draft' && row.entry.title === 'Greeting result',
-        );
-        if (draft?.kind !== 'draft') throw new Error('Missing selected draft');
-        return [
-          {
-            sourceIds: [originalId],
-            targetIds: [draft.entry.id],
-            relation: 'equivalent',
-            retainedPairs: [{ sourceId: originalId, targetId: draft.entry.id }],
-          },
-        ];
-      },
       approveSequence: async (body, state) => {
         confirmations.push('sequence');
         expect(state.skillsBinding).toBe('current');
@@ -528,13 +508,7 @@ test('the revision source retains verified work and obtains current approval thr
         };
       },
     });
-    expect(confirmations).toStrictEqual([
-      'plan',
-      'breakdown',
-      'correspondence',
-      'sequence',
-      'execution',
-    ]);
+    expect(confirmations).toStrictEqual(['plan', 'breakdown', 'sequence', 'execution']);
     expect(result.skillsBinding).toBe('current');
     expect(result.coordination.completionCount).toBe(1);
     expect(result.coordination.execution?.mode).toBe('supervised');

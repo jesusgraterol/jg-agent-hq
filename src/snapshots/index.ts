@@ -6,6 +6,9 @@ export {
   registerSnapshotContext,
 } from './snapshots.js';
 
+// encrypted archives
+export { packHqSnapshot, unpackHqSnapshot } from './archive/index.js';
+
 // contracts
 export type {
   IHqSnapshotInspection,
@@ -13,7 +16,3 @@ export type {
   IHqRestoreResult,
   ISnapshotContext,
 } from './types.js';
-
-// shared capture and offline verification
-export { captureSnapshot } from './capture.js';
-export { verifySnapshot } from './database.js';

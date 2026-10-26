@@ -294,6 +294,8 @@ export class ClaudeHistoryModel {
       updatedAt: row.updated_at,
       nativeState: 'unknown',
       nativeLineage: { sessionId: row.native_id, parentThreadId: null, forkedFromId: null },
+      // claude agents observations supply the live state
+      state: 'unknown',
       ownership: 'external',
       managedId: null,
       historyState: row.supported === 1 ? 'available' : 'unavailable',

@@ -5,7 +5,6 @@ import {
   fingerprintPlan,
   parseMilestones,
   parsePlan,
-  preparePlanDocumentWrite,
   preparePlanUpdate,
   type ISourceSpan,
 } from 'jg-plans';
@@ -79,35 +78,20 @@ export const observePlanId = (source: string): string | null => {
 };
 
 /**
- * The default HQ profile keeps unknown contract fields, including the plan identity.
+ * Keeps the body and every frontmatter field except the administrative keys, including the plan
+ * identity, as the execution contract.
  * @throws
  * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
  */
-export const observePlanContract = (
-  source: string,
-  custom?: { body: string; metadata: IPlanMetadata },
-): { body: string; metadata: IPlanMetadata } => {
+export const observePlanContract = (source: string): { body: string; metadata: IPlanMetadata } => {
   const document = parsePlan(source);
   const raw = metadataOf(document);
   if (!document.body || ('id' in raw && !z.string().trim().min(1).safeParse(raw.id).success))
     return invalid();
-  if (custom) {
-    const parsed = PlanMetadataSchema.safeParse(custom.metadata);
-    if (!parsed.success || custom.body !== document.body) return invalid(parsed.error);
-    return { body: document.body, metadata: parsed.data };
-  }
   const extensions = Object.fromEntries(
-    Object.entries(raw).filter(
-      ([key]) =>
-        ![...administrativeKeys, 'scope', 'repositories', 'errorReservations'].includes(key),
-    ),
+    Object.entries(raw).filter(([key]) => !administrativeKeys.includes(key)),
   );
-  const parsed = PlanMetadataSchema.safeParse({
-    scope: 'scope' in raw ? raw.scope : 'local',
-    repositories: 'repositories' in raw ? raw.repositories : [],
-    errorReservations: 'errorReservations' in raw ? raw.errorReservations : [],
-    extensions,
-  });
+  const parsed = PlanMetadataSchema.safeParse({ extensions });
   if (!parsed.success) return invalid(parsed.error);
   return { body: document.body, metadata: parsed.data };
 };
@@ -243,54 +227,6 @@ export const observeSequence = (source: string) => {
     ],
   );
   return { entries, shared, metadata, binding };
-};
-
-/**
- * Missing identities are assigned once by the engine, then persisted by HQ's journal.
- * @throws
- * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
- */
-export const prepareSequenceIds = (source: string, expectedSha256: string): string => {
-  try {
-    return preparePlanDocumentWrite(source, {
-      document: 'milestones',
-      expectedSha256,
-      source,
-      assignMissingIds: true,
-    }).source;
-  } catch (cause) {
-    return invalid(cause);
-  }
-};
-
-/**
- * New requirements receive engine identities; exact verified correspondence retains its identity.
- * @throws
- * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
- */
-export const prepareReconciliationIds = (source: string, retained: Map<number, string>): string => {
-  const document = parseMilestones(source);
-  const omissions = document.milestones.flatMap((entry) =>
-    retained.has(entry.ordinal!)
-      ? []
-      : entry.idMarkers.map((marker) => ({ start: marker.lineStart, end: marker.lineEnd })),
-  );
-  let candidate = retainRegions(source, [{ start: 0, end: source.length }], omissions);
-  try {
-    if (retained.size)
-      candidate = preparePlanUpdate(candidate, {
-        document: 'milestones',
-        changes: [...retained].map(([ordinal, id]) => ({ select: { ordinal }, set: { id } })),
-      }).source;
-    return preparePlanDocumentWrite(source, {
-      document: 'milestones',
-      expectedSha256: fingerprintSource(source),
-      source: candidate,
-      assignMissingIds: true,
-    }).source;
-  } catch (cause) {
-    return invalid(cause);
-  }
 };
 
 /**

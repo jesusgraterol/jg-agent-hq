@@ -15,15 +15,13 @@ import {
   ManagedThreadSchema,
   type IThreadSummary,
   HistoryProvenanceSchema,
+  SessionStateSchema,
+  SessionTransitionPageSchema,
 } from '../contracts/index.js';
 import { ClaudeHistoryReadSchema } from '../providers/claude/history/index.js';
 import type { IStorageDescriptor } from '../storage/index.js';
 
-import {
-  PlanWriteIntentSchema,
-  PlanProjectionResultSchema,
-  PlanRevisionPageResultSchema,
-} from '../plans/index.js';
+import { PlanWriteIntentSchema, PlanProjectionResultSchema } from '../plans/index.js';
 
 import {
   AdmissionResultSchema,
@@ -47,8 +45,6 @@ import {
  * @returns A store whose close waits for worker exit.
  * @throws
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
- * - JG_AGENT_HQ_STORAGE_UPGRADE_REQUIRED: The HQ storage requires an explicit upgrade
- * - JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED: The HQ storage version is unsupported
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
  * - JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE: The HQ action key is unavailable
  */
@@ -250,10 +246,7 @@ export const createStore = async (
     collaboration: (command, binding) =>
       request({ kind: 'collaboration', request: command, binding }, CollaborationResponseSchema),
     recoverCollaborationFanout: () => request({ kind: 'collaboration-fanout' }, z.boolean()),
-    prepareStorageMaintenance: (isSnapshot) =>
-      request({ kind: 'storage-maintenance', isSnapshot }, z.boolean()),
-    snapshotPlans: (after) =>
-      request({ kind: 'snapshot-plans', after }, z.array(z.string()).max(128)),
+    prepareStorageMaintenance: () => request({ kind: 'storage-maintenance' }, z.boolean()),
     snapshotBackup: async (destination) => {
       await request({ kind: 'snapshot-backup', destination }, z.null());
     },
@@ -276,11 +269,22 @@ export const createStore = async (
         { kind: 'evidence-origins', request: command },
         z.array(HistoryProvenanceSchema.nullable()).max(128),
       ),
-    projectPlanRevision: async (projection) => {
-      await request({ kind: 'plan-revision-project', projection }, z.null());
+    registerPlan: async (directory) => {
+      await request({ kind: 'plan-register', directory }, z.null());
     },
-    listPlanRevision: (page) =>
-      request({ kind: 'plan-revision-page', page }, PlanRevisionPageResultSchema),
+    observeSessions: async (provider, sessions, isComplete) => {
+      await request({ kind: 'sessions-observe', provider, sessions, isComplete }, z.null());
+    },
+    markSessionsUnknown: async (provider) => {
+      await request({ kind: 'sessions-unknown', provider }, z.null());
+    },
+    getSessionStates: (provider, nativeIds) =>
+      request(
+        { kind: 'sessions-states', provider, nativeIds },
+        z.array(z.object({ nativeId: z.string(), state: SessionStateSchema })),
+      ),
+    listSessionTransitions: (afterSequence, limit) =>
+      request({ kind: 'session-transitions', afterSequence, limit }, SessionTransitionPageSchema),
     getThreadPlan: (threadId) =>
       request({ kind: 'thread-plan-read', threadId }, ActionPlanContextSchema.nullable()),
     getPlanThreads: (directory) =>

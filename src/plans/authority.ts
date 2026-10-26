@@ -8,7 +8,6 @@ import type {
 } from '../contracts/index.js';
 
 import { isSamePlanRevision } from './utilities.js';
-import { createCompletionLookup } from './reconciliation.js';
 import { invalid } from './documents.js';
 import type { IPlanArtifacts } from './types.js';
 
@@ -41,25 +40,25 @@ export const describePlan = (
     !!coordination.sequenceApproval &&
     !coordination.sequenceApproval.revokedBy &&
     isSamePlanRevision(coordination.sequenceApproval.revision, revision);
-  const verified = createCompletionLookup(coordination.completions, coordination.correspondences);
+  // a done marker counts only with a current receipt for its milestone ID
+  const current = coordination.completions.filter((receipt) => !receipt.reopenedBy);
+  const evidenced = new Set(current.map((receipt) => receipt.milestoneId));
+  const verified = (milestone: { id: string | null }): boolean =>
+    !!milestone.id && evidenced.has(milestone.id);
+  const milestoneIds = new Set(artifacts.parsed.map((milestone) => milestone.id));
   const workflow = coordination.revision;
-  const invalidated = new Set(
-    coordination.correspondences.flatMap((record) => record.invalidatedReceiptIds),
-  );
   const isWholePlanComplete =
     artifacts.milestones === null &&
-    coordination.completions.some(
+    current.some(
       (receipt) =>
         receipt.milestoneId === null &&
         receipt.contractDigest === revision.planDigest &&
-        receipt.revision.breakdownDigest === null &&
-        !invalidated.has(receipt.id),
+        receipt.revision.breakdownDigest === null,
     );
   const state =
     coordination.observedConflict ||
     pendingActionId ||
     workflow?.phase === 'blocked' ||
-    workflow?.phase === 'reconciling' ||
     artifacts.parsed.some((milestone) => milestone.status === 'done' && !verified(milestone))
       ? 'blocked'
       : workflow?.phase === 'quiescing' ||
@@ -96,7 +95,6 @@ export const describePlan = (
     milestoneCount: artifacts.parsed.length,
     coordination: {
       schemaVersion: coordination.schemaVersion,
-      comparisonCount: coordination.comparisons.length,
       finalized: coordination.finalized,
       planApproval: coordination.planApproval,
       sequenceApproval: coordination.sequenceApproval,
@@ -104,6 +102,14 @@ export const describePlan = (
       lastActionId: coordination.lastActionId,
       observedConflict: coordination.observedConflict,
       completionCount: coordination.completions.length,
+      unmatchedEvidence: current
+        .filter((receipt) => receipt.milestoneId !== null && !milestoneIds.has(receipt.milestoneId))
+        .map(({ id, milestoneId, title, completedAt }) => ({
+          id,
+          milestoneId,
+          title,
+          completedAt,
+        })),
       revision: workflow
         ? {
             id: workflow.id,
@@ -118,11 +124,6 @@ export const describePlan = (
             createdAt: workflow.createdAt,
             hasUncertainEffects: workflow.hasUncertainEffects,
             hasCheckpoint: !!workflow.checkpoint,
-            hasProposal: !!workflow.proposal,
-            proposalId: workflow.proposal?.id ?? null,
-            unmatchedCount: workflow.proposal?.confirmation
-              ? 0
-              : (workflow.proposal?.unmatchedSourceIds.length ?? 0),
           }
         : null,
     },

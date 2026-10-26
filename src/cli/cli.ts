@@ -5,7 +5,6 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { Exception, hasErrorCode, isException } from 'jg-exception';
 
 import { HqRequestSchema } from '../contracts/index.js';
-import { upgradeHqStorage } from '../storage/upgrade/index.js';
 import { requestAgentHq } from '../ipc/index.js';
 import { createAgentHq } from '../runtime/index.js';
 import { readRuntimeOwner } from '../runtime/state/index.js';
@@ -30,7 +29,6 @@ const main = async (): Promise<void> => {
     allowPositionals: true,
     options: {
       'state-root': { type: 'string' },
-      'backup-directory': { type: 'string' },
       'coordination-root': { type: 'string' },
       directory: { type: 'string' },
       'workspace-root': { type: 'string', multiple: true },
@@ -48,6 +46,7 @@ const main = async (): Promise<void> => {
       topic: { type: 'string' },
       cursor: { type: 'string' },
       limit: { type: 'string' },
+      'after-sequence': { type: 'string' },
       search: { type: 'string' },
       provider: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
@@ -56,7 +55,7 @@ const main = async (): Promise<void> => {
   const [kind] = positionals;
   if (values.help || !kind || kind === 'help') {
     process.stdout.write(
-      'jg-agent-hq serve|upgrade-storage|status|stop|capabilities|threads|thread|turns|items|sessions|session-evidence|usage|account|models|configuration|mcp-servers|mcp-tools|mcp-resources|managed-thread-name|suggest-thread-name|skills|skill-preview|plan-status|plan-milestones|request --state-root <path> [--provider <provider-id>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--server-name <name>] [--skill-id <id>] [--arguments <text>] [--directory <path>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nsession-evidence accepts --native-item-id and repeated --evidence-kind.\nrequest reads one validated HQ command as JSON from stdin.\nupgrade-storage --state-root <existing-path> --backup-directory <absent-path> --workspace-root <path> [--workspace-root <path> ...] [--coordination-root <path>]\nStop HQ/native children and independent database/plan writers first. Existing owners are never reclaimed.\nLegacy serve errors require upgrade-storage; startup never migrates. Keep the verified backup. Uncertain outcomes require explicit reconciliation; retry inspects the durable stamp.\n',
+      'jg-agent-hq serve|status|stop|capabilities|threads|thread|turns|items|sessions|session-evidence|usage|account|models|configuration|mcp-servers|mcp-tools|mcp-resources|managed-thread-name|suggest-thread-name|skills|skill-preview|plan-status|plan-milestones|session-states|request --state-root <path> [--provider <provider-id>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--server-name <name>] [--skill-id <id>] [--arguments <text>] [--directory <path>] [--after-sequence <sequence>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory, and --coordination-root for a separate existing coordination directory.\nsession-evidence accepts --native-item-id and repeated --evidence-kind.\nrequest reads one validated HQ command as JSON from stdin.\n',
     );
     return;
   }
@@ -67,40 +66,6 @@ const main = async (): Promise<void> => {
     });
   const stateRoot = resolve(values['state-root']);
   const roots = (values['workspace-root'] ?? []).map((root) => resolve(root));
-  if (kind === 'upgrade-storage') {
-    const allowed = new Set([
-      'state-root',
-      'backup-directory',
-      'workspace-root',
-      'coordination-root',
-    ]);
-    if (
-      !values['backup-directory'] ||
-      roots.length === 0 ||
-      Object.keys(values).some((key) => !allowed.has(key))
-    )
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
-        data: { kind: 'invalid-request' },
-      });
-    const result = await upgradeHqStorage({
-      stateRoot,
-      backupDirectory: resolve(values['backup-directory']),
-      allowedRoots: roots,
-      coordinationRoot: values['coordination-root']
-        ? resolve(values['coordination-root'])
-        : undefined,
-    });
-    process.stdout.write(
-      `${JSON.stringify({ schemaVersion: 1, kind: 'upgrade-storage', result })}\n`,
-    );
-    return;
-  }
-  if (values['backup-directory'] !== undefined)
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
-      data: { kind: 'invalid-request' },
-    });
   if (kind === 'request') {
     if (Object.keys(values).some((key) => key !== 'state-root'))
       throw new Exception('The HQ request is invalid', {
@@ -162,7 +127,8 @@ const main = async (): Promise<void> => {
       values.cursor ||
       values.limit ||
       values.search ||
-      values.provider
+      values.provider ||
+      values['after-sequence']
     )
       throw new Exception('The HQ request is invalid', {
         code: 'JG_AGENT_HQ_REQUEST_INVALID',
@@ -247,7 +213,30 @@ const main = async (): Promise<void> => {
     );
     return;
   }
-  if (values.directory)
+  if (kind === 'session-states') {
+    const allowed = new Set(['state-root', 'after-sequence', 'limit']);
+    if (Object.keys(values).some((key) => !allowed.has(key)))
+      throw new Exception('The HQ request is invalid', {
+        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+        data: { kind: 'invalid-request' },
+      });
+    const parsed = HqRequestSchema.safeParse({
+      kind: 'session-states',
+      afterSequence: values['after-sequence'] === undefined ? 0 : Number(values['after-sequence']),
+      limit: values.limit === undefined ? 32 : Number(values.limit),
+    });
+    if (!parsed.success)
+      throw new Exception('The HQ request is invalid', {
+        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+        data: { kind: 'invalid-request' },
+        cause: parsed.error,
+      });
+    process.stdout.write(
+      `${JSON.stringify({ schemaVersion: 1, ...(await requestAgentHq(stateRoot, parsed.data)) })}\n`,
+    );
+    return;
+  }
+  if (values.directory || values['after-sequence'])
     throw new Exception('The HQ request is invalid', {
       code: 'JG_AGENT_HQ_REQUEST_INVALID',
       data: { kind: 'invalid-request' },

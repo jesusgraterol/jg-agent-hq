@@ -2,6 +2,7 @@
 export { retainNativeLineage } from './lineage/index.js';
 export type {
   IProviderProcess,
+  IProviderFraming,
   INativePrompt,
   IProviderSkills,
   IProviderCall,
@@ -33,7 +34,11 @@ export {
 export type { ICodexProvider, ICodexEvents, ICodexPrompt } from './codex/index.js';
 
 // Claude reads
-export { createClaudeProvider, createClaudeProviderFactory } from './claude/index.js';
+export {
+  createClaudeProvider,
+  createClaudeProviderFactory,
+  observeClaudeAgents,
+} from './claude/index.js';
 
 // Claude control
 export { createClaudeControl } from './claude/control/index.js';

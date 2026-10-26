@@ -2,7 +2,7 @@ CREATE TABLE hq_schema (
   id INTEGER NOT NULL CONSTRAINT hq_pk_schema__id PRIMARY KEY CHECK (id = 1),
   schema_hash TEXT NOT NULL CHECK (length(schema_hash) = 64),
   action_key_hash TEXT NOT NULL CHECK (length(action_key_hash) = 64),
-  schema_version INTEGER NOT NULL DEFAULT 2 CHECK (schema_version > 0)
+  package_version TEXT NOT NULL CHECK (length(package_version) BETWEEN 1 AND 64)
 ) STRICT;
 
 CREATE TABLE hq_native_history_index (
@@ -159,19 +159,6 @@ CREATE TABLE hq_plan_projection (
   directory TEXT NOT NULL,
   source_hash TEXT,
   CONSTRAINT hq_pk_pp__directory PRIMARY KEY (directory)
-) STRICT;
-
-CREATE TABLE hq_plan_revision_projection (
- directory TEXT NOT NULL,
- source_hash TEXT,
- CONSTRAINT hq_pk_prp__directory PRIMARY KEY (directory)
-) STRICT;
-CREATE TABLE hq_plan_record (
- directory TEXT NOT NULL,
- collection TEXT NOT NULL,
- record_id TEXT NOT NULL,
- entry TEXT NOT NULL,
- CONSTRAINT hq_pk_pr__directory_collection_record_id PRIMARY KEY (directory, collection, record_id)
 ) STRICT;
 
 CREATE TABLE hq_thread_plan (
@@ -521,8 +508,6 @@ CREATE TRIGGER hq_trg_po__register AFTER INSERT ON hq_plan_operation
 BEGIN INSERT INTO hq_plan_registration VALUES (new.directory) ON CONFLICT(directory) DO NOTHING; END;
 CREATE TRIGGER hq_trg_pp__register AFTER INSERT ON hq_plan_projection
 BEGIN INSERT INTO hq_plan_registration VALUES (new.directory) ON CONFLICT(directory) DO NOTHING; END;
-CREATE TRIGGER hq_trg_prp__register AFTER INSERT ON hq_plan_revision_projection
-BEGIN INSERT INTO hq_plan_registration VALUES (new.directory) ON CONFLICT(directory) DO NOTHING; END;
 CREATE TRIGGER hq_trg_tp__register AFTER INSERT ON hq_thread_plan
 BEGIN INSERT INTO hq_plan_registration VALUES (new.directory) ON CONFLICT(directory) DO NOTHING; END;
 CREATE TRIGGER hq_trg_tp__register_update AFTER UPDATE OF directory ON hq_thread_plan
@@ -537,3 +522,92 @@ CREATE TRIGGER hq_trg_r__register AFTER INSERT ON hq_request WHEN json_extract(n
 BEGIN INSERT INTO hq_plan_registration VALUES (json_extract(new.specification, '$.plan.directory')) ON CONFLICT(directory) DO NOTHING; END;
 CREATE TRIGGER hq_trg_r__register_update AFTER UPDATE OF specification ON hq_request WHEN json_extract(new.specification, '$.plan') IS NOT NULL
 BEGIN INSERT INTO hq_plan_registration VALUES (json_extract(new.specification, '$.plan.directory')) ON CONFLICT(directory) DO NOTHING; END;
+
+-- sessions another client drives, with the live state HQ last observed
+CREATE TABLE hq_observed_session (
+  provider TEXT NOT NULL CHECK (length(provider) BETWEEN 1 AND 64),
+  native_id TEXT NOT NULL CHECK (length(native_id) > 0),
+  state TEXT NOT NULL CHECK (state IN ('running', 'waiting', 'idle', 'closed', 'failed', 'unknown')),
+  observed_at INTEGER NOT NULL,
+  CONSTRAINT hq_pk_os__provider_native_id PRIMARY KEY (provider, native_id)
+) STRICT;
+
+-- ordered state changes of managed and observed sessions, kept for seven days
+CREATE TABLE hq_session_transition (
+  sequence INTEGER CONSTRAINT hq_pk_st__sequence PRIMARY KEY AUTOINCREMENT,
+  provider TEXT NOT NULL,
+  native_id TEXT,
+  thread_id TEXT,
+  ownership TEXT NOT NULL CHECK (ownership IN ('external', 'managed', 'uncertain')),
+  previous_state TEXT CHECK (previous_state IS NULL OR previous_state IN ('running', 'waiting', 'idle', 'closed', 'failed', 'unknown')),
+  state TEXT NOT NULL CHECK (state IN ('running', 'waiting', 'idle', 'closed', 'failed', 'unknown')),
+  reason TEXT NOT NULL CHECK (reason IN ('opened', 'turn-started', 'turn-completed', 'waiting-for-input', 'operator-stopped', 'failed', 'disappeared', 'closed')),
+  recorded_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX hq_idx_st__recorded_at ON hq_session_transition (recorded_at);
+CREATE INDEX hq_idx_st__thread_id_sequence ON hq_session_transition (thread_id, sequence) WHERE thread_id IS NOT NULL;
+CREATE TRIGGER hq_trg_st__prune AFTER INSERT ON hq_session_transition
+BEGIN DELETE FROM hq_session_transition WHERE sequence IN (SELECT sequence FROM hq_session_transition WHERE recorded_at < new.recorded_at - 604800000 ORDER BY recorded_at LIMIT 128); END;
+
+-- the session state each managed thread state reports; stopping keeps the state it stops
+CREATE TABLE hq_session_state_map (
+  thread_state TEXT NOT NULL CONSTRAINT hq_pk_ssm__thread_state PRIMARY KEY,
+  session_state TEXT
+) STRICT;
+INSERT INTO hq_session_state_map (thread_state, session_state) VALUES
+  ('creating', 'unknown'), ('inactive', 'closed'), ('idle', 'idle'), ('starting', 'running'),
+  ('running', 'running'), ('waiting-input', 'waiting'), ('waiting-approval', 'waiting'),
+  ('stopping', NULL), ('completed', 'idle'), ('failed', 'failed'), ('interrupted', 'idle'),
+  ('unknown', 'unknown');
+
+/*
+ * A managed session's previous state is its last recorded transition. It stops only through an
+ * operator interrupt or close, so leaving a running or waiting state for idle-after-interrupt or
+ * closed is an operator stop; unknown means ownership or the native connection was lost.
+ */
+CREATE TRIGGER hq_trg_t__transition AFTER UPDATE OF state ON hq_thread
+WHEN old.state != new.state AND (SELECT session_state FROM hq_session_state_map WHERE thread_state = new.state) IS NOT NULL
+BEGIN
+  INSERT INTO hq_session_transition (provider, native_id, thread_id, ownership, previous_state, state, reason, recorded_at)
+  SELECT new.provider, new.native_id, new.id, new.ownership, previous.state, next.session_state,
+    CASE
+      WHEN next.session_state = 'running' THEN 'turn-started'
+      WHEN next.session_state = 'waiting' THEN 'waiting-for-input'
+      WHEN next.session_state = 'idle' AND previous.state IN ('running', 'waiting') AND new.state = 'interrupted' THEN 'operator-stopped'
+      WHEN next.session_state = 'idle' AND previous.state IN ('running', 'waiting') THEN 'turn-completed'
+      WHEN next.session_state = 'idle' THEN 'opened'
+      WHEN next.session_state = 'closed' AND previous.state IN ('running', 'waiting') THEN 'operator-stopped'
+      WHEN next.session_state = 'closed' THEN 'closed'
+      WHEN next.session_state = 'failed' THEN 'failed'
+      ELSE 'disappeared'
+    END,
+    new.updated_at
+  FROM hq_session_state_map AS next
+  LEFT JOIN (SELECT state FROM hq_session_transition WHERE thread_id = new.id ORDER BY sequence DESC LIMIT 1) AS previous ON 1
+  WHERE next.thread_state = new.state AND next.session_state IS NOT previous.state;
+END;
+
+-- an observed session that leaves while it runs or waits disappeared; leaving while idle closed it
+CREATE TRIGGER hq_trg_os__insert AFTER INSERT ON hq_observed_session
+BEGIN
+  INSERT INTO hq_session_transition (provider, native_id, thread_id, ownership, previous_state, state, reason, recorded_at)
+  VALUES (new.provider, new.native_id, NULL, 'external', NULL, new.state,
+    CASE new.state WHEN 'running' THEN 'turn-started' WHEN 'waiting' THEN 'waiting-for-input' WHEN 'idle' THEN 'opened' WHEN 'failed' THEN 'failed' WHEN 'closed' THEN 'closed' ELSE 'disappeared' END,
+    new.observed_at);
+END;
+CREATE TRIGGER hq_trg_os__state AFTER UPDATE OF state ON hq_observed_session WHEN old.state != new.state
+BEGIN
+  INSERT INTO hq_session_transition (provider, native_id, thread_id, ownership, previous_state, state, reason, recorded_at)
+  VALUES (new.provider, new.native_id, NULL, 'external', old.state, new.state,
+    CASE
+      WHEN new.state = 'running' THEN 'turn-started'
+      WHEN new.state = 'waiting' THEN 'waiting-for-input'
+      WHEN new.state = 'idle' AND old.state IN ('running', 'waiting') THEN 'turn-completed'
+      WHEN new.state = 'idle' THEN 'opened'
+      WHEN new.state = 'closed' AND old.state IN ('running', 'waiting') THEN 'disappeared'
+      WHEN new.state = 'closed' THEN 'closed'
+      WHEN new.state = 'failed' THEN 'failed'
+      ELSE 'disappeared'
+    END,
+    new.observed_at);
+END;

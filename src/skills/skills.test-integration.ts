@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -412,6 +412,23 @@ test('trusted extra roots reach native loaders without becoming browser configur
     await fixture.runtime.close();
     const extra = join(fixture.root, 'extra');
     await mkdir(extra);
+    const skill = async (directory: string, source: string, root = extra) => {
+      await mkdir(join(root, directory));
+      await writeFile(join(root, directory, 'SKILL.md'), source);
+    };
+    await skill(
+      'root-skill',
+      '---\nname: root-skill\ndescription: "Operator root skill"\n---\n\nBody.\n',
+    );
+    await skill('explicit-skill', '---\nname: explicit-skill\ndescription: Shadowed copy\n---\n');
+    await skill('broken', 'no frontmatter\n');
+    await mkdir(join(extra, 'notes'));
+    await skill(
+      'linked',
+      '---\nname: linked-skill\ndescription: Outside the root\n---\n',
+      fixture.root,
+    );
+    await symlink(join(fixture.root, 'linked'), join(extra, 'linked'));
     const runtime = await createAgentHq({
       stateRoot: fixture.stateRoot,
       allowedRoots: [fixture.workspaceRoot],
@@ -443,19 +460,44 @@ test('trusted extra roots reach native loaders without becoming browser configur
         await wait(10);
       }
       expect(await readFile(join(fixture.root, 'calls.jsonl'), 'utf8')).toBe('');
-      await runtime.request({
-        kind: 'threads',
-        provider: 'codex',
-        workspaceRoot: fixture.workspaceRoot,
+      // Codex roots belong to the thread HQ starts, never to the shared daemon
+      const codex = await setup(fixture, 'codex');
+      const calls = await codex.calls();
+      expect(calls.map((record) => record.method)).not.toContain('skills/extraRoots/set');
+      expect(calls.find((record) => record.method === 'thread/start')?.params).toMatchObject({
+        selectedCapabilityRoots: [
+          {
+            id: 'jg-agent-hq-skills-0',
+            location: { type: 'environment', environmentId: 'local', path: extra },
+          },
+        ],
       });
-      const calls = (await readFile(join(fixture.root, 'calls.jsonl'), 'utf8'))
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line));
-      expect(calls).toContainEqual({
-        method: 'skills/extraRoots/set',
-        params: { extraRoots: [extra] },
+      const page = await codex.catalog(128);
+      expect(page).toMatchObject({ state: 'partial', unavailableCount: 1 });
+      expect(page.data.filter((entry) => entry.name === 'explicit-skill')).toHaveLength(1);
+      expect(page.data.map((entry) => entry.name)).not.toContain('linked-skill');
+      const rooted = page.data.find((entry) => entry.name === 'root-skill')!;
+      expect(rooted).toMatchObject({
+        description: 'Operator root skill',
+        kind: 'skill',
+        path: join(extra, 'root-skill', 'SKILL.md'),
+        scope: 'host',
+        isEnabled: true,
       });
+      expect((await codex.preview(rooted.id, 'plan')).text).toBe('$root-skill plan');
+      const message = codex.envelope({
+        kind: 'message',
+        threadId: codex.managed.id,
+        input: { kind: 'skill', skillId: rooted.id, arguments: 'plan' },
+      });
+      await codex.submit(message);
+      await codex.settled(message.id);
+      expect(await codex.inputs()).toStrictEqual([
+        [
+          { type: 'text', text: '$root-skill plan' },
+          { type: 'skill', name: 'root-skill', path: join(extra, 'root-skill', 'SKILL.md') },
+        ],
+      ]);
       const starts = z.array(z.object({ args: z.array(z.string()) })).parse(
         (await readFile(join(fixture.root, 'claude-starts.jsonl'), 'utf8'))
           .trim()

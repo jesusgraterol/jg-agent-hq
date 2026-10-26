@@ -1,7 +1,5 @@
 import { z } from 'zod';
 
-import { ProviderIdSchema } from '../providers/index.js';
-
 // execution revisions are independent of exact file inspection hashes
 export const PlanDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const PlanRevisionSchema = z.strictObject({
@@ -10,24 +8,8 @@ export const PlanRevisionSchema = z.strictObject({
 });
 export type IPlanRevision = z.infer<typeof PlanRevisionSchema>;
 
-// JSON-only contract metadata remains safe in the browser contracts entry point.
+// plan frontmatter beyond the administrative keys, kept as JSON-safe extensions
 export const PlanMetadataSchema = z.strictObject({
-  scope: z.string().min(1).max(128),
-  repositories: z.array(z.string().min(1).max(128)).max(128),
-  errorReservations: z
-    .array(
-      z
-        .strictObject({
-          repository: z.string().min(1).max(128),
-          namespace: z.string().min(1).max(256),
-          start: z.number().int().safe(),
-          end: z.number().int().safe(),
-          registryPath: z.string().min(1).max(4096),
-          purpose: z.string().min(1).max(4096),
-        })
-        .refine((reservation) => reservation.end >= reservation.start),
-    )
-    .max(128),
   extensions: z.record(z.string(), z.json()).default({}),
 });
 export type IPlanMetadata = z.infer<typeof PlanMetadataSchema>;
@@ -55,7 +37,7 @@ export const PlanMilestoneSchema = z.object({
 });
 export type IPlanMilestone = z.infer<typeof PlanMilestoneSchema>;
 
-// actual evidence remains attached to its verified contract through later correspondence
+// actual evidence stays attached to its milestone ID across jg-breakdown revisions
 export const PlanCheckSchema = z.strictObject({
   command: z.string().min(1).max(4096),
   outcome: z.literal('passed'),
@@ -89,7 +71,8 @@ export const PlanCompletionSchema = z.strictObject({
   checkouts: z.array(PlanWorktreeProofSchema).max(128),
   checks: z.array(PlanCheckSchema).min(1).max(32),
   completedAt: z.number().int(),
-  reopenActionId: z.uuid().nullable(),
+  // the finalization that found this milestone no longer done; the receipt then stops counting
+  reopenedBy: z.uuid().nullable(),
 });
 export type IPlanCompletion = z.infer<typeof PlanCompletionSchema>;
 export const PlanSnapshotMilestoneSchema = PlanMilestoneSchema.extend({
@@ -111,39 +94,6 @@ export const PlanCheckpointSchema = z.strictObject({
 });
 export type IPlanCheckpoint = z.infer<typeof PlanCheckpointSchema>;
 
-// one explicit confirmation covers all unmatched checkpoint entries, including completed work
-export const PlanCorrespondenceSchema = z.strictObject({
-  sourceIds: z
-    .array(z.uuid())
-    .min(1)
-    .max(1024)
-    .refine((ids) => new Set(ids).size === ids.length),
-  targetIds: z
-    .array(z.uuid())
-    .max(1024)
-    .refine((ids) => new Set(ids).size === ids.length),
-  relation: z.enum(['equivalent', 'requirements-changed', 'omitted', 'reopened']),
-  retainedPairs: z.array(z.strictObject({ sourceId: z.uuid(), targetId: z.uuid() })).max(1024),
-});
-export type IPlanCorrespondence = z.infer<typeof PlanCorrespondenceSchema>;
-export const PlanDraftMilestoneSchema = PlanSnapshotMilestoneSchema.extend({
-  matchedSourceId: z.uuid().nullable(),
-});
-export type IPlanDraftMilestone = z.infer<typeof PlanDraftMilestoneSchema>;
-export const PlanProposalSchema = z.strictObject({
-  id: z.uuid(),
-  revision: PlanRevisionSchema,
-  inspectionHash: PlanDigestSchema.nullable(),
-  drafts: z.array(PlanDraftMilestoneSchema).max(1024),
-  unmatchedSourceIds: z.array(z.uuid()).max(1024),
-  confirmation: z
-    .strictObject({
-      action: PlanOperatorActionSchema,
-      decisions: z.array(PlanCorrespondenceSchema).max(1024),
-    })
-    .nullable(),
-});
-export type IPlanProposal = z.infer<typeof PlanProposalSchema>;
 export const PlanRevisionWorkflowSchema = z.strictObject({
   id: z.uuid(),
   action: PlanOperatorActionSchema,
@@ -157,14 +107,7 @@ export const PlanRevisionWorkflowSchema = z.strictObject({
       z.strictObject({ threadId: z.uuid(), interruptActionId: z.uuid(), closeActionId: z.uuid() }),
     )
     .max(32),
-  phase: z.enum([
-    'quiescing',
-    'editing',
-    'reconciling',
-    'awaiting-approval',
-    'blocked',
-    'finished',
-  ]),
+  phase: z.enum(['quiescing', 'editing', 'awaiting-approval', 'blocked', 'finished']),
   reason: z.string().max(4096).nullable(),
   threadIds: z.array(z.uuid()).max(32),
   checkouts: z.array(PlanCheckoutSchema).max(128),
@@ -172,30 +115,10 @@ export const PlanRevisionWorkflowSchema = z.strictObject({
   invocation: z
     .strictObject({ action: PlanOperatorActionSchema, skill: z.enum(['jg-plan', 'jg-breakdown']) })
     .nullable(),
-  proposal: PlanProposalSchema.nullable(),
   createdAt: z.number().int(),
   hasUncertainEffects: z.boolean(),
 });
 export type IPlanRevisionWorkflow = z.infer<typeof PlanRevisionWorkflowSchema>;
-export const PlanCorrespondenceRecordSchema = z.strictObject({
-  id: z.uuid(),
-  action: PlanOperatorActionSchema,
-  revision: PlanRevisionSchema,
-  sources: z.array(PlanSnapshotMilestoneSchema).max(1024),
-  targets: z
-    .array(
-      z.strictObject({
-        id: z.uuid(),
-        contractDigest: PlanDigestSchema,
-        status: PlanMilestoneSchema.shape.status,
-      }),
-    )
-    .max(1024),
-  relation: PlanCorrespondenceSchema.shape.relation,
-  invalidatedReceiptIds: z.array(z.uuid()).max(1024),
-  recordedAt: z.number().int(),
-});
-export type IPlanCorrespondenceRecord = z.infer<typeof PlanCorrespondenceRecordSchema>;
 
 const MutationFields = {
   target: PlanTargetSchema,
@@ -210,16 +133,8 @@ export const PlanCommandSchema = z.discriminatedUnion('kind', [
     limit: z.number().int().min(1).max(128).default(32),
     cursor: z.string().min(1).max(16_384).optional(),
   }),
-  z.strictObject({
-    kind: z.literal('finalize'),
-    ...MutationFields,
-    confirmation: z
-      .strictObject({
-        proposalId: z.uuid(),
-        decisions: z.array(PlanCorrespondenceSchema).max(1024),
-      })
-      .optional(),
-  }),
+  z.strictObject({ kind: z.literal('register'), target: PlanTargetSchema }),
+  z.strictObject({ kind: z.literal('finalize'), ...MutationFields }),
   z.strictObject({
     kind: z.literal('complete'),
     ...MutationFields,
@@ -239,13 +154,6 @@ export const PlanCommandSchema = z.discriminatedUnion('kind', [
     ...MutationFields,
     revisionId: z.uuid(),
     skill: z.enum(['jg-plan', 'jg-breakdown']),
-  }),
-  z.strictObject({
-    kind: z.literal('reconciliation'),
-    target: PlanTargetSchema,
-    collection: z.enum(['sources', 'drafts', 'evidence', 'correspondences']),
-    limit: z.number().int().min(1).max(128).default(32),
-    cursor: z.string().min(1).max(16_384).optional(),
   }),
   z.strictObject({
     kind: z.literal('approve'),
@@ -302,33 +210,14 @@ export const PlanFinalizationSchema = z.strictObject({
   fileHash: PlanDigestSchema.nullable(),
   createdAt: z.number().int(),
 });
-// coordinators own semantic review; the core preserves its exact revision-bound evidence
-export const PlanComparisonSchema = z.strictObject({
-  sourceRevision: PlanRevisionSchema,
-  targetDirectory: z.string().min(1).max(4096),
-  targetRevision: PlanRevisionSchema,
-  verdict: z.enum(['compatible', 'contradiction']),
-  reason: z.string().min(1).max(4096),
-  reviewer: z.strictObject({
-    provider: ProviderIdSchema,
-    cliVersion: z.string().min(1).max(128),
-    model: z.string().min(1).max(256).nullable(),
-    reference: z.string().min(1).max(4096),
-  }),
-  reviewedAt: z.number().int().nonnegative(),
-});
-export type IPlanComparison = z.infer<typeof PlanComparisonSchema>;
-
 export const PlanCoordinationSchema = z.strictObject({
   schemaVersion: z.literal(1),
-  comparisons: z.array(PlanComparisonSchema).max(1024),
   finalized: PlanFinalizationSchema.nullable(),
   planApproval: PlanApprovalSchema.nullable(),
   sequenceApproval: PlanApprovalSchema.nullable(),
   execution: PlanExecutionSchema.nullable(),
   lastActionId: z.uuid().nullable(),
   completions: z.array(PlanCompletionSchema).max(1024),
-  correspondences: z.array(PlanCorrespondenceRecordSchema).max(1024),
   revision: PlanRevisionWorkflowSchema.nullable(),
   baseline: PlanCheckpointSchema.nullable(),
   observedConflict: z
@@ -346,28 +235,25 @@ export type IPlanCoordination = z.infer<typeof PlanCoordinationSchema>;
 
 // collection bodies remain in the file owner and paged SQLite projections
 export const PlanCoordinationSummarySchema = PlanCoordinationSchema.omit({
-  comparisons: true,
   completions: true,
-  correspondences: true,
   revision: true,
   baseline: true,
 }).extend({
-  comparisonCount: z.number().int().nonnegative(),
   completionCount: z.number().int().nonnegative(),
+  // current receipts whose milestone ID no longer appears in the sequence
+  unmatchedEvidence: z
+    .array(
+      PlanCompletionSchema.pick({ id: true, milestoneId: true, title: true, completedAt: true }),
+    )
+    .max(1024),
   revision: PlanRevisionWorkflowSchema.omit({
     checkpoint: true,
-    proposal: true,
     checkouts: true,
     controls: true,
     checkpointActionId: true,
     blockActionId: true,
   })
-    .extend({
-      hasCheckpoint: z.boolean(),
-      hasProposal: z.boolean(),
-      proposalId: z.uuid().nullable(),
-      unmatchedCount: z.number().int().nonnegative(),
-    })
+    .extend({ hasCheckpoint: z.boolean() })
     .nullable(),
 });
 export const PlanStatusSchema = z.object({
@@ -397,31 +283,9 @@ export const PlanStatusSchema = z.object({
   coordination: PlanCoordinationSummarySchema,
 });
 export type IPlanStatus = z.infer<typeof PlanStatusSchema>;
-// paged retained history omits duplicated source contracts from correspondence summaries
-export const PlanCorrespondenceSummarySchema = PlanCorrespondenceRecordSchema.omit({
-  sources: true,
-}).extend({
-  sources: z
-    .array(PlanSnapshotMilestoneSchema.pick({ id: true, contractDigest: true, status: true }))
-    .max(1024),
-});
-export const PlanReconciliationEntrySchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('source'), entry: PlanSnapshotMilestoneSchema }),
-  z.object({ kind: z.literal('draft'), entry: PlanDraftMilestoneSchema }),
-  z.object({ kind: z.literal('evidence'), entry: PlanCompletionSchema }),
-  z.object({ kind: z.literal('correspondence'), entry: PlanCorrespondenceSummarySchema }),
-]);
-export type IPlanReconciliationEntry = z.infer<typeof PlanReconciliationEntrySchema>;
 export const PlanResultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('status'), result: PlanStatusSchema }),
-  z.object({ kind: z.literal('reconciliation-required'), result: PlanStatusSchema }),
-  z.object({
-    kind: z.literal('reconciliation'),
-    result: z.object({
-      data: z.array(PlanReconciliationEntrySchema).max(128),
-      nextCursor: z.string().nullable(),
-    }),
-  }),
+  z.object({ kind: z.literal('registered'), result: z.object({ directory: z.string() }) }),
   z.object({
     kind: z.literal('finalized'),
     result: PlanStatusSchema,

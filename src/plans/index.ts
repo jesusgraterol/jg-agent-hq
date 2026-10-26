@@ -5,9 +5,9 @@ export {
   parsePlanMilestones,
   isSamePlanRevision,
 } from './utilities.js';
+export { observePlanContract } from './documents.js';
 export type {
   IPlanContract,
-  IPlanContractParser,
   IPlanStopJob,
   IParsedMilestone,
   IPlanArtifacts,
@@ -22,11 +22,3 @@ export {
 } from './types.js';
 // selected-plan coordination
 export { createPlans } from './plans.js';
-
-// revision read projection contracts
-export {
-  PlanRevisionProjectionSchema,
-  PlanRevisionPageSchema,
-  PlanRevisionPageResultSchema,
-} from './types.js';
-export type { IPlanRevisionProjection } from './types.js';

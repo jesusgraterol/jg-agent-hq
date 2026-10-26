@@ -1,19 +1,16 @@
 // @vitest-environment node
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, symlink, readdir, rm, rename } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, symlink, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { createAgentHq, acquireHqLock, type IAgentHq } from 'jg-agent-hq';
+import { createAgentHq, createHqSnapshot, acquireHqLock, type IAgentHq } from 'jg-agent-hq';
 import type {
-  IPlanComparison,
-  IPlanCoordination,
   IPlanCommandInput,
   IPlanOperatorAction,
   IPlanTarget,
   IPlanStatus,
-  IPlanMetadata,
 } from 'jg-agent-hq/contracts';
-import { fingerprintPlan } from 'jg-plans';
+import { fingerprintPlan, withPlanDocumentLocks } from 'jg-plans';
 import { expect, test } from 'vitest';
 
 import {
@@ -21,10 +18,14 @@ import {
   type IClaudeFixture,
 } from '../../scripts/test-support/claude-runtime.js';
 
-const milestone = (ordinal: number, id?: string, status = 'pending') =>
+// jg-breakdown assigns milestone IDs; a null id writes a milestone without one
+const milestone = (ordinal: number, id: string | null, status = 'pending') =>
   `## Milestone ${ordinal}: Feature ${ordinal}\n**Status:** ${status}\n${id ? `**Milestone ID:** ${id}\n` : ''}\n**Objective:** Complete feature ${ordinal}.\n**Dependencies:** None.\n**Scope:** Feature code.\n**Implementation:** Implement feature ${ordinal}.\n**Verification:** Actual checks.\n**Acceptance:** Correct behavior.\n**Review checkpoint:** Review feature ${ordinal}.\n\n`;
-const sequence = (count = 2, ids?: string[]) =>
-  `# Milestones\n\n## Overview\n\n| Milestone | Name | Status |\n| --- | --- | --- |\n${Array.from({ length: count }, (_, i) => `| ${i + 1} | Feature ${i + 1} | pending |`).join('\n')}\n\n${Array.from({ length: count }, (_, i) => milestone(i + 1, ids?.[i])).join('')}## Approval required\nApprove the sequence.\n`;
+const sequence = (
+  count = 2,
+  ids: (string | null)[] = Array.from({ length: count }, () => randomUUID()),
+) =>
+  `# Milestones\n\n## Overview\n\n| Milestone | Name | Status |\n| --- | --- | --- |\n${Array.from({ length: count }, (_, i) => `| ${i + 1} | Feature ${i + 1} | pending |`).join('\n')}\n\n${Array.from({ length: count }, (_, i) => milestone(i + 1, ids[i] ?? null)).join('')}## Approval required\nApprove the sequence.\n`;
 const action = (): IPlanOperatorAction => ({
   id: randomUUID(),
   operatorId: 'workspace-owner',
@@ -91,15 +92,18 @@ const setup = async (fixture: IClaudeFixture, content = sequence()) => {
   return { directory, target, send, status, finalize, approve, page, ready };
 };
 
-test('generic plan finalization presents stable IDs without granting approval, execution or native permission', async () => {
+test('generic plan finalization records jg-breakdown IDs without granting approval, execution or native permission', async () => {
   await withClaudeRuntime(async (fixture) => {
     const plan = await setup(fixture);
     const before = await plan.status();
     expect(before.state).toBe('plan-approval-required');
-    expect(before.revision.breakdownDigest).toBeNull();
+    expect(before.revision.breakdownDigest).toMatch(/^[a-f0-9]{64}$/);
+    const presented = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
     const { response, command } = await plan.finalize();
     const canonical = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
+    expect(canonical).toBe(presented);
     expect(response.content).toBe(canonical);
+    expect(response.result.revision).toStrictEqual(before.revision);
     expect(response.result.coordination.finalized).toMatchObject({
       action: command.action,
       revision: response.result.revision,
@@ -204,75 +208,6 @@ test.each(['supervised', 'auto'] as const)(
   },
 );
 
-test.each(['compatible', 'contradiction'] as const)(
-  'coordinator %s evidence survives authority writes and restart without changing execution identity',
-  async (verdict) => {
-    await withClaudeRuntime(async (fixture) => {
-      const plan = await setup(fixture);
-      await plan.finalize();
-      const before = await plan.status();
-      const comparison: IPlanComparison = {
-        sourceRevision: before.revision,
-        targetDirectory: join(fixture.workspaceRoot, 'other-plan'),
-        targetRevision: { planDigest: hash('other plan'), breakdownDigest: null },
-        verdict,
-        reason: 'The coordinator reviewed shared ownership and requirements.',
-        reviewer: {
-          provider: 'codex',
-          cliVersion: '0.163.0',
-          model: null,
-          reference: 'native-review:comparison-1',
-        },
-        reviewedAt: Date.now(),
-      };
-      const path = join(plan.directory, 'coordination.json');
-      const release = await acquireHqLock(fixture.stateRoot, 'coordinator comparison');
-      try {
-        const coordination: IPlanCoordination = JSON.parse(await readFile(path, 'utf8'));
-        coordination.comparisons = [comparison];
-        const temporary = join(plan.directory, '.comparison.json.tmp');
-        await writeFile(temporary, `${JSON.stringify(coordination)}\n`);
-        await rename(temporary, path);
-      } finally {
-        await release();
-      }
-      const reviewed = await plan.status();
-      expect(reviewed.revision).toStrictEqual(before.revision);
-      expect(reviewed.inspection.coordination).not.toBe(before.inspection.coordination);
-      expect(reviewed.coordination.comparisonCount).toBe(1);
-      expect(reviewed.coordination).not.toHaveProperty('comparisons');
-      expect(reviewed.isPlanApproved).toBe(false);
-      expect(reviewed.isSequenceApproved).toBe(false);
-      expect(reviewed.coordination.execution).toBeNull();
-
-      await plan.approve('plan');
-      await plan.approve('sequence');
-      await plan.send({
-        kind: 'revoke',
-        target: plan.target,
-        action: action(),
-        expected: before.revision,
-        scope: 'all',
-      });
-      await fixture.runtime.close();
-      const restarted = await createAgentHq({
-        stateRoot: fixture.stateRoot,
-        allowedRoots: [fixture.workspaceRoot],
-      });
-      try {
-        const current = await plan.status(restarted);
-        expect(current.revision).toStrictEqual(before.revision);
-        expect(current.coordination.comparisonCount).toBe(1);
-        expect(current.isPlanApproved).toBe(false);
-        expect(current.isSequenceApproved).toBe(false);
-        expect(JSON.parse(await readFile(path, 'utf8')).comparisons).toStrictEqual([comparison]);
-      } finally {
-        await restarted.close();
-      }
-    });
-  },
-);
-
 test('explicit authorization binds current revisions, selected IDs and exact execution mode', async () => {
   await withClaudeRuntime(async (fixture) => {
     const plan = await setup(fixture);
@@ -371,58 +306,48 @@ test('approval rejects raw output, stale inspection, stale revision, forged prov
   });
 });
 
-test('host profile, status, Overview and unrelated session labels preserve approval; contract changes do not', async () => {
-  const metadata: IPlanMetadata = {
-    scope: 'local',
-    extensions: {},
-    repositories: ['workspace'],
-    errorReservations: [],
-  };
-  await withClaudeRuntime(
-    async (fixture) => {
-      const plan = await setup(fixture);
-      const prefix = '---\npriority: P2\npriorityReason: Normal work.\n---\n';
-      const body = '# Plan\nBuild the workspace.\n';
-      await writeFile(join(plan.directory, 'plan.md'), prefix + body);
-      await plan.ready();
-      const current = await plan.status();
-      await writeFile(join(plan.directory, 'plan.md'), prefix.replace('P2', 'P1') + body);
-      const content = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
-      await writeFile(
-        join(plan.directory, 'milestones.md'),
-        content
-          .replace('**Status:** pending', '**Status:** in progress')
-          .replace('| 1 | Feature 1 | pending |', '| 1 | Feature 1 | in progress |'),
-      );
-      await writeFile(join(plan.directory, 'sessions.md'), 'codex_better-name\n');
-      const changed = await plan.status();
-      expect(changed.revision).toStrictEqual(current.revision);
-      expect(changed.inspection.plan).not.toBe(current.inspection.plan);
-      expect(changed.isSequenceApproved).toBe(true);
-      await writeFile(
-        join(plan.directory, 'milestones.md'),
-        content.replace('**Dependencies:** None.', '**Dependencies:** Requires external approval.'),
-      );
-      const stale = await plan.status();
-      expect(stale.isPlanApproved).toBe(true);
-      expect(stale.isSequenceApproved).toBe(false);
-      metadata.errorReservations.push({
-        repository: 'workspace',
-        namespace: 'api',
-        start: 200,
-        end: 204,
-        registryPath: 'errors/index.ts',
-        purpose: 'Feature failures',
-      });
-      expect((await plan.status()).isPlanApproved).toBe(false);
-    },
-    {
-      parsePlanContract: ({ content }) => ({
-        body: content.slice(content.indexOf('\n---\n') + 5),
-        metadata,
-      }),
-    },
-  );
+test('administrative keys, status, Overview and unrelated session labels preserve approval; contract changes do not', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const plan = await setup(fixture);
+    const frontmatter = (status: string, updatedAt: string, owner: string) =>
+      `---\nid: workspace-plan\nstatus: ${status}\nupdated_at: ${updatedAt}\nowner: ${owner}\n---\n`;
+    const body = '# Plan\nBuild the workspace.\n';
+    await writeFile(
+      join(plan.directory, 'plan.md'),
+      frontmatter('pending', '2026-10-22T10:00:00Z', 'core') + body,
+    );
+    await plan.ready();
+    const current = await plan.status();
+    await writeFile(
+      join(plan.directory, 'plan.md'),
+      frontmatter('in progress', '2026-10-22T11:00:00Z', 'core') + body,
+    );
+    const content = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
+    await writeFile(
+      join(plan.directory, 'milestones.md'),
+      content
+        .replace('**Status:** pending', '**Status:** in progress')
+        .replace('| 1 | Feature 1 | pending |', '| 1 | Feature 1 | in progress |'),
+    );
+    await writeFile(join(plan.directory, 'sessions.md'), 'codex_better-name\n');
+    const changed = await plan.status();
+    expect(changed.revision).toStrictEqual(current.revision);
+    expect(changed.inspection.plan).not.toBe(current.inspection.plan);
+    expect(changed.isSequenceApproved).toBe(true);
+    await writeFile(
+      join(plan.directory, 'milestones.md'),
+      content.replace('**Dependencies:** None.', '**Dependencies:** Requires external approval.'),
+    );
+    const stale = await plan.status();
+    expect(stale.isPlanApproved).toBe(true);
+    expect(stale.isSequenceApproved).toBe(false);
+    // every other frontmatter field is an extension, so changing one changes the plan contract
+    await writeFile(
+      join(plan.directory, 'plan.md'),
+      frontmatter('in progress', '2026-10-22T11:00:00Z', 'platform') + body,
+    );
+    expect((await plan.status()).isPlanApproved).toBe(false);
+  });
 });
 
 test('revoked plan authority cannot be restored by replaying an earlier approval', async () => {
@@ -513,7 +438,38 @@ test('a done marker is visible but cannot replace verified completion evidence',
   });
 });
 
-test('the shared lock serializes competing finalizers and replay keeps the original UUIDs', async () => {
+test('register records an allowed directory for snapshots without locking or reading its plan', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const directory = join(fixture.workspaceRoot, 'registered-plan');
+    await mkdir(directory);
+    const register = (selected: string) =>
+      fixture.runtime.request({
+        kind: 'plan',
+        command: { kind: 'register', target: { directory: selected } },
+      });
+    // plan.md doesn't exist yet and its document locks are held, so a read or a lock would fail
+    const registered = await withPlanDocumentLocks(directory, ['plan', 'milestones'], () =>
+      register(directory),
+    );
+    expect(registered).toStrictEqual({
+      kind: 'plan',
+      result: { kind: 'registered', result: { directory } },
+    });
+    expect(await register(directory)).toStrictEqual(registered);
+    await writeFile(join(directory, 'plan.md'), '# Plan\nCapture the registered plan.\n');
+    expect(
+      (await createHqSnapshot(fixture.runtime, join(fixture.root, 'snapshot'))).planCount,
+    ).toBe(1);
+    await expect(register(fixture.root)).rejects.toThrow('outside the allowed workspaces');
+    await expect(register(join(directory, 'plan.md'))).rejects.toThrow('plan is invalid');
+    await mkdir(join(fixture.workspaceRoot, '_archive'));
+    await expect(register(join(fixture.workspaceRoot, '_archive'))).rejects.toThrow(
+      'plan is invalid',
+    );
+  });
+});
+
+test('the shared lock serializes competing finalizers and replay returns the original result', async () => {
   await withClaudeRuntime(async (fixture) => {
     const plan = await setup(fixture);
     const before = await plan.status();
@@ -537,7 +493,16 @@ test('the shared lock serializes competing finalizers and replay keeps the origi
     const first = await pending;
     const retry = await plan.send(command);
     expect(retry).toStrictEqual(first);
-    await expect(plan.send({ ...command, action: action() })).rejects.toThrow('conflicts');
+    // the same revision may be finalized again; a changed one needs a revision first
+    expect((await plan.send({ ...command, action: action() })).kind).toBe('finalized');
+    const content = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
+    await writeFile(
+      join(plan.directory, 'milestones.md'),
+      content.replace('Actual checks.', 'Changed checks.'),
+    );
+    await expect(
+      plan.send({ ...command, action: action(), expected: (await plan.status()).revision }),
+    ).rejects.toThrow('conflicts');
   });
 });
 
@@ -723,9 +688,7 @@ test('finalization leaves both real and fenced Overview text and identity exampl
     const result = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
     expect(result).toContain(sample);
     expect(result).toContain('| 1 | Feature 1 | pending |');
-    expect(
-      result.replace(/^\*\*Milestone ID:\*\* [a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\n/gm, ''),
-    ).toBe(content);
+    expect(result).toBe(content);
   });
 });
 
@@ -733,7 +696,7 @@ test('the default profile excludes only administrative fields and retains the co
   await withClaudeRuntime(async (fixture) => {
     const plan = await setup(fixture);
     const source =
-      '---\nid: workspace-plan\nrevision: 1\nstatus: pending\ncreated_at: 2026-10-22T10:00:00Z\nupdated_at: 2026-10-22T10:00:00Z\nscope: cross-repo\nrepositories: [workspace]\ncustom: { acceptance: true }\n---\n# Plan\nBuild the workspace.\n';
+      '---\nid: workspace-plan\nrevision: 1\nstatus: pending\ncreated_at: 2026-10-22T10:00:00Z\nupdated_at: 2026-10-22T10:00:00Z\nowner: core\nreviewers: [workspace]\ncustom: { acceptance: true }\n---\n# Plan\nBuild the workspace.\n';
     await writeFile(join(plan.directory, 'plan.md'), source);
     const before = await plan.ready();
     const administrative = source
@@ -749,7 +712,8 @@ test('the default profile excludes only administrative fields and retains the co
     for (const changed of [
       source.replace('workspace-plan', 'new-plan'),
       source.replace('acceptance: true', 'acceptance: false'),
-      source.replace('cross-repo', 'single-repo'),
+      source.replace('owner: core', 'owner: platform'),
+      source.replace('[workspace]', '[workspace, platform]'),
     ]) {
       await writeFile(join(plan.directory, 'plan.md'), changed);
       expect((await plan.status()).revision.planDigest).not.toBe(before.revision.planDigest);
@@ -757,47 +721,28 @@ test('the default profile excludes only administrative fields and retains the co
   });
 });
 
-test.each([
-  'scope: null',
-  'repositories: false',
-  'errorReservations: invalid',
-  'custom: .nan',
-  '- not-a-mapping',
-  'custom: [unterminated',
-])('the default profile refuses malformed contractual metadata: %s', async (metadata) => {
-  await withClaudeRuntime(async (fixture) => {
-    const plan = await setup(fixture);
-    await writeFile(
-      join(plan.directory, 'plan.md'),
-      `---\n${metadata}\n---\n# Plan\nBuild the workspace.\n`,
-    );
-    await expect(plan.status()).rejects.toMatchObject({ code: 'JG_AGENT_HQ_PLAN_INVALID' });
-  });
-});
-
-test('the host hook must use the exact engine-observed body boundary', async () => {
-  await withClaudeRuntime(
-    async (fixture) => {
+test.each(['custom: .nan', '- not-a-mapping', 'custom: [unterminated'])(
+  'the default profile refuses malformed contractual metadata: %s',
+  async (metadata) => {
+    await withClaudeRuntime(async (fixture) => {
       const plan = await setup(fixture);
+      await writeFile(
+        join(plan.directory, 'plan.md'),
+        `---\n${metadata}\n---\n# Plan\nBuild the workspace.\n`,
+      );
       await expect(plan.status()).rejects.toMatchObject({ code: 'JG_AGENT_HQ_PLAN_INVALID' });
-    },
-    {
-      parsePlanContract: () => ({
-        body: 'Build the workspace.\n',
-        metadata: { scope: 'local', repositories: [], errorReservations: [], extensions: {} },
-      }),
-    },
-  );
-});
+    });
+  },
+);
 
-test('finalization preserves BOM, CRLF, metadata and Overview bytes while assigning replayable identities', async () => {
+test('finalization leaves BOM, CRLF, metadata and Overview bytes unchanged and replays its result', async () => {
   await withClaudeRuntime(async (fixture) => {
     const original =
       '\uFEFF---\r\ncontract: retained\r\n---\r\n' + sequence().replaceAll('\n', '\r\n');
     const plan = await setup(fixture, original);
     const finalized = await plan.finalize();
     const source = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
-    expect(source.replace(/^\*\*Milestone ID:\*\* [^\r\n]+\r\n/gm, '')).toBe(original);
+    expect(source).toBe(original);
     expect(await plan.send(finalized.command)).toStrictEqual(finalized.response);
     expect(await readFile(join(plan.directory, 'milestones.md'), 'utf8')).toBe(source);
   });

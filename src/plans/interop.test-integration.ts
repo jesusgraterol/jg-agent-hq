@@ -482,11 +482,11 @@ test(
     await withClaudeRuntime(async (fixture) => {
       const small = await exampleRuntime(fixture, 'small');
       await small.approve('plan');
-      const legacy = await exampleRuntime(fixture, 'with-milestones');
-      await legacy.approve('plan');
-      await legacy.finalize();
-      await legacy.approve('sequence');
-      expect(await legacy.status()).toMatchObject({
+      const sequenced = await exampleRuntime(fixture, 'with-milestones');
+      await sequenced.approve('plan');
+      await sequenced.finalize();
+      await sequenced.approve('sequence');
+      expect(await sequenced.status()).toMatchObject({
         isPlanApproved: true,
         isSequenceApproved: true,
       });

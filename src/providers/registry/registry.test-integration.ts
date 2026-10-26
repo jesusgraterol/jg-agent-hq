@@ -245,6 +245,7 @@ const createFixtureProvider = () => {
             createdAt: 1_900_000_000_000,
             updatedAt: 1_900_000_000_000,
             nativeState: 'idle',
+            state: 'idle',
             ownership: 'external',
             managedId: null,
             historyState: 'available',

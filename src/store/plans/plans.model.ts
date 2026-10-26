@@ -4,7 +4,6 @@ import { z } from 'zod';
 
 import {
   PlanMilestoneSchema,
-  PlanReconciliationEntrySchema,
   ActionPlanContextSchema,
   type IActionPlanContext,
 } from '../../contracts/index.js';
@@ -12,7 +11,6 @@ import {
   PlanWriteIntentSchema,
   type IPlanWriteIntent,
   type IPlanProjection,
-  type IPlanRevisionProjection,
 } from '../../plans/index.js';
 
 /** Owns selected-plan projections and write replay identities inside the SQLite worker. */
@@ -148,60 +146,15 @@ export class PlansModel {
       hasMore,
     };
   }
-  /** Rebuilds retained evidence rows only when the authoritative file hash changes. */
-  public projectRevision(projection: IPlanRevisionProjection): void {
-    const current = this.__database
-      .prepare('SELECT source_hash FROM hq_plan_revision_projection WHERE directory = ?')
-      .get(projection.directory);
-    if (current && current.source_hash === projection.sourceHash) return;
-    this.__database.exec('BEGIN IMMEDIATE');
-    try {
-      this.__database
-        .prepare('DELETE FROM hq_plan_record WHERE directory = ?')
-        .run(projection.directory);
-      const insert = this.__database.prepare(
-        'INSERT INTO hq_plan_record (directory, collection, record_id, entry) VALUES (?, ?, ?, ?)',
-      );
-      for (const row of projection.records)
-        insert.run(projection.directory, row.collection, row.id, JSON.stringify(row.entry));
-      this.__database
-        .prepare(
-          'INSERT INTO hq_plan_revision_projection (directory, source_hash) VALUES (?, ?) ON CONFLICT(directory) DO UPDATE SET source_hash = excluded.source_hash',
-        )
-        .run(projection.directory, projection.sourceHash);
-      this.__database.exec('COMMIT');
-    } catch (cause) {
-      this.__database.exec('ROLLBACK');
-      throw cause;
-    }
+  /** Records a plan directory for snapshot capture; an existing registration is kept. */
+  public register(directory: string): void {
+    this.__database
+      .prepare(
+        'INSERT INTO hq_plan_registration (directory) VALUES (?) ON CONFLICT(directory) DO NOTHING',
+      )
+      .run(directory);
   }
 
-  /** Reads one indexed seek page with additional response-byte headroom. */
-  public listRevision(page: {
-    directory: string;
-    collection: string;
-    after: string;
-    limit: number;
-  }) {
-    const rows = this.__database
-      .prepare(
-        'SELECT record_id, entry FROM hq_plan_record WHERE directory = ? AND collection = ? AND record_id > ? ORDER BY record_id LIMIT ?',
-      )
-      .all(page.directory, page.collection, page.after, page.limit + 1);
-    const data = [];
-    let bytes = 0;
-    let lastId: string | null = null;
-    for (const row of rows) {
-      if (data.length === page.limit) break;
-      const entry = z.string().parse(row.entry);
-      const size = Buffer.byteLength(entry);
-      if (data.length && bytes + size > 4_194_304) break;
-      data.push(PlanReconciliationEntrySchema.parse(JSON.parse(entry)));
-      bytes += size;
-      lastId = z.string().parse(row.record_id);
-    }
-    return { data, lastId, hasMore: rows.length > data.length };
-  }
   /** Resolves one thread's current guided scope without trusting its display label. */
   public getThreadPlan(threadId: string): IActionPlanContext | null {
     const row = this.__database

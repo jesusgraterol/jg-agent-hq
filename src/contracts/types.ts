@@ -38,6 +38,7 @@ import { SkillIdSchema, SkillPageSchema, SkillPreviewSchema } from './skills/ind
 import { NativeIdSchema, CursorSchema, NativeLineageSchema } from './identities/index.js';
 import { ProviderModelPageSchema, ProviderModelsRequestSchema } from './models/index.js';
 import { ConfigurationRequestSchema, SessionConfigurationSchema } from './configuration/index.js';
+import { SessionStateSchema, SessionTransitionPageSchema } from './sessions/index.js';
 import { PlanCommandSchema, PlanResultSchema } from './plans/index.js';
 import {
   ActionPlanContextSchema,
@@ -144,6 +145,11 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     threadId: z.uuid(),
     afterRevision: z.number().int().nonnegative().optional(),
   }),
+  z.strictObject({
+    kind: z.literal('session-states'),
+    afterSequence: z.number().int().nonnegative().default(0),
+    limit: z.number().int().min(1).max(128).default(32),
+  }),
 ]);
 export type IHqRequest = z.infer<typeof HqRequestSchema>;
 export type IHqRequestInput = z.input<typeof HqRequestSchema>;
@@ -158,6 +164,7 @@ export const ThreadSummarySchema = z.object({
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
   nativeState: z.enum(['notLoaded', 'idle', 'systemError', 'active', 'unknown']),
+  state: SessionStateSchema,
   ownership: z.enum(['external', 'managed', 'uncertain']),
   managedId: z.uuid().nullable(),
   historyState: z.enum(['available', 'unavailable']),
@@ -343,6 +350,7 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
     }),
   }),
   z.object({ kind: z.literal('live-items'), result: LiveItemsSchema }),
+  z.object({ kind: z.literal('session-states'), result: SessionTransitionPageSchema }),
 ]);
 export type IHqResponse = z.infer<typeof HqResponseSchema>;
 

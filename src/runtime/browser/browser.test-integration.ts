@@ -46,11 +46,8 @@ const requestFor = async (runtime: IAgentHq): Promise<IBrowserAction> => {
     id: randomUUID(),
     runtimeEpoch: status.result.runtimeEpoch,
     command: {
-      kind: 'priority',
-      target: { directory: '/selected-plan' },
-      expectedRevision: { planDigest: 'a'.repeat(64), breakdownDigest: null },
-      priority: 'P1',
-      reason: 'operator choice',
+      kind: 'plan',
+      command: { kind: 'status', target: { directory: '/operator-choice' } },
     },
   };
 };
@@ -73,9 +70,8 @@ test('concurrent identical requests invoke the host once; payload and operator c
         {
           ...input,
           command: {
-            kind: 'publication-retry',
-            publicationId: randomUUID(),
-            expectedCommit: 'a'.repeat(40),
+            kind: 'plan',
+            command: { kind: 'status', target: { directory: '/another-plan' } },
           },
         },
         'operator',
@@ -88,7 +84,7 @@ test('concurrent identical requests invoke the host once; payload and operator c
     expect(execute).toHaveBeenCalledTimes(1);
     await runtime.close();
     const database = await readFile(join(stateRoot, 'hq.sqlite'));
-    expect(database.includes(Buffer.from('operator choice'))).toBe(false);
+    expect(database.includes(Buffer.from('/operator-choice'))).toBe(false);
   });
 });
 

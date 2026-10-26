@@ -84,7 +84,7 @@ export const createPlanAdmission = (
       context: { directory: artifacts.directory, scope, observedRevision: artifacts.revision },
     };
   };
-  /** Blocks work on a bound thread while its contracts or owner are being reconciled. */
+  /** Blocks work on a bound thread while its contracts are revised or its owner is unavailable. */
   const boundArtifacts = async (
     context: IActionPlanContext,
     apply: IApplyPlanIntent,

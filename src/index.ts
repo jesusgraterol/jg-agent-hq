@@ -60,15 +60,17 @@ export type {
 } from './contracts/configuration/index.js';
 export type { INativeLineage } from './contracts/identities/index.js';
 
-// trusted offline storage upgrades
-export { upgradeHqStorage } from './storage/upgrade/index.js';
-export type { IHqStorageUpgradeOptions, IHqStorageUpgradeResult } from './storage/upgrade/index.js';
-
 // trusted host storage
 export type { IStorageDescriptor, IStorageMaintenanceOperation } from './storage/index.js';
 
 // trusted host snapshot and offline recovery
-export { createHqSnapshot, inspectHqSnapshot, restoreHqSnapshot } from './snapshots/index.js';
+export {
+  createHqSnapshot,
+  inspectHqSnapshot,
+  restoreHqSnapshot,
+  packHqSnapshot,
+  unpackHqSnapshot,
+} from './snapshots/index.js';
 export type {
   IHqSnapshotInspection,
   IHqRestoreOptions,
@@ -77,7 +79,7 @@ export type {
 
 // pure execution revision contracts
 export { computePlanRevision } from './plans/index.js';
-export type { IPlanContract, IPlanContractParser } from './plans/index.js';
+export type { IPlanContract } from './plans/index.js';
 
 // native media transport and results
 export type { IProviderInputFile } from './providers/index.js';
