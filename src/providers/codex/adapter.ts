@@ -39,7 +39,7 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
   id: 'codex',
   async create(context) {
     const native = await createCodexProvider(extraSkillRoots, context.agentTools);
-    // whether each observed session's workspace is allowed, read once per session
+    // whether each session is observed, read once: Codex saves it and it's inside an allowed workspace
     const allowedSessions = new Map<string, boolean>();
     let observations = Promise.resolve();
     const observeSession = (nativeId: string, state: ISessionState): void => {
@@ -47,10 +47,12 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
         .then(async () => {
           let isAllowed = allowedSessions.get(nativeId);
           if (isAllowed === undefined) {
-            const thread = await native.readThread(nativeId);
-            isAllowed = await resolveWorkspaceTarget(thread.workspaceRoot, context.allowedRoots)
-              .then(() => true)
-              .catch(() => false);
+            const thread = await native.readObservedThread(nativeId);
+            isAllowed =
+              !thread.isEphemeral &&
+              (await resolveWorkspaceTarget(thread.workspaceRoot, context.allowedRoots)
+                .then(() => true)
+                .catch(() => false));
             if (allowedSessions.size >= 1024)
               allowedSessions.delete(allowedSessions.keys().next().value!);
             allowedSessions.set(nativeId, isAllowed);

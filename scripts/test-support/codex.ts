@@ -78,7 +78,7 @@ else {
       else if (opcode === 10) appendFileSync(join(directory,'pongs.jsonl'),payload.toString('utf8')+'\n');
     }
   });
-  const threads = Array.from({ length: 1024 },(_,index) => ({ id: 'thread-'+String(index).padStart(4,'0'), cwd: workspaceRoot, name: 'Task '+index, createdAt: 1_700_000_000 + Math.floor(index/2), updatedAt: 1_700_000_100, status: { type: 'notLoaded' } })).reverse();
+  const threads = Array.from({ length: 1024 },(_,index) => ({ id: 'thread-'+String(index).padStart(4,'0'), cwd: workspaceRoot, name: 'Task '+index, createdAt: 1_700_000_000 + Math.floor(index/2), updatedAt: 1_700_000_100, ephemeral: false, status: { type: 'notLoaded' } })).reverse();
   const respond = (id,result) => send(JSON.stringify({ id,result }));
   const notify = (method,params) => send(JSON.stringify({ method,params }));
   const managed = new Map();
@@ -122,7 +122,7 @@ else {
     const { method,params = {} } = request;
     // held interrupts are confirmed together on the first request after releaseInterrupts is set
     if (control.releaseInterrupts && !control.holdInterrupt) for (const pending of interrupts.splice(0)) { respond(pending.id,{});complete(pending.params.threadId,'interrupted'); }
-    // threadStatuses reports sessions another client drives, by thread ID
+    // threadStatuses reports sessions another client drives, by thread ID; ephemeralThreads lists the ones Codex doesn't save
     const statusOf = (thread) => control.threadStatuses?.[thread.id] ?? thread.status;
     if (control.emitOnce) writeFileSync(join(directory,'control.json'),JSON.stringify({...control,emit:undefined,emitOnce:undefined}));
     if (control.emit) for (const event of control.emit) notify(event.method,event.params);
@@ -283,7 +283,7 @@ else {
       const profiles=Object.fromEntries(Array.from({length:control.profileCount??4},(_,index)=>['profile-'+String(index).padStart(4,'0'),{description:control.configRevision?'Updated profile':'Native profile',model:'model-0000'}]));
       respond(request.id,{config:control.configMalformed?{model:42}:{model:'model-0000',model_reasoning_effort:'native-effort',profile:null,profiles,agents:{max_threads:4,explore:{description:'Read native code',model:'model-0000'}},approval_policy:'on-request',sandbox_mode:'read-only',secret:'must-not-leak'}});return;
     }
-    if (method === 'thread/read') { respond(request.id,{ thread: { ...threads[0],...managed.get(params.threadId),status: statusOf({ id: params.threadId,status: managed.get(params.threadId)?.status ?? threads[0].status }),...(control.unavailableSettings?{model:null,reasoningEffort:null}:{}),id: params.threadId,cwd: control.wrongRoot || managed.get(params.threadId)?.cwd || workspaceRoot } });return; }
+    if (method === 'thread/read') { respond(request.id,{ thread: { ...threads[0],...managed.get(params.threadId),...(control.ephemeralThreads?.includes(params.threadId) ? { ephemeral: true } : {}),status: statusOf({ id: params.threadId,status: managed.get(params.threadId)?.status ?? threads[0].status }),...(control.unavailableSettings?{model:null,reasoningEffort:null}:{}),id: params.threadId,cwd: control.wrongRoot || managed.get(params.threadId)?.cwd || workspaceRoot } });return; }
     if (method === 'thread/turns/list') { respond(request.id,{ data: [{ id: 'turn-a',status: 'completed',startedAt: 1_700_000_000,completedAt: 1_700_000_001 }],nextCursor: null });return; }
     if (method === 'thread/items/list') {
       const text = control.largeItem ? 'a'.repeat(1_048_576) : 'Hello from the native history';
