@@ -1,6 +1,6 @@
 {
   "name": "jg-agent-hq",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "description": "Native coding-agent session control, agent streams and durable collaboration for Node.js apps.",
   "type": "module",
   "license": "MIT",
