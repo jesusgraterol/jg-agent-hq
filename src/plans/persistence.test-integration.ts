@@ -78,9 +78,11 @@ const setup = async (
   const directory = join(fixture.workspaceRoot, 'persistence-plan');
   await mkdir(directory);
   await writeFile(join(directory, 'plan.md'), planSource);
+  // jg-breakdown assigns the milestone ID that finalization requires
+  const milestoneId = randomUUID();
   await writeFile(
     join(directory, 'milestones.md'),
-    '# Milestones\n\n## Milestone 1: Workspace\n**Status:** pending\n\nVerify every checked write.\n',
+    `# Milestones\n\n## Milestone 1: Workspace\n**Status:** pending\n**Milestone ID:** ${milestoneId}\n\nVerify every checked write.\n`,
   );
   const target = { directory };
   const send = async (command: IPlanCommandInput) => {
@@ -113,7 +115,17 @@ const setup = async (
     action: action(),
     expected: (await status()).revision,
   };
-  return { directory, send, status, command };
+  // completion writes all three documents, which finalization leaves unchanged
+  const completion = {
+    kind: 'complete' as const,
+    target,
+    action: action(),
+    expected: command.expected,
+    milestoneId,
+    checks: [{ command: 'node --version', outcome: 'passed' as const, reference: 'fixture:check' }],
+    checkouts: [],
+  };
+  return { directory, send, status, command, completion };
 };
 
 test('shared document ownership blocks HQ before journal preparation, without waiting or takeover', async () => {
@@ -136,21 +148,21 @@ test.each(['milestones.md', 'coordination.json'])(
     await withClaudeRuntime(async (fixture) => {
       const plan = await setup(fixture);
       faults.afterWrite = name;
-      await expect(plan.send(plan.command)).rejects.toMatchObject({
+      await expect(plan.send(plan.completion)).rejects.toMatchObject({
         code: 'JG_AGENT_HQ_PLAN_FAILED',
       });
       const canonical = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
       expect(canonical).toMatch(/\*\*Milestone ID:\*\* [a-f0-9-]{36}/);
       expect(await plan.status()).toMatchObject({
         state: 'blocked',
-        pendingActionId: plan.command.action.id,
+        pendingActionId: plan.completion.action.id,
       });
       const maintenance = vi.fn(async () => undefined);
       await expect(fixture.runtime.withStorageMaintenance(maintenance)).rejects.toMatchObject({
         code: 'JG_AGENT_HQ_ACTION_CONFLICT',
       });
       expect(maintenance).not.toHaveBeenCalled();
-      await plan.send(plan.command);
+      await plan.send(plan.completion);
       expect(await readFile(join(plan.directory, 'milestones.md'), 'utf8')).toBe(canonical);
       expect((await plan.status()).pendingActionId).toBeNull();
     });
@@ -245,9 +257,13 @@ test('inspection leaves broad modes alone; replacements and exclusive coordinati
     await plan.status();
     expect((await lstat(miles)).mode & 0o777).toBe(0o666);
     await plan.send(plan.command);
-    expect((await lstat(miles)).mode & 0o777).toBe(0o600);
+    // finalization replaces only coordination.json
+    expect((await lstat(miles)).mode & 0o777).toBe(0o666);
     expect((await lstat(coordination)).mode & 0o777).toBe(0o600);
     expect((await lstat(join(plan.directory, 'plan.md'))).mode & 0o777).toBe(0o644);
+    await plan.send(plan.completion);
+    expect((await lstat(miles)).mode & 0o777).toBe(0o600);
+    expect((await lstat(join(plan.directory, 'plan.md'))).mode & 0o777).toBe(0o600);
   });
 });
 
@@ -757,7 +773,7 @@ test.each(['prepared', 'unknown'] as const)(
         }
         return post.apply(this, args);
       });
-      await expect(plan.send(plan.command)).rejects.toMatchObject({
+      await expect(plan.send(plan.completion)).rejects.toMatchObject({
         code: 'JG_AGENT_HQ_STORE_FAILED',
       });
       const source = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
@@ -768,7 +784,7 @@ test.each(['prepared', 'unknown'] as const)(
       try {
         const row = db
           .prepare('SELECT state, intent FROM hq_plan_operation WHERE id = ?')
-          .get(plan.command.action.id)!;
+          .get(plan.completion.action.id)!;
         expect(row.state).toBe('prepared');
         expect(JSON.parse(String(row.intent))).toMatchObject({
           milestones: { operation: 'write', source },
@@ -780,7 +796,7 @@ test.each(['prepared', 'unknown'] as const)(
       }
       expect(await plan.status()).toMatchObject({
         state: 'blocked',
-        pendingActionId: plan.command.action.id,
+        pendingActionId: plan.completion.action.id,
       });
       const current = await plan.status();
       await expect(
@@ -793,7 +809,7 @@ test.each(['prepared', 'unknown'] as const)(
           milestoneIds: [],
         }),
       ).rejects.toMatchObject({ code: 'JG_AGENT_HQ_ACTION_CONFLICT' });
-      await plan.send(plan.command);
+      await plan.send(plan.completion);
       expect((await plan.status()).pendingActionId).toBeNull();
       expect(await readFile(join(plan.directory, 'milestones.md'), 'utf8')).toBe(source);
       expect(await readFile(join(plan.directory, 'coordination.json'), 'utf8')).toBe(coordination);

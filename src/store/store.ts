@@ -19,11 +19,7 @@ import {
 import { ClaudeHistoryReadSchema } from '../providers/claude/history/index.js';
 import type { IStorageDescriptor } from '../storage/index.js';
 
-import {
-  PlanWriteIntentSchema,
-  PlanProjectionResultSchema,
-  PlanRevisionPageResultSchema,
-} from '../plans/index.js';
+import { PlanWriteIntentSchema, PlanProjectionResultSchema } from '../plans/index.js';
 
 import {
   AdmissionResultSchema,
@@ -271,11 +267,9 @@ export const createStore = async (
         { kind: 'evidence-origins', request: command },
         z.array(HistoryProvenanceSchema.nullable()).max(128),
       ),
-    projectPlanRevision: async (projection) => {
-      await request({ kind: 'plan-revision-project', projection }, z.null());
+    registerPlan: async (directory) => {
+      await request({ kind: 'plan-register', directory }, z.null());
     },
-    listPlanRevision: (page) =>
-      request({ kind: 'plan-revision-page', page }, PlanRevisionPageResultSchema),
     getThreadPlan: (threadId) =>
       request({ kind: 'thread-plan-read', threadId }, ActionPlanContextSchema.nullable()),
     getPlanThreads: (directory) =>

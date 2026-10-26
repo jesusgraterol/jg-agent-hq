@@ -219,11 +219,13 @@ test.each([
 test('installed plan commands and stdin finalization work without a private plan registry', async () => {
   await withClaudeRuntime(async ({ stateRoot, workspaceRoot }) => {
     const directory = join(workspaceRoot, 'ordinary-plan');
+    // jg-breakdown assigns the milestone ID that finalization requires
+    const milestoneId = randomUUID();
     await mkdir(directory);
     await writeFile(join(directory, 'plan.md'), '# Plan\nBuild one feature.\n');
     await writeFile(
       join(directory, 'milestones.md'),
-      '# Milestones\n\n## Milestone 1: Feature\n**Status:** pending\n\n**Objective:** Build the feature.\n**Dependencies:** None.\n**Scope:** Feature.\n**Implementation:** Implement it.\n**Verification:** Real checks.\n**Acceptance:** Correct.\n**Review checkpoint:** Review it.\n',
+      `# Milestones\n\n## Milestone 1: Feature\n**Status:** pending\n**Milestone ID:** ${milestoneId}\n\n**Objective:** Build the feature.\n**Dependencies:** None.\n**Scope:** Feature.\n**Implementation:** Implement it.\n**Verification:** Real checks.\n**Acceptance:** Correct.\n**Review checkpoint:** Review it.\n`,
     );
     const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
     const run = promisify(execFile);
@@ -258,7 +260,9 @@ test('installed plan commands and stdin finalization work without a private plan
       ),
     ]);
     expect(finalized.code).toBe(0);
-    expect(JSON.parse(finalized.stdout).result.content).toContain('**Milestone ID:**');
+    expect(JSON.parse(finalized.stdout).result.content).toContain(
+      `**Milestone ID:** ${milestoneId}`,
+    );
     const page = JSON.parse(
       (
         await run(process.execPath, [

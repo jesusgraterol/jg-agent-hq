@@ -165,11 +165,7 @@ export {
   PlanWorktreeProofSchema,
   PlanCompletionSchema,
   PlanSnapshotMilestoneSchema,
-  PlanCorrespondenceSchema,
-  PlanDraftMilestoneSchema,
-  PlanProposalSchema,
   PlanRevisionWorkflowSchema,
-  PlanCorrespondenceRecordSchema,
   PlanCoordinationSummarySchema,
 } from './plans/index.js';
 export type {
@@ -177,20 +173,12 @@ export type {
   IPlanWorktreeProof,
   IPlanCompletion,
   IPlanSnapshotMilestone,
-  IPlanCorrespondence,
-  IPlanDraftMilestone,
-  IPlanProposal,
   IPlanRevisionWorkflow,
-  IPlanCorrespondenceRecord,
 } from './plans/index.js';
 
 // saved revision baseline
 export { PlanCheckpointSchema } from './plans/index.js';
 export type { IPlanCheckpoint } from './plans/index.js';
-
-// bounded revision reads
-export { PlanCorrespondenceSummarySchema, PlanReconciliationEntrySchema } from './plans/index.js';
-export type { IPlanReconciliationEntry } from './plans/index.js';
 
 // guided plan scope
 export { PlanActionScopeSchema, ActionPlanContextSchema } from './actions/index.js';

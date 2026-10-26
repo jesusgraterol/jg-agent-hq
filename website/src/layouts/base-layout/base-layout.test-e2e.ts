@@ -277,7 +277,7 @@ for (const walkthrough of [
     link: 'Revision walkthrough',
     helper: 'revisePlan',
     boundary: 'Editing a status in the file never counts as verified.',
-    callback: 'confirmCorrespondence',
+    callback: 'approveSequence',
   },
 ])
   for (const width of [320, 1440])

@@ -34,11 +34,7 @@ export {
   PlanWorktreeProofSchema,
   PlanCompletionSchema,
   PlanSnapshotMilestoneSchema,
-  PlanCorrespondenceSchema,
-  PlanDraftMilestoneSchema,
-  PlanProposalSchema,
   PlanRevisionWorkflowSchema,
-  PlanCorrespondenceRecordSchema,
   PlanCoordinationSummarySchema,
 } from './types.js';
 export type {
@@ -46,17 +42,9 @@ export type {
   IPlanWorktreeProof,
   IPlanCompletion,
   IPlanSnapshotMilestone,
-  IPlanCorrespondence,
-  IPlanDraftMilestone,
-  IPlanProposal,
   IPlanRevisionWorkflow,
-  IPlanCorrespondenceRecord,
 } from './types.js';
 
 // saved revision baseline
 export { PlanCheckpointSchema } from './types.js';
 export type { IPlanCheckpoint } from './types.js';
-
-// bounded revision reads
-export { PlanCorrespondenceSummarySchema, PlanReconciliationEntrySchema } from './types.js';
-export type { IPlanReconciliationEntry } from './types.js';

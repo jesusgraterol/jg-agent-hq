@@ -37,7 +37,6 @@ import {
   ErrorKindSchema,
   type IThreadSummary,
   type IPlanMilestone,
-  type IPlanReconciliationEntry,
   type IActionReceipt,
   type IManagedThread,
   type IActionSummary,
@@ -59,9 +58,6 @@ import {
   PlanWriteIntentSchema,
   PlanProjectionSchema,
   PlanProjectionPageSchema,
-  PlanRevisionProjectionSchema,
-  PlanRevisionPageSchema,
-  type IPlanRevisionProjection,
   type IPlanWriteIntent,
   type IPlanProjection,
 } from '../plans/index.js';
@@ -136,11 +132,7 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     nextCursor: z.string().max(16_384).nullable(),
     observedAt: z.number().int(),
   }),
-  z.strictObject({
-    kind: z.literal('plan-revision-project'),
-    projection: PlanRevisionProjectionSchema,
-  }),
-  z.strictObject({ kind: z.literal('plan-revision-page'), page: PlanRevisionPageSchema }),
+  z.strictObject({ kind: z.literal('plan-register'), directory: z.string() }),
   z.strictObject({ kind: z.literal('thread-plan-read'), threadId: z.uuid() }),
   z.strictObject({ kind: z.literal('plan-threads'), directory: z.string() }),
   z.strictObject({ kind: z.literal('queue-peek'), threadId: z.uuid() }),
@@ -357,23 +349,12 @@ export type IStore = {
     operatorId: string,
     state: 'acknowledged' | 'uncertain',
   ): Promise<IBrowserReceipt | null>;
-  /** Refreshes one selected coordination-file projection.
-   * @returns A promise resolved after projection commit.
+  /** Records a resolved plan directory so snapshots capture its files.
+   * @returns A promise resolved after the idempotent insert commits.
    * @throws
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
-  projectPlanRevision(projection: IPlanRevisionProjection): Promise<void>;
-  /** Reads a bounded revision/evidence seek page.
-   * @returns A page within the response byte budget.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  listPlanRevision(page: {
-    directory: string;
-    collection: 'sources' | 'drafts' | 'evidence' | 'correspondences';
-    after: string;
-    limit: number;
-  }): Promise<{ data: IPlanReconciliationEntry[]; lastId: string | null; hasMore: boolean }>;
+  registerPlan(directory: string): Promise<void>;
   /** Reads a thread's exact current plan binding.
    * @returns Its guided context, or null.
    * @throws

@@ -96,7 +96,6 @@ export const parsePlanCoordination = (coordinationText: string | null): IPlanCoo
           execution: null,
           lastActionId: null,
           completions: [],
-          correspondences: [],
           revision: null,
           baseline: null,
           observedConflict: null,

@@ -19,7 +19,7 @@ import { canExecutePlanUnit, describePlan, updatePlanAuthority } from './authori
 import { createPlanAdmission } from './admission.js';
 import { readPlanPage } from './projections.js';
 import { invalid, prepareAggregateProgress, prepareSequenceMarkers } from './documents.js';
-import { finalizeInitialSequence } from './finalization.js';
+import { finalizePlanSequence } from './finalization.js';
 import {
   beginPlanRevision,
   finishPlanCheckpoint,
@@ -27,11 +27,6 @@ import {
   refreshPlanBaseline,
 } from './revisions.js';
 import { capturePlanWorktrees } from './evidence.js';
-import {
-  proposeReconciliation,
-  confirmReconciliation,
-  renderReconciledSequence,
-} from './reconciliation.js';
 import {
   parsePlanCoordination,
   serializePlanCoordination,
@@ -41,12 +36,7 @@ import {
   removePlanMilestones,
   resolvePlanDirectory,
 } from './files.js';
-import {
-  hashPlanContent,
-  isSamePlanRevision,
-  computePlanRevision,
-  parsePlanMilestones,
-} from './utilities.js';
+import { hashPlanContent, isSamePlanRevision, parsePlanMilestones } from './utilities.js';
 import type { IPlanArtifacts, IPlanWriteIntent, IPlanStopJob, IApplyPlanIntent } from './types.js';
 
 const conflict = (): never => {
@@ -98,7 +88,7 @@ export const createPlans = (
     const workflow = artifacts.coordination.revision;
     if (
       workflow &&
-      ['quiescing', 'editing', 'reconciling', 'blocked'].includes(workflow.phase) &&
+      ['quiescing', 'editing', 'blocked'].includes(workflow.phase) &&
       (workflow.ownerRuntimeEpoch !== runtimeEpoch ||
         (workflow.phase === 'quiescing' && !activeStopPhases.has(workflow.phaseActionId)))
     ) {
@@ -564,6 +554,12 @@ export const createPlans = (
      * - JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED: HQ lock ownership changed before release
      */
     async handle(command: IPlanCommand): Promise<IPlanResult> {
+      if (command.kind === 'register') {
+        // registration takes no locks and never reads plan files
+        const directory = await resolvePlanDirectory(command.target.directory, roots);
+        await store.registerPlan(directory);
+        return { kind: 'registered', result: { directory } };
+      }
       const completionWorktrees =
         command.kind === 'complete' ? await capturePlanWorktrees(command.checkouts, roots) : [];
       const result = await withHqLock(coordinationRoot, `plan-${command.kind}`, () =>
@@ -574,8 +570,7 @@ export const createPlans = (
             artifacts = await observeChange(artifacts, apply);
           if (command.kind === 'status')
             return { kind: 'status', result: describeCurrent(artifacts, pendingActionId) };
-          if (command.kind === 'milestones' || command.kind === 'reconciliation')
-            return readPlanPage(store, artifacts, command);
+          if (command.kind === 'milestones') return readPlanPage(store, artifacts, command);
           if (command.kind === 'check-execution') {
             const status = describePlan(artifacts, pendingActionId);
             const execution = artifacts.coordination.execution;
@@ -622,7 +617,6 @@ export const createPlans = (
           const coordination = structuredClone(artifacts.coordination);
           let milestones: string | null = null;
           let planSource: string | null = null;
-          let needsReconciliation = false;
           if (command.kind === 'begin-revision') {
             const threadIds = [
               ...new Set([
@@ -645,7 +639,7 @@ export const createPlans = (
               !workflow ||
               workflow.id !== command.revisionId ||
               !workflow.checkpoint ||
-              !['editing', 'reconciling', 'blocked'].includes(workflow.phase)
+              !['editing', 'blocked'].includes(workflow.phase)
             )
               conflict();
             if (command.skill === 'jg-breakdown' && !describePlan(artifacts).isPlanApproved)
@@ -654,7 +648,6 @@ export const createPlans = (
               workflow!.checkpoint!.revision,
               artifacts.revision,
             );
-            workflow!.proposal = null;
             workflow!.phase = 'quiescing';
             workflow!.phaseActionId = command.action.id;
             workflow!.ownerRuntimeEpoch = runtimeEpoch;
@@ -681,14 +674,11 @@ export const createPlans = (
               artifacts.milestones !== null &&
               artifacts.parsed.some((entry) => entry.id === command.milestoneId)
             ) {
-              const drafts = artifacts.parsed.map((entry) => ({
-                ...entry,
-                id: entry.id ?? conflict(),
-                contractDigest: entry.contractDigest ?? conflict(),
-                matchedSourceId: null,
-                status: entry.id === command.milestoneId ? ('done' as const) : entry.status,
-              }));
-              milestones = renderReconciledSequence(artifacts.milestones, drafts);
+              if (artifacts.parsed.some((entry) => !entry.id)) conflict();
+              const entry = artifacts.parsed.find((item) => item.id === command.milestoneId)!;
+              milestones = prepareSequenceMarkers(artifacts.milestones, [
+                { ordinal: entry.ordinal, id: entry.id!, status: 'done' },
+              ]);
               coordination.baseline = refreshPlanBaseline(
                 artifacts,
                 milestones,
@@ -699,73 +689,21 @@ export const createPlans = (
             if (!artifacts.conformance.sequence) invalid();
             if (artifacts.skillsBinding === 'stale') conflict();
             const workflow = coordination.revision;
-            let finalized: { content: string | null; revision: typeof artifacts.revision } | null =
-              null;
             if (workflow && workflow.phase !== 'finished') {
-              if (!['editing', 'reconciling', 'awaiting-approval'].includes(workflow.phase))
-                conflict();
+              if (!['editing', 'awaiting-approval'].includes(workflow.phase)) conflict();
               if ((await store.getPlanThreads(artifacts.directory)).length) conflict();
               if (!workflow.checkpoint?.isQuiescent) conflict();
-              const proposal =
-                workflow.proposal ?? proposeReconciliation(artifacts, command.action);
-              if (
-                proposal.inspectionHash !== artifacts.hashes.milestones ||
-                !isSamePlanRevision(proposal.revision, artifacts.revision)
-              )
-                conflict();
-              workflow.proposal = proposal;
-              if (proposal.unmatchedSourceIds.length && !command.confirmation) {
-                workflow.phase = 'reconciling';
-                needsReconciliation = true;
-              } else {
-                let drafts = proposal.drafts;
-                if (proposal.unmatchedSourceIds.length) {
-                  if (command.confirmation!.proposalId !== proposal.id) conflict();
-                  const confirmed = confirmReconciliation(
-                    artifacts,
-                    proposal,
-                    command.action,
-                    command.confirmation!.decisions,
-                  );
-                  drafts = confirmed.drafts;
-                  coordination.correspondences.push(...confirmed.records);
-                  proposal.confirmation = {
-                    action: command.action,
-                    decisions: command.confirmation!.decisions,
-                  };
-                } else if (command.confirmation) conflict();
-                const content =
-                  artifacts.milestones === null
-                    ? null
-                    : renderReconciledSequence(artifacts.milestones, drafts);
-                const revision = computePlanRevision({
-                  ...artifacts.contract,
-                  milestones: content,
-                });
-                for (const record of coordination.correspondences)
-                  if (record.action.id === command.action.id) record.revision = revision;
-                finalized = { content, revision };
-                workflow.phase = 'awaiting-approval';
-                workflow.reason = null;
-              }
-            } else {
-              if (command.confirmation) conflict();
-              finalized = finalizeInitialSequence(artifacts);
-            }
-            if (finalized) {
-              milestones = finalized.content;
-              coordination.finalized = {
-                action: command.action,
-                revision: finalized.revision,
-                fileHash: milestones === null ? null : hashPlanContent(milestones),
-                createdAt: Date.now(),
-              };
-              coordination.baseline = refreshPlanBaseline(
-                artifacts,
-                milestones,
-                finalized.revision,
-              );
-            }
+              workflow.phase = 'awaiting-approval';
+              workflow.reason = null;
+            } else if (
+              coordination.finalized &&
+              !isSamePlanRevision(coordination.finalized.revision, artifacts.revision)
+            )
+              conflict();
+            Object.assign(
+              coordination,
+              finalizePlanSequence(artifacts, coordination, command.action),
+            );
           } else Object.assign(coordination, updatePlanAuthority(artifacts, command, runtimeEpoch));
           if (milestones !== null && Buffer.byteLength(milestones) > 1_048_576)
             throw new Exception('The HQ plan is invalid', {
@@ -807,8 +745,6 @@ export const createPlans = (
             sourceHash: artifacts.hashes.milestones,
             milestones: artifacts.parsed.map((milestone) => PlanMilestoneSchema.parse(milestone)),
           });
-          if (needsReconciliation)
-            return { kind: 'reconciliation-required', result: describeCurrent(artifacts) };
           return command.kind === 'finalize'
             ? {
                 kind: 'finalized',

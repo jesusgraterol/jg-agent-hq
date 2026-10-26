@@ -15,10 +15,9 @@ import {
   type IActionCommand,
   type IActionEnvelope,
   type IManagedThread,
-  type IPlanCorrespondence,
   type IPlanCheckout,
 } from 'jg-agent-hq/contracts';
-import { fingerprintPlan } from 'jg-plans';
+import { fingerprintPlan, preparePlanUpdate, writePlanDocument } from 'jg-plans';
 import { expect, test } from 'vitest';
 
 import {
@@ -64,8 +63,15 @@ const operator = (): IPlanOperatorAction => ({
   source: { kind: 'user-message', reference: `fixture-invocation:${randomUUID()}` },
 });
 
-const milestone = (ordinal: number, title: string, objective: string, status = 'pending') =>
-  `## Milestone ${ordinal}: ${title}\n**Status:** ${status}\n\n**Objective:** ${objective}\n**Dependencies:** None.\n**Scope:** ${title} module.\n**Implementation:** Deliver the stated objective.\n**Verification:** Run the module checks.\n**Acceptance:** The objective holds.\n**Review checkpoint:** Review the module.\n\n`;
+// a null id writes a milestone without the ID that jg-breakdown would assign
+const milestone = (
+  ordinal: number,
+  title: string,
+  objective: string,
+  status = 'pending',
+  id: string | null = randomUUID(),
+) =>
+  `## Milestone ${ordinal}: ${title}\n**Status:** ${status}\n${id ? `**Milestone ID:** ${id}\n` : ''}\n**Objective:** ${objective}\n**Dependencies:** None.\n**Scope:** ${title} module.\n**Implementation:** Deliver the stated objective.\n**Verification:** Run the module checks.\n**Acceptance:** The objective holds.\n**Review checkpoint:** Review the module.\n\n`;
 const sequence = (blocks: string[]) =>
   `# Milestones\n\n## Overview\n\n| Milestone | Name | Status |\n| --- | --- | --- |\n${blocks.map((_, index) => `| ${index + 1} | Feature ${index + 1} | pending |`).join('\n')}\n\n${blocks.join('')}## Approval required\nApprove this sequence.\n`;
 
@@ -77,16 +83,20 @@ const setup = async (
   const directory = join(fixture.workspaceRoot, 'revision-plan');
   await mkdir(directory);
   await writeFile(join(directory, 'plan.md'), planBody);
+  // jg-breakdown assigns the milestone IDs that finalization requires
   if (content !== null)
-    await writeFile(
-      join(directory, 'milestones.md'),
-      content ??
+    await writePlanDocument(directory, {
+      document: 'milestones',
+      expectedSha256: null,
+      source:
+        content ??
         sequence([
           milestone(1, 'Greeting', 'Return the requested greeting.'),
           milestone(2, 'Report', 'Format the report.', 'in progress'),
           milestone(3, 'Export', 'Export JSON.'),
         ]),
-    );
+      assignMissingIds: true,
+    });
   await writeFile(
     join(fixture.workspaceRoot, 'greeting.mjs'),
     'export const greet = (name) => `Hello, ${name}`;\n',
@@ -114,18 +124,9 @@ const setup = async (
     const state = await status();
     return send({ ...command, target, expected: state.revision, action: operator() });
   };
-  const finalize = async (confirmation?: {
-    proposalId: string;
-    decisions: IPlanCorrespondence[];
-  }) => {
+  const finalize = async () => {
     const current = await status();
-    return send({
-      kind: 'finalize',
-      target,
-      expected: current.revision,
-      action: operator(),
-      confirmation,
-    });
+    return send({ kind: 'finalize', target, expected: current.revision, action: operator() });
   };
   const approve = async (scope: 'plan' | 'sequence') => {
     const current = await status();
@@ -146,21 +147,6 @@ const setup = async (
     PlanCoordinationSchema.parse(
       JSON.parse(await readFile(join(directory, 'coordination.json'), 'utf8')),
     );
-  const collection = async (
-    kind: 'sources' | 'drafts' | 'evidence' | 'correspondences',
-    limit = 32,
-    cursor?: string,
-  ) => {
-    const response = await send({
-      kind: 'reconciliation',
-      target,
-      collection: kind,
-      limit,
-      cursor,
-    });
-    if (response.kind !== 'reconciliation') throw new Error('Missing reconciliation page');
-    return response.result;
-  };
   const until = async (predicate: (status: IPlanStatus) => boolean) => {
     const deadline = Date.now() + 5000;
     let current = await status();
@@ -184,7 +170,6 @@ const setup = async (
     approve,
     entries,
     stored,
-    collection,
     until,
   };
 };
@@ -237,31 +222,6 @@ const begin = async (
   });
   await plan.until((status) => status.coordination.revision?.phase === 'editing');
   return action;
-};
-
-const decisionsFor = async (plan: Awaited<ReturnType<typeof setup>>, sources: string[]) => {
-  const page = await plan.collection('drafts');
-  const drafts = page.data.filter((row) => row.kind === 'draft').map((row) => row.entry);
-  const greeting = drafts.find((draft) => draft.title === 'Greeting result')!;
-  const changed = drafts.find((draft) => draft.title === 'Export')!;
-  const state = await plan.stored();
-  return {
-    proposalId: state.revision!.proposal!.id,
-    decisions: [
-      {
-        sourceIds: [sources[0]!],
-        targetIds: [greeting.id],
-        relation: 'equivalent' as const,
-        retainedPairs: [{ sourceId: sources[0]!, targetId: greeting.id }],
-      },
-      {
-        sourceIds: [sources[2]!],
-        targetIds: [changed.id],
-        relation: 'requirements-changed' as const,
-        retainedPairs: [],
-      },
-    ],
-  };
 };
 
 test('an undivided plan retains real completion evidence and cannot execute its finished contract again', async () => {
@@ -327,21 +287,15 @@ test('an undivided plan retains real completion evidence and cannot execute its 
         mode: 'auto',
       }),
     ).rejects.toThrow('conflicts');
-    const evidence = await plan.collection('evidence');
-    expect(evidence.data).toHaveLength(1);
-    expect(evidence.data[0].kind === 'evidence' && evidence.data[0].entry.milestoneId).toBeNull();
     await fixture.runtime.close();
     const restarted = await createAgentHq({
       stateRoot: fixture.stateRoot,
       allowedRoots: [fixture.workspaceRoot],
     });
     try {
-      expect((await plan.status(restarted)).state).toBe('completed');
-      const retained = await plan.send(
-        { kind: 'reconciliation', target: plan.target, collection: 'evidence' },
-        restarted,
-      );
-      expect(retained.kind === 'reconciliation' && retained.result.data).toHaveLength(1);
+      const retained = await plan.status(restarted);
+      expect(retained.state).toBe('completed');
+      expect(retained.coordination.completionCount).toBe(1);
     } finally {
       await restarted.close();
     }
@@ -395,58 +349,37 @@ test('an undivided plan checkpoints and revises without requiring a milestone fi
   });
 });
 
-test('dropping a sequence requires one explicit omission confirmation before whole-plan execution', async () => {
+test('dropping a sequence keeps its completion evidence visible as unmatched', async () => {
   await withClaudeRuntime(async (fixture) => {
     const plan = await setup(fixture);
     const completed = await completeGreeting(fixture, plan);
+    const before = await plan.stored();
     await begin(plan);
     await writeFile(
       join(plan.directory, 'plan.md'),
       '# Plan\nFinish only the report after the verified greeting.\n',
     );
     await rm(join(plan.directory, 'milestones.md'));
-    const proposed = await plan.finalize();
-    expect(proposed.kind).toBe('reconciliation-required');
-    const stored = await plan.stored();
-    const proposal = stored.revision?.proposal;
-    if (!proposal) throw new Error('Expected saved reconciliation');
-    expect(proposal.unmatchedSourceIds).toContain(completed);
-    expect(proposal.drafts).toStrictEqual([]);
+    const finalized = await plan.finalize();
+    if (finalized.kind !== 'finalized') throw new Error('Expected finalization');
+    expect(finalized.content).toBeNull();
+    expect(finalized.result.coordination.unmatchedEvidence).toStrictEqual([
+      {
+        id: before.completions[0]!.id,
+        milestoneId: completed,
+        title: 'Greeting',
+        completedAt: before.completions[0]!.completedAt,
+      },
+    ]);
+    expect((await plan.stored()).completions).toStrictEqual(before.completions);
     await plan.approve('plan');
-    const current = await plan.status();
-    await expect(
-      plan.send({
-        kind: 'authorize',
-        target: plan.target,
-        action: operator(),
-        expected: current.revision,
-        mode: 'auto',
-        milestoneIds: [],
-      }),
-    ).rejects.toThrow('conflicts');
-    const finalized = await plan.finalize({
-      proposalId: proposal.id,
-      decisions: [
-        {
-          sourceIds: proposal.unmatchedSourceIds,
-          targetIds: [],
-          relation: 'omitted',
-          retainedPairs: [],
-        },
-      ],
-    });
-    expect(finalized.kind).toBe('finalized');
-    expect((await plan.stored()).completions).toStrictEqual(stored.completions);
     expect((await plan.status()).state).toBe('ready');
-    expect(
-      (await plan.collection('sources')).data.some(
-        (row) => row.kind === 'source' && row.entry.id === completed,
-      ),
-    ).toBe(true);
+    await plan.mutate({ kind: 'authorize', mode: 'auto', milestoneIds: [] });
+    expect((await plan.status()).coordination.execution?.milestoneIds).toStrictEqual([]);
   });
 });
 
-test('checkpoint, deletion, regeneration and one confirmation preserve reworded completed and partial work', async () => {
+test('a regenerated sequence that keeps milestone IDs carries reworded completed and partial work', async () => {
   await withClaudeRuntime(async (fixture) => {
     const plan = await setup(fixture);
     const completed = await completeGreeting(fixture, plan);
@@ -475,30 +408,30 @@ test('checkpoint, deletion, regeneration and one confirmation preserve reworded 
     await writeFile(
       join(plan.directory, 'milestones.md'),
       sequence([
-        milestone(1, 'Greeting result', 'Return the requested greeting using equivalent wording.'),
-        milestone(2, 'Report', 'Format the report.'),
+        milestone(
+          1,
+          'Greeting result',
+          'Return the requested greeting using equivalent wording.',
+          'done',
+          sources[0],
+        ),
+        milestone(2, 'Report', 'Format the report.', 'in progress', sources[1]),
         milestone(3, 'Export', 'Export JSON with a checksum.'),
       ]),
     );
     await plan.approve('plan');
-    expect((await plan.finalize()).kind).toBe('reconciliation-required');
-    const mapping = await decisionsFor(plan, sources);
-    const result = await plan.finalize(mapping);
-    expect(result.kind).toBe('finalized');
+    expect((await plan.finalize()).kind).toBe('finalized');
     const current = await plan.entries();
     expect(current.map((entry) => entry.status)).toStrictEqual(['done', 'in progress', 'pending']);
     expect(current[0]!.id).toBe(completed);
     expect(current[1]!.id).toBe(sources[1]);
     expect(current[2]!.id).not.toBe(sources[2]);
-    const after = await plan.stored();
-    expect(after.completions).toStrictEqual(before.completions);
-    expect(after.correspondences[0]!.sources[0]!.contractDigest).toBe(
-      before.completions[0]!.contractDigest,
-    );
+    expect((await plan.stored()).completions).toStrictEqual(before.completions);
     await plan.approve('sequence');
     const ready = await plan.status();
     expect(ready.isSequenceApproved).toBe(true);
     expect(ready.state).toBe('in-progress');
+    expect(ready.coordination.unmatchedEvidence).toStrictEqual([]);
     expect(ready.coordination.execution!.revokedBy).not.toBeNull();
     await expect(
       plan.send({
@@ -534,74 +467,52 @@ test('checkpoint, deletion, regeneration and one confirmation preserve reworded 
   });
 });
 
-test('one mapping must resolve every unmatched source and cannot silently reset completed work', async () => {
+test('finalization refuses a milestone without an ID and changes nothing', async () => {
   await withClaudeRuntime(async (fixture) => {
     const plan = await setup(fixture);
-    await completeGreeting(fixture, plan);
     const sources = (await plan.entries()).map((entry) => entry.id!);
     await begin(plan);
-    await rm(join(plan.directory, 'milestones.md'));
-    await writeFile(
-      join(plan.directory, 'milestones.md'),
+    const regenerated = (exportId: string | null) =>
       sequence([
-        milestone(1, 'Greeting result', 'Return the requested greeting using equivalent wording.'),
-        milestone(2, 'Report', 'Format the report.'),
-        milestone(3, 'Export', 'Export JSON with a checksum.'),
-      ]),
-    );
-    await plan.finalize();
-    const mapping = await decisionsFor(plan, sources);
-    const canonical = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
-    await expect(
-      plan.finalize({ ...mapping, decisions: mapping.decisions.slice(0, 1) }),
-    ).rejects.toThrow('conflicts');
-    await expect(
-      plan.finalize({ ...mapping, decisions: [...mapping.decisions, mapping.decisions[0]!] }),
-    ).rejects.toThrow('conflicts');
-    expect(await readFile(join(plan.directory, 'milestones.md'), 'utf8')).toBe(canonical);
-    expect((await plan.status()).state).toBe('blocked');
-    await plan.finalize(mapping);
-    expect((await plan.entries())[0]!.status).toBe('done');
+        milestone(1, 'Greeting', 'Return the requested greeting.', 'pending', sources[0]),
+        milestone(2, 'Report', 'Format the report.', 'in progress', sources[1]),
+        milestone(3, 'Export', 'Export JSON with a checksum.', 'pending', exportId),
+      ]);
+    await writeFile(join(plan.directory, 'milestones.md'), regenerated(null));
+    const before = await plan.stored();
+    await expect(plan.finalize()).rejects.toMatchObject({ code: 'JG_AGENT_HQ_PLAN_INVALID' });
+    expect(await readFile(join(plan.directory, 'milestones.md'), 'utf8')).toBe(regenerated(null));
+    expect(await plan.stored()).toStrictEqual(before);
+    expect((await plan.status()).isFinalized).toBe(false);
+    await writeFile(join(plan.directory, 'milestones.md'), regenerated(randomUUID()));
+    expect((await plan.finalize()).kind).toBe('finalized');
   });
 });
 
-test('unverified done evidence blocks equivalent carryover until explicitly reopened', async () => {
+test('a done marker without evidence for its milestone ID blocks the plan until the sequence reopens it', async () => {
   await withClaudeRuntime(async (fixture) => {
     const plan = await setup(fixture);
-    const sources = await plan.entries();
+    const sources = (await plan.entries()).map((entry) => entry.id!);
     const raw = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
     await writeFile(
       join(plan.directory, 'milestones.md'),
       raw.replace('**Status:** pending', '**Status:** done'),
     );
+    expect((await plan.status()).state).toBe('blocked');
     await begin(plan);
-    await writeFile(
-      join(plan.directory, 'milestones.md'),
+    const regenerated = (status: string) =>
       sequence([
-        milestone(1, 'Greeting result', 'Equivalent greeting text.'),
-        milestone(2, 'Report', 'Format the report.'),
-        milestone(3, 'Export', 'Export JSON.'),
-      ]),
-    );
-    await plan.finalize();
-    const drafts = (await plan.collection('drafts')).data
-      .filter((row) => row.kind === 'draft')
-      .map((row) => row.entry);
-    const greeting = drafts.find((draft) => draft.title === 'Greeting result')!;
-    const proposalId = (await plan.stored()).revision!.proposal!.id;
-    const equivalent: IPlanCorrespondence = {
-      sourceIds: [sources[0]!.id!],
-      targetIds: [greeting.id],
-      relation: 'equivalent',
-      retainedPairs: [{ sourceId: sources[0]!.id!, targetId: greeting.id }],
-    };
-    await expect(plan.finalize({ proposalId, decisions: [equivalent] })).rejects.toThrow(
-      'conflicts',
-    );
-    await plan.finalize({ proposalId, decisions: [{ ...equivalent, relation: 'reopened' }] });
-    const current = await plan.entries();
-    expect(current[0]!.id).toBe(sources[0]!.id);
-    expect(current[0]!.status).toBe('pending');
+        milestone(1, 'Greeting result', 'Equivalent greeting text.', status, sources[0]),
+        milestone(2, 'Report', 'Format the report.', 'in progress', sources[1]),
+        milestone(3, 'Export', 'Export JSON.', 'pending', sources[2]),
+      ]);
+    await writeFile(join(plan.directory, 'milestones.md'), regenerated('done'));
+    expect((await plan.finalize()).kind).toBe('finalized');
+    expect((await plan.status()).state).toBe('blocked');
+    await writeFile(join(plan.directory, 'milestones.md'), regenerated('pending'));
+    expect((await plan.finalize()).kind).toBe('finalized');
+    expect((await plan.status()).state).toBe('sequence-approval-required');
+    expect((await plan.entries())[0]).toMatchObject({ id: sources[0], status: 'pending' });
   });
 });
 
@@ -897,7 +808,7 @@ test.each(['codex', 'claude'] as const)(
   },
 );
 
-test('observed external deletion closes admission and stops only bound execution before reconciliation', async () => {
+test('observed external deletion closes admission and stops only bound execution before revision', async () => {
   await withClaudeRuntime(async (fixture) => {
     const plan = await setup(fixture);
     const session = await native(fixture);
@@ -1195,56 +1106,7 @@ test('unproven native background cleanup retains the checkpoint and blocks editi
   });
 });
 
-test(
-  'retained checkpoint and proposed drafts use bounded stable seek pages over 1024 milestones',
-  {
-    // a complete filesystem/SQLite revision of 1,024 milestones needs a larger CI budget
-    timeout: 30_000,
-  },
-  async () => {
-    await withClaudeRuntime(async (fixture) => {
-      const content = sequence(
-        Array.from({ length: 1024 }, (_, index) =>
-          milestone(index + 1, `Feature ${index + 1}`, `Deliver requirement ${index + 1}.`),
-        ),
-      );
-      const plan = await setup(fixture, content);
-      await begin(plan);
-      await writeFile(
-        join(plan.directory, 'milestones.md'),
-        content.replaceAll('Deliver requirement', 'Implement requirement'),
-      );
-      await plan.finalize();
-      for (const collection of ['sources', 'drafts'] as const) {
-        const ids: string[] = [];
-        let cursor: string | undefined;
-        do {
-          const page = await plan.collection(collection, 128, cursor);
-          expect(page.data).toHaveLength(128);
-          ids.push(
-            ...page.data.map((row) =>
-              row.kind === 'source' || row.kind === 'draft' ? row.entry.id : 'invalid',
-            ),
-          );
-          cursor = page.nextCursor ?? undefined;
-        } while (cursor);
-        expect(ids).toHaveLength(1024);
-        expect(new Set(ids).size).toBe(1024);
-      }
-      expect((await plan.collection('evidence')).data).toStrictEqual([]);
-      expect((await plan.collection('correspondences')).nextCursor).toBeNull();
-      const first = await plan.collection('sources');
-      expect(first.data).toHaveLength(32);
-      await expect(plan.collection('sources', 64, first.nextCursor!)).rejects.toThrow('cursor');
-      await expect(plan.collection('drafts', 32, first.nextCursor!)).rejects.toThrow('cursor');
-      await expect(plan.collection('sources', 32, 'invalid')).rejects.toThrow('cursor');
-      await plan.approve('plan');
-      await expect(plan.collection('sources', 32, first.nextCursor!)).rejects.toThrow('cursor');
-    });
-  },
-);
-
-test('a finalization write retry after restart reuses the saved mapping, assigned IDs and original evidence', async () => {
+test('a finalization write retry after restart replays the same finalization and evidence', async () => {
   await withClaudeRuntime(async (fixture) => {
     const plan = await setup(fixture);
     await completeGreeting(fixture, plan);
@@ -1253,20 +1115,18 @@ test('a finalization write retry after restart reuses the saved mapping, assigne
     await writeFile(
       join(plan.directory, 'milestones.md'),
       sequence([
-        milestone(1, 'Greeting result', 'Equivalent greeting wording.'),
-        milestone(2, 'Report', 'Format the report.'),
+        milestone(1, 'Greeting result', 'Equivalent greeting wording.', 'done', sources[0]),
+        milestone(2, 'Report', 'Format the report.', 'in progress', sources[1]),
         milestone(3, 'Export', 'Export JSON with a checksum.'),
       ]),
     );
-    await plan.finalize();
-    const mapping = await decisionsFor(plan, sources);
+    const canonical = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
     const before = await plan.status();
     const command: IPlanCommandInput = {
       kind: 'finalize',
       target: plan.target,
       expected: before.revision,
       action: operator(),
-      confirmation: mapping,
     };
     const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
     try {
@@ -1279,8 +1139,7 @@ test('a finalization write retry after restart reuses the saved mapping, assigne
       database.close();
     }
     const persisted = await plan.stored();
-    const canonical = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
-    expect(persisted.revision!.proposal!.confirmation!.action.id).toBe(command.action.id);
+    expect(persisted.finalized!.action.id).toBe(command.action.id);
     await fixture.runtime.close();
     const replacement = await createAgentHq({
       stateRoot: fixture.stateRoot,
@@ -1289,7 +1148,7 @@ test('a finalization write retry after restart reuses the saved mapping, assigne
     try {
       expect((await plan.send(command, replacement)).kind).toBe('finalized');
       expect(await readFile(join(plan.directory, 'milestones.md'), 'utf8')).toBe(canonical);
-      expect((await plan.stored()).correspondences).toStrictEqual(persisted.correspondences);
+      expect((await plan.stored()).finalized).toStrictEqual(persisted.finalized);
       expect((await plan.stored()).completions).toStrictEqual(persisted.completions);
       expect((await plan.status(replacement)).pendingActionId).toBeNull();
     } finally {
@@ -1298,7 +1157,7 @@ test('a finalization write retry after restart reuses the saved mapping, assigne
   });
 });
 
-test('real installed jg-breakdown output carries reworded completed and partial work through canonical presentation', async () => {
+test('real jg-breakdown output that keeps milestone IDs carries reworded completed and partial work', async () => {
   await withClaudeRuntime(async (fixture) => {
     const revised = await readFile(
       new URL('./fixtures/revised-milestones.txt', import.meta.url),
@@ -1349,22 +1208,20 @@ test('real installed jg-breakdown output carries reworded completed and partial 
     await writeFile(join(plan.directory, 'plan.md'), planBody);
     expect((await plan.status()).state).toBe('plan-approval-required');
     await plan.approve('plan');
-    await writeFile(join(plan.directory, 'milestones.md'), revised);
-    expect((await plan.finalize()).kind).toBe('reconciliation-required');
-    const proposal = (await plan.stored()).revision!.proposal!;
-    expect(proposal.unmatchedSourceIds).toHaveLength(3);
-    expect(proposal.drafts.map((entry) => entry.status)).toStrictEqual([
-      'done',
-      'in progress',
-      'pending',
-    ]);
-    const decisions: IPlanCorrespondence[] = proposal.drafts.map((draft, index) => ({
-      sourceIds: [original[index]!.id!],
-      targetIds: [draft.id],
-      relation: index === 2 ? 'requirements-changed' : 'equivalent',
-      retainedPairs: index === 2 ? [] : [{ sourceId: original[index]!.id!, targetId: draft.id }],
-    }));
-    const canonical = await plan.finalize({ proposalId: proposal.id, decisions });
+    // jg-breakdown keeps the two carried milestones' IDs and assigns one to the changed export
+    await writePlanDocument(plan.directory, {
+      document: 'milestones',
+      expectedSha256: null,
+      source: preparePlanUpdate(revised, {
+        document: 'milestones',
+        changes: [1, 2].map((ordinal) => ({
+          select: { ordinal },
+          set: { id: original[ordinal - 1]!.id! },
+        })),
+      }).source,
+      assignMissingIds: true,
+    });
+    const canonical = await plan.finalize();
     if (canonical.kind !== 'finalized') throw new Error('Missing canonical presentation');
     expect(canonical.content).toBe(await readFile(join(plan.directory, 'milestones.md'), 'utf8'));
     expect(canonical.result.state).toBe('sequence-approval-required');
@@ -1547,91 +1404,41 @@ test('planning permits only the selected native skill and canonical finalization
   });
 });
 
-test('split, merged and omitted correspondence retain every original receipt and partial contract', async () => {
+test('a milestone that leaves the sequence keeps its evidence unmatched until it returns with its ID', async () => {
   await withClaudeRuntime(async (fixture) => {
     const plan = await setup(fixture);
-    await completeGreeting(fixture, plan);
-    const sources = await plan.entries();
+    const completed = await completeGreeting(fixture, plan);
+    const sources = (await plan.entries()).map((entry) => entry.id!);
     const original = (await plan.stored()).completions[0]!;
     await begin(plan);
     await writeFile(
       join(plan.directory, 'milestones.md'),
       sequence([
-        milestone(1, 'Greeting text', 'Return the greeting text.'),
-        milestone(2, 'Greeting output', 'Expose the greeting output.'),
-        milestone(3, 'Report composition', 'Combine the partial report and export requirement.'),
+        milestone(1, 'Report', 'Format the report.', 'in progress', sources[1]),
+        milestone(2, 'Export', 'Export JSON.', 'pending', sources[2]),
       ]),
     );
-    await plan.finalize();
-    const proposal = (await plan.stored()).revision!.proposal!;
-    const drafts = proposal.drafts;
-    await plan.finalize({
-      proposalId: proposal.id,
-      decisions: [
-        {
-          sourceIds: [sources[0]!.id!],
-          targetIds: [drafts[0]!.id, drafts[1]!.id],
-          relation: 'equivalent',
-          retainedPairs: [{ sourceId: sources[0]!.id!, targetId: drafts[0]!.id }],
-        },
-        {
-          sourceIds: [sources[1]!.id!, sources[2]!.id!],
-          targetIds: [drafts[2]!.id],
-          relation: 'equivalent',
-          retainedPairs: [],
-        },
-      ],
-    });
-    expect((await plan.entries()).map((entry) => entry.status)).toStrictEqual([
-      'done',
-      'done',
-      'in progress',
-    ]);
+    const removed = await plan.finalize();
+    if (removed.kind !== 'finalized') throw new Error('Expected finalization');
+    expect(
+      removed.result.coordination.unmatchedEvidence.map((entry) => entry.milestoneId),
+    ).toStrictEqual([completed]);
     expect((await plan.stored()).completions).toStrictEqual([original]);
-    await plan.approve('sequence');
-    const state = await plan.status();
-    await plan.send({
-      kind: 'authorize',
-      target: plan.target,
-      expected: state.revision,
-      action: operator(),
-      mode: 'supervised',
-      milestoneIds: [(await plan.entries())[2]!.id!],
-    });
-    const before = await plan.entries();
     await begin(plan);
     await writeFile(
       join(plan.directory, 'milestones.md'),
       sequence([
-        milestone(1, 'Report composition revised', 'Keep the partial combined report requirement.'),
+        milestone(1, 'Greeting', 'Return the requested greeting.', 'done', completed),
+        milestone(2, 'Report', 'Format the report.', 'in progress', sources[1]),
+        milestone(3, 'Export', 'Export JSON.', 'pending', sources[2]),
       ]),
     );
-    await plan.finalize();
-    const next = (await plan.stored()).revision!.proposal!;
-    await plan.finalize({
-      proposalId: next.id,
-      decisions: [
-        {
-          sourceIds: [before[0]!.id!, before[1]!.id!],
-          targetIds: [],
-          relation: 'omitted',
-          retainedPairs: [],
-        },
-        {
-          sourceIds: [before[2]!.id!],
-          targetIds: [next.drafts[0]!.id],
-          relation: 'equivalent',
-          retainedPairs: [{ sourceId: before[2]!.id!, targetId: next.drafts[0]!.id }],
-        },
-      ],
-    });
-    expect((await plan.entries())[0]!.status).toBe('in progress');
+    const restored = await plan.finalize();
+    if (restored.kind !== 'finalized') throw new Error('Expected finalization');
+    expect(restored.result.coordination.unmatchedEvidence).toStrictEqual([]);
+    // the sequence is back to its approved revision, and the done milestone counts again
+    expect(restored.result.state).toBe('in-progress');
     expect((await plan.stored()).completions).toStrictEqual([original]);
-    const records = (await plan.collection('correspondences')).data;
-    expect(
-      records.filter((row) => row.kind === 'correspondence' && row.entry.relation === 'omitted'),
-    ).toHaveLength(1);
-    expect((await plan.collection('sources')).data.length).toBeGreaterThanOrEqual(5);
   });
 });
 
@@ -1669,35 +1476,26 @@ test.each(['hard-link', 'parent-link'] as const)(
   },
 );
 
-test('explicit reopening retains original verified evidence but requires a new completion before done credit returns', async () => {
+test('reopening a completed milestone requires a new completion before done credit returns', async () => {
   await withClaudeRuntime(async (fixture) => {
     const plan = await setup(fixture);
     const id = await completeGreeting(fixture, plan);
+    const sources = (await plan.entries()).map((entry) => entry.id!);
     const original = (await plan.stored()).completions[0]!;
     await begin(plan);
     await writeFile(
       join(plan.directory, 'milestones.md'),
       sequence([
-        milestone(1, 'Greeting reopened', 'Review the greeting again.'),
-        milestone(2, 'Report', 'Format the report.'),
-        milestone(3, 'Export', 'Export JSON.'),
+        milestone(1, 'Greeting reopened', 'Review the greeting again.', 'pending', id),
+        milestone(2, 'Report', 'Format the report.', 'in progress', sources[1]),
+        milestone(3, 'Export', 'Export JSON.', 'pending', sources[2]),
       ]),
     );
     await plan.finalize();
-    const proposal = (await plan.stored()).revision!.proposal!;
-    const draft = proposal.drafts[0]!;
-    await plan.finalize({
-      proposalId: proposal.id,
-      decisions: [
-        {
-          sourceIds: [id],
-          targetIds: [draft.id],
-          relation: 'reopened',
-          retainedPairs: [{ sourceId: id, targetId: draft.id }],
-        },
-      ],
-    });
-    expect((await plan.entries())[0]!.status).toBe('pending');
+    const reopened = await plan.stored();
+    expect(reopened.completions).toStrictEqual([
+      { ...original, reopenedBy: reopened.finalized!.action.id },
+    ]);
     const current = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
     await writeFile(
       join(plan.directory, 'milestones.md'),
@@ -1706,14 +1504,13 @@ test('explicit reopening retains original verified evidence but requires a new c
     expect((await plan.status()).state).toBe('blocked');
     await completeGreeting(fixture, plan);
     const stored = await plan.stored();
-    expect(stored.completions[0]).toStrictEqual(original);
     expect(stored.completions).toHaveLength(2);
-    expect(stored.completions[1]!.reopenActionId).toBe(stored.correspondences[0]!.action.id);
+    expect(stored.completions[1]!.reopenedBy).toBeNull();
     expect((await plan.status()).state).toBe('sequence-approval-required');
   });
 });
 
-test('an explicit new planning invocation reconciles an edit observed while interruption was finishing', async () => {
+test('an explicit new planning invocation recovers an edit observed while interruption was finishing', async () => {
   await withClaudeRuntime(async (fixture) => {
     const plan = await setup(fixture);
     const session = await native(fixture);
@@ -1786,51 +1583,29 @@ test('an explicit new planning invocation reconciles an edit observed while inte
   });
 });
 
-test('a fresh explicit breakdown invocation replaces a stale unconfirmed proposal without accepting stale confirmation', async () => {
+test('finalizing again after a further edit records the newer revision without its approval', async () => {
   await withClaudeRuntime(async (fixture) => {
     const plan = await setup(fixture);
-    const sources = await plan.entries();
+    const sources = (await plan.entries()).map((entry) => entry.id!);
     await begin(plan);
-    const regenerated = sequence([
-      milestone(1, 'Greeting revised', 'Equivalent greeting requirements.'),
-      milestone(2, 'Report', 'Format the report.'),
-      milestone(3, 'Export', 'Export JSON.'),
-    ]);
-    await writeFile(join(plan.directory, 'milestones.md'), regenerated);
-    await plan.finalize();
-    const first = (await plan.stored()).revision!.proposal!;
-    await writeFile(
-      join(plan.directory, 'milestones.md'),
-      regenerated.replace('Greeting revised', 'Greeting final wording'),
-    );
-    await expect(plan.finalize()).rejects.toThrow('conflicts');
-    const current = await plan.status();
-    await plan.send({
-      kind: 'revision-invoke',
-      target: plan.target,
-      expected: current.revision,
-      action: operator(),
-      revisionId: current.coordination.revision!.id,
-      skill: 'jg-breakdown',
-    });
-    await plan.until((state) => state.coordination.revision?.phase === 'editing');
-    expect((await plan.stored()).revision!.proposal).toBeNull();
-    await plan.finalize();
-    const next = (await plan.stored()).revision!.proposal!;
-    expect(next.id).not.toBe(first.id);
-    const draft = next.drafts[0]!;
-    const decisions: IPlanCorrespondence[] = [
-      {
-        sourceIds: [sources[0]!.id!],
-        targetIds: [draft.id],
-        relation: 'equivalent',
-        retainedPairs: [{ sourceId: sources[0]!.id!, targetId: draft.id }],
-      },
-    ];
-    await expect(plan.finalize({ proposalId: first.id, decisions })).rejects.toThrow('conflicts');
-    await plan.finalize({ proposalId: next.id, decisions });
-    expect((await plan.entries())[0]!.id).toBe(sources[0]!.id);
-    expect((await plan.status()).isSequenceApproved).toBe(false);
+    const regenerated = (title: string) =>
+      sequence([
+        milestone(1, title, 'Equivalent greeting requirements.', 'pending', sources[0]),
+        milestone(2, 'Report', 'Format the report.', 'in progress', sources[1]),
+        milestone(3, 'Export', 'Export JSON.', 'pending', sources[2]),
+      ]);
+    await writeFile(join(plan.directory, 'milestones.md'), regenerated('Greeting revised'));
+    const first = await plan.finalize();
+    if (first.kind !== 'finalized') throw new Error('Expected finalization');
+    await writeFile(join(plan.directory, 'milestones.md'), regenerated('Greeting final wording'));
+    const stale = await plan.status();
+    expect(stale.isFinalized).toBe(false);
+    expect(stale.revision.breakdownDigest).not.toBe(first.result.revision.breakdownDigest);
+    const second = await plan.finalize();
+    if (second.kind !== 'finalized') throw new Error('Expected finalization');
+    expect(second.result.revision).toStrictEqual(stale.revision);
+    expect(second.result).toMatchObject({ isFinalized: true, isSequenceApproved: false });
+    expect((await plan.entries())[0]!.id).toBe(sources[0]);
   });
 });
 

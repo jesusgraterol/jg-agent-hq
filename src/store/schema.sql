@@ -161,19 +161,6 @@ CREATE TABLE hq_plan_projection (
   CONSTRAINT hq_pk_pp__directory PRIMARY KEY (directory)
 ) STRICT;
 
-CREATE TABLE hq_plan_revision_projection (
- directory TEXT NOT NULL,
- source_hash TEXT,
- CONSTRAINT hq_pk_prp__directory PRIMARY KEY (directory)
-) STRICT;
-CREATE TABLE hq_plan_record (
- directory TEXT NOT NULL,
- collection TEXT NOT NULL,
- record_id TEXT NOT NULL,
- entry TEXT NOT NULL,
- CONSTRAINT hq_pk_pr__directory_collection_record_id PRIMARY KEY (directory, collection, record_id)
-) STRICT;
-
 CREATE TABLE hq_thread_plan (
  thread_id TEXT NOT NULL,
  directory TEXT NOT NULL,
@@ -520,8 +507,6 @@ CREATE TABLE hq_plan_registration (
 CREATE TRIGGER hq_trg_po__register AFTER INSERT ON hq_plan_operation
 BEGIN INSERT INTO hq_plan_registration VALUES (new.directory) ON CONFLICT(directory) DO NOTHING; END;
 CREATE TRIGGER hq_trg_pp__register AFTER INSERT ON hq_plan_projection
-BEGIN INSERT INTO hq_plan_registration VALUES (new.directory) ON CONFLICT(directory) DO NOTHING; END;
-CREATE TRIGGER hq_trg_prp__register AFTER INSERT ON hq_plan_revision_projection
 BEGIN INSERT INTO hq_plan_registration VALUES (new.directory) ON CONFLICT(directory) DO NOTHING; END;
 CREATE TRIGGER hq_trg_tp__register AFTER INSERT ON hq_thread_plan
 BEGIN INSERT INTO hq_plan_registration VALUES (new.directory) ON CONFLICT(directory) DO NOTHING; END;

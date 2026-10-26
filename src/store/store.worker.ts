@@ -132,11 +132,8 @@ const startWorker = async (): Promise<void> => {
           case 'browser-settle':
             result = browser.settle(command.id, command.operatorId, command.state);
             break;
-          case 'plan-revision-project':
-            plans.projectRevision(command.projection);
-            break;
-          case 'plan-revision-page':
-            result = plans.listRevision(command.page);
+          case 'plan-register':
+            plans.register(command.directory);
             break;
           case 'thread-plan-read':
             result = plans.getThreadPlan(command.threadId);

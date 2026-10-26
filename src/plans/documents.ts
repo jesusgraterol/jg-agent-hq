@@ -5,7 +5,6 @@ import {
   fingerprintPlan,
   parseMilestones,
   parsePlan,
-  preparePlanDocumentWrite,
   preparePlanUpdate,
   type ISourceSpan,
 } from 'jg-plans';
@@ -228,54 +227,6 @@ export const observeSequence = (source: string) => {
     ],
   );
   return { entries, shared, metadata, binding };
-};
-
-/**
- * Missing identities are assigned once by the engine, then persisted by HQ's journal.
- * @throws
- * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
- */
-export const prepareSequenceIds = (source: string, expectedSha256: string): string => {
-  try {
-    return preparePlanDocumentWrite(source, {
-      document: 'milestones',
-      expectedSha256,
-      source,
-      assignMissingIds: true,
-    }).source;
-  } catch (cause) {
-    return invalid(cause);
-  }
-};
-
-/**
- * New requirements receive engine identities; exact verified correspondence retains its identity.
- * @throws
- * - JG_AGENT_HQ_PLAN_INVALID: The HQ plan is invalid
- */
-export const prepareReconciliationIds = (source: string, retained: Map<number, string>): string => {
-  const document = parseMilestones(source);
-  const omissions = document.milestones.flatMap((entry) =>
-    retained.has(entry.ordinal!)
-      ? []
-      : entry.idMarkers.map((marker) => ({ start: marker.lineStart, end: marker.lineEnd })),
-  );
-  let candidate = retainRegions(source, [{ start: 0, end: source.length }], omissions);
-  try {
-    if (retained.size)
-      candidate = preparePlanUpdate(candidate, {
-        document: 'milestones',
-        changes: [...retained].map(([ordinal, id]) => ({ select: { ordinal }, set: { id } })),
-      }).source;
-    return preparePlanDocumentWrite(source, {
-      document: 'milestones',
-      expectedSha256: fingerprintSource(source),
-      source: candidate,
-      assignMissingIds: true,
-    }).source;
-  } catch (cause) {
-    return invalid(cause);
-  }
 };
 
 /**

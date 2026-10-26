@@ -141,7 +141,7 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
       if ('upgradeHqStorage' in packed) throw new Error('packed storage upgrade remains');
       import * as contracts from 'jg-agent-hq/contracts';
       import { HqResponseSchema, BrowserActionSchema, BrowserCommandSchema, UsageCreditsSchema, UsageResetCreditsSchema, UsageWindowScopeSchema } from 'jg-agent-hq/contracts';
-      for (const name of ['BrowserRepositorySchema','BrowserRepositoryPageSchema','BrowserPlanSummarySchema','BrowserPlanPageSchema','BrowserPlanDetailSchema','BrowserSessionSchema','BrowserSystemSchema','PublicationStatusSchema','PlanComparisonSchema'])
+      for (const name of ['BrowserRepositorySchema','BrowserRepositoryPageSchema','BrowserPlanSummarySchema','BrowserPlanPageSchema','BrowserPlanDetailSchema','BrowserSessionSchema','BrowserSystemSchema','PublicationStatusSchema','PlanComparisonSchema','PlanCorrespondenceSchema','PlanProposalSchema','PlanReconciliationEntrySchema'])
         if (name in contracts) throw new Error('packed contract remains: ' + name);
       if (BrowserCommandSchema.options.map((command) => command.shape.kind.value).join() !== 'native,plan') throw new Error('packed browser commands changed');
       const credit = UsageCreditsSchema.parse({bucket:'codex',hasCredits:true,isUnlimited:false,balance:'0.29000000000000001'});

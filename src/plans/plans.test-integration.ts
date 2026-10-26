@@ -3,14 +3,14 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile, symlink, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { createAgentHq, acquireHqLock, type IAgentHq } from 'jg-agent-hq';
+import { createAgentHq, createHqSnapshot, acquireHqLock, type IAgentHq } from 'jg-agent-hq';
 import type {
   IPlanCommandInput,
   IPlanOperatorAction,
   IPlanTarget,
   IPlanStatus,
 } from 'jg-agent-hq/contracts';
-import { fingerprintPlan } from 'jg-plans';
+import { fingerprintPlan, withPlanDocumentLocks } from 'jg-plans';
 import { expect, test } from 'vitest';
 
 import {
@@ -18,10 +18,14 @@ import {
   type IClaudeFixture,
 } from '../../scripts/test-support/claude-runtime.js';
 
-const milestone = (ordinal: number, id?: string, status = 'pending') =>
+// jg-breakdown assigns milestone IDs; a null id writes a milestone without one
+const milestone = (ordinal: number, id: string | null, status = 'pending') =>
   `## Milestone ${ordinal}: Feature ${ordinal}\n**Status:** ${status}\n${id ? `**Milestone ID:** ${id}\n` : ''}\n**Objective:** Complete feature ${ordinal}.\n**Dependencies:** None.\n**Scope:** Feature code.\n**Implementation:** Implement feature ${ordinal}.\n**Verification:** Actual checks.\n**Acceptance:** Correct behavior.\n**Review checkpoint:** Review feature ${ordinal}.\n\n`;
-const sequence = (count = 2, ids?: string[]) =>
-  `# Milestones\n\n## Overview\n\n| Milestone | Name | Status |\n| --- | --- | --- |\n${Array.from({ length: count }, (_, i) => `| ${i + 1} | Feature ${i + 1} | pending |`).join('\n')}\n\n${Array.from({ length: count }, (_, i) => milestone(i + 1, ids?.[i])).join('')}## Approval required\nApprove the sequence.\n`;
+const sequence = (
+  count = 2,
+  ids: (string | null)[] = Array.from({ length: count }, () => randomUUID()),
+) =>
+  `# Milestones\n\n## Overview\n\n| Milestone | Name | Status |\n| --- | --- | --- |\n${Array.from({ length: count }, (_, i) => `| ${i + 1} | Feature ${i + 1} | pending |`).join('\n')}\n\n${Array.from({ length: count }, (_, i) => milestone(i + 1, ids[i] ?? null)).join('')}## Approval required\nApprove the sequence.\n`;
 const action = (): IPlanOperatorAction => ({
   id: randomUUID(),
   operatorId: 'workspace-owner',
@@ -88,15 +92,18 @@ const setup = async (fixture: IClaudeFixture, content = sequence()) => {
   return { directory, target, send, status, finalize, approve, page, ready };
 };
 
-test('generic plan finalization presents stable IDs without granting approval, execution or native permission', async () => {
+test('generic plan finalization records jg-breakdown IDs without granting approval, execution or native permission', async () => {
   await withClaudeRuntime(async (fixture) => {
     const plan = await setup(fixture);
     const before = await plan.status();
     expect(before.state).toBe('plan-approval-required');
-    expect(before.revision.breakdownDigest).toBeNull();
+    expect(before.revision.breakdownDigest).toMatch(/^[a-f0-9]{64}$/);
+    const presented = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
     const { response, command } = await plan.finalize();
     const canonical = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
+    expect(canonical).toBe(presented);
     expect(response.content).toBe(canonical);
+    expect(response.result.revision).toStrictEqual(before.revision);
     expect(response.result.coordination.finalized).toMatchObject({
       action: command.action,
       revision: response.result.revision,
@@ -431,7 +438,38 @@ test('a done marker is visible but cannot replace verified completion evidence',
   });
 });
 
-test('the shared lock serializes competing finalizers and replay keeps the original UUIDs', async () => {
+test('register records an allowed directory for snapshots without locking or reading its plan', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const directory = join(fixture.workspaceRoot, 'registered-plan');
+    await mkdir(directory);
+    const register = (selected: string) =>
+      fixture.runtime.request({
+        kind: 'plan',
+        command: { kind: 'register', target: { directory: selected } },
+      });
+    // plan.md doesn't exist yet and its document locks are held, so a read or a lock would fail
+    const registered = await withPlanDocumentLocks(directory, ['plan', 'milestones'], () =>
+      register(directory),
+    );
+    expect(registered).toStrictEqual({
+      kind: 'plan',
+      result: { kind: 'registered', result: { directory } },
+    });
+    expect(await register(directory)).toStrictEqual(registered);
+    await writeFile(join(directory, 'plan.md'), '# Plan\nCapture the registered plan.\n');
+    expect(
+      (await createHqSnapshot(fixture.runtime, join(fixture.root, 'snapshot'))).planCount,
+    ).toBe(1);
+    await expect(register(fixture.root)).rejects.toThrow('outside the allowed workspaces');
+    await expect(register(join(directory, 'plan.md'))).rejects.toThrow('plan is invalid');
+    await mkdir(join(fixture.workspaceRoot, '_archive'));
+    await expect(register(join(fixture.workspaceRoot, '_archive'))).rejects.toThrow(
+      'plan is invalid',
+    );
+  });
+});
+
+test('the shared lock serializes competing finalizers and replay returns the original result', async () => {
   await withClaudeRuntime(async (fixture) => {
     const plan = await setup(fixture);
     const before = await plan.status();
@@ -455,7 +493,16 @@ test('the shared lock serializes competing finalizers and replay keeps the origi
     const first = await pending;
     const retry = await plan.send(command);
     expect(retry).toStrictEqual(first);
-    await expect(plan.send({ ...command, action: action() })).rejects.toThrow('conflicts');
+    // the same revision may be finalized again; a changed one needs a revision first
+    expect((await plan.send({ ...command, action: action() })).kind).toBe('finalized');
+    const content = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
+    await writeFile(
+      join(plan.directory, 'milestones.md'),
+      content.replace('Actual checks.', 'Changed checks.'),
+    );
+    await expect(
+      plan.send({ ...command, action: action(), expected: (await plan.status()).revision }),
+    ).rejects.toThrow('conflicts');
   });
 });
 
@@ -641,9 +688,7 @@ test('finalization leaves both real and fenced Overview text and identity exampl
     const result = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
     expect(result).toContain(sample);
     expect(result).toContain('| 1 | Feature 1 | pending |');
-    expect(
-      result.replace(/^\*\*Milestone ID:\*\* [a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\n/gm, ''),
-    ).toBe(content);
+    expect(result).toBe(content);
   });
 });
 
@@ -690,14 +735,14 @@ test.each(['custom: .nan', '- not-a-mapping', 'custom: [unterminated'])(
   },
 );
 
-test('finalization preserves BOM, CRLF, metadata and Overview bytes while assigning replayable identities', async () => {
+test('finalization leaves BOM, CRLF, metadata and Overview bytes unchanged and replays its result', async () => {
   await withClaudeRuntime(async (fixture) => {
     const original =
       '\uFEFF---\r\ncontract: retained\r\n---\r\n' + sequence().replaceAll('\n', '\r\n');
     const plan = await setup(fixture, original);
     const finalized = await plan.finalize();
     const source = await readFile(join(plan.directory, 'milestones.md'), 'utf8');
-    expect(source.replace(/^\*\*Milestone ID:\*\* [^\r\n]+\r\n/gm, '')).toBe(original);
+    expect(source).toBe(original);
     expect(await plan.send(finalized.command)).toStrictEqual(finalized.response);
     expect(await readFile(join(plan.directory, 'milestones.md'), 'utf8')).toBe(source);
   });
