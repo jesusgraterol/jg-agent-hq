@@ -4,8 +4,18 @@ import { Exception, extractMessage } from 'jg-exception';
 
 import { createLineDecoder, MAX_FRAME_BYTES } from '../ipc/index.js';
 
-import type { IProviderProcess } from './types.js';
+import type { IProviderFraming, IProviderProcess } from './types.js';
 import { createProcessOwnership } from './process/index.js';
+
+// one JSON message per line, with no preamble
+const LINE_FRAMING: IProviderFraming = {
+  preamble: null,
+  createDecoder: ({ receive }) => ({
+    ...createLineDecoder(MAX_FRAME_BYTES, receive),
+    stop: () => undefined,
+  }),
+  encode: (message) => Buffer.from(`${JSON.stringify(message)}\n`),
+};
 
 /**
  * Owns one POSIX process group and bounded structured transport, without a shell.
@@ -19,16 +29,30 @@ export const createProviderProcess = (
   receive: (message: unknown) => void,
   stopped: (failure: unknown) => void,
   cwd?: string,
+  framing: IProviderFraming = LINE_FRAMING,
 ): IProviderProcess => {
   const child = spawn(executable, args, { detached: true, stdio: ['pipe', 'pipe', 'pipe'], cwd });
   let isRunning = true;
+  // messages wait for the native answer to the preamble; a stopped transport releases them
+  let markOpen = (): void => undefined;
+  let abandonOpen = (_cause: unknown): void => undefined;
+  const opened = new Promise<void>((resolve, reject) => {
+    markOpen = resolve;
+    abandonOpen = reject;
+  });
+  opened.catch(() => undefined);
+  if (!framing.preamble) markOpen();
   const { close } = createProcessOwnership(child);
   child.once('close', () => {
     isRunning = false;
+    decoder.stop();
+    abandonOpen(new Error('native process closed'));
   });
   const fail = (cause: unknown): void => {
     if (!isRunning) return;
     isRunning = false;
+    decoder.stop();
+    abandonOpen(cause);
     stopped(
       new Exception(`The HQ transport failed: ${extractMessage(cause)}`, {
         code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
@@ -38,7 +62,14 @@ export const createProviderProcess = (
     );
     void close().catch(stopped);
   };
-  const decoder = createLineDecoder(MAX_FRAME_BYTES, receive);
+  const decoder = framing.createDecoder({
+    receive,
+    reply: (bytes) => {
+      child.stdin.write(bytes);
+    },
+    open: () => markOpen(),
+    fail,
+  });
   child.stdout.on('data', (chunk: Buffer) => {
     try {
       decoder.push(chunk);
@@ -72,14 +103,16 @@ export const createProviderProcess = (
     );
     void close().catch(stopped);
   });
+  if (framing.preamble) child.stdin.write(framing.preamble);
 
   return {
     get isRunning() {
       return isRunning;
     },
     async write(message): Promise<void> {
-      const content = `${JSON.stringify(message)}\n`;
-      if (!isRunning || Buffer.byteLength(content) > MAX_FRAME_BYTES)
+      await opened.catch(() => undefined);
+      const content = framing.encode(message);
+      if (!isRunning || content.length > MAX_FRAME_BYTES)
         throw new Exception('The HQ transport failed', {
           code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
           data: { kind: 'agent-unavailable' },

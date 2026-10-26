@@ -25,6 +25,7 @@ import {
 import { toHistoryItem, toThreadSummary, toTurnSummary, toUsageSnapshot } from './transformers.js';
 import { parseNative } from './validations.js';
 import { toCodexModels } from './models/index.js';
+import { HOST_SKILL_SCOPE, readSkillRoots, toCapabilityRoots } from './skill-roots/index.js';
 import {
   toCodexConfiguration,
   toCodexSessionSettings,
@@ -215,76 +216,73 @@ export const createCodexProvider = async (
       return latest;
     })());
   };
-  rpc = await createCodexRpc(
-    {
-      request: (id, method, params) => {
-        if (method === 'item/tool/call') {
-          const operation = callTool(id, params);
-          toolCalls.add(operation);
-          void operation
-            .catch(() => rpc?.reject(id))
-            .finally(() => toolCalls.delete(operation))
-            .catch(() => undefined);
-          return;
-        }
-        if (events) events.request(id, method, params);
-        else void rpc?.reject(id).catch(() => undefined);
-      },
-      lateResponse: (id, result, error) => {
-        if (authentication?.lateResponse(id, result, error)) return;
-        if (extensionRequests.has(id)) {
-          extensionRequests.delete(id);
-          if (error !== undefined)
-            events?.controlOutcome({ kind: 'failed', requestId: id, failure: 'agent-unavailable' });
-          else {
-            z.object({}).parse(result);
-            events?.controlOutcome({
-              kind: 'control-accepted',
-              requestId: id,
-              state: 'applied',
-              completion: 'completed',
-            });
-          }
-          return;
-        }
-        events?.lateResponse(id, result, error);
-      },
-      unavailable: () => {
-        authentication?.unavailable();
-        extensionRequests.clear();
-        events?.unavailable();
-      },
-      notify: (method, params) => {
-        authentication?.notify(method, params);
-        events?.notify(method, params);
-        if (method !== 'account/rateLimits/updated' && method !== 'account/updated') return;
-        if (method === 'account/updated') {
-          accountGeneration += 1;
-          latest = {
-            provider: 'codex',
-            state: 'unavailable',
-            source: 'native',
-            observedAt: null,
-            ordinaryUsageAllowed: null,
-            windows: [],
-            credits: null,
-            resetCredits: null,
-          };
-        }
-        if (
-          method === 'account/rateLimits/updated' &&
-          !z.object({ rateLimits: NativeBucketSchema }).safeParse(params).success
-        ) {
-          latest = { ...latest, state: latest.observedAt === null ? 'unavailable' : 'stale' };
-          return;
-        }
-        // sparse updates invalidate the account observation; one native refresh reconciles all buckets
-        latest = { ...latest, state: latest.observedAt === null ? 'unavailable' : 'stale' };
-        void readUsage();
-      },
+  rpc = await createCodexRpc({
+    request: (id, method, params) => {
+      if (method === 'item/tool/call') {
+        const operation = callTool(id, params);
+        toolCalls.add(operation);
+        void operation
+          .catch(() => rpc?.reject(id))
+          .finally(() => toolCalls.delete(operation))
+          .catch(() => undefined);
+        return;
+      }
+      if (events) events.request(id, method, params);
+      else void rpc?.reject(id).catch(() => undefined);
     },
-    extraSkillRoots,
-  );
+    lateResponse: (id, result, error) => {
+      if (authentication?.lateResponse(id, result, error)) return;
+      if (extensionRequests.has(id)) {
+        extensionRequests.delete(id);
+        if (error !== undefined)
+          events?.controlOutcome({ kind: 'failed', requestId: id, failure: 'agent-unavailable' });
+        else {
+          z.object({}).parse(result);
+          events?.controlOutcome({
+            kind: 'control-accepted',
+            requestId: id,
+            state: 'applied',
+            completion: 'completed',
+          });
+        }
+        return;
+      }
+      events?.lateResponse(id, result, error);
+    },
+    unavailable: () => {
+      authentication?.unavailable();
+      extensionRequests.clear();
+      events?.unavailable();
+    },
+    notify: (method, params) => {
+      authentication?.notify(method, params);
+      events?.notify(method, params);
+      if (method !== 'account/rateLimits/updated' && method !== 'account/updated') return;
+      if (method === 'account/updated') {
+        accountGeneration += 1;
+        latest = {
+          provider: 'codex',
+          state: 'unavailable',
+          source: 'native',
+          observedAt: null,
+          ordinaryUsageAllowed: null,
+          windows: [],
+          credits: null,
+          resetCredits: null,
+        };
+      }
+      if (
+        method === 'account/rateLimits/updated' &&
+        !z.object({ rateLimits: NativeBucketSchema }).safeParse(params).success
+      ) {
+        latest = { ...latest, state: latest.observedAt === null ? 'unavailable' : 'stale' };
+        return;
+      }
+      // sparse updates invalidate the account observation; one native refresh reconciles all buckets
+      latest = { ...latest, state: latest.observedAt === null ? 'unavailable' : 'stale' };
+      void readUsage();
+    },
+  });
   const connection = rpc;
   authentication = createCodexAuthentication(connection, (outcome) =>
     events?.controlOutcome(outcome),
@@ -495,25 +493,41 @@ export const createCodexProvider = async (
             kind: 'agent-unavailable',
           },
         });
+      // native discovery never lists a thread's capability roots, so HQ adds its own; native wins
+      const roots = await readSkillRoots(extraSkillRoots);
+      const nativeNames = new Set(entry.skills.map((skill) => skill.name));
       return {
-        unavailableCount: entry.errors.length,
+        unavailableCount: entry.errors.length + roots.unavailableCount,
         observedAt: Date.now(),
-        skills: entry.skills.map((skill) => ({
-          name: skill.name,
-          description: skill.description,
-          argumentHint: null,
-          kind: 'skill',
-          path: skill.path,
-          scope: skill.scope,
-          isEnabled: skill.enabled,
-          requiresExplicitInvocation: null,
-          prerequisites:
-            skill.dependencies?.tools.map((tool) => ({
-              type: tool.type,
-              name: tool.value,
-              description: tool.description ?? null,
-            })) ?? null,
-        })),
+        skills: [
+          ...entry.skills.map((skill) => ({
+            name: skill.name,
+            description: skill.description,
+            argumentHint: null,
+            kind: 'skill' as const,
+            path: skill.path,
+            scope: skill.scope,
+            isEnabled: skill.enabled,
+            requiresExplicitInvocation: null,
+            prerequisites:
+              skill.dependencies?.tools.map((tool) => ({
+                type: tool.type,
+                name: tool.value,
+                description: tool.description ?? null,
+              })) ?? null,
+          })),
+          ...roots.skills
+            .filter((skill) => !nativeNames.has(skill.name))
+            .map((skill) => ({
+              ...skill,
+              argumentHint: null,
+              kind: 'skill' as const,
+              scope: HOST_SKILL_SCOPE,
+              isEnabled: true,
+              requiresExplicitInvocation: null,
+              prerequisites: null,
+            })),
+        ],
       };
     },
     setEvents: (handlers) => {
@@ -526,6 +540,10 @@ export const createCodexProvider = async (
         {
           cwd: workspaceRoot,
           ...toCodexSessionSettings(selected),
+          // per-thread roots; forks inherit them, and other daemon sessions never see them
+          ...(extraSkillRoots.length
+            ? { selectedCapabilityRoots: toCapabilityRoots(extraSkillRoots) }
+            : {}),
           ...(agentTools
             ? {
                 dynamicTools: agentTools

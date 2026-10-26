@@ -114,7 +114,7 @@ The [qualification matrix](api/README.md#qualification) records native journeys,
 - `src/locks/`: lock ownership, acquisition, status and deliberate recovery.
 - `src/runtime/`: trusted configuration and lifetime ownership.
 - `src/ipc/` and `src/cli/`: private local commands and the installed executable.
-- `src/providers/codex/`: native history and account protocol.
+- `src/providers/codex/`: the shared app-server daemon connection, native history and account protocol.
 - `src/providers/claude/`: native structured control and usage, plus the identity-validated, worker-owned local history reader.
 - `src/providers/registry/`: lazy factories, normalized provider evidence, bounded lifecycle and source isolation.
 - `src/providers/inputs/` and `src/providers/results/`: checked file delivery and complete native result validation.

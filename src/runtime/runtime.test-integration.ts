@@ -782,6 +782,90 @@ test('lost native output makes the provider unavailable while the independent ho
   });
 });
 
+test('Codex connects through the shared daemon proxy, and a failed daemon start never connects', async () => {
+  const readCommands = async (root: string): Promise<unknown[]> =>
+    (await readFile(join(root, 'commands.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+  await withRuntime(async ({ root, workspaceRoot, control, request }) => {
+    await control({ ping: true, fragmentFrames: true });
+    const reply = await request({ kind: 'threads', provider: 'codex', workspaceRoot });
+    if (reply.kind !== 'threads') throw new Error('wrong response');
+    expect(reply.result.data[0]).toMatchObject({ nativeId: 'thread-1023' });
+    expect(await readCommands(root)).toStrictEqual([
+      ['app-server', 'daemon', 'start'],
+      ['app-server', 'proxy'],
+    ]);
+    expect(await readFile(join(root, 'pongs.jsonl'), 'utf8')).toBe('keepalive\n');
+  });
+  await withRuntime(async ({ workspaceRoot, control, request }) => {
+    await control({ wrongAccept: true });
+    await expectToRejectCode(
+      request({ kind: 'threads', provider: 'codex', workspaceRoot }),
+      'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
+      'Coding agent is unavailable.',
+    );
+  });
+  await withRuntime(async ({ root, workspaceRoot, control, request }) => {
+    await control({ daemonFailure: true });
+    await expectToRejectCode(
+      request({ kind: 'threads', provider: 'codex', workspaceRoot }),
+      'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
+      'Coding agent is unavailable.',
+    );
+    const commands = await readCommands(root);
+    expect(commands).toContainEqual(['app-server', 'daemon', 'start']);
+    expect(commands).not.toContainEqual(['app-server', 'proxy']);
+  });
+});
+
+test(
+  'a daemon that stops answering keepalive pings makes Codex unavailable and its sessions uncertain',
+  // the keepalive interval is fixed at 10 seconds, so detection takes up to two intervals
+  { timeout: 45_000 },
+  async () => {
+    await withRuntime(async ({ workspaceRoot, control, request }) => {
+      const status = HqResponseSchema.parse(await request({ kind: 'status' }));
+      if (status.kind !== 'status') throw new Error('wrong response');
+      const actionId = randomUUID();
+      await request({
+        kind: 'action',
+        action: {
+          id: actionId,
+          runtimeEpoch: status.result.runtimeEpoch,
+          command: { kind: 'thread-create', provider: 'codex', workspaceRoot, name: 'keepalive' },
+        },
+      });
+      await expect
+        .poll(async () => {
+          const receipt = await request({ kind: 'receipt', actionId });
+          return receipt.kind === 'receipt' ? receipt.result?.delivery : null;
+        })
+        .toBe('acknowledged');
+      const receipt = await request({ kind: 'receipt', actionId });
+      if (receipt.kind !== 'receipt' || !receipt.result?.threadId) throw new Error('no thread');
+      const threadId = receipt.result.threadId;
+      await control({ ignorePings: true });
+      await expect
+        .poll(
+          async () => {
+            const current = await request({ kind: 'status' });
+            return current.kind === 'status'
+              ? current.result.providers.find((provider) => provider.provider === 'codex')?.state
+              : null;
+          },
+          { timeout: 30_000, interval: 250 },
+        )
+        .toBe('unavailable');
+      expect(await request({ kind: 'managed-thread', threadId })).toMatchObject({
+        kind: 'managed-thread',
+        result: { ownership: 'uncertain' },
+      });
+    });
+  },
+);
+
 test(
   'unconfirmed native startup cleanup preserves runtime ownership evidence',
   { timeout: 15_000 },

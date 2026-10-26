@@ -31,7 +31,7 @@ import { createCodexProvider } from './codex.js';
 import { createCodexEvents, toProviderThread } from './events.js';
 
 /**
- * Describes current Codex controls and lazily owns their native app-server connection.
+ * Describes current Codex controls and lazily owns a connection to the shared app-server daemon.
  * @returns A built-in factory that preserves native settings, authentication and permission policy.
  */
 export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentProviderFactory => ({

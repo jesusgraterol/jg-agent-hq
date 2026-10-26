@@ -1,8 +1,14 @@
+import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import { Exception, extractMessage } from 'jg-exception';
 import { z } from 'zod';
 
 import { createProviderProcess } from '../index.js';
+
+import { createWebSocketFraming } from './websocket/index.js';
+
+const run = promisify(execFile);
 
 const EnvelopeSchema = z.object({
   id: z.union([z.number().int(), z.string()]).optional(),
@@ -13,21 +19,20 @@ const EnvelopeSchema = z.object({
 });
 
 /**
- * Connects to the installed CLI's stdio app-server with bounded pending requests.
+ * Connects to the installed CLI's shared app-server daemon through its stdio proxy, starting the
+ * daemon when no terminal session has, with bounded pending requests. The daemon's control socket
+ * speaks WebSocket, which the proxy forwards as raw bytes.
  * @returns An initialized transport with exact action IDs and late-response callbacks.
  * @throws
  * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
  * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
  */
-export const createCodexRpc = async (
-  handlers: {
-    notify(method: string, params: unknown): void;
-    request(id: string | number, method: string, params: unknown): void;
-    lateResponse(id: string, result: unknown, error: unknown): void;
-    unavailable(): void;
-  },
-  extraSkillRoots: string[] = [],
-) => {
+export const createCodexRpc = async (handlers: {
+  notify(method: string, params: unknown): void;
+  request(id: string | number, method: string, params: unknown): void;
+  lateResponse(id: string, result: unknown, error: unknown): void;
+  unavailable(): void;
+}) => {
   const manifest = z
     .object({ version: z.string() })
     .parse(JSON.parse(await readFile(new URL('../../../package.json', import.meta.url), 'utf8')));
@@ -54,9 +59,19 @@ export const createCodexRpc = async (
     }
     pending.clear();
   };
+  // terminal sessions and HQ share one daemon, which outlives this connection
+  try {
+    await run('codex', ['app-server', 'daemon', 'start'], { timeout: 30_000, maxBuffer: 65_536 });
+  } catch (cause) {
+    throw new Exception(`The Codex integration failed: ${extractMessage(cause)}`, {
+      code: 'JG_AGENT_HQ_CODEX_FAILED',
+      data: { kind: 'agent-unavailable' },
+      cause,
+    });
+  }
   const transport = createProviderProcess(
     'codex',
-    ['app-server', '--listen', 'stdio://'],
+    ['app-server', 'proxy'],
     (message) => {
       const parsed = EnvelopeSchema.safeParse(message);
       if (!parsed.success)
@@ -100,6 +115,8 @@ export const createCodexRpc = async (
       else entry.resolve(envelope.result);
     },
     stopped,
+    undefined,
+    createWebSocketFraming(),
   );
   const request = async (
     method: string,
@@ -161,17 +178,6 @@ export const createCodexRpc = async (
         cause: initialized.error,
       });
     await transport.write({ method: 'initialized', params: {} });
-    if (extraSkillRoots.length) {
-      const roots = z
-        .object({})
-        .safeParse(await request('skills/extraRoots/set', { extraRoots: extraSkillRoots }));
-      if (!roots.success)
-        throw new Exception('The Codex integration failed', {
-          code: 'JG_AGENT_HQ_CODEX_FAILED',
-          data: { kind: 'agent-unavailable' },
-          cause: roots.error,
-        });
-    }
     return {
       userAgent: initialized.data.userAgent ?? null,
       get isAvailable() {
