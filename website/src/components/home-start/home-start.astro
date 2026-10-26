@@ -60,6 +60,7 @@ const COPY_CONTEXTS = ['install command', 'start command', 'status command'] as 
               {step.title}
             </h3>
             <InstallCommand
+              copyDisplay="icon"
               command={step.command}
               id={index === 0 ? 'install-command' : `setup-command-${index}`}
               context={COPY_CONTEXTS[index]!}
