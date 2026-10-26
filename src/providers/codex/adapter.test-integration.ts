@@ -171,6 +171,27 @@ test('a Codex session outside the allowed workspaces is never observed', async (
   });
 });
 
+test('a Codex session Codex never saves, such as its own helper sessions, is never observed', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const saved = 'thread-1022';
+    await fixture.runtime.request({ kind: 'usage', provider: 'codex' });
+    await codex(fixture, {
+      ephemeralThreads: [EXTERNAL],
+      threadStatuses: { [EXTERNAL]: { type: 'active', activeFlags: [] } },
+      emitOnce: true,
+      emit: [
+        statusChanged({ type: 'active', activeFlags: [] }),
+        { method: 'thread/status/changed', params: { threadId: saved, status: { type: 'idle' } } },
+      ],
+    });
+    await fixture.runtime.request({ kind: 'usage', provider: 'codex' });
+    // sessions are observed in order, so the saved session's change shows the other one was read
+    await expect
+      .poll(async () => (await transitions(fixture)).map(summary))
+      .toStrictEqual([[saved, null, 'idle', 'opened', 'external']]);
+  });
+});
+
 test('interrupt and close of a Codex session count only once the daemon confirms them', async () => {
   await withClaudeRuntime(async (fixture) => {
     const managed = await createThread(fixture, 'confirmed-controls');

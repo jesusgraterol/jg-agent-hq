@@ -438,6 +438,13 @@ export const createCodexProvider = async (
       );
       return toThreadSummary(result.thread);
     },
+    async readObservedThread(nativeId) {
+      const { thread } = parseNative(
+        z.object({ thread: NativeThreadSchema.refine((thread) => thread.id === nativeId) }),
+        await connection.request('thread/read', { threadId: nativeId, includeTurns: false }),
+      );
+      return { workspaceRoot: thread.cwd, isEphemeral: thread.ephemeral === true };
+    },
     async listTurns(nativeId, limit, cursor) {
       const page = parseNative(
         NativeTurnPageSchema,

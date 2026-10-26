@@ -38,6 +38,8 @@ export const NativeThreadSchema = z.object({
   forkedFromId: z.string().min(1).max(4096).nullable().optional(),
   cwd: z.string().min(1).max(4096),
   name: z.string().nullable().optional(),
+  // a session Codex doesn't save, such as the helper sessions it starts itself
+  ephemeral: z.boolean().optional(),
   createdAt: z.number().int().safe(),
   updatedAt: z.number().int().safe(),
   status: z.object({
@@ -148,6 +150,8 @@ export type ICodexProvider = {
     search?: string,
   ): Promise<INativePage<IThreadSummary>>;
   readThread(nativeId: string): Promise<IThreadSummary>;
+  /** @returns A session's workspace and whether Codex doesn't save it, which decide observation. */
+  readObservedThread(nativeId: string): Promise<{ workspaceRoot: string; isEphemeral: boolean }>;
   listTurns(nativeId: string, limit: number, cursor?: string): Promise<INativePage<ITurnSummary>>;
   listItems(
     nativeId: string,

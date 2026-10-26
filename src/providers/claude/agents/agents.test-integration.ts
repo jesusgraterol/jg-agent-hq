@@ -38,8 +38,8 @@ const report = (fixture: IClaudeFixture, control: object) =>
 
 test(
   'claude agents report running, waiting and idle sessions, and a session that disappears',
-  // three five-second polls observe each change
-  { timeout: 30_000 },
+  // four five-second polls observe each change
+  { timeout: 40_000 },
   async () => {
     await withClaudeRuntime(async (fixture) => {
       const [busy, blocked] = [randomUUID(), randomUUID()];
@@ -96,6 +96,28 @@ test(
           [blocked, 'waiting'],
         ]),
       );
+      // an interactive session reports a question or permission prompt as waiting
+      await report(fixture, {
+        agents: [
+          {
+            pid: 1,
+            cwd: fixture.workspaceRoot,
+            kind: 'interactive',
+            sessionId: busy,
+            status: 'waiting',
+          },
+          {
+            id: 'background-1',
+            cwd: fixture.workspaceRoot,
+            kind: 'background',
+            sessionId: blocked,
+            state: 'blocked',
+          },
+        ],
+      });
+      await expect
+        .poll(async () => (await transitions(fixture)).slice(2).map(summary), { timeout: 12_000 })
+        .toStrictEqual([[busy, 'running', 'waiting', 'waiting-for-input', 'external']]);
       await report(fixture, {
         agents: [
           {
@@ -108,14 +130,14 @@ test(
         ],
       });
       await expect
-        .poll(async () => (await transitions(fixture)).slice(2).map(summary), { timeout: 12_000 })
+        .poll(async () => (await transitions(fixture)).slice(3).map(summary), { timeout: 12_000 })
         .toStrictEqual([
-          [busy, 'running', 'idle', 'turn-completed', 'external'],
+          [busy, 'waiting', 'idle', 'turn-completed', 'external'],
           [blocked, 'waiting', 'closed', 'disappeared', 'external'],
         ]);
       await report(fixture, { agents: [] });
       await expect
-        .poll(async () => (await transitions(fixture)).slice(4).map(summary), { timeout: 12_000 })
+        .poll(async () => (await transitions(fixture)).slice(5).map(summary), { timeout: 12_000 })
         .toStrictEqual([[busy, 'idle', 'closed', 'closed', 'external']]);
     });
   },

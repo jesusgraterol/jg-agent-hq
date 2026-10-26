@@ -9,12 +9,15 @@ import { ClaudeAgentsSchema, type IClaudeAgent } from './types.js';
 
 const run = promisify(execFile);
 
-/** Maps a native busy, blocked or idle report to the shared session state. */
+/**
+ * Maps a native report to the shared session state: an interactive session reports `waiting` on a
+ * question or permission prompt, and a background one `blocked`.
+ */
 export const toAgentState = (agent: IClaudeAgent): ISessionState => {
   const reported = agent.status ?? agent.state;
   return reported === 'busy'
     ? 'running'
-    : reported === 'blocked'
+    : reported === 'waiting' || reported === 'blocked'
       ? 'waiting'
       : reported === 'idle'
         ? 'idle'

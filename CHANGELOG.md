@@ -1,5 +1,10 @@
 # Changelog
 
+## 4.0.1
+
+- Report an interactive Claude session that waits on a question or permission prompt as waiting. Claude Code lists it as `waiting`, which was recorded as an unknown state and reported as a disappearance.
+- Never observe an ephemeral Codex session, which Codex doesn't save, such as a helper session Codex starts itself. It no longer appears in session states.
+
 ## 4.0.0
 
 - Run Codex sessions on Codex's shared app-server daemon, which also hosts terminal sessions, through `codex app-server proxy`. A keepalive notices a stopped daemon: affected sessions become uncertain, nothing is resent, and the next Codex read reconnects. Extra skill roots now travel with the threads HQ starts instead of changing every session on the daemon.
