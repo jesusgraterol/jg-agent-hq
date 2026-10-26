@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.0.0
+
+- Run Codex sessions on Codex's shared app-server daemon, which also hosts terminal sessions, through `codex app-server proxy`. A keepalive notices a stopped daemon: affected sessions become uncertain, nothing is resent, and the next Codex read reconnects. Extra skill roots now travel with the threads HQ starts instead of changing every session on the daemon.
+- Show sessions started in a terminal. Codex sessions on the daemon and Claude sessions from `claude agents --json` report a live state with external ownership, and take input only after they are closed there and adopted. Every state change of a managed or observed session is recorded in order and read with `session-states`; transitions are kept for seven days.
+- Capture snapshots while agents keep working, and mark a plan edited during capture so restore withholds its execution authority. Add `packHqSnapshot` and `unpackHqSnapshot` for AES-256-GCM archives of a snapshot, for off-machine copies.
+- Keep one storage schema. Its stamp records the package version that wrote it, and any other schema is refused with an error naming that version. Remove the offline storage upgrade, the `upgrade-storage` command and version-1 snapshot support.
+- Finalize plans on the milestone IDs jg-breakdown assigns. Completion evidence follows its milestone ID, and evidence whose ID left the sequence is listed as unmatched. Add the `register` plan command so snapshots capture a plan's files. Remove HQ's own milestone matching, the `reconciliation` command and the correspondence contracts.
+- Remove host-only contracts: the `priority`, `error-reservation` and `publication-retry` browser commands, the host read models, the `scope`, `repositories` and `errorReservations` plan metadata, plan comparisons and the `parsePlanContract` option. A plan's execution identity is its body, its milestones and its frontmatter extensions. The single Codex quota bucket is named `single`.
+
 ## 3.0.0
 
 - Check protocol 0.2 plans with jg-plans 0.3.0 at each stage that grants authority: plan approval requires plan.md to conform, and finalization, sequence approval, authorization and execution require plan.md and milestones.md to conform together. Reading, status and revision workflows are unaffected, and plans without the 0.2 marker keep their current behavior.
