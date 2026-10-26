@@ -2,7 +2,7 @@ CREATE TABLE hq_schema (
   id INTEGER NOT NULL CONSTRAINT hq_pk_schema__id PRIMARY KEY CHECK (id = 1),
   schema_hash TEXT NOT NULL CHECK (length(schema_hash) = 64),
   action_key_hash TEXT NOT NULL CHECK (length(action_key_hash) = 64),
-  schema_version INTEGER NOT NULL DEFAULT 2 CHECK (schema_version > 0)
+  package_version TEXT NOT NULL CHECK (length(package_version) BETWEEN 1 AND 64)
 ) STRICT;
 
 CREATE TABLE hq_native_history_index (

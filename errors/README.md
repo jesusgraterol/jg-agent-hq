@@ -26,45 +26,39 @@ Recovery never automatically deletes an inactive, unreadable, incomplete or unve
 
 These contracts use the named codes below. An Exception's `data.kind` classifies its safe wire mapping. Native codes, when present in diagnostic metadata, belong to the native protocol and are not HQ error codes. Claude control error responses carry `nativeRejection: true` internally because that protocol supplies no numeric error code. Internal diagnostic causes are never copied into IPC error responses.
 
-| Code                                    | Stable message                                                   |
-| --------------------------------------- | ---------------------------------------------------------------- |
-| JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE      | The HQ state directory is unsafe                                 |
-| JG_AGENT_HQ_STATE_FILE_UNSAFE           | The HQ state file is unsafe                                      |
-| JG_AGENT_HQ_RUNTIME_ALREADY_OWNED       | The HQ runtime is already owned                                  |
-| JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE  | The HQ runtime owner is unverifiable                             |
-| JG_AGENT_HQ_REQUEST_INVALID             | The HQ request is invalid                                        |
-| JG_AGENT_HQ_TARGET_FORBIDDEN            | The HQ target is outside the allowed workspaces                  |
-| JG_AGENT_HQ_CURSOR_INVALID              | The HQ cursor does not match this request                        |
-| JG_AGENT_HQ_CODEX_FAILED                | The Codex integration failed                                     |
-| JG_AGENT_HQ_CLAUDE_FAILED               | The Claude integration failed                                    |
-| JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE  | The Claude history is unavailable                                |
-| JG_AGENT_HQ_TRANSPORT_FAILED            | The HQ transport failed                                          |
-| JG_AGENT_HQ_STORE_FAILED                | The HQ store failed                                              |
-| JG_AGENT_HQ_STORAGE_INVALID             | The HQ storage is invalid                                        |
-| JG_AGENT_HQ_STORAGE_UPGRADE_REQUIRED    | The HQ storage requires an explicit upgrade                      |
-| JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED | The HQ storage version is unsupported                            |
-| JG_AGENT_HQ_STORAGE_UPGRADE_FAILED      | The HQ storage upgrade failed                                    |
-| JG_AGENT_HQ_STORAGE_UPGRADE_UNCERTAIN   | The HQ storage upgrade requires reconciliation                   |
-| JG_AGENT_HQ_SNAPSHOT_INVALID            | The HQ snapshot is invalid                                       |
-| JG_AGENT_HQ_SNAPSHOT_FAILED             | The HQ snapshot operation failed                                 |
-| JG_AGENT_HQ_PROVIDER_FAILED             | The HQ provider integration failed                               |
-| JG_AGENT_HQ_CAPABILITY_UNAVAILABLE      | The HQ capability is unavailable                                 |
-| JG_AGENT_HQ_RUNTIME_NOT_RUNNING         | The HQ runtime is not running                                    |
-| JG_AGENT_HQ_ACTION_CONFLICT             | The HQ action conflicts with its recorded state                  |
-| JG_AGENT_HQ_COLLABORATION_FORBIDDEN     | The HQ collaboration operation is not authorized                 |
-| JG_AGENT_HQ_COLLABORATION_CONFLICT      | The HQ collaboration operation conflicts with its recorded state |
-| JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE      | The HQ action key is unavailable                                 |
-| JG_AGENT_HQ_SKILL_UNAVAILABLE           | The HQ skill is unavailable                                      |
-| JG_AGENT_HQ_PLAN_INVALID                | The HQ plan is invalid                                           |
-| JG_AGENT_HQ_PLAN_FAILED                 | The HQ plan operation failed                                     |
-
-Storage version/upgrade-required errors use state-conflict. Upgrade failed/uncertain errors use operation-failed. An uncertain upgrade never retries or reverses automatically; trusted Node diagnostics retain the phase and selected verified backup when available. CLI presentation exposes only static canonical messages.
+| Code                                   | Stable message                                                   |
+| -------------------------------------- | ---------------------------------------------------------------- |
+| JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE     | The HQ state directory is unsafe                                 |
+| JG_AGENT_HQ_STATE_FILE_UNSAFE          | The HQ state file is unsafe                                      |
+| JG_AGENT_HQ_RUNTIME_ALREADY_OWNED      | The HQ runtime is already owned                                  |
+| JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE | The HQ runtime owner is unverifiable                             |
+| JG_AGENT_HQ_REQUEST_INVALID            | The HQ request is invalid                                        |
+| JG_AGENT_HQ_TARGET_FORBIDDEN           | The HQ target is outside the allowed workspaces                  |
+| JG_AGENT_HQ_CURSOR_INVALID             | The HQ cursor does not match this request                        |
+| JG_AGENT_HQ_CODEX_FAILED               | The Codex integration failed                                     |
+| JG_AGENT_HQ_CLAUDE_FAILED              | The Claude integration failed                                    |
+| JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE | The Claude history is unavailable                                |
+| JG_AGENT_HQ_TRANSPORT_FAILED           | The HQ transport failed                                          |
+| JG_AGENT_HQ_STORE_FAILED               | The HQ store failed                                              |
+| JG_AGENT_HQ_STORAGE_INVALID            | The HQ storage is invalid                                        |
+| JG_AGENT_HQ_SNAPSHOT_INVALID           | The HQ snapshot is invalid                                       |
+| JG_AGENT_HQ_SNAPSHOT_FAILED            | The HQ snapshot operation failed                                 |
+| JG_AGENT_HQ_PROVIDER_FAILED            | The HQ provider integration failed                               |
+| JG_AGENT_HQ_CAPABILITY_UNAVAILABLE     | The HQ capability is unavailable                                 |
+| JG_AGENT_HQ_RUNTIME_NOT_RUNNING        | The HQ runtime is not running                                    |
+| JG_AGENT_HQ_ACTION_CONFLICT            | The HQ action conflicts with its recorded state                  |
+| JG_AGENT_HQ_COLLABORATION_FORBIDDEN    | The HQ collaboration operation is not authorized                 |
+| JG_AGENT_HQ_COLLABORATION_CONFLICT     | The HQ collaboration operation conflicts with its recorded state |
+| JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE     | The HQ action key is unavailable                                 |
+| JG_AGENT_HQ_SKILL_UNAVAILABLE          | The HQ skill is unavailable                                      |
+| JG_AGENT_HQ_PLAN_INVALID               | The HQ plan is invalid                                           |
+| JG_AGENT_HQ_PLAN_FAILED                | The HQ plan operation failed                                     |
 
 State safety rejects non-private ownership, symlinks and non-regular files. ACTION_KEY_UNAVAILABLE also rejects a valid-length key whose fingerprint differs from the database stamp, before opening a writer. Runtime ownership is never reclaimed automatically. Transport failure includes malformed, oversized or incomplete frames and bounded-request/lifecycle failures. Native history and subscription failures remain unavailable, never successful empty results. Claude control rejects missing or non-idle initialization, invalid native session identities and malformed lifecycle evidence. Failed delivery remains uncertain when no exact native rejection or acknowledgement establishes its outcome.
 
-A nonempty SQLite schema requires exactly one matching `hq_schema` stamp. Missing, malformed or mismatched stamps use STORAGE_INVALID with the safe state-conflict classification before HQ changes the database. Read-only validation preserves uncheckpointed WAL state on rejection. Initialization failures roll back the complete HQ schema. Storage maintenance uses ACTION_CONFLICT for concurrent maintenance, calls from admitted work, active native execution or an unresolved plan write. Host callback errors propagate unchanged after admission is released.
+A nonempty SQLite schema requires exactly one matching `hq_schema` stamp. Missing, malformed or mismatched stamps use STORAGE_INVALID with the safe state-conflict classification before HQ changes the database. Its message names the package version that wrote storage from another schema, or another jg-agent-hq version when the stamp records none; the CLI presents only that writer message. Read-only validation preserves uncheckpointed WAL state on rejection. Initialization failures roll back the complete HQ schema. Storage maintenance uses ACTION_CONFLICT for concurrent maintenance, calls from admitted work, active native execution or an unresolved plan write. Host callback errors propagate unchanged after admission is released.
 
-Snapshot capture retains prepared document writes but uses ACTION_CONFLICT for active native execution, concurrent maintenance and document contention. SNAPSHOT_INVALID classifies invalid selections or incomplete, corrupt, unsafe or occupied snapshot/recovery paths as invalid-request. SNAPSHOT_FAILED classifies operational backup, copy, worker, lock-release and cleanup failures as operation-failed. Its stable message may carry a private extracted diagnostic suffix. These contracts belong only to trusted Node snapshot exports.
+Snapshot capture retains prepared document writes and continues through native work, but uses ACTION_CONFLICT for concurrent maintenance, an expired metadata lock wait and document contention. Inspection and restore use STORAGE_INVALID for a snapshot from another schema. SNAPSHOT_INVALID classifies invalid selections or incomplete, corrupt, unsafe or occupied snapshot/recovery paths as invalid-request. SNAPSHOT_FAILED classifies operational backup, copy, worker, lock-release and cleanup failures as operation-failed. Its stable message may carry a private extracted diagnostic suffix. These contracts belong only to trusted Node snapshot exports.
 
 A native or worker startup failure whose cleanup could not be confirmed carries internal `cleanupUnconfirmed: true`. The runtime retains its owner record in that case rather than allowing a new host to assume its resources have stopped.
 

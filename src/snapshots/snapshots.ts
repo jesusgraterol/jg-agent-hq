@@ -28,7 +28,7 @@ export const registerSnapshotContext = (context: ISnapshotContext): void => {
  * Runs full SQLite verification/restoration off the caller's event loop and confirms worker exit.
  * @returns The validated snapshot metadata.
  * @throws
- * - JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED: The HQ storage version is unsupported
+ * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
  * - JG_AGENT_HQ_SNAPSHOT_INVALID: The HQ snapshot is invalid
  * - JG_AGENT_HQ_SNAPSHOT_FAILED: The HQ snapshot operation failed
  */
@@ -79,7 +79,7 @@ const runSnapshotWorker = async (input: {
               kind:
                 response.code === 'JG_AGENT_HQ_SNAPSHOT_INVALID'
                   ? 'invalid-request'
-                  : response.code === 'JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED'
+                  : response.code === 'JG_AGENT_HQ_STORAGE_INVALID'
                     ? 'state-conflict'
                     : 'operation-failed',
             },
@@ -91,12 +91,13 @@ const runSnapshotWorker = async (input: {
 };
 
 /**
- * Captures a quiescent running HQ, host tables, private key and registered plan companions.
- * The host must pause all of its writers. Busy checkpoints never interrupt native work.
+ * Captures a running HQ, host tables, private key and registered plan companions while agents
+ * keep working. HQ-mediated plan writes wait for the coordination metadata lock; the host must
+ * keep its own connections from writing host tables until the capture resolves.
  * The destination must be absent under an existing canonical parent.
  * @returns A fully verified local snapshot; remote durability remains the host's responsibility.
  * @throws
- * - JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED: The HQ storage version is unsupported
+ * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
  * - JG_AGENT_HQ_SNAPSHOT_INVALID: The HQ snapshot is invalid
  * - JG_AGENT_HQ_SNAPSHOT_FAILED: The HQ snapshot operation failed
  * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
@@ -116,20 +117,19 @@ export const createHqSnapshot = async (
     invalidSnapshot();
   let owned: string | undefined;
   try {
-    return await context.maintenance(async (storage) => {
+    return await context.admit(async () => {
       let release: (() => Promise<void>) | undefined;
       let failure: unknown;
       try {
-        release = await acquireHqLock(context.coordinationRoot, 'snapshot', { waitTimeoutMs: 0 });
+        release = await acquireHqLock(context.coordinationRoot, 'snapshot');
         const result = await captureSnapshot(
           {
             stateRoot: context.stateRoot,
             coordinationRoot: context.coordinationRoot,
             allowedRoots: context.allowedRoots,
             actionKeyHash: context.actionKeyHash,
-            schemaHash: storage.schemaHash,
+            schemaHash: context.store.storage.schemaHash,
             backupDatabase: (path) => context.store.snapshotBackup(path),
-            readPlans: (after) => context.store.snapshotPlans(after),
             verify: inspectHqSnapshot,
           },
           destination,
@@ -148,7 +148,7 @@ export const createHqSnapshot = async (
           throw cleanup;
         }
       }
-    }, true);
+    });
   } catch (cause) {
     if (owned) {
       try {
@@ -162,7 +162,7 @@ export const createHqSnapshot = async (
       hasErrorCode(cause, 'JG_AGENT_HQ_ACTION_CONFLICT') ||
       hasErrorCode(cause, 'JG_AGENT_HQ_SNAPSHOT_INVALID') ||
       hasErrorCode(cause, 'JG_AGENT_HQ_SNAPSHOT_FAILED') ||
-      hasErrorCode(cause, 'JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED')
+      hasErrorCode(cause, 'JG_AGENT_HQ_STORAGE_INVALID')
     )
       throw cause;
     if (
@@ -186,7 +186,7 @@ export const createHqSnapshot = async (
  * Validates private files, manifest hashes, supported schema, SQLite integrity and exact report payloads.
  * @returns Bounded metadata; recovery.jsonl retains the streamed plan mapping after restore.
  * @throws
- * - JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED: The HQ storage version is unsupported
+ * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
  * - JG_AGENT_HQ_SNAPSHOT_INVALID: The HQ snapshot is invalid
  * - JG_AGENT_HQ_SNAPSHOT_FAILED: The HQ snapshot operation failed
  */
@@ -202,7 +202,7 @@ export const inspectHqSnapshot = async (directory: string): Promise<IHqSnapshotI
  * createAgentHq requires the host's explicit allowedRoots and a fresh native ownership decision.
  * @returns The new state root and separate plan recovery directory, with source snapshot metadata.
  * @throws
- * - JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED: The HQ storage version is unsupported
+ * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
  * - JG_AGENT_HQ_SNAPSHOT_INVALID: The HQ snapshot is invalid
  * - JG_AGENT_HQ_SNAPSHOT_FAILED: The HQ snapshot operation failed
  */

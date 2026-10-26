@@ -4,8 +4,9 @@ import { createHqSnapshot, restoreHqSnapshot, type IAgentHq } from 'jg-agent-hq'
 
 /**
  * Saves one application preference, captures shared storage and verifies an offline restore.
- * Pause all other writers and select a quiescent runtime before calling. Both output
- * directories must be absent. The caller owns HQ; this helper closes its SQL connections.
+ * Keep other host connections from writing host tables until it returns; agents may keep
+ * working. Both output directories must be absent. The caller owns HQ; this helper closes
+ * its SQL connections.
  * The application transaction commits before capture and is not rolled back if capture fails.
  * Capture returns verified metadata; restore independently validates the staged copy.
  * @returns The inspected snapshot, recovery locations and exact restored preference.

@@ -43,8 +43,9 @@ test(
       expect(paths).toContain('dist/index.d.ts');
       expect(paths).toContain('dist/cli/cli.js');
       expect(paths).toContain('dist/store/schema.sql');
-      expect(paths).toContain('dist/storage/schema/v1.sql');
-      expect(paths).toContain('dist/storage/schema/v1-to-v2.sql');
+      expect(paths.filter((path) => path.startsWith('dist/storage/'))).not.toContainEqual(
+        expect.stringMatching(/v1|upgrade/),
+      );
       expect(paths).toContain('dist/contracts/index.js');
       expect(paths).toContain('dist/agent-tools/mcp/mcp.js');
       expect(paths).toContain('LICENSE');
@@ -89,11 +90,7 @@ test(
           maxBuffer: 2_097_152,
         },
       );
-      for (const asset of [
-        'store/schema.sql',
-        'storage/schema/v1.sql',
-        'storage/schema/v1-to-v2.sql',
-      ])
+      for (const asset of ['store/schema.sql'])
         expect(
           hashValue(await readFile(join(scratch, 'node_modules/jg-agent-hq/dist', asset))),
         ).toBe(hashValue(await readFile(join(ROOT, 'src', asset))));
@@ -109,9 +106,7 @@ test(
       const usageContract = join(scratch, 'usage-contract.ts');
       await writeFile(
         usageContract,
-        `import type { IAgentProvider, IHqStorageUpgradeOptions, IHqStorageUpgradeResult } from 'jg-agent-hq';
-import { upgradeHqStorage } from 'jg-agent-hq';
-export const upgrade: (options: IHqStorageUpgradeOptions) => Promise<IHqStorageUpgradeResult> = upgradeHqStorage;
+        `import type { IAgentProvider } from 'jg-agent-hq';
 import type { IUsageCredits, IUsageResetCredits, IUsageWindowScope } from 'jg-agent-hq/contracts';
 export const legacyReadUsage: IAgentProvider['readUsage'] = async () => ({
   provider: 'older-provider', source: 'native', state: 'unavailable', observedAt: null,
@@ -141,7 +136,9 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
         }),
       ).toBe('');
       const script = `
-      import { createAgentHq, requestAgentHq, withHqLock, readHqLockState, upgradeHqStorage } from 'jg-agent-hq';
+      import * as packed from 'jg-agent-hq';
+      import { createAgentHq, requestAgentHq, withHqLock, readHqLockState } from 'jg-agent-hq';
+      if ('upgradeHqStorage' in packed) throw new Error('packed storage upgrade remains');
       import { HqResponseSchema, BrowserActionSchema, UsageCreditsSchema, UsageResetCreditsSchema, UsageWindowScopeSchema } from 'jg-agent-hq/contracts';
       const credit = UsageCreditsSchema.parse({bucket:'codex',hasCredits:true,isUnlimited:false,balance:'0.29000000000000001'});
       if(credit.balance!=='0.29000000000000001') throw new Error('packed credit precision failed');
@@ -150,9 +147,6 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
       import { controlSession } from './examples/control-session.ts';
       import { shareStorage } from './examples/shared-storage.ts';
       import { join } from 'node:path';
-      import { DatabaseSync } from 'node:sqlite';
-      import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
-      import { createHash } from 'node:crypto';
       const stateRoot = join(process.cwd(), 'state');
       const value = await withHqLock(stateRoot, 'smoke', async () => 42);
       if (value !== 42 || (await readHqLockState(stateRoot)).kind !== 'free') throw new Error('consumer failed');
@@ -173,18 +167,6 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
         const session = await controlSession({stateRoot: runtime.stateRoot, workspaceRoot: process.cwd(), provider: 'codex', name: 'packed-example', text: 'Discuss the task without changing files.', actionIds: {create:crypto.randomUUID(), message:crypto.randomUUID()}});
         if(session.receipt.delivery!=='acknowledged' || session.thread.provider!=='codex' || session.usage.source!=='native') throw new Error('packed source example failed');
       } finally { await runtime.close(); }
-      const current = await upgradeHqStorage({stateRoot: runtime.stateRoot, backupDirectory: join(process.cwd(),'unused-backup'), allowedRoots:[process.cwd()]});
-      if(current.state!=='current' || current.backupDirectory!==null) throw new Error('packed offline upgrade failed');
-      const legacyRoot = join(process.cwd(),'legacy');
-      await mkdir(legacyRoot,{mode:0o700});
-      const key=Buffer.alloc(32,1);
-      await writeFile(join(legacyRoot,'action.key'),key,{mode:0o600});
-      const database=new DatabaseSync(join(legacyRoot,'hq.sqlite'));
-      try {
-        database.exec(await readFile(join(process.cwd(),'node_modules/jg-agent-hq/dist/storage/schema/v1.sql'),'utf8'));
-        database.prepare('INSERT INTO hq_schema (id,schema_hash,action_key_hash) VALUES (1,?,?)').run('af0686f5f4a2af3cbe033a9aab2982d041a4cb0b2fc47088bdd9e15963c66fee',createHash('sha256').update(key).digest('hex'));
-      } finally { database.close(); }
-      await chmod(join(legacyRoot,'hq.sqlite'),0o600);
     `;
       const bin = await installCodexFixture(scratch);
       const env = {
@@ -207,33 +189,9 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
         timeout: 10_000,
       });
       expect(help).toContain(
-        'serve|upgrade-storage|status|stop|capabilities|threads|thread|turns|items|sessions|session-evidence|usage',
+        'serve|status|stop|capabilities|threads|thread|turns|items|sessions|session-evidence|usage',
       );
-      const offline = JSON.parse(
-        execFileSync(
-          join(scratch, 'node_modules/.bin/jg-agent-hq'),
-          [
-            'upgrade-storage',
-            '--state-root',
-            join(scratch, 'legacy'),
-            '--backup-directory',
-            join(scratch, 'packed-backup'),
-            '--workspace-root',
-            scratch,
-          ],
-          { cwd: scratch, encoding: 'utf8', timeout: 10000 },
-        ),
-      );
-      expect(offline).toMatchObject({
-        schemaVersion: 1,
-        kind: 'upgrade-storage',
-        result: {
-          state: 'upgraded',
-          fromVersion: 1,
-          toVersion: 2,
-          backupDirectory: join(scratch, 'packed-backup'),
-        },
-      });
+      expect(help).not.toContain('upgrade');
       const installedManifest = JSON.parse(
         await readFile(join(scratch, 'node_modules/jg-agent-hq/package.json'), 'utf8'),
       ) as { dependencies: Record<string, string> };

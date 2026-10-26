@@ -1,21 +1,17 @@
 // @vitest-environment node
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { setTimeout as wait } from 'node:timers/promises';
-import { createAgentHq, inspectHqSnapshot } from 'jg-agent-hq';
+import { createAgentHq } from 'jg-agent-hq';
 import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
-import {
-  installCodexFixture,
-  withClaudeRuntime,
-  withLegacyStorage,
-} from '../../scripts/test-support/index.js';
+import { installCodexFixture, withClaudeRuntime } from '../../scripts/test-support/index.js';
 
 test('dedicated CLI provider selection reads Claude capabilities and reports unavailable provider data', async () => {
   await withClaudeRuntime(async ({ stateRoot }) => {
@@ -305,210 +301,74 @@ const runOffline = (args: string[]) =>
     child.once('error', reject);
   });
 
-// separate CLI/verification/startup worker lifecycles run sequentially without a controller or native binaries
-test(
-  'offline CLI upgrades legacy storage, retains a verified backup and supports repeated roots and current retry',
-  { timeout: 20000 },
-  async () => {
-    await withLegacyStorage(async ({ root, stateRoot, backupDirectory, workspaceRoot }) => {
-      const otherRoot = join(root, 'other'),
-        coordinationRoot = join(root, 'coordination');
-      await mkdir(otherRoot, { mode: 0o700 });
-      await mkdir(coordinationRoot, { mode: 0o755 });
-      await chmod(coordinationRoot, 0o755);
-      const flags = [
-        '--state-root',
-        stateRoot,
-        '--backup-directory',
-        backupDirectory,
-        '--workspace-root',
-        workspaceRoot,
-        '--workspace-root',
-        otherRoot,
-        '--coordination-root',
-        coordinationRoot,
-      ];
-      const upgraded = await runOffline(['upgrade-storage', ...flags]);
-      expect(upgraded.code).toBe(0);
-      expect(upgraded.stderr).toBe('');
-      expect(JSON.parse(upgraded.stdout)).toMatchObject({
-        schemaVersion: 1,
-        kind: 'upgrade-storage',
-        result: { state: 'upgraded', fromVersion: 1, toVersion: 2, stateRoot, backupDirectory },
-      });
-      expect((await inspectHqSnapshot(backupDirectory)).header.sourceAllowedRoots).toStrictEqual([
-        workspaceRoot,
-        otherRoot,
-      ]);
-      const retry = await runOffline(['upgrade-storage', ...flags]);
-      expect(retry.code).toBe(0);
-      expect(JSON.parse(retry.stdout)).toMatchObject({
-        result: { state: 'current', backupDirectory: null },
-      });
-      await expect(readFile(join(stateRoot, 'hq-owner.json'))).rejects.toMatchObject({
-        code: 'ENOENT',
-      });
-      await expect(readFile(join(stateRoot, 'control.sock'))).rejects.toMatchObject({
-        code: 'ENOENT',
-      });
-      const runtime = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
-      await runtime.close();
-    });
-  },
-);
+// a stopped state root with a stamp from another package build, inspected without native binaries
+const withWrittenState = async (
+  stamp: string,
+  run: (fixture: { root: string; stateRoot: string; workspaceRoot: string }) => Promise<void>,
+): Promise<void> => {
+  const root = await mkdtemp(join(tmpdir(), 'jg-hq-cli-stamp-'));
+  try {
+    const stateRoot = join(root, 'state');
+    const workspaceRoot = join(root, 'workspace');
+    await mkdir(workspaceRoot);
+    const runtime = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
+    await runtime.close();
+    const { DatabaseSync } = await import('node:sqlite');
+    const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'));
+    try {
+      database.exec(stamp);
+    } finally {
+      database.close();
+    }
+    await run({ root, stateRoot, workspaceRoot });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+};
 
 test.each([
-  ['missing backup', []],
-  ['missing workspace', ['--backup-directory', 'backup']],
   [
-    'unrelated flag',
-    ['--backup-directory', 'backup', '--workspace-root', '.', '--provider', 'codex'],
+    'a newer schema',
+    `UPDATE hq_schema SET schema_hash = '${'0'.repeat(64)}', package_version = '9.9.9'`,
+    'The HQ storage is invalid: written by jg-agent-hq 9.9.9',
   ],
-  ['unknown flag', ['--backup-directory', 'backup', '--workspace-root', '.', '--unknown']],
-])('offline CLI rejects %s before creating output', async (_name, flags) => {
-  await withLegacyStorage(async ({ stateRoot }) => {
-    const result = await runOffline(['upgrade-storage', '--state-root', stateRoot, ...flags]);
-    expect(result.code).toBe(1);
-    expect(result.stdout).toBe('');
-    expect(JSON.parse(result.stderr)).toMatchObject({
-      schemaVersion: 1,
-      success: false,
-      error: { message: expect.any(String) },
-    });
-  });
-});
-
-test.each(['serve', 'status', 'request'])(
-  '%s rejects the offline-only backup flag',
-  async (kind) => {
-    await withLegacyStorage(async ({ stateRoot, backupDirectory }) => {
+  [
+    'a stamp without a package version',
+    'ALTER TABLE hq_schema DROP COLUMN package_version',
+    'The HQ storage is invalid: written by another jg-agent-hq version',
+  ],
+])(
+  'serve refuses storage from %s and names the version that wrote it',
+  async (_label, stamp, message) => {
+    await withWrittenState(stamp, async ({ root, stateRoot, workspaceRoot }) => {
       const result = await runOffline([
-        kind,
+        'serve',
         '--state-root',
         stateRoot,
-        '--backup-directory',
-        backupDirectory,
+        '--workspace-root',
+        workspaceRoot,
       ]);
       expect(result.code).toBe(1);
-      expect(JSON.parse(result.stderr)).toStrictEqual({
-        schemaVersion: 1,
-        success: false,
-        error: { kind: 'invalid-request', message: 'Request is invalid.' },
-      });
-    });
-  },
-);
-
-test('legacy serve presents an actionable static upgrade message', async () => {
-  await withLegacyStorage(async ({ stateRoot, workspaceRoot }) => {
-    const result = await runOffline([
-      'serve',
-      '--state-root',
-      stateRoot,
-      '--workspace-root',
-      workspaceRoot,
-    ]);
-    expect(result.code).toBe(1);
-    expect(result.stdout).toBe('');
-    expect(JSON.parse(result.stderr)).toStrictEqual({
-      schemaVersion: 1,
-      success: false,
-      error: { kind: 'state-conflict', message: 'The HQ storage requires an explicit upgrade' },
-    });
-    expect((await runOffline(['upgrade-storage', '--help'])).stdout).toContain(
-      'upgrade-storage --state-root',
-    );
-  });
-});
-
-test.each(['future', 'owner', 'collision', 'failed', 'uncertain'])(
-  'offline CLI %s errors retain static presentation and exit 1',
-  async (kind) => {
-    await withLegacyStorage(async ({ root, stateRoot, workspaceRoot, backupDirectory }) => {
-      const extra: string[] = [];
-      if (kind === 'owner')
-        await writeFile(
-          join(stateRoot, 'hq-owner.json'),
-          JSON.stringify({
-            pid: process.pid,
-            nonce: crypto.randomUUID(),
-            command: 'serve',
-            createdAt: new Date().toISOString(),
-          }),
-          { mode: 0o600 },
-        );
-      if (kind === 'collision') await mkdir(backupDirectory);
-      if (kind === 'future' || kind === 'failed') {
-        const { DatabaseSync } = await import('node:sqlite');
-        const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'));
-        try {
-          database.exec(
-            kind === 'future'
-              ? 'ALTER TABLE hq_schema ADD COLUMN schema_version INTEGER DEFAULT 99'
-              : "CREATE TRIGGER app_fail_stamp BEFORE UPDATE ON hq_schema BEGIN SELECT RAISE(ABORT, 'Private diagnostic must stay private'); END;",
-          );
-        } finally {
-          database.close();
-        }
-      }
-      if (kind === 'uncertain') {
-        const preload = join(root, 'cli-fault.mjs');
-        await writeFile(
-          preload,
-          `import { DatabaseSync } from 'node:sqlite';
-const original=DatabaseSync.prototype.exec;
-DatabaseSync.prototype.exec=function(sql){const result=original.call(this,sql);if(sql==='COMMIT') throw new Error('Private diagnostic must stay private');return result;};
-`,
-        );
-        extra.push('--import', pathToFileURL(preload).href);
-      }
-      const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>(
-        (resolveResult, reject) => {
-          const child = execFile(
-            process.execPath,
-            [
-              ...extra,
-              fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url)),
-              'upgrade-storage',
-              '--state-root',
-              stateRoot,
-              '--backup-directory',
-              backupDirectory,
-              '--workspace-root',
-              workspaceRoot,
-            ],
-            { timeout: 15000, maxBuffer: 65536 },
-            (_error, stdout, stderr) => resolveResult({ code: child.exitCode, stdout, stderr }),
-          );
-          child.once('error', reject);
-        },
-      );
-      expect(result.code).toBe(1);
       expect(result.stdout).toBe('');
-      const presentation =
-        kind === 'future'
-          ? { kind: 'state-conflict', message: 'The HQ storage version is unsupported' }
-          : kind === 'failed'
-            ? { kind: 'operation-failed', message: 'The HQ storage upgrade failed' }
-            : kind === 'uncertain'
-              ? {
-                  kind: 'operation-failed',
-                  message: 'The HQ storage upgrade requires reconciliation',
-                }
-              : kind === 'owner'
-                ? { kind: 'state-conflict', message: 'State changed. Refresh before continuing.' }
-                : { kind: 'invalid-request', message: 'Request is invalid.' };
       expect(JSON.parse(result.stderr)).toStrictEqual({
         schemaVersion: 1,
         success: false,
-        error: presentation,
+        error: { kind: 'state-conflict', message },
       });
       expect(result.stderr).not.toContain(root);
-      expect(result.stderr).not.toContain('Private diagnostic');
-      if (kind === 'failed' || kind === 'uncertain')
-        expect((await inspectHqSnapshot(backupDirectory)).header.schemaHash).toBe(
-          'af0686f5f4a2af3cbe033a9aab2982d041a4cb0b2fc47088bdd9e15963c66fee',
-        );
     });
   },
 );
+
+test('the CLI has no storage upgrade command or backup flag', async () => {
+  expect((await runOffline(['--help'])).stdout).not.toContain('upgrade');
+  for (const args of [
+    ['upgrade-storage', '--state-root', 'state'],
+    ['serve', '--state-root', 'state', '--backup-directory', 'backup'],
+  ]) {
+    const result = await runOffline(args);
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(JSON.parse(result.stderr)).toMatchObject({ schemaVersion: 1, success: false });
+  }
+});

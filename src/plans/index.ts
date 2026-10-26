@@ -5,6 +5,7 @@ export {
   parsePlanMilestones,
   isSamePlanRevision,
 } from './utilities.js';
+export { observePlanContract } from './documents.js';
 export type {
   IPlanContract,
   IPlanContractParser,

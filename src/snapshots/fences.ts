@@ -1,39 +1,22 @@
 import { DatabaseSync } from 'node:sqlite';
-import { Exception } from 'jg-exception';
 
-import { STORAGE_SCHEMAS, readStorageSchema } from '../storage/schema/index.js';
+import { readStorageStamp } from '../storage/schema/index.js';
 
 import { invalidSnapshot } from './files.js';
 
 /**
- * Requires a fence implementation explicitly selected by this exact registered schema.
- * @throws
- * - JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED: The HQ storage version is unsupported
- */
-export const requireRestoreFence = (schemaHash: string): void => {
-  const schema = STORAGE_SCHEMAS.find((entry) => entry.hash === schemaHash);
-  if (schema?.restoreFenceVersion !== 1)
-    throw new Exception('The HQ storage version is unsupported', {
-      code: 'JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED',
-      data: { kind: 'state-conflict' },
-    });
-};
-
-/**
  * Invalidates current execution authority while retaining immutable receipts, IDs and write intents.
- * Source paths remain evidence and require explicit host root selection on startup.
+ * Plans that changed during capture also lose their thread bindings' execution scope, so their
+ * work resumes only under fresh authority. Source paths remain evidence and require explicit host
+ * root selection on startup.
  * @throws
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
- * - JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED: The HQ storage version is unsupported
  * - JG_AGENT_HQ_SNAPSHOT_INVALID: The HQ snapshot is invalid
  */
-export const applyRestoreFences = (filename: string, schemaHash: string): void => {
-  requireRestoreFence(schemaHash);
+export const applyRestoreFences = (filename: string, changedDirectories: string[]): void => {
   const database = new DatabaseSync(filename, { enableForeignKeyConstraints: true });
   try {
-    const observed = readStorageSchema(database);
-    if (!observed || observed.schema.hash !== schemaHash) invalidSnapshot();
-    requireRestoreFence(observed.schema.hash);
+    if (!readStorageStamp(database)) invalidSnapshot();
     database.exec('PRAGMA synchronous = FULL; BEGIN IMMEDIATE');
     try {
       const now = Date.now();
@@ -62,6 +45,10 @@ export const applyRestoreFences = (filename: string, schemaHash: string): void =
           "UPDATE hq_native_approval SET state = 'expired', updated_at = ? WHERE state = 'pending'",
         )
         .run(now);
+      const strip = database.prepare(
+        "UPDATE hq_thread_plan SET authorization_id = NULL, milestone_id = NULL, context = json_set(context, '$.scope', json('null')) WHERE directory = ?",
+      );
+      for (const directory of changedDirectories) strip.run(directory);
       database.exec('COMMIT');
     } catch (cause) {
       database.exec('ROLLBACK');

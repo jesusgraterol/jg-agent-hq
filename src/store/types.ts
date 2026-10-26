@@ -111,8 +111,7 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     actionId: z.uuid(),
   }),
   z.strictObject({ kind: z.literal('evidence-origins'), request: EvidenceOriginsRequestSchema }),
-  z.strictObject({ kind: z.literal('storage-maintenance'), isSnapshot: z.boolean() }),
-  z.strictObject({ kind: z.literal('snapshot-plans'), after: z.string() }),
+  z.strictObject({ kind: z.literal('storage-maintenance') }),
   z.strictObject({ kind: z.literal('snapshot-backup'), destination: z.string() }),
   z.strictObject({
     kind: z.literal('browser-read'),
@@ -314,14 +313,13 @@ export type IStore = {
    * @throws
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
-  prepareStorageMaintenance(isSnapshot: boolean): Promise<boolean>;
+  prepareStorageMaintenance(): Promise<boolean>;
   /**
    * Reads one seek page of registered plan directories while maintenance holds admission.
    * @returns At most 128 ordered directories.
    * @throws
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
-  snapshotPlans(after: string): Promise<string[]>;
   /**
    * Copies the worker's database through SQLite's WAL-aware backup API.
    * Local backup completion has no metadata-command deadline; maintenance stays held until it settles.

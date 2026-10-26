@@ -61,14 +61,6 @@ const startWorker = async (): Promise<void> => {
         }
         let result: unknown = null;
         switch (command.kind) {
-          case 'snapshot-plans':
-            result = database
-              .prepare(
-                'SELECT directory FROM hq_plan_registration WHERE directory > ? ORDER BY directory LIMIT 128',
-              )
-              .all(command.after)
-              .map((row) => row.directory);
-            break;
           case 'snapshot-backup': {
             await backup(database, command.destination);
             const copy = new DatabaseSync(command.destination);
@@ -128,7 +120,7 @@ const startWorker = async (): Promise<void> => {
             const pendingPlan = database
               .prepare("SELECT 1 FROM hq_plan_operation WHERE state = 'prepared' LIMIT 1")
               .get();
-            result = !activeThread && !activeAction && (command.isSnapshot || !pendingPlan);
+            result = !activeThread && !activeAction && !pendingPlan;
             break;
           }
           case 'browser-read':

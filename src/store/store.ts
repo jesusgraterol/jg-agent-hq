@@ -47,8 +47,6 @@ import {
  * @returns A store whose close waits for worker exit.
  * @throws
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
- * - JG_AGENT_HQ_STORAGE_UPGRADE_REQUIRED: The HQ storage requires an explicit upgrade
- * - JG_AGENT_HQ_STORAGE_VERSION_UNSUPPORTED: The HQ storage version is unsupported
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
  * - JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE: The HQ action key is unavailable
  */
@@ -250,10 +248,7 @@ export const createStore = async (
     collaboration: (command, binding) =>
       request({ kind: 'collaboration', request: command, binding }, CollaborationResponseSchema),
     recoverCollaborationFanout: () => request({ kind: 'collaboration-fanout' }, z.boolean()),
-    prepareStorageMaintenance: (isSnapshot) =>
-      request({ kind: 'storage-maintenance', isSnapshot }, z.boolean()),
-    snapshotPlans: (after) =>
-      request({ kind: 'snapshot-plans', after }, z.array(z.string()).max(128)),
+    prepareStorageMaintenance: () => request({ kind: 'storage-maintenance' }, z.boolean()),
     snapshotBackup: async (destination) => {
       await request({ kind: 'snapshot-backup', destination }, z.null());
     },

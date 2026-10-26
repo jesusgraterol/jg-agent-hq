@@ -149,7 +149,10 @@ test('initialization rolls back all HQ objects when its schema execution fails',
       join(packageRoot, 'node_modules'),
       'dir',
     );
-    await writeFile(join(packageRoot, 'package.json'), '{"type":"module"}\n');
+    await writeFile(
+      join(packageRoot, 'package.json'),
+      '{"type":"module","version":"0.0.0-isolated"}\n',
+    );
     const schemaPath = join(packageRoot, 'dist', 'store', 'schema.sql');
     await writeFile(
       schemaPath,

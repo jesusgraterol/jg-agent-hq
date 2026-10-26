@@ -231,14 +231,11 @@ export const readRuntimeOwner = async (
  * - JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE: The HQ runtime owner is unverifiable
  * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
  */
-export const claimRuntimeOwner = async (
-  stateRoot: string,
-  command: 'serve' | 'upgrade-storage' = 'serve',
-) => {
+export const claimRuntimeOwner = async (stateRoot: string) => {
   const owner: IHqLockOwner = {
     pid: process.pid,
     nonce: randomUUID(),
-    command,
+    command: 'serve',
     createdAt: new Date().toISOString(),
   };
   const content = `${JSON.stringify(owner)}\n`;

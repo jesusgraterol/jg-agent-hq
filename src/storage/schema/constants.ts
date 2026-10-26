@@ -1,3 +1,15 @@
-// exact published 2.0.0 schema; this compatibility asset must never follow the current schema
-export const V1_SCHEMA_HASH = 'af0686f5f4a2af3cbe033a9aab2982d041a4cb0b2fc47088bdd9e15963c66fee';
-export const CURRENT_SCHEMA_VERSION = 2;
+import { readFileSync } from 'node:fs';
+import { hashValue } from 'jg-crypto';
+import { z } from 'zod';
+
+// the version stamped into databases and snapshots this package writes
+export const PACKAGE_VERSION = z
+  .object({ version: z.string().min(1).max(64) })
+  .parse(
+    JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')),
+  ).version;
+
+// the one schema this package reads; package-owned SQL is immutable during a process lifetime
+export const CURRENT_SCHEMA_HASH = hashValue(
+  readFileSync(new URL('../../store/schema.sql', import.meta.url)),
+);
