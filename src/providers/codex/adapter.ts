@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import {
   SessionSettingsSchema,
+  MAX_PAGE_SIZE,
   MAX_INPUT_FILES,
   MAX_INPUT_FILE_BYTES,
   MAX_TEXT_FILE_BYTES,
@@ -126,6 +127,39 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
             data: page.data,
             nextCursor: encodeHistoryCursor(page.nextCursor, filters),
             source: 'native' as const,
+          },
+        };
+      }
+      if (command.nativeItemId !== undefined) {
+        // Codex has no lookup of one item, so its turn's items are read until it appears
+        let itemCursor: string | undefined;
+        do {
+          const page = await native.listItems(
+            command.nativeId,
+            MAX_PAGE_SIZE,
+            itemCursor,
+            command.turnId,
+          );
+          const item = page.data.find((entry) => entry.nativeId === command.nativeItemId);
+          if (item)
+            return {
+              kind: 'items' as const,
+              result: {
+                data: [item],
+                nextCursor: null,
+                source: 'native' as const,
+                history: 'persisted' as const,
+              },
+            };
+          itemCursor = page.nextCursor ?? undefined;
+        } while (itemCursor);
+        return {
+          kind: 'items' as const,
+          result: {
+            data: [],
+            nextCursor: null,
+            source: 'native' as const,
+            history: 'persisted' as const,
           },
         };
       }

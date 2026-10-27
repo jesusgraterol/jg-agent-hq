@@ -269,6 +269,79 @@ test('authorized native history is re-read after a delayed flush and large frame
   });
 });
 
+test('Codex items read newest first toward older ones, cut their text, and find one item in an old turn of a long thread', async () => {
+  await withRuntime(async ({ root, workspaceRoot, control, request }) => {
+    const target = {
+      kind: 'items',
+      provider: 'codex',
+      workspaceRoot,
+      nativeId: 'thread-1023',
+    } as const;
+    // an old turn longer than two listing pages, then a newer short one
+    await control({
+      items: [
+        ...Array.from({ length: 300 }, (_, index) => ({
+          turnId: 'turn-a',
+          item: { id: `a-${index}`, type: 'agentMessage', text: `older ${index}` },
+        })),
+        ...Array.from({ length: 3 }, (_, index) => ({
+          turnId: 'turn-b',
+          item: { id: `b-${index}`, type: 'agentMessage', text: `newer ${index}` },
+        })),
+      ],
+    });
+    const first = await request({ ...target, limit: 2 });
+    if (first.kind !== 'items') throw new Error('wrong response');
+    expect(first.result.data.map((item) => item.nativeId)).toStrictEqual(['b-2', 'b-1']);
+    const next = await request({ ...target, limit: 2, cursor: first.result.nextCursor! });
+    expect(next.kind === 'items' && next.result.data.map((item) => item.nativeId)).toStrictEqual([
+      'b-0',
+      'a-299',
+    ]);
+    const cut = await request({ ...target, limit: 1, textLimit: 5 });
+    expect(
+      cut.kind === 'items' && cut.result.data.map((item) => [item.text, item.isTruncated]),
+    ).toStrictEqual([['newer', true]]);
+    const oldest = await request({
+      ...target,
+      nativeItemId: 'a-0',
+      turnId: 'turn-a',
+      textLimit: 3,
+    });
+    expect(oldest.kind === 'items' && oldest.result).toMatchObject({
+      data: [{ nativeId: 'a-0', turnId: 'turn-a', text: 'old', isTruncated: true }],
+      nextCursor: null,
+    });
+    expect(oldest.kind === 'items' && oldest.result.data).toHaveLength(1);
+    // the lookup listed only that turn, newest first and 128 items at a time
+    const ListingSchema = z.object({
+      turnId: z.string().optional(),
+      limit: z.number(),
+      sortDirection: z.string(),
+    });
+    const lookups = CallsSchema.parse(
+      (await readFile(join(root, 'calls.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line)),
+    )
+      .filter((call) => call.method === 'thread/items/list')
+      .map((call) => ListingSchema.parse(call.params))
+      .filter((params) => params.turnId === 'turn-a');
+    expect(lookups).toStrictEqual(
+      Array.from({ length: 3 }, () => ({ turnId: 'turn-a', limit: 128, sortDirection: 'desc' })),
+    );
+    // an unknown item, and one outside the given turn, read as an empty page
+    for (const [nativeItemId, turnId] of [
+      ['a-missing', 'turn-a'],
+      ['b-0', 'turn-a'],
+    ] as const) {
+      const empty = await request({ ...target, nativeItemId, turnId });
+      expect(empty.kind === 'items' && empty.result).toMatchObject({ data: [], nextCursor: null });
+    }
+  });
+});
+
 test('workspace authorization precedes native access and rejects symlink escapes and cross-workspace history', async () => {
   await withRuntime(async ({ root, workspaceRoot, control, request }) => {
     const outside = join(root, 'outside');

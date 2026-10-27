@@ -465,7 +465,7 @@ export const createCodexProvider = async (
         });
       return { data: page.data.map(toTurnSummary), nextCursor: page.nextCursor };
     },
-    async listItems(nativeId, limit, cursor, turnId, evidence = false) {
+    async listItems(nativeId, limit, cursor, turnId, fullBody = false) {
       const page = parseNative(
         NativeItemPageSchema,
         await connection.request('thread/items/list', {
@@ -473,7 +473,7 @@ export const createCodexProvider = async (
           turnId,
           limit,
           cursor,
-          sortDirection: evidence ? 'desc' : 'asc',
+          sortDirection: 'desc',
         }),
       );
       if (page.data.length > limit)
@@ -484,7 +484,7 @@ export const createCodexProvider = async (
           },
         });
       return {
-        data: page.data.map((item) => toHistoryItem(item, evidence)),
+        data: page.data.map((item) => toHistoryItem(item, fullBody)),
         nextCursor: page.nextCursor,
       };
     },

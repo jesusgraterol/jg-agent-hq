@@ -17,7 +17,7 @@ import {
   observeClaudeAgents,
 } from '../providers/index.js';
 import { createProviderRegistry } from '../providers/registry/index.js';
-import { readNativeHistory } from '../sessions/index.js';
+import { limitItemText, readNativeHistory } from '../sessions/index.js';
 import { suggestThreadName } from '../sessions/names/index.js';
 import { createSkills } from '../skills/index.js';
 import { createStore } from '../store/index.js';
@@ -344,12 +344,19 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
         };
       default: {
         const response = await readNativeHistory(command, providers, projection, allowedRoots);
-        if (command.kind === 'items' && response.kind === 'items')
-          actions.live.reconcile(
-            JSON.stringify([command.provider, command.nativeId]),
-            response.result.data,
-          );
-        return response;
+        if (command.kind !== 'items' || response.kind !== 'items') return response;
+        // live items reconcile against the persisted text before it is cut
+        actions.live.reconcile(
+          JSON.stringify([command.provider, command.nativeId]),
+          response.result.data,
+        );
+        return {
+          ...response,
+          result: {
+            ...response.result,
+            data: limitItemText(response.result.data, command.textLimit),
+          },
+        };
       }
     }
   };

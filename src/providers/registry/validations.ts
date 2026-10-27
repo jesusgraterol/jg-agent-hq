@@ -155,6 +155,18 @@ export const validateProviderHistory = (
         ))
     )
       rejectProviderResponse();
+    // items stay within the requested turn, and one item read is that item alone
+    if (
+      response.kind === 'items' &&
+      (command.kind !== 'items' ||
+        (command.nativeItemId !== undefined && response.result.data.length > 1) ||
+        response.result.data.some(
+          (item) =>
+            (command.turnId !== undefined && item.turnId !== command.turnId) ||
+            (command.nativeItemId !== undefined && item.nativeId !== command.nativeItemId),
+        ))
+    )
+      rejectProviderResponse();
   } else rejectProviderResponse();
   return response;
 };

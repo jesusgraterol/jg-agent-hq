@@ -1,5 +1,5 @@
-// native history continuations
-export { decodeHistoryCursor, encodeHistoryCursor } from './utilities.js';
+// native history continuations and item text limits
+export { decodeHistoryCursor, encodeHistoryCursor, limitItemText } from './utilities.js';
 
 // scoped read orchestration
 export { readNativeHistory } from './sessions.js';

@@ -228,21 +228,32 @@ export class ClaudeHistoryModel {
         },
       });
     }
-    const entries = this.__database
-      .prepare(
-        `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM hq_claude_entry
-      WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND byte_offset > ?
+    // items read newest first, the cursor holding the oldest offset read; one item is read by its UUID
+    const before = seek?.offset ?? Number.MAX_SAFE_INTEGER;
+    const entries = (
+      command.nativeItemId === undefined
+        ? this.__database
+            .prepare(
+              `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM hq_claude_entry
+      WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND byte_offset < ?
       ${command.turnId === undefined ? '' : 'AND turn_id = ?'}
-      ORDER BY byte_offset LIMIT ?`,
-      )
-      .all(
-        root,
-        command.nativeId,
-        offset,
-        ...(command.turnId === undefined ? [] : [command.turnId]),
-        command.limit + 1,
-      )
-      .map((entry) => EntryRowSchema.parse(entry));
+      ORDER BY byte_offset DESC LIMIT ?`,
+            )
+            .all(
+              root,
+              command.nativeId,
+              before,
+              ...(command.turnId === undefined ? [] : [command.turnId]),
+              command.limit + 1,
+            )
+        : this.__database
+            .prepare(
+              `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM hq_claude_entry
+      WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND uuid = ? AND turn_id = ?
+      LIMIT 1`,
+            )
+            .all(root, command.nativeId, command.nativeItemId, command.turnId ?? null)
+    ).map((entry) => EntryRowSchema.parse(entry));
     const page = entries.slice(0, command.limit);
     const fd = openTranscript(directory, command.nativeId);
     try {
@@ -251,7 +262,7 @@ export class ClaudeHistoryModel {
       const items = [];
       let size = 0;
       let readBytes = 0;
-      let lastOffset = offset;
+      let lastOffset = before;
       for (const entry of page) {
         // a page always reads its first record, which can be larger than the page budget
         if (readBytes > 0 && readBytes + entry.byte_length > MAX_PAGE_BYTES) break;

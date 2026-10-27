@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { Exception, extractMessage } from 'jg-exception';
 import { z } from 'zod';
 
+import type { IHistoryItem } from '../contracts/index.js';
+
 const ContinuationSchema = z.strictObject({
   version: z.literal(1),
   filterHash: z.string().regex(/^[a-f0-9]{64}$/),
@@ -59,3 +61,17 @@ export const encodeHistoryCursor = (nativeCursor: string | null, filters: object
           ContinuationSchema.parse({ version: 1, filterHash: hashFilters(filters), nativeCursor }),
         ),
       ).toString('base64url');
+
+/**
+ * Cuts each item's text to a limit on a code-point boundary, marking the items it cut, after
+ * everything that compares the persisted text, such as live-item reconciliation, has read it.
+ * @param items The items as their provider presents them.
+ * @param textLimit The most UTF-16 code units of text an item keeps.
+ * @returns The items with their text cut.
+ */
+export const limitItemText = (items: IHistoryItem[], textLimit: number): IHistoryItem[] =>
+  items.map((item) => {
+    if (item.text.length <= textLimit) return item;
+    const end = /[\uD800-\uDBFF]/.test(item.text.charAt(textLimit - 1)) ? textLimit - 1 : textLimit;
+    return { ...item, text: item.text.slice(0, end), isTruncated: true };
+  });

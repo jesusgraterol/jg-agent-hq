@@ -153,12 +153,13 @@ export type ICodexProvider = {
   /** @returns A session's workspace and whether Codex doesn't save it, which decide observation. */
   readObservedThread(nativeId: string): Promise<{ workspaceRoot: string; isEphemeral: boolean }>;
   listTurns(nativeId: string, limit: number, cursor?: string): Promise<INativePage<ITurnSummary>>;
+  /** @returns One page of items newest first, with full text when `fullBody` is set. */
   listItems(
     nativeId: string,
     limit: number,
     cursor?: string,
     turnId?: string,
-    evidence?: boolean,
+    fullBody?: boolean,
   ): Promise<INativePage<IHistoryItem>>;
   readUsage(): Promise<IUsageSnapshot>;
   /**

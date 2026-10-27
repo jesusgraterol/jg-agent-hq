@@ -16,6 +16,7 @@ export type { IExtensionControlCommand } from './extensions/index.js';
 // constants
 export {
   DEFAULT_PAGE_SIZE,
+  MAX_ITEM_TEXT_LENGTH,
   MAX_PAGE_SIZE,
   PUBLIC_ERROR_CODES,
   PUBLIC_ERROR_MESSAGES,

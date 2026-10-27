@@ -32,7 +32,12 @@ import {
   ProviderStatusSchema,
 } from './providers/index.js';
 
-import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, PUBLIC_ERROR_MESSAGES } from './constants.js';
+import {
+  DEFAULT_PAGE_SIZE,
+  MAX_ITEM_TEXT_LENGTH,
+  MAX_PAGE_SIZE,
+  PUBLIC_ERROR_MESSAGES,
+} from './constants.js';
 import { SkillIdSchema, SkillPageSchema, SkillPreviewSchema } from './skills/index.js';
 
 import { NativeIdSchema, CursorSchema, NativeLineageSchema } from './identities/index.js';
@@ -88,12 +93,22 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({ kind: z.literal('thread'), ...TargetFields }),
   z.strictObject({ kind: z.literal('turns'), ...TargetFields, ...PageFields }),
-  z.strictObject({
-    kind: z.literal('items'),
-    ...TargetFields,
-    turnId: NativeIdSchema.optional(),
-    ...PageFields,
-  }),
+  // newest first: a page toward older items, or one item by its native ID within its turn
+  z
+    .strictObject({
+      kind: z.literal('items'),
+      ...TargetFields,
+      turnId: NativeIdSchema.optional(),
+      nativeItemId: NativeIdSchema.optional(),
+      textLimit: z.number().int().min(1).max(MAX_ITEM_TEXT_LENGTH).default(MAX_ITEM_TEXT_LENGTH),
+      ...PageFields,
+    })
+    .refine(
+      (command) =>
+        command.nativeItemId === undefined ||
+        (command.turnId !== undefined && command.cursor === undefined),
+      { message: 'One item is read within its turn, without a cursor', path: ['nativeItemId'] },
+    ),
   z.strictObject({ kind: z.literal('usage'), provider: TargetFields.provider }),
   z.strictObject({
     kind: z.literal('skills'),
