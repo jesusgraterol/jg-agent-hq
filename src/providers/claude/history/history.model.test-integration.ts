@@ -384,6 +384,130 @@ test('hidden native records preserve turn grouping and repeated message identiti
   });
 });
 
+test('hidden records Claude Code writes before the records they follow keep the session and its turn', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const hidden = (parentUuid: string, type: string) => ({
+      ...claudeRecord(workspaceRoot, nativeId, { parentUuid }),
+      type,
+      message: undefined,
+    });
+    const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'prompt' });
+    const first = hidden(prompt.uuid, 'attachment');
+    const second = hidden(first.uuid, 'attachment');
+    const third = hidden(second.uuid, 'system');
+    const answer = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: third.uuid,
+      text: 'answer',
+    });
+    // each hidden record precedes its parent, as instructions attachments and scheduled tasks do
+    await writeFile(
+      transcript(nativeId),
+      [prompt, third, second, first, answer].map((record) => JSON.stringify(record)).join('\n') +
+        '\n',
+    );
+    const items = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
+    expect(
+      items.kind === 'items' && items.result.data.map((item) => [item.text, item.turnId]),
+    ).toStrictEqual([
+      ['prompt', prompt.uuid],
+      ['answer', prompt.uuid],
+    ]);
+    const turns = await request({ kind: 'turns', provider: 'claude', workspaceRoot, nativeId });
+    expect(turns.kind === 'turns' && turns.result.data.map((turn) => turn.nativeId)).toStrictEqual([
+      prompt.uuid,
+    ]);
+  });
+});
+
+test('a hidden record whose parent never appears keeps its session readable, and a message never does', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'prompt' });
+    const answer = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: prompt.uuid,
+      text: 'answer',
+    });
+    const orphan = {
+      ...claudeRecord(workspaceRoot, nativeId, { parentUuid: randomUUID() }),
+      type: 'attachment',
+      message: undefined,
+    };
+    await writeFile(
+      transcript(nativeId),
+      [prompt, answer, orphan].map((record) => JSON.stringify(record)).join('\n') + '\n',
+    );
+    const items = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
+    expect(items.kind === 'items' && items.result.data.map((item) => item.text)).toStrictEqual([
+      'prompt',
+      'answer',
+    ]);
+    const unknownId = randomUUID();
+    const reply = claudeRecord(workspaceRoot, unknownId, {
+      type: 'assistant',
+      parentUuid: randomUUID(),
+    });
+    await writeFile(
+      transcript(unknownId),
+      [claudeRecord(workspaceRoot, unknownId), reply].map((row) => JSON.stringify(row)).join('\n') +
+        '\n',
+    );
+    await expect(
+      request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId: unknownId }),
+    ).rejects.toThrow('Coding agent is unavailable');
+  });
+});
+
+test('a record over a mebibyte, such as a tool result holding images, keeps its session', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'prompt' });
+    const tool = {
+      ...claudeRecord(workspaceRoot, nativeId, { parentUuid: prompt.uuid }),
+      message: { role: 'user', content: [{ type: 'tool_result', content: 'a'.repeat(4_194_304) }] },
+    };
+    const answer = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: tool.uuid,
+      text: 'answer',
+    });
+    await writeFile(
+      transcript(nativeId),
+      [prompt, tool, answer].map((record) => JSON.stringify(record)).join('\n') + '\n',
+    );
+    // the large record fills a page of its own, past the budget either neighbor would leave
+    const pages: string[][] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await request({
+        kind: 'items',
+        provider: 'claude',
+        workspaceRoot,
+        nativeId,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      if (page.kind !== 'items') throw new Error('wrong response');
+      pages.push(page.result.data.map((item) => item.kind));
+      cursor = page.result.nextCursor ?? undefined;
+    } while (cursor !== undefined);
+    expect(pages).toStrictEqual([['user-message'], ['tool'], ['agent-message']]);
+    const evidence = await request({
+      kind: 'session-evidence',
+      provider: 'claude',
+      workspaceRoot,
+      nativeId,
+      kinds: ['agent-message'],
+      limit: 1,
+    });
+    expect(evidence).toMatchObject({
+      kind: 'session-evidence',
+      result: { data: [{ text: 'answer' }] },
+    });
+  });
+});
+
 test.each(['truncate', 'replace'])(
   'file identity(%s) -> stale continuations rejected',
   async (operation) => {
