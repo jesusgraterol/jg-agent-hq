@@ -40,9 +40,14 @@ import {
 } from './utilities.js';
 
 // identifies the path and record interpretation used by persisted projection entries
-const HISTORY_PROJECTION_VERSION = 3;
-const MAX_RECORD_BYTES = 1_048_576;
-const MAX_REFRESH_BYTES = 4_194_304;
+const HISTORY_PROJECTION_VERSION = 4;
+// one record, such as a tool result holding images, and an indexing read, which fits the largest
+const MAX_RECORD_BYTES = 8_388_608;
+const MAX_REFRESH_BYTES = 16_777_216;
+// the record bytes and serialized items of one page, which stays inside the 8 MiB IPC frame
+const MAX_PAGE_BYTES = 4_194_304;
+// hidden records awaiting a parent later in the file; Claude Code writes them a few lines early
+const MAX_HELD_BACK_RECORDS = 64;
 const CHAIN = `WITH RECURSIVE current_chain AS (
   SELECT workspace_root, native_id, uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible
   FROM hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?
@@ -248,7 +253,8 @@ export class ClaudeHistoryModel {
       let readBytes = 0;
       let lastOffset = offset;
       for (const entry of page) {
-        if (readBytes + entry.byte_length > MAX_REFRESH_BYTES) break;
+        // a page always reads its first record, which can be larger than the page budget
+        if (readBytes > 0 && readBytes + entry.byte_length > MAX_PAGE_BYTES) break;
         readBytes += entry.byte_length;
         const bytes = Buffer.alloc(entry.byte_length);
         if (readSync(fd, bytes, 0, bytes.length, entry.byte_offset) !== bytes.length)
@@ -260,7 +266,7 @@ export class ClaudeHistoryModel {
           this.__unavailable();
         const item = toClaudeItem(record, entry.turn_id);
         const itemSize = Buffer.byteLength(JSON.stringify(item));
-        if (size + itemSize > MAX_REFRESH_BYTES) break;
+        if (size + itemSize > MAX_PAGE_BYTES) break;
         size += itemSize;
         lastOffset = entry.byte_offset;
         items.push(item);
@@ -345,7 +351,7 @@ export class ClaudeHistoryModel {
       if (this.__identity(fd) !== row.identity || fstatSync(fd).size < row.file_size)
         this.__unavailable();
       for (const entry of entries.slice(0, EVIDENCE_SOURCE_PAGE_SIZE)) {
-        if (readBytes + entry.byte_length > MAX_REFRESH_BYTES) break;
+        if (readBytes > 0 && readBytes + entry.byte_length > MAX_PAGE_BYTES) break;
         const bytes = Buffer.alloc(entry.byte_length);
         if (readSync(fd, bytes, 0, bytes.length, entry.byte_offset) !== bytes.length)
           this.__unavailable();
@@ -523,6 +529,37 @@ export class ClaudeHistoryModel {
       let lineStart = position;
       let tail = Buffer.alloc(0);
       const chunk = Buffer.alloc(65_536);
+      // hidden records whose parent comes later in the file, by location and awaited parent
+      const heldBack: { offset: number; length: number; parentUuid: string }[] = [];
+      const reread = (offset: number, length: number): Buffer => {
+        const bytes = Buffer.alloc(length);
+        if (readSync(fd, bytes, 0, length, offset) !== length) this.__unavailable();
+        return bytes;
+      };
+      const isReleasable = ({ parentUuid }: { parentUuid: string }): boolean =>
+        this.__hasEntry(root, nativeId, parentUuid);
+      const indexRecord = (bytes: Buffer, offset: number): void => {
+        const parentUuid = this.__record(root, nativeId, row, bytes, offset, false);
+        if (parentUuid !== null) {
+          if (heldBack.length >= MAX_HELD_BACK_RECORDS) this.__unavailable();
+          heldBack.push({ offset, length: bytes.length, parentUuid });
+          return;
+        }
+        // a released record can be the parent of another held-back one
+        for (let held = heldBack.findIndex(isReleasable); held !== -1; ) {
+          const [record] = heldBack.splice(held, 1);
+          if (record)
+            this.__record(
+              root,
+              nativeId,
+              row,
+              reread(record.offset, record.length),
+              record.offset,
+              false,
+            );
+          held = heldBack.findIndex(isReleasable);
+        }
+      };
       this.__database.exec('BEGIN IMMEDIATE');
       try {
         while (position < stat.size && remaining() > 0) {
@@ -539,12 +576,26 @@ export class ClaudeHistoryModel {
           tail = Buffer.concat([tail, chunk.subarray(0, count)]);
           for (let end = tail.indexOf(10); end !== -1; end = tail.indexOf(10)) {
             if (end > MAX_RECORD_BYTES) this.__unavailable();
-            if (end > 0) this.__record(root, nativeId, row, tail.subarray(0, end), lineStart);
+            if (end > 0) indexRecord(tail.subarray(0, end), lineStart);
             lineStart += end + 1;
             tail = tail.subarray(end + 1);
           }
           if (tail.length > MAX_RECORD_BYTES) this.__unavailable();
         }
+        /*
+         * A parent this read didn't reach is indexed as the root of its own turn: the projection
+         * keeps no position before byte_offset to retry from, and a hidden record only groups
+         * the records that follow it.
+         */
+        for (const record of heldBack)
+          this.__record(
+            root,
+            nativeId,
+            row,
+            reread(record.offset, record.length),
+            record.offset,
+            true,
+          );
         row.byte_offset = lineStart;
         this.__database
           .prepare(
@@ -582,13 +633,22 @@ export class ClaudeHistoryModel {
     }
   }
 
+  /**
+   * Indexes one transcript record. Claude Code can write a hidden record, such as an attachment
+   * or a scheduled-task event, a few lines before the record it follows; such a record is held
+   * back unless `isOrphanAllowed`, and the caller retries it once its parent is indexed.
+   * @returns Null once the record is indexed, or the UUID of the parent a held-back record awaits.
+   * @throws
+   * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+   */
   private __record(
     root: string,
     nativeId: string,
     row: IFileRow,
     bytes: Buffer,
     offset: number,
-  ): void {
+    isOrphanAllowed: boolean,
+  ): string | null {
     const input: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
     const metadata = ApiRequestMetadataSchema.safeParse(input);
     if (metadata.success) {
@@ -597,7 +657,7 @@ export class ClaudeHistoryModel {
         (metadata.data.cwd !== undefined && !isClaudeWorkspaceCwd(metadata.data.cwd, root))
       )
         this.__unavailable();
-      return;
+      return null;
     }
     const record = RecordSchema.parse(input);
     if (record.cwd !== undefined) {
@@ -610,13 +670,13 @@ export class ClaudeHistoryModel {
     if (record.type === 'custom-title') {
       if (record.sessionId !== nativeId || record.customTitle === undefined) this.__unavailable();
       row.name = record.customTitle;
-      return;
+      return null;
     }
-    if (record.isSidechain) return;
+    if (record.isSidechain) return null;
     if (!record.uuid) {
       if (record.message !== undefined || record.type === 'user' || record.type === 'assistant')
         this.__unavailable();
-      return;
+      return null;
     }
     if (
       (record.type === 'user' || record.type === 'assistant') &&
@@ -639,6 +699,12 @@ export class ClaudeHistoryModel {
           )
           .get(root, nativeId, record.parentUuid)
       : undefined;
+    const visible = record.message !== undefined && !record.isMeta;
+    if (record.parentUuid === record.uuid) this.__unavailable();
+    if (record.parentUuid && !parent) {
+      if (visible) this.__unavailable();
+      if (!isOrphanAllowed) return record.parentUuid;
+    }
     const textPrompt =
       record.type === 'user' &&
       !record.isMeta &&
@@ -652,9 +718,6 @@ export class ClaudeHistoryModel {
       : typeof parent?.turn_id === 'string'
         ? parent.turn_id
         : record.uuid;
-    const visible = record.message !== undefined && !record.isMeta;
-    if (record.parentUuid === record.uuid) this.__unavailable();
-    if (record.parentUuid && !parent) this.__unavailable();
     const previous = this.__database
       .prepare(
         'SELECT parent_uuid FROM hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?',
@@ -716,6 +779,17 @@ export class ClaudeHistoryModel {
     }
     row.created_at = Math.min(row.created_at, createdAt);
     row.updated_at = Math.max(row.updated_at, createdAt);
+    return null;
+  }
+
+  private __hasEntry(root: string, nativeId: string, uuid: string): boolean {
+    return (
+      this.__database
+        .prepare(
+          'SELECT 1 FROM hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?',
+        )
+        .get(root, nativeId, uuid) !== undefined
+    );
   }
 
   private __unavailable(): never {

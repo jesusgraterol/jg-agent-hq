@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.0.2
+
+- Read Claude sessions whose transcript holds a hidden record written before the record it follows, such as an instructions attachment or a scheduled-task event. The reader rejected the whole session, so HQ couldn't name or show it; it now holds the record back until its parent is indexed.
+- Accept Claude transcript records up to 8 MiB, such as tool results holding images, instead of 1 MiB. Indexing reads up to 16 MiB per batch so the largest record fits, and a page always reads its first record.
+- Re-index every Claude transcript once after the upgrade, so sessions the previous version rejected become readable.
+
 ## 4.0.1
 
 - Report an interactive Claude session that waits on a question or permission prompt as waiting. Claude Code lists it as `waiting`, which was recorded as an unknown state and reported as a disappearance.
