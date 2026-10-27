@@ -484,7 +484,8 @@ export const createCodexProvider = async (
           },
         });
       return {
-        data: page.data.map((item) => toHistoryItem(item, fullBody)),
+        // reasoning is left out, so a page can hold fewer items than its limit
+        data: page.data.flatMap((item) => toHistoryItem(item, fullBody) ?? []),
         nextCursor: page.nextCursor,
       };
     },

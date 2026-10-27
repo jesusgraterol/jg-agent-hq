@@ -32,6 +32,9 @@ const item = (nativeId: string, turnId: string) => ({
   },
   text: 'answer',
   isTruncated: false,
+  callId: null,
+  outcome: null,
+  files: [],
 });
 const itemsPage = (data: unknown[]) => ({
   kind: 'items',

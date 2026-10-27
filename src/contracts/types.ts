@@ -194,7 +194,20 @@ export const TurnSummarySchema = z.object({
 });
 export type ITurnSummary = z.infer<typeof TurnSummarySchema>;
 
-// explicit presentation fields; unknown native item kinds are labeled unsupported
+// one file a file change touched, with the lines it added and removed
+export const HistoryFileSchema = z.object({
+  path: z.string().min(1).max(4096),
+  added: z.number().int().nonnegative(),
+  removed: z.number().int().nonnegative(),
+});
+export type IHistoryFile = z.infer<typeof HistoryFileSchema>;
+
+/*
+ * Explicit presentation fields; unknown native item kinds are labeled unsupported. `callId` pairs
+ * a tool call with its result, `outcome` is what the provider recorded, null when unknown or
+ * running, and `files` lists a file change's files; both come from the full record, so cutting
+ * the text never changes them.
+ */
 export const HistoryItemSchema = z.object({
   nativeId: NativeIdSchema,
   turnId: NativeIdSchema,
@@ -203,6 +216,9 @@ export const HistoryItemSchema = z.object({
   provenance: HistoryProvenanceSchema,
   text: z.string(),
   isTruncated: z.boolean(),
+  callId: z.string().min(1).max(4096).nullable(),
+  outcome: z.enum(['succeeded', 'failed']).nullable(),
+  files: z.array(HistoryFileSchema).max(MAX_PAGE_SIZE),
 });
 export type IHistoryItem = z.infer<typeof HistoryItemSchema>;
 export const LiveItemsSchema = z.object({

@@ -210,14 +210,10 @@ export const createProviderRegistry = (
       item: (nativeId, item, complete, replacedIds) =>
         deliver(() => {
           const normalized = HistoryItemSchema.parse(item);
-          const observed = normalized.provenance;
-          normalized.provenance = nativeProvenance(normalized.kind, observed.nativeInputId);
-          if (observed.origin === 'system' && observed.source === 'native-kind')
-            normalized.provenance = {
-              ...normalized.provenance,
-              origin: 'system',
-              source: 'native-kind',
-            };
+          normalized.provenance = nativeProvenance(
+            normalized.kind,
+            normalized.provenance.nativeInputId,
+          );
           handlers?.item(
             provider,
             NativeIdSchema.parse(nativeId),

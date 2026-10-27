@@ -382,6 +382,12 @@ const withWrittenState = async (
 
 test.each([
   [
+    // the hash of the schema jg-agent-hq 4.0.2 wrote, whose entry index had no notice kind
+    'the 4.0.2 schema',
+    "UPDATE hq_schema SET schema_hash = '062346e252b338d94d126c3f55f50851e003691b1be51de46b6e43b5b09615ae', package_version = '4.0.2'",
+    'The HQ storage is invalid: written by jg-agent-hq 4.0.2',
+  ],
+  [
     'a newer schema',
     `UPDATE hq_schema SET schema_hash = '${'0'.repeat(64)}', package_version = '9.9.9'`,
     'The HQ storage is invalid: written by jg-agent-hq 9.9.9',

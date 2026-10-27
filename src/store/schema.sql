@@ -205,7 +205,7 @@ CREATE TABLE hq_claude_entry (
   workspace_root TEXT NOT NULL, native_id TEXT NOT NULL, uuid TEXT NOT NULL,
   parent_uuid TEXT, turn_id TEXT NOT NULL, byte_offset INTEGER NOT NULL, byte_length INTEGER NOT NULL,
   created_at INTEGER NOT NULL, is_visible INTEGER NOT NULL,
-  item_kind TEXT NOT NULL CHECK (item_kind IN ('user-message','agent-message','command','tool','file-change','unsupported')),
+  item_kind TEXT NOT NULL CHECK (item_kind IN ('user-message','agent-message','command','tool','file-change','notice','unsupported')),
   is_current INTEGER NOT NULL, turn_start_offset INTEGER, anchor_id TEXT,
   CONSTRAINT hq_pk_ce__workspace_root_native_id_uuid PRIMARY KEY (workspace_root, native_id, uuid),
   CONSTRAINT hq_fk_ce__workspace_root_native_id FOREIGN KEY (workspace_root, native_id)

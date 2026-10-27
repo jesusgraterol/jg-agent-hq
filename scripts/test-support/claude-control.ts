@@ -23,14 +23,16 @@ export const startClaudeControl = () => {
  appendFileSync(join(root,'claude-starts.jsonl'),JSON.stringify({args,cwd:process.cwd(),id})+'\n');
  const control=()=>JSON.parse(readFileSync(join(root,'claude-control.json'),'utf8'));
  const out=message=>process.stdout.write(JSON.stringify({...message,session_id:id})+'\n');
- const record=(uuid,type,content,parentUuid=null)=>appendFileSync(transcript,JSON.stringify({type,uuid,parentUuid,sessionId:id,cwd:process.cwd(),version:'2.1.304',timestamp:new Date().toISOString(),isSidechain:false,message:{role:type,content}})+'\n');
+ const record=(uuid,type,content,parentUuid=null,toolUseResult)=>appendFileSync(transcript,JSON.stringify({type,uuid,parentUuid,sessionId:id,cwd:process.cwd(),version:'2.1.304',timestamp:new Date().toISOString(),isSidechain:false,message:{role:type,content},...(toolUseResult===undefined?{}:{toolUseResult})})+'\n');
  let input=null;
  let leaf=inherited.filter(row=>row.uuid).at(-1)?.uuid??null;
  let hasPrompt=false;
  let isClosing=false;
  const complete=(interrupted=false)=>{
   if(!input)return;
-  if(!interrupted){
+  // scripted frames are written to the transcript as the CLI would, with their result metadata
+  if(!interrupted&&control().frames)for(const frame of control().frames){out(frame);if(frame.type==='user'||frame.type==='assistant'){record(frame.uuid,frame.type,frame.message.content,leaf,frame.tool_use_result);leaf=frame.uuid;}}
+  else if(!interrupted){
    const uuid=randomUUID(),text=control().outputText??(control().outputSize?'x'.repeat(control().outputSize):'Native response to '+input.message.content);
    out({type:'stream_event',event:{type:'message_start',message:{id:'api-message'}}});
    out({type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'text'}}});

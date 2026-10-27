@@ -75,3 +75,11 @@ export const limitItemText = (items: IHistoryItem[], textLimit: number): IHistor
     const end = /[\uD800-\uDBFF]/.test(item.text.charAt(textLimit - 1)) ? textLimit - 1 : textLimit;
     return { ...item, text: item.text.slice(0, end), isTruncated: true };
   });
+
+/**
+ * Counts a text's lines, as a file holding it has them.
+ * @param text The text, whose final newline ends its last line.
+ * @returns The number of lines, zero for an empty text.
+ */
+export const countLines = (text: string): number =>
+  text === '' ? 0 : text.split('\n').length - (text.endsWith('\n') ? 1 : 0);

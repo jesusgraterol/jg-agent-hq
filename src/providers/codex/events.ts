@@ -134,7 +134,8 @@ export const createCodexEvents = (
             } else if (!captured.oversized) captured.text = message.text;
           }
         }
-        events.item(threadId, toHistoryItem({ turnId, item }), method === 'item/completed');
+        const presented = toHistoryItem({ turnId, item });
+        if (presented) events.item(threadId, presented, method === 'item/completed');
       } else if (
         method === 'item/agentMessage/delta' ||
         method === 'item/commandExecution/outputDelta'

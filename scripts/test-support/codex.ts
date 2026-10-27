@@ -238,6 +238,7 @@ else {
       }
       if (!control.holdTurn && !control.prompt && !control.toolCall) {
         const text=control.outputText??(control.outputSize?'x'.repeat(control.outputSize):control.structuredOutput!==undefined?JSON.stringify(control.structuredOutput):'Live response');
+        for(const extra of control.turnItems??[])notify('item/completed',{threadId:thread.id,turnId:turn.id,item:extra});
         notify('item/completed',{threadId:thread.id,turnId:turn.id,item:{...item,text}});
         notify('thread/tokenUsage/updated',{threadId:thread.id,turnId:turn.id,tokenUsage:control.usageMalformed?'unknown-usage':{last:{inputTokens:7,outputTokens:3,cachedInputTokens:2}}});
         complete(thread.id);

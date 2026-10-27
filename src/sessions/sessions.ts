@@ -156,12 +156,8 @@ export const readNativeHistory = async (
     response.kind === 'session-evidence' || response.kind === 'items' ? response.result.data : [];
   if (items.length && 'nativeId' in command) {
     // provider assertions alone never establish an operator or an HQ action link
-    for (const item of items) {
-      const observed = item.provenance;
-      item.provenance = nativeProvenance(item.kind, observed.nativeInputId);
-      if (observed.origin === 'system' && observed.source === 'native-kind')
-        item.provenance = { ...item.provenance, origin: 'system', source: 'native-kind' };
-    }
+    for (const item of items)
+      item.provenance = nativeProvenance(item.kind, item.provenance.nativeInputId);
     const origins = await projection.getEvidenceOrigins({
       provider: command.provider,
       nativeId: command.nativeId,

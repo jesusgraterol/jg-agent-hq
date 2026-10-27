@@ -167,6 +167,123 @@ test('Claude creates and names an idle native session, deduplicates input and re
   });
 });
 
+test('Claude live items present what history will: thinking and notifications left out, a live edit as a file change', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create();
+    const [thinking, call, result, notification, answer] = Array.from({ length: 5 }, () =>
+      randomUUID(),
+    );
+    const path = join(fixture.workspaceRoot, 'a.ts');
+    const event = (body: unknown) => ({ type: 'stream_event', event: body });
+    await fixture.control({
+      frames: [
+        event({ type: 'message_start', message: { id: 'api-thinking' } }),
+        event({ type: 'content_block_start', index: 0, content_block: { type: 'thinking' } }),
+        {
+          type: 'assistant',
+          uuid: thinking,
+          message: {
+            id: 'api-thinking',
+            role: 'assistant',
+            content: [{ type: 'thinking', thinking: 'private', signature: 'sig' }],
+          },
+        },
+        event({ type: 'message_start', message: { id: 'api-edit' } }),
+        event({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_edit', name: 'Edit', input: {} },
+        }),
+        {
+          type: 'assistant',
+          uuid: call,
+          message: {
+            id: 'api-edit',
+            role: 'assistant',
+            content: [
+              { type: 'tool_use', id: 'toolu_edit', name: 'Edit', input: { file_path: path } },
+            ],
+          },
+        },
+        {
+          type: 'user',
+          uuid: result,
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'toolu_edit', content: 'updated' }],
+          },
+          tool_use_result: {
+            filePath: path,
+            structuredPatch: [
+              { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
+            ],
+          },
+        },
+        {
+          type: 'user',
+          uuid: notification,
+          message: { role: 'user', content: '<task-notification>\n</task-notification>' },
+        },
+        {
+          type: 'assistant',
+          uuid: answer,
+          message: {
+            id: 'api-answer',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Edited.' }],
+          },
+        },
+      ],
+    });
+    const input = await api.message(thread.id, 'Edit the file');
+    await api.until(
+      () => api.receipt(input.id),
+      (entry) => entry.completion === 'completed',
+    );
+    const shown = (item: {
+      nativeId: string;
+      kind: string;
+      text: string;
+      callId: string | null;
+      outcome: string | null;
+      files: unknown[];
+    }) => ({
+      nativeId: item.nativeId,
+      kind: item.kind,
+      text: item.text,
+      callId: item.callId,
+      outcome: item.outcome,
+      files: item.files,
+    });
+    const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
+    if (live.kind !== 'live-items') throw new Error('Missing live items');
+    const liveItems = live.result.data.map(shown);
+    expect(liveItems.map((item) => item.nativeId)).toStrictEqual([
+      expect.any(String),
+      call,
+      result,
+      answer,
+    ]);
+    expect(liveItems[2]).toStrictEqual({
+      nativeId: result,
+      kind: 'file-change',
+      text: `${path}\n@@ -1,1 +1,1 @@\n-old\n+new`,
+      callId: 'toolu_edit',
+      outcome: 'succeeded',
+      files: [{ path, added: 1, removed: 1 }],
+    });
+    const history = await fixture.request({
+      kind: 'items',
+      provider: 'claude',
+      workspaceRoot: fixture.workspaceRoot,
+      nativeId: thread.nativeId!,
+    });
+    if (history.kind !== 'items') throw new Error('Missing history');
+    expect(history.result.data.map(shown).reverse()).toStrictEqual(liveItems);
+  });
+});
+
 test('Claude queues one follow-up at a verified result boundary and never sends a duplicate', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture),

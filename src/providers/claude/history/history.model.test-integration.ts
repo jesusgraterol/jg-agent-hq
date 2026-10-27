@@ -1043,3 +1043,165 @@ test('items cut text at their text limit on a code-point boundary, and read one 
     ).rejects.toThrow('The HQ request is invalid');
   });
 });
+
+test('the index stores what the CLI shows: hidden thinking and notifications, presented kinds, and turns started by the operator', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const records: ({ uuid: string } & Record<string, unknown>)[] = [];
+    const add = (
+      type: 'user' | 'assistant',
+      content: unknown,
+      extra: Record<string, unknown> = {},
+    ) => {
+      const record: { uuid: string } & Record<string, unknown> = {
+        ...claudeRecord(workspaceRoot, nativeId, { type, parentUuid: records.at(-1)?.uuid }),
+        message: { role: type, content },
+        ...extra,
+      };
+      records.push(record);
+      return record;
+    };
+    const prompt = add('user', 'Fix the login');
+    const thinking = add('assistant', [{ type: 'thinking', thinking: 'private', signature: 's' }]);
+    const answer = add('assistant', [{ type: 'text', text: 'Looking' }]);
+    const edit = add('assistant', [
+      { type: 'tool_use', id: 'toolu_edit', name: 'Edit', input: { file_path: 'a.ts' } },
+    ]);
+    const edited = add(
+      'user',
+      [{ type: 'tool_result', tool_use_id: 'toolu_edit', content: 'ok' }],
+      {
+        toolUseResult: {
+          filePath: join(workspaceRoot, 'a.ts'),
+          structuredPatch: [
+            { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
+          ],
+        },
+      },
+    );
+    const write = add('assistant', [
+      { type: 'tool_use', id: 'toolu_write', name: 'Write', input: { file_path: 'b.ts' } },
+    ]);
+    const written = add(
+      'user',
+      [{ type: 'tool_result', tool_use_id: 'toolu_write', content: 'created' }],
+      {
+        toolUseResult: {
+          type: 'create',
+          filePath: join(workspaceRoot, 'b.ts'),
+          content: 'one\ntwo\n',
+          structuredPatch: [],
+        },
+      },
+    );
+    const notification = add(
+      'user',
+      '<task-notification>\n<task-id>t</task-id>\n</task-notification>',
+    );
+    const noted = add('assistant', [{ type: 'text', text: 'Noted' }]);
+    const summary = add('user', 'Summary of the earlier conversation', { isCompactSummary: true });
+    const command = add(
+      'user',
+      '<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>main</command-args>',
+    );
+    const output = add('user', '<local-command-stdout>Reviewed</local-command-stdout>');
+    const shell = add('user', '<bash-input> ls</bash-input>');
+    const listing = add('user', '<bash-stdout>a.ts</bash-stdout><bash-stderr></bash-stderr>');
+    const interrupted = add('user', [
+      { type: 'text', text: '[Request interrupted by user for tool use]' },
+    ]);
+    await writeFile(
+      transcript(nativeId),
+      records.map((record) => JSON.stringify(record)).join('\n') + '\n',
+    );
+    const target = { provider: 'claude', workspaceRoot, nativeId } as const;
+    const shown = (
+      record: { uuid: string },
+      turn: { uuid: string },
+      kind: string,
+      text: string,
+      extra: { callId?: string; outcome?: string; files?: unknown[] } = {},
+    ) => ({
+      id: record.uuid,
+      turnId: turn.uuid,
+      kind,
+      text,
+      callId: extra.callId ?? null,
+      outcome: extra.outcome ?? null,
+      files: extra.files ?? [],
+    });
+    const all = await request({ kind: 'items', ...target });
+    if (all.kind !== 'items') throw new Error('wrong response');
+    expect(
+      all.result.data.map(({ nativeId: id, turnId, kind, text, callId, outcome, files }) => ({
+        id,
+        turnId,
+        kind,
+        text,
+        callId,
+        outcome,
+        files,
+      })),
+    ).toStrictEqual([
+      shown(interrupted, command, 'notice', '[Request interrupted by user for tool use]'),
+      shown(listing, command, 'command', 'a.ts', { callId: shell.uuid }),
+      shown(shell, command, 'command', 'ls', { callId: shell.uuid }),
+      shown(output, command, 'notice', 'Reviewed'),
+      shown(command, command, 'user-message', '/review main'),
+      shown(summary, prompt, 'notice', 'Summary of the earlier conversation'),
+      shown(noted, prompt, 'agent-message', 'Noted'),
+      shown(written, prompt, 'file-change', `${join(workspaceRoot, 'b.ts')}\none\ntwo\n`, {
+        callId: 'toolu_write',
+        outcome: 'succeeded',
+        files: [{ path: join(workspaceRoot, 'b.ts'), added: 2, removed: 0 }],
+      }),
+      shown(write, prompt, 'tool', 'Write\n{"file_path":"b.ts"}', { callId: 'toolu_write' }),
+      shown(
+        edited,
+        prompt,
+        'file-change',
+        `${join(workspaceRoot, 'a.ts')}\n@@ -1,1 +1,1 @@\n-old\n+new`,
+        {
+          callId: 'toolu_edit',
+          outcome: 'succeeded',
+          files: [{ path: join(workspaceRoot, 'a.ts'), added: 1, removed: 1 }],
+        },
+      ),
+      shown(edit, prompt, 'tool', 'Edit\n{"file_path":"a.ts"}', { callId: 'toolu_edit' }),
+      shown(answer, prompt, 'agent-message', 'Looking'),
+      shown(prompt, prompt, 'user-message', 'Fix the login'),
+    ]);
+    expect(JSON.stringify(all)).not.toContain(thinking.uuid);
+    expect(JSON.stringify(all)).not.toContain(notification.uuid);
+    // only the operator's messages start turns
+    const turns = await request({ kind: 'turns', ...target });
+    expect(turns.kind === 'turns' && turns.result.data.map((turn) => turn.nativeId)).toStrictEqual([
+      prompt.uuid,
+      command.uuid,
+    ]);
+    // a page past a hidden notification still fills its limit
+    const first = await request({ kind: 'items', ...target, limit: 6 });
+    if (first.kind !== 'items') throw new Error('wrong response');
+    const second = await request({
+      kind: 'items',
+      ...target,
+      limit: 6,
+      cursor: first.result.nextCursor!,
+    });
+    expect(
+      second.kind === 'items' && second.result.data.map((item) => item.nativeId),
+    ).toStrictEqual([noted, written, write, edited, edit, answer].map((record) => record.uuid));
+    // evidence filters on the same presented kinds
+    for (const [kinds, ids] of [
+      [['notice'], [interrupted.uuid, output.uuid, summary.uuid]],
+      [['file-change'], [written.uuid, edited.uuid]],
+      [['command'], [listing.uuid, shell.uuid]],
+    ] as const) {
+      const evidence = await request({ kind: 'session-evidence', ...target, kinds: [...kinds] });
+      if (evidence.kind !== 'session-evidence') throw new Error('wrong response');
+      expect(evidence.result.data.map((item) => [item.reference.itemId, item.text])).toStrictEqual(
+        ids.map((id) => [id, all.result.data.find((item) => item.nativeId === id)!.text]),
+      );
+    }
+  });
+});
