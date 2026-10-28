@@ -12,14 +12,24 @@ import type {
   IEvidencePage,
   IHqRequestInput,
 } from 'jg-agent-hq/contracts';
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 
 import {
   claudeRecord,
+  countHeldDelays,
+  startHoldingDelays,
+  stopHoldingDelays,
   withClaudeRuntime,
   writeFixtureControl,
   type IClaudeFixture,
 } from '../../scripts/test-support/index.js';
+
+// a test that must know no Claude poll runs holds the poll's wait between runs
+vi.mock('jg-utilities', async (original) => {
+  const actual = await original<typeof import('jg-utilities')>();
+  const { holdDelays } = await import('../../scripts/test-support/delays.js');
+  return { ...actual, delay: holdDelays(actual.delay) };
+});
 
 const evidence = async (
   fixture: IClaudeFixture,
@@ -958,34 +968,41 @@ test('active observed sessions take their workspace from the Claude poll and fro
 });
 
 test('active sessions return the newest 128 of more, in running and waiting states only', async () => {
-  await withClaudeRuntime(async (fixture) => {
-    const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { timeout: 5_000 });
-    try {
-      const insert = database.prepare(
-        'INSERT INTO hq_observed_session (provider, native_id, state, observed_at) VALUES (?, ?, ?, ?)',
-      );
-      for (let index = 0; index < 130; index += 1)
-        insert.run(
-          'codex',
-          `active-${String(index).padStart(4, '0')}`,
-          index % 2 ? 'running' : 'waiting',
-          1_700_000_000_000 + index,
+  startHoldingDelays(30);
+  try {
+    await withClaudeRuntime(async (fixture) => {
+      // the startup poll has recorded its run once it waits, and no other run follows to close rows
+      await expect.poll(() => countHeldDelays(30)).toBe(1);
+      const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { timeout: 5_000 });
+      try {
+        const insert = database.prepare(
+          'INSERT INTO hq_observed_session (provider, native_id, state, observed_at) VALUES (?, ?, ?, ?)',
         );
-      for (const state of ['idle', 'closed', 'failed', 'unknown'])
-        insert.run('codex', `inactive-${state}`, state, 1_800_000_000_000);
-      // a Claude session no poll of this runtime has listed has no known workspace yet
-      insert.run('claude', randomUUID(), 'running', 1_800_000_000_000);
-    } finally {
-      database.close();
-    }
-    const active = await readActive(fixture);
-    expect(active.isTruncated).toBe(true);
-    // the newest record, the unlisted Claude session, takes one of the 128 places and is left out
-    expect(active.data.map((session) => session.nativeId)).toStrictEqual(
-      Array.from({ length: 127 }, (_, index) => `active-${String(129 - index).padStart(4, '0')}`),
-    );
-    expect(active.data.every((session) => session.workspaceRoot === fixture.workspaceRoot)).toBe(
-      true,
-    );
-  });
+        for (let index = 0; index < 130; index += 1)
+          insert.run(
+            'codex',
+            `active-${String(index).padStart(4, '0')}`,
+            index % 2 ? 'running' : 'waiting',
+            1_700_000_000_000 + index,
+          );
+        for (const state of ['idle', 'closed', 'failed', 'unknown'])
+          insert.run('codex', `inactive-${state}`, state, 1_800_000_000_000);
+        // a Claude session no poll of this runtime has listed has no known workspace yet
+        insert.run('claude', randomUUID(), 'running', 1_800_000_000_000);
+      } finally {
+        database.close();
+      }
+      const active = await readActive(fixture);
+      expect(active.isTruncated).toBe(true);
+      // the newest record, the unlisted Claude session, takes one of the 128 places and is left out
+      expect(active.data.map((session) => session.nativeId)).toStrictEqual(
+        Array.from({ length: 127 }, (_, index) => `active-${String(129 - index).padStart(4, '0')}`),
+      );
+      expect(active.data.every((session) => session.workspaceRoot === fixture.workspaceRoot)).toBe(
+        true,
+      );
+    });
+  } finally {
+    stopHoldingDelays();
+  }
 });
