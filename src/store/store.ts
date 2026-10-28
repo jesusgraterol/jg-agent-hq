@@ -62,6 +62,8 @@ export const createStore = async (
         !argument.startsWith('--input-type=') &&
         arguments_[index - 1] !== '--input-type',
     ),
+    // indexing a large transcript otherwise grows the young generation to V8's default maximum
+    resourceLimits: { maxYoungGenerationSizeMb: 16 },
     workerData: { databasePath, runtimeEpoch, actionKey },
   });
   let hasExited = false;

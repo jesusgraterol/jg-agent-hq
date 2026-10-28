@@ -1,5 +1,9 @@
 # Changelog
 
+## 5.0.1
+
+- Index Claude transcripts with less memory. Each record is read once, instead of being copied again for every 64 KiB chunk it spans, and the SQLite worker's young generation is capped at 16 MiB. Indexing a 224 MB transcript held the runtime at about 200 MB instead of about 300 MB. The storage schema is unchanged, so databases and snapshots written by 5.0.0 open as they are.
+
 ## 5.0.0
 
 - Read `items` newest first, its only order, with its cursor continuing toward older items; it read oldest first before. `textLimit`, from 1 to 65,536 and 65,536 by default, cuts each item's text on a code-point boundary and marks it `isTruncated`. `nativeItemId` with its `turnId` returns that item alone; Codex finds it by reading that turn's items 128 at a time.
