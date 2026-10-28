@@ -372,6 +372,7 @@ const createFixtureProvider = () => {
                   outcome: null,
                   files: [],
                   provenance: nativeProvenance('agent-message'),
+                  createdAt: null,
                 },
                 true,
               );
@@ -389,6 +390,7 @@ const createFixtureProvider = () => {
               outcome: null,
               files: [],
               provenance: nativeProvenance('agent-message'),
+              createdAt: null,
             },
             true,
           );
@@ -621,6 +623,7 @@ test('a provider cannot label a live user message as an authenticated operator s
           callId: null,
           outcome: null,
           files: [],
+          createdAt: null,
           provenance: {
             origin: 'operator',
             source: 'authenticated-host-action',

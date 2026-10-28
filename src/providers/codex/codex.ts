@@ -2,11 +2,20 @@ import { Exception, isException } from 'jg-exception';
 import { z } from 'zod';
 import { abortable, createDeadline } from 'jg-utilities';
 
-import type { IUsageSnapshot, ISessionSettings, IOutputSchema } from '../../contracts/index.js';
+import type {
+  IUsageSnapshot,
+  ISessionSettings,
+  IOutputSchema,
+  ITurnSummary,
+} from '../../contracts/index.js';
 import { NativeIdSchema } from '../../contracts/identities/index.js';
 import type { IProviderAgentTools } from '../../agent-tools/index.js';
 
-import { LOADED_THREADS_PAGE_SIZE } from './constants.js';
+import {
+  LOADED_THREADS_PAGE_SIZE,
+  MAX_TURN_TIME_PAGES,
+  TURN_TIMES_PAGE_SIZE,
+} from './constants.js';
 import { createCodexRpc } from './rpc.js';
 import { createCodexExtensions } from './extensions/index.js';
 import { createCodexAccounts } from './accounts/index.js';
@@ -23,6 +32,7 @@ import {
   NativeTurnSchema,
   type ICodexEvents,
   type ICodexProvider,
+  type INativePage,
 } from './types.js';
 import { toHistoryItem, toThreadSummary, toTurnSummary, toUsageSnapshot } from './transformers.js';
 import { parseNative } from './validations.js';
@@ -290,6 +300,48 @@ export const createCodexProvider = async (
   authentication = createCodexAuthentication(connection, (outcome) =>
     events?.controlOutcome(outcome),
   );
+  const listTurns = async (
+    nativeId: string,
+    limit: number,
+    cursor?: string,
+  ): Promise<INativePage<ITurnSummary>> => {
+    const page = parseNative(
+      NativeTurnPageSchema,
+      await connection.request('thread/turns/list', {
+        threadId: nativeId,
+        limit,
+        cursor,
+        sortDirection: 'desc',
+        itemsView: 'notLoaded',
+      }),
+    );
+    if (page.data.length > limit)
+      throw new Exception('The Codex integration failed', {
+        code: 'JG_AGENT_HQ_CODEX_FAILED',
+        data: {
+          kind: 'agent-unavailable',
+        },
+      });
+    return { data: page.data.map(toTurnSummary), nextCursor: page.nextCursor };
+  };
+  /*
+   * Reads turns newest first until every turn a history page's items belong to is found, so a
+   * recent page takes one read; a turn older than the most pages read leaves its items untimed.
+   */
+  const readItemTurns = async (
+    nativeId: string,
+    turnIds: Set<string>,
+  ): Promise<Map<string, ITurnSummary>> => {
+    const turns = new Map<string, ITurnSummary>();
+    let cursor: string | undefined;
+    for (let read = 0; read < MAX_TURN_TIME_PAGES && turns.size < turnIds.size; read += 1) {
+      const page = await listTurns(nativeId, TURN_TIMES_PAGE_SIZE, cursor);
+      for (const turn of page.data) if (turnIds.has(turn.nativeId)) turns.set(turn.nativeId, turn);
+      if (!page.nextCursor) break;
+      cursor = page.nextCursor;
+    }
+    return turns;
+  };
   return {
     hasAgentTools: (nativeId) => toolSessions.has(nativeId),
     ...createCodexExtensions(connection),
@@ -462,26 +514,7 @@ export const createCodexProvider = async (
       );
       return { data: page.data, nextCursor: page.nextCursor ?? null };
     },
-    async listTurns(nativeId, limit, cursor) {
-      const page = parseNative(
-        NativeTurnPageSchema,
-        await connection.request('thread/turns/list', {
-          threadId: nativeId,
-          limit,
-          cursor,
-          sortDirection: 'desc',
-          itemsView: 'notLoaded',
-        }),
-      );
-      if (page.data.length > limit)
-        throw new Exception('The Codex integration failed', {
-          code: 'JG_AGENT_HQ_CODEX_FAILED',
-          data: {
-            kind: 'agent-unavailable',
-          },
-        });
-      return { data: page.data.map(toTurnSummary), nextCursor: page.nextCursor };
-    },
+    listTurns,
     async listItems(nativeId, limit, cursor, turnId, fullBody = false) {
       const page = parseNative(
         NativeItemPageSchema,
@@ -500,9 +533,12 @@ export const createCodexProvider = async (
             kind: 'agent-unavailable',
           },
         });
+      const turns = await readItemTurns(nativeId, new Set(page.data.map((item) => item.turnId)));
       return {
         // reasoning is left out, so a page can hold fewer items than its limit
-        data: page.data.flatMap((item) => toHistoryItem(item, fullBody) ?? []),
+        data: page.data.flatMap(
+          (item) => toHistoryItem(item, turns.get(item.turnId), fullBody) ?? [],
+        ),
         nextCursor: page.nextCursor,
       };
     },

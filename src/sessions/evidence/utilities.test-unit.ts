@@ -22,6 +22,7 @@ test('a response that cannot represent even one native identity fails rather tha
     outcome: null,
     files: [],
     provenance: nativeProvenance('agent-message'),
+    createdAt: null,
   };
   expectToThrowCode(
     () => buildEvidencePage(command, evidencePosition(command), [item], null),
@@ -51,6 +52,7 @@ test('unknown native content is explicitly incomplete; evidence cannot claim fre
         outcome: null,
         files: [],
         provenance: nativeProvenance('unsupported'),
+        createdAt: null,
       },
     ],
     null,
@@ -85,6 +87,7 @@ test('long native continuations cannot exceed the response budget after a comple
         outcome: null,
         files: [],
         provenance: nativeProvenance('agent-message'),
+        createdAt: null,
       },
     ],
     'n'.repeat(8192),

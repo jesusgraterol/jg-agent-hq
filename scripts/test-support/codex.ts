@@ -216,7 +216,7 @@ else {
       if (control.rejectTurn) { send(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic input rejection'}}));return; }
       const thread = managed.get(params.threadId);
       thread.model=params.model??thread.model;thread.reasoningEffort=params.effort??thread.reasoningEffort;
-      const turn = {id:(control.turnPrefix??'')+'native-turn-'+(++turnSequence),status:'inProgress'};
+      const turn = {id:(control.turnPrefix??'')+'native-turn-'+(++turnSequence),status:'inProgress',startedAt:1_800_000_000+turnSequence};
       thread.activeTurn=turn.id;
       notify('turn/started',{threadId:thread.id,turn});
       const item = {id:'live-'+turnSequence,type:'agentMessage',text:''};
@@ -287,7 +287,13 @@ else {
     // loadedThreads lists the threads the daemon has loaded, for every client
     if (method === 'thread/loaded/list') { respond(request.id,{ data: control.loadedThreads ?? [], nextCursor: null });return; }
     if (method === 'thread/read') { respond(request.id,{ thread: { ...threads[0],...managed.get(params.threadId),...(control.ephemeralThreads?.includes(params.threadId) ? { ephemeral: true } : {}),status: statusOf({ id: params.threadId,status: managed.get(params.threadId)?.status ?? threads[0].status }),...(control.unavailableSettings?{model:null,reasoningEffort:null}:{}),id: params.threadId,cwd: control.wrongRoot || managed.get(params.threadId)?.cwd || workspaceRoot } });return; }
-    if (method === 'thread/turns/list') { respond(request.id,{ data: [{ id: 'turn-a',status: 'completed',startedAt: 1_700_000_000,completedAt: 1_700_000_001 }],nextCursor: null });return; }
+    if (method === 'thread/turns/list') {
+      let selected = control.turns ?? [{ id: 'turn-a',status: 'completed',startedAt: 1_700_000_000,completedAt: 1_700_000_001 }];
+      if(params.sortDirection==='desc')selected=[...selected].reverse();
+      const after=params.cursor?selected.findIndex(turn=>turn.id===params.cursor)+1:0;
+      const batch=selected.slice(after,after+params.limit);
+      respond(request.id,{data:batch,nextCursor:after+batch.length<selected.length?batch.at(-1).id:null});return;
+    }
     if (method === 'thread/items/list') {
       const text = control.largeItem ? 'a'.repeat(1_048_576) : 'Hello from the native history';
       let selected = control.awaitingFlush ? [] : control.items ?? [{ turnId: 'turn-a',item: { id: 'item-a',type: 'agentMessage',text } }];

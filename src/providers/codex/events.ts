@@ -4,6 +4,7 @@ import {
   MAX_RESULT_BYTES,
   type IOutputSchema,
   type ISessionState,
+  type ITurnSummary,
   type ITurnUsage,
 } from '../../contracts/index.js';
 import { toTurnResult } from '../results/index.js';
@@ -11,10 +12,11 @@ import { toTurnResult } from '../results/index.js';
 import { NativeIdSchema } from '../../contracts/identities/index.js';
 import type { IAgentProviderOutcome, IAgentProviderEvents, IProviderThread } from '../index.js';
 
+import { RUNNING_TURNS_CAPACITY } from './constants.js';
 import type { ICodexEvents, ICodexProvider, INativeThread } from './types.js';
 import { NativeItemSchema, NativeThreadSchema, NativeTurnSchema } from './types.js';
 import { parseNative } from './validations.js';
-import { toHistoryItem, toNativeLineage, toSessionState } from './transformers.js';
+import { toHistoryItem, toNativeLineage, toSessionState, toTurnSummary } from './transformers.js';
 import { buildCodexReply, parseCodexPrompt, toApprovalPresentation } from './approvals/index.js';
 
 const TargetSchema = z.object({ threadId: NativeIdSchema, turnId: NativeIdSchema });
@@ -53,6 +55,8 @@ export const createCodexEvents = (
       usage: ITurnUsage | null;
     }
   >();
+  // each thread's running turn, which times its live items
+  const runningTurns = new Map<string, ITurnSummary>();
   return {
     controlOutcome: (outcome) => events.outcome(outcome),
     prepareTurn(nativeId, schema) {
@@ -75,6 +79,10 @@ export const createCodexEvents = (
           params,
         );
         if (method === 'turn/started') {
+          runningTurns.delete(threadId);
+          if (runningTurns.size >= RUNNING_TURNS_CAPACITY)
+            runningTurns.delete(runningTurns.keys().next().value!);
+          runningTurns.set(threadId, toTurnSummary(turn));
           const captured = turns.get(threadId);
           if (captured) {
             if (captured.turnId && captured.turnId !== turn.id) parseNative(z.never(), params);
@@ -87,6 +95,7 @@ export const createCodexEvents = (
             nativeTurnId: turn.id,
           });
         } else if (turn.status !== 'inProgress') {
+          if (runningTurns.get(threadId)?.nativeId === turn.id) runningTurns.delete(threadId);
           const pending = turns.get(threadId);
           const captured = pending?.turnId === turn.id ? pending : undefined;
           const result = captured
@@ -135,7 +144,11 @@ export const createCodexEvents = (
             } else if (!captured.oversized) captured.text = message.text;
           }
         }
-        const presented = toHistoryItem({ turnId, item });
+        const running = runningTurns.get(threadId);
+        const presented = toHistoryItem(
+          { turnId, item },
+          running?.nativeId === turnId ? running : undefined,
+        );
         if (presented) events.item(threadId, presented, method === 'item/completed');
       } else if (
         method === 'item/agentMessage/delta' ||

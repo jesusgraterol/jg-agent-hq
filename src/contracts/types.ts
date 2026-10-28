@@ -240,7 +240,8 @@ export type IHistoryFile = z.infer<typeof HistoryFileSchema>;
  * Explicit presentation fields; unknown native item kinds are labeled unsupported. `callId` pairs
  * a tool call with its result, `outcome` is what the provider recorded, null when unknown or
  * running, and `files` lists a file change's files; both come from the full record, so cutting
- * the text never changes them.
+ * the text never changes them. `createdAt` is the item's time in Unix milliseconds, or null when
+ * the provider records none.
  */
 export const HistoryItemSchema = z.object({
   nativeId: NativeIdSchema,
@@ -253,6 +254,7 @@ export const HistoryItemSchema = z.object({
   callId: z.string().min(1).max(4096).nullable(),
   outcome: z.enum(['succeeded', 'failed']).nullable(),
   files: z.array(HistoryFileSchema).max(MAX_PAGE_SIZE),
+  createdAt: z.number().int().nullable(),
 });
 export type IHistoryItem = z.infer<typeof HistoryItemSchema>;
 export const LiveItemsSchema = z.object({

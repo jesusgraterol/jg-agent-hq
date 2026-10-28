@@ -253,7 +253,8 @@ const toPresentation = (record: IRecord): IPresentation | null => {
 
 /**
  * Presents one native record as the CLI shows it, shared by history pages, live items and
- * evidence. Outcome and files come from the full record, before the text is cut.
+ * evidence. Outcome and files come from the full record, before the text is cut, and its time
+ * from the record's `timestamp`.
  * @returns The item, or null for a record the CLI leaves out, such as thinking or a task notification.
  * @throws
  * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
@@ -275,6 +276,7 @@ export const toClaudeItem = (
   const { text } = presentation;
   let end = fullBody ? text.length : Math.min(text.length, MAX_ITEM_TEXT_LENGTH);
   if (end < text.length && /[\uD800-\uDBFF]/.test(text.charAt(end - 1))) end -= 1;
+  const createdAt = Date.parse(record.timestamp ?? '');
   return {
     ...presentation,
     nativeId: record.uuid,
@@ -285,5 +287,6 @@ export const toClaudeItem = (
     ),
     text: text.slice(0, end),
     isTruncated: end < text.length,
+    createdAt: Number.isFinite(createdAt) ? createdAt : null,
   };
 };
