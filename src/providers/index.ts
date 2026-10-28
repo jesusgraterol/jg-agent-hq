@@ -16,7 +16,7 @@ export type {
 } from './types.js';
 export { ProviderThreadSchema, ProviderInspectionSchema, ProviderSkillsSchema } from './types.js';
 export { PROVIDER_INPUT_SCHEMA, SUPPORTED_PROVIDER_OPERATION } from './constants.js';
-export { createProviderProcess } from './process.js';
+export { createProviderProcess, isOwnedProcess } from './process.js';
 
 // Codex
 export {

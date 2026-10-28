@@ -17,6 +17,15 @@ const LINE_FRAMING: IProviderFraming = {
   encode: (message) => Buffer.from(`${JSON.stringify(message)}\n`),
 };
 
+// the native processes this runtime started and that still run, which `claude agents` lists too
+const ownedPids = new Set<number>();
+
+/**
+ * Whether a native process this runtime started is running with the given PID.
+ * @returns True for a running process this runtime owns.
+ */
+export const isOwnedProcess = (pid: number): boolean => ownedPids.has(pid);
+
 /**
  * Owns one POSIX process group and bounded structured transport, without a shell.
  * @returns A transport whose close waits for owned process termination.
@@ -32,6 +41,11 @@ export const createProviderProcess = (
   framing: IProviderFraming = LINE_FRAMING,
 ): IProviderProcess => {
   const child = spawn(executable, args, { detached: true, stdio: ['pipe', 'pipe', 'pipe'], cwd });
+  const { pid } = child;
+  if (pid !== undefined) {
+    ownedPids.add(pid);
+    child.once('close', () => ownedPids.delete(pid));
+  }
   let isRunning = true;
   // messages wait for the native answer to the preamble; a stopped transport releases them
   let markOpen = (): void => undefined;

@@ -122,6 +122,14 @@ test.each([
   expect(toClaudeItem(record, 'turn')).toBeNull();
 });
 
+test.each([
+  ['2026-10-28T09:15:30.250Z', 1_793_178_930_250],
+  [undefined, null],
+  ['not a time', null],
+])('toClaudeItem(timestamp %s) -> createdAt %s', (timestamp, createdAt) => {
+  expect(toClaudeItem(user('Fix the login', { timestamp }), 'turn')?.createdAt).toBe(createdAt);
+});
+
 test('a shell input and its output are commands paired by the input UUID', () => {
   expect(
     presented({ ...user('<bash-input> git status</bash-input>'), uuid: 'shell-input' }),

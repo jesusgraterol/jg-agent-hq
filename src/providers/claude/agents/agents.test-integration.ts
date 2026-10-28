@@ -44,6 +44,9 @@ const runs = async (fixture: IClaudeFixture): Promise<number> => {
     return 0;
   }
 };
+// transitions one poll records together have no fixed order among themselves
+const byNativeId = (left: unknown[], right: unknown[]) =>
+  String(left[0]).localeCompare(String(right[0]));
 const report = (fixture: IClaudeFixture, control: object) =>
   writeFixtureControl(fixture.root, 'claude-agents.json', control);
 // these tests observe changes at the live pace, every 5 seconds
@@ -51,18 +54,36 @@ const live = (fixture: IClaudeFixture) =>
   fixture.runtime.request({ kind: 'observation-pace', pace: 'live' });
 
 test(
-  'claude agents report running, waiting and idle sessions, and a session that disappears',
+  'claude agents report states by their fields, and a session that stops running disappears',
   // four five-second polls observe each change
   { timeout: 40_000 },
   async () => {
     await withClaudeRuntime(async (fixture) => {
       await live(fixture);
-      const [busy, blocked] = [randomUUID(), randomUUID()];
-      for (const id of [busy, blocked])
+      const [busy, background, stopped] = [randomUUID(), randomUUID(), randomUUID()];
+      for (const id of [busy, background, stopped])
         await writeFile(
           fixture.transcript(id),
           `${JSON.stringify(claudeRecord(fixture.workspaceRoot, id))}\n`,
         );
+      // what Claude Code 2.1.312 reports for a background session at each step
+      const backgroundAgent = (fields: object) => ({
+        id: 'background-1',
+        pid: 3,
+        cwd: fixture.workspaceRoot,
+        kind: 'background',
+        sessionId: background,
+        name: 'background',
+        ...fields,
+      });
+      // a background session that no longer runs keeps its last state but has no pid
+      const stoppedAgent = {
+        id: 'background-2',
+        cwd: fixture.workspaceRoot,
+        kind: 'background',
+        sessionId: stopped,
+        state: 'blocked',
+      };
       await report(fixture, {
         agents: [
           {
@@ -73,14 +94,8 @@ test(
             name: 'terminal',
             status: 'busy',
           },
-          {
-            id: 'background-1',
-            cwd: fixture.workspaceRoot,
-            kind: 'background',
-            sessionId: blocked,
-            name: 'background',
-            state: 'blocked',
-          },
+          backgroundAgent({ state: 'working' }),
+          stoppedAgent,
           // outside the allowed workspaces, so never observed
           {
             pid: 2,
@@ -92,11 +107,15 @@ test(
         ],
       });
       await expect
-        .poll(async () => (await transitions(fixture)).map(summary), { timeout: 12_000 })
-        .toStrictEqual([
-          [busy, null, 'running', 'turn-started', 'external'],
-          [blocked, null, 'waiting', 'waiting-for-input', 'external'],
-        ]);
+        .poll(async () => (await transitions(fixture)).map(summary).sort(byNativeId), {
+          timeout: 12_000,
+        })
+        .toStrictEqual(
+          [
+            [busy, null, 'running', 'turn-started', 'external'],
+            [background, null, 'running', 'turn-started', 'external'],
+          ].sort(byNativeId),
+        );
       const listed = await fixture.runtime.request({
         kind: 'threads',
         provider: 'claude',
@@ -108,10 +127,21 @@ test(
       ).toStrictEqual(
         new Map([
           [busy, 'running'],
-          [blocked, 'waiting'],
+          [background, 'running'],
+          [stopped, 'unknown'],
         ]),
       );
-      // an interactive session reports a question or permission prompt as waiting
+      // each running session names the terminal that runs it, with the ID `claude attach` takes
+      expect(
+        new Map(listed.result.data.map((thread) => [thread.nativeId, thread.terminal])),
+      ).toStrictEqual(
+        new Map([
+          [busy, { kind: 'interactive' }],
+          [background, { kind: 'background', attachId: 'background-1' }],
+          [stopped, null],
+        ]),
+      );
+      // a question or a permission prompt reports waiting, for either kind of session
       await report(fixture, {
         agents: [
           {
@@ -121,18 +151,24 @@ test(
             sessionId: busy,
             status: 'waiting',
           },
-          {
-            id: 'background-1',
-            cwd: fixture.workspaceRoot,
-            kind: 'background',
-            sessionId: blocked,
+          backgroundAgent({
+            status: 'waiting',
+            waitingFor: 'permission prompt',
             state: 'blocked',
-          },
+          }),
+          stoppedAgent,
         ],
       });
       await expect
-        .poll(async () => (await transitions(fixture)).slice(2).map(summary), { timeout: 12_000 })
-        .toStrictEqual([[busy, 'running', 'waiting', 'waiting-for-input', 'external']]);
+        .poll(async () => (await transitions(fixture)).slice(2).map(summary).sort(byNativeId), {
+          timeout: 12_000,
+        })
+        .toStrictEqual(
+          [
+            [busy, 'running', 'waiting', 'waiting-for-input', 'external'],
+            [background, 'running', 'waiting', 'waiting-for-input', 'external'],
+          ].sort(byNativeId),
+        );
       await report(fixture, {
         agents: [
           {
@@ -142,18 +178,102 @@ test(
             sessionId: busy,
             status: 'idle',
           },
+          backgroundAgent({ status: 'idle', state: 'done' }),
         ],
       });
       await expect
-        .poll(async () => (await transitions(fixture)).slice(3).map(summary), { timeout: 12_000 })
-        .toStrictEqual([
-          [busy, 'waiting', 'idle', 'turn-completed', 'external'],
-          [blocked, 'waiting', 'closed', 'disappeared', 'external'],
-        ]);
-      await report(fixture, { agents: [] });
+        .poll(async () => (await transitions(fixture)).slice(4).map(summary).sort(byNativeId), {
+          timeout: 12_000,
+        })
+        .toStrictEqual(
+          [
+            [busy, 'waiting', 'idle', 'turn-completed', 'external'],
+            [background, 'waiting', 'idle', 'turn-completed', 'external'],
+          ].sort(byNativeId),
+        );
+      // stopping the background session leaves its entry without a pid
+      await report(fixture, {
+        agents: [{ ...backgroundAgent({ state: 'stopped' }), pid: undefined }],
+      });
       await expect
-        .poll(async () => (await transitions(fixture)).slice(5).map(summary), { timeout: 12_000 })
-        .toStrictEqual([[busy, 'idle', 'closed', 'closed', 'external']]);
+        .poll(async () => (await transitions(fixture)).slice(6).map(summary).sort(byNativeId), {
+          timeout: 12_000,
+        })
+        .toStrictEqual(
+          [
+            [busy, 'idle', 'closed', 'closed', 'external'],
+            [background, 'idle', 'closed', 'closed', 'external'],
+          ].sort(byNativeId),
+        );
+    });
+  },
+);
+
+test(
+  'claude agents entries for the processes this runtime started are left out, whatever session they name',
+  // one five-second poll after the session is created
+  { timeout: 20_000 },
+  async () => {
+    await withClaudeRuntime(async (fixture) => {
+      await live(fixture);
+      const status = await fixture.runtime.request({ kind: 'status' });
+      if (status.kind !== 'status') throw new Error('Missing runtime status');
+      const created = await fixture.runtime.request({
+        kind: 'action',
+        action: {
+          id: randomUUID(),
+          runtimeEpoch: status.result.runtimeEpoch,
+          command: {
+            kind: 'thread-create',
+            provider: 'claude',
+            workspaceRoot: fixture.workspaceRoot,
+            name: 'owned-process',
+          },
+        },
+      });
+      if (created.kind !== 'action' || !created.result.threadId) throw new Error('Missing thread');
+      const threadId = created.result.threadId;
+      await expect
+        .poll(async () => {
+          const thread = await fixture.runtime.request({ kind: 'managed-thread', threadId });
+          return thread.kind === 'managed-thread' ? thread.result?.state : null;
+        })
+        .toBe('idle');
+      // the fake records the PID of each native process the runtime starts for a session
+      const { pid } = JSON.parse(
+        (await readFile(join(fixture.root, 'claude-pids.jsonl'), 'utf8'))
+          .trim()
+          .split('\n')
+          .at(-1)!,
+      ) as { pid: number };
+      const external = randomUUID();
+      await report(fixture, {
+        agents: [
+          {
+            pid,
+            cwd: fixture.workspaceRoot,
+            kind: 'interactive',
+            sessionId: randomUUID(),
+            status: 'busy',
+          },
+          {
+            pid: pid + 1,
+            cwd: fixture.workspaceRoot,
+            kind: 'interactive',
+            sessionId: external,
+            status: 'busy',
+          },
+        ],
+      });
+      await expect
+        .poll(
+          async () =>
+            (await transitions(fixture))
+              .filter((transition) => transition.ownership === 'external')
+              .map(summary),
+          { timeout: 12_000 },
+        )
+        .toStrictEqual([[external, null, 'running', 'turn-started', 'external']]);
     });
   },
 );
@@ -286,3 +406,84 @@ test('the active-sessions poll waits 30 seconds in the background and 5 while li
     stopHoldingDelays();
   }
 });
+
+test(
+  "a Claude session a terminal runs stays the terminal's: HQ neither adopts it nor sends a session it runs any input",
+  // each change waits for a five-second poll
+  { timeout: 40_000 },
+  async () => {
+    await withClaudeRuntime(async (fixture) => {
+      await live(fixture);
+      const submit = async (command: object) => {
+        const status = await fixture.runtime.request({ kind: 'status' });
+        if (status.kind !== 'status') throw new Error('Missing runtime status');
+        return fixture.runtime.request({
+          kind: 'action',
+          action: {
+            id: randomUUID(),
+            runtimeEpoch: status.result.runtimeEpoch,
+            command: command as never,
+          },
+        });
+      };
+      const terminal = randomUUID();
+      await writeFile(
+        fixture.transcript(terminal),
+        `${JSON.stringify(claudeRecord(fixture.workspaceRoot, terminal))}\n`,
+      );
+      const listing = (sessionId: string) => ({
+        pid: 7,
+        cwd: fixture.workspaceRoot,
+        kind: 'interactive',
+        sessionId,
+        status: 'idle',
+      });
+      await report(fixture, { agents: [listing(terminal)] });
+      await expect
+        .poll(async () => (await transitions(fixture)).map(summary), { timeout: 12_000 })
+        .toStrictEqual([[terminal, null, 'idle', 'opened', 'external']]);
+      const adoption = {
+        kind: 'thread-adopt',
+        provider: 'claude',
+        workspaceRoot: fixture.workspaceRoot,
+        nativeId: terminal,
+        name: 'from-terminal',
+        operatorConfirmation: 'A message from the app',
+      };
+      await expect(submit(adoption)).rejects.toMatchObject({ code: 'JG_AGENT_HQ_ACTION_CONFLICT' });
+      // once the terminal closes it, HQ takes it
+      await report(fixture, { agents: [] });
+      await expect
+        .poll(async () => (await transitions(fixture)).slice(1).map(summary), { timeout: 12_000 })
+        .toStrictEqual([[terminal, 'idle', 'closed', 'closed', 'external']]);
+      expect(await submit(adoption)).toMatchObject({ kind: 'action' });
+      // a session HQ started that a terminal then resumes takes no input from HQ
+      const created = await submit({
+        kind: 'thread-create',
+        provider: 'claude',
+        workspaceRoot: fixture.workspaceRoot,
+        name: 'resumed-in-terminal',
+      });
+      if (created.kind !== 'action' || !created.result.threadId) throw new Error('Missing thread');
+      const threadId = created.result.threadId;
+      let nativeId = '';
+      await expect
+        .poll(async () => {
+          const thread = await fixture.runtime.request({ kind: 'managed-thread', threadId });
+          nativeId = thread.kind === 'managed-thread' ? (thread.result?.nativeId ?? '') : '';
+          return thread.kind === 'managed-thread' ? thread.result?.state : null;
+        })
+        .toBe('idle');
+      const processes = async () =>
+        (await readFile(join(fixture.root, 'claude-pids.jsonl'), 'utf8')).trim().split('\n').length;
+      const before = await processes();
+      await report(fixture, { agents: [listing(nativeId)] });
+      const runsBefore = await runs(fixture);
+      await expect.poll(() => runs(fixture), { timeout: 12_000 }).toBeGreaterThan(runsBefore);
+      await expect(
+        submit({ kind: 'message', threadId, input: { kind: 'text', text: 'From the app' } }),
+      ).rejects.toMatchObject({ code: 'JG_AGENT_HQ_ACTION_CONFLICT' });
+      expect(await processes()).toBe(before);
+    });
+  },
+);

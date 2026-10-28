@@ -1,6 +1,15 @@
 // open native sessions are bounded independently of the durable thread collection
 export const CONTROLLED_THREAD_CAPACITY = 32;
 
+/*
+ * A managed thread HQ created empty, still open and not archived, that no turn has started. Forks
+ * and adopted sessions start with native history, so they never match.
+ */
+export const UNSTARTED_CONDITION = `active_turn_id IS NULL AND last_turn_id IS NULL AND is_archived = 0
+  AND state != 'inactive' AND fork_source_thread_id IS NULL
+  AND EXISTS (SELECT 1 FROM hq_action WHERE hq_action.id = hq_thread.registration_action_id
+    AND hq_action.kind = 'thread-create')`;
+
 // explicit selections keep queue bodies out of collection reads
 export const THREAD_COLUMNS =
   'id, provider, native_id, native_lineage, fork_source_thread_id, is_archived, name, workspace_root, ownership, runtime_epoch, active_turn_id, last_turn_id, last_turn_state, pending_action_id, state, registration_action_id, created_at, updated_at';

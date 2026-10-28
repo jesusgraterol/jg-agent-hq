@@ -30,6 +30,7 @@ import {
 import { capabilityUnavailable } from '../registry/index.js';
 
 import { createCodexProvider } from './codex.js';
+import { MAX_LOADED_THREAD_PAGES } from './constants.js';
 import { createCodexEvents, toProviderThread } from './events.js';
 
 /**
@@ -43,27 +44,49 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
     // whether each session is observed, read once: Codex saves it and it's inside an allowed workspace
     const allowedSessions = new Map<string, boolean>();
     let observations = Promise.resolve();
+    // records a session's state, read from Codex when no status change reported it
+    const record = async (nativeId: string, reported: ISessionState | null): Promise<void> => {
+      let isAllowed = allowedSessions.get(nativeId);
+      let state = reported;
+      if (isAllowed === undefined || state === null) {
+        const observed = await native.readObservedThread(nativeId);
+        state ??= observed.thread.state;
+        isAllowed =
+          !observed.isEphemeral &&
+          (await resolveWorkspaceTarget(observed.thread.workspaceRoot, context.allowedRoots)
+            .then(() => true)
+            .catch(() => false));
+        if (allowedSessions.size >= 1024)
+          allowedSessions.delete(allowedSessions.keys().next().value!);
+        allowedSessions.set(nativeId, isAllowed);
+      }
+      if (isAllowed) context.events.session(nativeId, state);
+    };
     const observeSession = (nativeId: string, state: ISessionState): void => {
       observations = observations
-        .then(async () => {
-          let isAllowed = allowedSessions.get(nativeId);
-          if (isAllowed === undefined) {
-            const observed = await native.readObservedThread(nativeId);
-            isAllowed =
-              !observed.isEphemeral &&
-              (await resolveWorkspaceTarget(observed.thread.workspaceRoot, context.allowedRoots)
-                .then(() => true)
-                .catch(() => false));
-            if (allowedSessions.size >= 1024)
-              allowedSessions.delete(allowedSessions.keys().next().value!);
-            allowedSessions.set(nativeId, isAllowed);
-          }
-          if (isAllowed) context.events.session(nativeId, state);
-        })
+        .then(() => record(nativeId, state))
         // an unreadable session stays unobserved until its next status change
         .catch(() => undefined);
     };
-    native.setEvents(createCodexEvents(native, context.events, observeSession));
+    /*
+     * A session the daemon already ran when this connection opened reports no status change until
+     * it next changes, so every loaded thread's state is read on each connect.
+     */
+    const observeLoaded = (): void => {
+      observations = observations
+        .then(async () => {
+          let cursor: string | undefined;
+          for (let page = 0; page < MAX_LOADED_THREAD_PAGES; page += 1) {
+            const loaded = await native.listLoadedThreads(cursor);
+            for (const nativeId of loaded.data) await record(nativeId, null).catch(() => undefined);
+            if (loaded.nextCursor === null) return;
+            cursor = loaded.nextCursor;
+          }
+        })
+        .catch(() => undefined);
+    };
+    native.setEvents(createCodexEvents(native, context.events, observeSession, observeLoaded));
+    observeLoaded();
     const verifyRoot = async (workspaceRoot: string, expectedRoot: string): Promise<void> => {
       if ((await resolveWorkspaceTarget(workspaceRoot, context.allowedRoots)) !== expectedRoot)
         throw new Exception('The HQ target is outside the allowed workspaces', {

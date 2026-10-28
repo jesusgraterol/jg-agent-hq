@@ -33,6 +33,7 @@ export const createCodexRpc = async (handlers: {
   request(id: string | number, method: string, params: unknown): void;
   lateResponse(id: string, result: unknown, error: unknown): void;
   unavailable(): void;
+  opened(): void;
 }) => {
   const manifest = z
     .object({ version: z.string() })
@@ -228,6 +229,7 @@ export const createCodexRpc = async (handlers: {
     reopening ??= (async () => {
       try {
         connection = await open();
+        handlers.opened();
       } finally {
         reopening = undefined;
       }

@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
 
 import type { IHistoryItem } from '../../../contracts/index.js';
 
@@ -45,6 +45,10 @@ const createEvents = () => {
   return { events, items };
 };
 const streamEvent = (event: unknown) => ({ type: 'stream_event', session_id: 'session', event });
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 test('live frames and previews present what history will: thinking and notifications left out, edits as file changes', () => {
   const session = createSession();
@@ -174,4 +178,40 @@ test('live frames and previews present what history will: thinking and notificat
     },
   ]);
   expect(session.previews.size).toBe(0);
+});
+
+test('a live item is timed when its frame arrives, a preview and its record alike', () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const session = createSession();
+  const { events, items } = createEvents();
+  vi.setSystemTime(new Date('2026-10-28T09:00:00.000Z'));
+  receiveClaudeMessage(
+    session,
+    streamEvent({ type: 'message_start', message: { id: 'api' } }),
+    events,
+  );
+  receiveClaudeMessage(
+    session,
+    streamEvent({
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'text', text: '' },
+    }),
+    events,
+  );
+  vi.setSystemTime(new Date('2026-10-28T09:00:05.000Z'));
+  receiveClaudeMessage(
+    session,
+    {
+      type: 'assistant',
+      session_id: 'session',
+      uuid: 'answer',
+      message: { id: 'api', role: 'assistant', content: [{ type: 'text', text: 'Done' }] },
+    },
+    events,
+  );
+  expect(items.map(({ item }) => [item.nativeId, item.createdAt])).toStrictEqual([
+    ['live:input:api:0', Date.parse('2026-10-28T09:00:00.000Z')],
+    ['answer', Date.parse('2026-10-28T09:00:05.000Z')],
+  ]);
 });

@@ -75,7 +75,7 @@ export const FilePatchSchema = z.object({
 });
 export type IFilePatch = z.infer<typeof FilePatchSchema>;
 export const SeekSchema = z.strictObject({
-  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
   nativeId: z.uuid(),
 });
 export const EntrySeekSchema = z.strictObject({

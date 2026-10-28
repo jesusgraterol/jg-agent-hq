@@ -62,6 +62,7 @@ export const toThreadSummary = (thread: INativeThread): IThreadSummary =>
     ownership: 'external',
     managedId: null,
     historyState: 'available',
+    terminal: null,
   });
 
 /**
@@ -134,13 +135,17 @@ const toHistoryFile = (change: z.infer<typeof ChangesSchema>['changes'][number])
 
 /**
  * Presents one native item as the CLI shows it, shared by history pages, live items and evidence.
- * Outcome and files come from the full item, before the text is cut.
+ * Outcome and files come from the full item, before the text is cut. Times come from the item's
+ * turn, which Codex times across all of its history: an operator message takes its turn's start
+ * and every other item its turn's end, or its start while the turn runs; an item whose turn isn't
+ * known has no time.
  * @returns The item, or null for reasoning, which the CLI leaves out of history.
  * @throws
  * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
  */
 export const toHistoryItem = (
   { turnId, item }: INativeItem,
+  turn: Pick<ITurnSummary, 'startedAt' | 'completedAt'> | undefined,
   fullBody = false,
 ): IHistoryItem | null => {
   let kind: IHistoryItem['kind'] = 'unsupported';
@@ -225,6 +230,12 @@ export const toHistoryItem = (
     callId: null,
     outcome,
     files,
+    createdAt:
+      turn === undefined
+        ? null
+        : item.type === 'userMessage'
+          ? turn.startedAt
+          : (turn.completedAt ?? turn.startedAt),
   });
 };
 

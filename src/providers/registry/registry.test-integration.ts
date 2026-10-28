@@ -124,6 +124,7 @@ const createFixtureProvider = () => {
           ownership: 'external',
           managedId: null,
           historyState: 'available',
+          terminal: null,
         }),
         readLogin: async () => ({
           state: 'unavailable',
@@ -264,6 +265,7 @@ const createFixtureProvider = () => {
             ownership: 'external',
             managedId: null,
             historyState: 'available',
+            terminal: null,
           });
           if (shouldDeferCreation) {
             pendingCreation = { requestId, nativeId, workspaceRoot };
@@ -370,6 +372,7 @@ const createFixtureProvider = () => {
                   outcome: null,
                   files: [],
                   provenance: nativeProvenance('agent-message'),
+                  createdAt: null,
                 },
                 true,
               );
@@ -387,6 +390,7 @@ const createFixtureProvider = () => {
               outcome: null,
               files: [],
               provenance: nativeProvenance('agent-message'),
+              createdAt: null,
             },
             true,
           );
@@ -619,6 +623,7 @@ test('a provider cannot label a live user message as an authenticated operator s
           callId: null,
           outcome: null,
           files: [],
+          createdAt: null,
           provenance: {
             origin: 'operator',
             source: 'authenticated-host-action',
@@ -1146,6 +1151,7 @@ test('a third provider reads its observed sessions for active-sessions, and an a
             ownership: 'external',
             managedId: null,
             historyState: 'available',
+            terminal: null,
           },
         ],
         isTruncated: false,

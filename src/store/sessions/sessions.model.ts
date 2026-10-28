@@ -80,10 +80,13 @@ export class SessionsModel {
     const now = Date.now();
     this.__database.exec('BEGIN IMMEDIATE');
     try {
+      /*
+       * A session HQ runs keeps its transitions on its managed record instead; one HQ closed is
+       * observed again, so a terminal that continues it shows.
+       */
       const managed = this.__database.prepare(
-        'SELECT 1 FROM hq_thread WHERE provider = ? AND native_id = ?',
+        "SELECT 1 FROM hq_thread WHERE provider = ? AND native_id = ? AND state != 'inactive'",
       );
-      // an adopted session keeps its transitions on its managed record instead
       const forget = this.__database.prepare(
         'DELETE FROM hq_observed_session WHERE provider = ? AND native_id = ?',
       );
@@ -147,13 +150,17 @@ export class SessionsModel {
     nativeIds: string[],
   ): { nativeId: string; state: ISessionState }[] {
     const managed = this.__database.prepare(
-      "SELECT coalesce(hq_session_state_map.session_state, (SELECT state FROM hq_session_transition WHERE thread_id = hq_thread.id ORDER BY sequence DESC LIMIT 1), 'unknown') AS state FROM hq_thread INNER JOIN hq_session_state_map ON hq_session_state_map.thread_state = hq_thread.state WHERE hq_thread.provider = ? AND hq_thread.native_id = ?",
+      "SELECT coalesce(hq_session_state_map.session_state, (SELECT state FROM hq_session_transition WHERE thread_id = hq_thread.id ORDER BY sequence DESC LIMIT 1), 'unknown') AS state, hq_thread.state = 'inactive' AS is_closed FROM hq_thread INNER JOIN hq_session_state_map ON hq_session_state_map.thread_state = hq_thread.state WHERE hq_thread.provider = ? AND hq_thread.native_id = ?",
     );
     const observed = this.__database.prepare(
       'SELECT state FROM hq_observed_session WHERE provider = ? AND native_id = ?',
     );
     return nativeIds.flatMap((nativeId) => {
-      const row = managed.get(provider, nativeId) ?? observed.get(provider, nativeId);
+      // a session HQ closed takes the state observed since, while a terminal continues it
+      const record = managed.get(provider, nativeId);
+      const row = record?.is_closed
+        ? (observed.get(provider, nativeId) ?? record)
+        : (record ?? observed.get(provider, nativeId));
       return row ? [{ nativeId, state: SessionStateSchema.parse(row.state) }] : [];
     });
   }

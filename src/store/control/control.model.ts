@@ -36,6 +36,7 @@ import {
   CONTROLLED_THREAD_CAPACITY,
   EVENT_COLUMNS,
   THREAD_COLUMNS,
+  UNSTARTED_CONDITION,
 } from './constants.js';
 import { toActionReceipt, toActionSummary, toManagedThread } from './transformers.js';
 import {
@@ -218,6 +219,55 @@ export class ControlModel {
       data: rows.slice(0, page.limit).map((row) => toManagedThread(ThreadRowSchema.parse(row))),
       hasMore: rows.length > page.limit,
     };
+  }
+
+  /**
+   * Reads one provider's managed threads in a workspace that no turn has started, newest first:
+   * each was created empty with `thread-create`, has a native ID and no active or last turn, and
+   * is neither archived nor closed.
+   * @returns At most `limit` threads and whether more exist.
+   */
+  public listUnstartedThreads(
+    provider: IManagedThread['provider'],
+    workspaceRoot: string,
+    limit: number,
+  ): { data: IManagedThread[]; isTruncated: boolean } {
+    const rows = this.__database
+      .prepare(
+        `SELECT ${THREAD_COLUMNS} FROM hq_thread
+      WHERE workspace_root = ? AND provider = ? AND native_id IS NOT NULL AND ${UNSTARTED_CONDITION}
+      ORDER BY hq_thread.created_at DESC, hq_thread.id DESC LIMIT ?`,
+      )
+      .all(workspaceRoot, provider, limit + 1);
+    return {
+      data: rows.slice(0, limit).map((row) => toManagedThread(ThreadRowSchema.parse(row))),
+      isTruncated: rows.length > limit,
+    };
+  }
+
+  /** Whether a managed thread came from adopting a native session rather than from HQ creating it. */
+  public isAdoptedThread(threadId: string): boolean {
+    return (
+      this.__database
+        .prepare(
+          `SELECT 1 FROM hq_thread INNER JOIN hq_action ON hq_action.id = hq_thread.registration_action_id
+        WHERE hq_thread.id = ? AND hq_action.kind = 'thread-adopt'`,
+        )
+        .get(threadId) !== undefined
+    );
+  }
+
+  /** Reads a managed thread by its native ID when no turn has started it. */
+  public getUnstartedThread(
+    provider: IManagedThread['provider'],
+    nativeId: string,
+  ): IManagedThread | null {
+    const row = this.__database
+      .prepare(
+        `SELECT ${THREAD_COLUMNS} FROM hq_thread WHERE provider = ? AND native_id = ? AND ${UNSTARTED_CONDITION}`,
+      )
+      .get(provider, nativeId);
+    return row ? toManagedThread(ThreadRowSchema.parse(row)) : null;
   }
 
   /** Reads action metadata without selecting queued message bodies. */

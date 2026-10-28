@@ -25,8 +25,10 @@ export {
 // wire contracts
 export {
   HqRequestSchema,
+  SessionTerminalSchema,
   ThreadSummarySchema,
   ActiveSessionsSchema,
+  UnstartedThreadsSchema,
   TurnSummarySchema,
   HistoryFileSchema,
   HistoryItemSchema,
@@ -62,8 +64,10 @@ export type {
 export type {
   IHqRequest,
   IHqRequestInput,
+  ISessionTerminal,
   IThreadSummary,
   IActiveSessions,
+  IUnstartedThreads,
   ITurnSummary,
   IHistoryFile,
   IHistoryItem,

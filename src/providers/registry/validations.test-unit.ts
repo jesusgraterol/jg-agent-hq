@@ -35,6 +35,7 @@ const item = (nativeId: string, turnId: string) => ({
   callId: null,
   outcome: null,
   files: [],
+  createdAt: null,
 });
 const itemsPage = (data: unknown[]) => ({
   kind: 'items',

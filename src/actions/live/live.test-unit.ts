@@ -14,6 +14,7 @@ const item = {
   outcome: null,
   files: [],
   provenance: nativeProvenance('agent-message'),
+  createdAt: null,
 };
 
 test('unchanged live reads avoid copying bodies; append, completion, reconciliation and eviction invalidate the revision', () => {

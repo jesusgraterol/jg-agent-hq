@@ -124,6 +124,8 @@ export const receiveClaudeMessage = (
         uuid: message.uuid,
         message: message.message,
         toolUseResult: message.tool_use_result,
+        // a live item is timed when its frame arrives
+        timestamp: new Date().toISOString(),
       }),
       input.id,
     );
@@ -191,6 +193,7 @@ export const receiveClaudeMessage = (
           type: 'assistant',
           uuid: id,
           message: { role: 'assistant', content: [block.content_block] },
+          timestamp: new Date().toISOString(),
         },
         input.id,
       );

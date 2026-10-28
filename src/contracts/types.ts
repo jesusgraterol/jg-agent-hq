@@ -170,10 +170,22 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     limit: z.number().int().min(1).max(128).default(32),
   }),
   z.strictObject({ kind: z.literal('active-sessions') }),
+  z.strictObject({
+    kind: z.literal('unstarted-threads'),
+    provider: TargetFields.provider,
+    workspaceRoot: TargetFields.workspaceRoot,
+  }),
   z.strictObject({ kind: z.literal('observation-pace'), pace: ObservationPaceSchema }),
 ]);
 export type IHqRequest = z.infer<typeof HqRequestSchema>;
 export type IHqRequestInput = z.input<typeof HqRequestSchema>;
+
+// how a terminal runs a Claude session: in its own window, or in Claude Code's background service
+export const SessionTerminalSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('interactive') }),
+  z.object({ kind: z.literal('background'), attachId: z.string().min(1).max(64) }),
+]);
+export type ISessionTerminal = z.infer<typeof SessionTerminalSchema>;
 
 // native discovery is external/read-only until explicitly adopted for control
 export const ThreadSummarySchema = z.object({
@@ -189,6 +201,8 @@ export const ThreadSummarySchema = z.object({
   ownership: z.enum(['external', 'managed', 'uncertain']),
   managedId: z.uuid().nullable(),
   historyState: z.enum(['available', 'unavailable']),
+  // the terminal that runs the session, while one does; always null for Codex
+  terminal: SessionTerminalSchema.nullable(),
 });
 export type IThreadSummary = z.infer<typeof ThreadSummarySchema>;
 
@@ -198,6 +212,13 @@ export const ActiveSessionsSchema = z.object({
   isTruncated: z.boolean(),
 });
 export type IActiveSessions = z.infer<typeof ActiveSessionsSchema>;
+
+// one workspace's managed threads that no turn has started yet, newest first, with whether more exist
+export const UnstartedThreadsSchema = z.object({
+  data: z.array(ThreadSummarySchema).max(DEFAULT_PAGE_SIZE),
+  isTruncated: z.boolean(),
+});
+export type IUnstartedThreads = z.infer<typeof UnstartedThreadsSchema>;
 
 export const TurnSummarySchema = z.object({
   nativeId: NativeIdSchema,
@@ -219,7 +240,8 @@ export type IHistoryFile = z.infer<typeof HistoryFileSchema>;
  * Explicit presentation fields; unknown native item kinds are labeled unsupported. `callId` pairs
  * a tool call with its result, `outcome` is what the provider recorded, null when unknown or
  * running, and `files` lists a file change's files; both come from the full record, so cutting
- * the text never changes them.
+ * the text never changes them. `createdAt` is the item's time in Unix milliseconds, or null when
+ * the provider records none.
  */
 export const HistoryItemSchema = z.object({
   nativeId: NativeIdSchema,
@@ -232,6 +254,7 @@ export const HistoryItemSchema = z.object({
   callId: z.string().min(1).max(4096).nullable(),
   outcome: z.enum(['succeeded', 'failed']).nullable(),
   files: z.array(HistoryFileSchema).max(MAX_PAGE_SIZE),
+  createdAt: z.number().int().nullable(),
 });
 export type IHistoryItem = z.infer<typeof HistoryItemSchema>;
 export const LiveItemsSchema = z.object({
@@ -396,6 +419,7 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('live-items'), result: LiveItemsSchema }),
   z.object({ kind: z.literal('session-states'), result: SessionTransitionPageSchema }),
   z.object({ kind: z.literal('active-sessions'), result: ActiveSessionsSchema }),
+  z.object({ kind: z.literal('unstarted-threads'), result: UnstartedThreadsSchema }),
   z.object({
     kind: z.literal('observation-pace'),
     result: z.object({ pace: ObservationPaceSchema }),

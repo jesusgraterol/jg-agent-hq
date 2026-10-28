@@ -245,6 +245,8 @@ test('authorized native history is re-read after a delayed flush and large frame
           contentBoundary: 'untrusted',
           grantsAuthority: false,
         },
+        // an agent message takes its completed turn's end
+        createdAt: 1_700_000_001_000,
       },
     ]);
     const calls = CallsSchema.parse(
@@ -258,6 +260,8 @@ test('authorized native history is re-read after a delayed flush and large frame
         [
           'initialize',
           'initialized',
+          // each connection reads the daemon's loaded threads for sessions already running
+          'thread/loaded/list',
           'thread/read',
           'thread/turns/list',
           'thread/items/list',
@@ -342,6 +346,79 @@ test('Codex items read newest first toward older ones, cut their text, and find 
       const empty = await request({ ...target, nativeItemId, turnId });
       expect(empty.kind === 'items' && empty.result).toMatchObject({ data: [], nextCursor: null });
     }
+  });
+});
+
+test('Codex items take their turn times, and a page reads its turns once, newest first and at most eight times', async () => {
+  await withRuntime(async ({ root, workspaceRoot, control, request }) => {
+    const target = {
+      kind: 'items',
+      provider: 'codex',
+      workspaceRoot,
+      nativeId: 'thread-1023',
+    } as const;
+    const message = (id: string, turnId: string) => ({
+      turnId,
+      item: { id, type: 'agentMessage', text: id },
+    });
+    const prompt = (id: string, turnId: string) => ({
+      turnId,
+      item: { id, type: 'userMessage', content: [{ type: 'text', text: id }] },
+    });
+    // 1,100 old turns, then a completed turn and a running one, listed oldest first
+    await control({
+      turns: [
+        ...Array.from({ length: 1100 }, (_, index) => ({
+          id: `old-${index}`,
+          status: 'completed',
+          startedAt: 1_600_000_000 + index * 10,
+          completedAt: 1_600_000_005 + index * 10,
+        })),
+        { id: 'turn-a', status: 'completed', startedAt: 1_700_000_000, completedAt: 1_700_000_060 },
+        { id: 'turn-b', status: 'inProgress', startedAt: 1_700_100_000, completedAt: null },
+      ],
+      items: [
+        message('oldest', 'old-0'),
+        message('older', 'old-900'),
+        prompt('prompt-a', 'turn-a'),
+        message('answer-a', 'turn-a'),
+        prompt('prompt-b', 'turn-b'),
+        message('answer-b', 'turn-b'),
+      ],
+    });
+    const readTurns = async () =>
+      CallsSchema.parse(
+        (await readFile(join(root, 'calls.jsonl'), 'utf8'))
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line)),
+      )
+        .filter((call) => call.method === 'thread/turns/list')
+        .map((call) => call.params);
+    const before = (await readTurns()).length;
+    const first = await request({ ...target, limit: 4 });
+    if (first.kind !== 'items') throw new Error('wrong response');
+    expect(first.result.data.map((item) => [item.nativeId, item.createdAt])).toStrictEqual([
+      // the running turn times every item by its start
+      ['answer-b', 1_700_100_000_000],
+      ['prompt-b', 1_700_100_000_000],
+      // a completed turn times its operator message by its start and the rest by its end
+      ['answer-a', 1_700_000_060_000],
+      ['prompt-a', 1_700_000_000_000],
+    ]);
+    const firstReads = (await readTurns()).slice(before);
+    expect(firstReads).toStrictEqual([
+      { threadId: 'thread-1023', limit: 128, sortDirection: 'desc', itemsView: 'notLoaded' },
+    ]);
+    const next = await request({ ...target, limit: 4, cursor: first.result.nextCursor! });
+    if (next.kind !== 'items') throw new Error('wrong response');
+    // old-900 is on the second page of turns; old-0 lies past the eighth, so it has no time
+    expect(next.result.data.map((item) => [item.nativeId, item.createdAt])).toStrictEqual([
+      ['older', 1_600_009_005_000],
+      ['oldest', null],
+    ]);
+    expect((await readTurns()).slice(before + 1)).toHaveLength(8);
   });
 });
 

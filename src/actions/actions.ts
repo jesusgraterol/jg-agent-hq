@@ -12,6 +12,7 @@ import type {
   IPreparedInput,
   IPlanRevisionWorkflow,
   ILoginObservation,
+  ISessionTerminal,
 } from '../contracts/index.js';
 import { getErrorKind } from '../errors/index.js';
 import type { INativePrompt, IProviderThread } from '../providers/index.js';
@@ -48,6 +49,7 @@ export const createActions = (
   plans: ReturnType<typeof createPlans>,
   runBackground: (operation: () => Promise<void>) => Promise<void>,
   invalidateNativeCatalogs: () => void,
+  claudeTerminalOf: (nativeId: string) => ISessionTerminal | null,
 ) => {
   const prompts = new Map<string, { native: INativePrompt; threadId: string }>();
   const controlled = new Map<string, { provider: IManagedThread['provider']; nativeId: string }>();
@@ -886,9 +888,12 @@ export const createActions = (
       prepared.workspaceRoot = workspaceRoot;
     }
     if (command.kind === 'thread-adopt') {
+      // a terminal that runs a Claude session keeps it; HQ takes it only once it runs nowhere
+      if (command.provider === 'claude' && claudeTerminalOf(command.nativeId)) conflict();
       const target = await control.inspectThread(command.nativeId, prepared.workspaceRoot!);
+      // nobody holds it, or the client that does is between turns, as a Codex terminal can be
       if (
-        !target.canAdopt ||
+        (!target.canAdopt && !target.canResume) ||
         (await resolveWorkspaceTarget(target.thread.workspaceRoot, roots)) !==
           prepared.workspaceRoot
       )
@@ -902,6 +907,7 @@ export const createActions = (
         command.kind === 'thread-recover' && command.recovery.kind === 'attach'
           ? command.recovery.nativeId
           : thread.nativeId;
+      if (nativeId && thread.provider === 'claude' && claudeTerminalOf(nativeId)) conflict();
       if (nativeId) {
         const target = await control.inspectThread(nativeId, thread.workspaceRoot);
         const canResume =
@@ -931,9 +937,14 @@ export const createActions = (
     if (command.kind === 'message' || command.kind === 'queue') {
       const thread = await store.getThread(command.threadId);
       if (!thread?.nativeId) conflict();
+      // a terminal that resumed a Claude session HQ runs has it now, so HQ sends nothing
+      if (thread.provider === 'claude' && claudeTerminalOf(thread.nativeId)) conflict();
       const files = await readInputFiles(command.input.files ?? [], thread.workspaceRoot, roots);
       let selection: Parameters<typeof skills.prepare>[1] = command.input;
       if (scopes.collaboration) {
+        // HQ's agent tools never join a Codex session it adopted, since the terminal's session holds it
+        if (thread.provider === 'codex' && (await store.isAdoptedThread(thread.id)))
+          capabilityUnavailable();
         const job = await store.dispatchJob(
           scopes.collaboration.taskId,
           scopes.collaboration.requestId,
