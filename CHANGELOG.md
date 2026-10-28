@@ -1,5 +1,15 @@
 # Changelog
 
+## 6.0.0
+
+- List `threads` by last activity, newest first, for Claude and Codex, with cursors that continue in that order; they were listed by creation time.
+- Add `unstarted-threads`, which returns a workspace's managed sessions that `thread-create` made empty and no turn has started, at most 32 and newest first. `thread` and `items` answer for them from their HQ records, so a new session opens before its provider writes any history.
+- Read session states that were already live when the runtime connects. Each Codex connection reads the daemon's loaded threads, leaving out ephemeral ones, so a session already running shows as running. Claude states come from the fields `claude agents --json` reports: an entry without a `pid` isn't running, `status: "waiting"` is waiting, `status: "idle"` is idle and `state: "working"` is running, and the processes the runtime started are left out.
+- Name the terminal that runs a Claude session. Thread summaries gain `terminal`: `interactive`, `background` with the `attachId` that `claude attach` takes, or null, and a provider's summaries must carry it. While a terminal runs a Claude session, HQ refuses to adopt or resume it or send it input.
+- Adopt a Codex session a terminal holds between turns, resuming it without settings overrides; adoption during a turn is refused. A session HQ closed is observed again like any other, and HQ resumes it when the terminal still has it loaded. A collaboration request to a Codex session HQ adopted is refused, since its agent tools never join it.
+- Give history and live items `createdAt`, in Unix milliseconds or null, and a provider's items must carry it. A Claude item takes its record's time, and a live one the time its frame arrived. A Codex item takes its turn's times: an operator message the turn's start, every other item its end, or its start while the turn runs. A Codex history page reads its items' turns newest first, 128 at a time and at most 8 times.
+- Keep 5.x's storage schema, so databases and snapshots written by 5.x open as they are.
+
 ## 5.0.1
 
 - Index Claude transcripts with less memory. Each record is read once, instead of being copied again for every 64 KiB chunk it spans, and the SQLite worker's young generation is capped at 16 MiB. Indexing a 224 MB transcript held the runtime at about 200 MB instead of about 300 MB. The storage schema is unchanged, so databases and snapshots written by 5.0.0 open as they are.
