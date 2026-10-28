@@ -18,7 +18,7 @@ import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 import type { IStore } from '../store/index.js';
 import type { IActiveSessionRecord } from '../store/sessions/index.js';
 
-import type { IHistoryRequest } from './types.js';
+import type { IClaudeSessions, IHistoryRequest } from './types.js';
 import {
   evidencePosition,
   verifyEvidencePage,
@@ -48,6 +48,7 @@ export const readNativeHistory = async (
   registry: ReturnType<typeof createProviderRegistry>,
   projection: IStore,
   allowedRoots: string[],
+  claude: IClaudeSessions,
 ): Promise<IHqResponse> => {
   const workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, allowedRoots);
   if (command.kind === 'sessions') {
@@ -65,6 +66,7 @@ export const readNativeHistory = async (
       registry,
       projection,
       allowedRoots,
+      claude,
     );
     if (page.kind !== 'threads')
       throw new Exception('The HQ provider integration failed', {
@@ -120,7 +122,7 @@ export const readNativeHistory = async (
           result: { data: [], history: 'persisted', source: 'native', nextCursor: null },
         });
       const [summary] = await toManagedSummaries(projection, [unstarted]);
-      return HqResponseSchema.parse({ kind: 'thread', result: summary });
+      return HqResponseSchema.parse({ kind: 'thread', result: withTerminal(summary!, claude) });
     }
   }
   const adapter = await registry.get(command.provider);
@@ -171,6 +173,7 @@ export const readNativeHistory = async (
         thread.nativeLineage = retainNativeLineage(control.nativeLineage, thread.nativeLineage);
       }
       thread.state = states.get(thread.nativeId) ?? thread.state;
+      thread.terminal = withTerminal(thread, claude).terminal;
     }
     await projection.remember(
       threads,
@@ -206,6 +209,12 @@ export const readNativeHistory = async (
   return HqResponseSchema.parse(response);
 };
 
+// a summary with the terminal that runs it, which only Claude sessions report
+const withTerminal = (summary: IThreadSummary, claude: IClaudeSessions): IThreadSummary => ({
+  ...summary,
+  terminal: summary.provider === 'claude' ? claude.terminalOf(summary.nativeId) : null,
+});
+
 /**
  * Summarizes managed threads as `threads` does, each in the state its record maps to.
  * @returns One summary per thread, in order.
@@ -238,6 +247,7 @@ const toManagedSummaries = async (
     ownership: thread.ownership,
     managedId: thread.id,
     historyState: 'available',
+    terminal: null,
   }));
 };
 
@@ -253,6 +263,7 @@ export const readUnstartedThreads = async (
   command: Extract<IHqRequest, { kind: 'unstarted-threads' }>,
   projection: IStore,
   allowedRoots: string[],
+  claude: IClaudeSessions,
 ): Promise<IUnstartedThreads> => {
   const workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, allowedRoots);
   const page = await projection.listUnstartedThreads(
@@ -260,7 +271,12 @@ export const readUnstartedThreads = async (
     workspaceRoot,
     DEFAULT_PAGE_SIZE,
   );
-  return { data: await toManagedSummaries(projection, page.data), isTruncated: page.isTruncated };
+  return {
+    data: (await toManagedSummaries(projection, page.data)).map((summary) =>
+      withTerminal(summary, claude),
+    ),
+    isTruncated: page.isTruncated,
+  };
 };
 
 /**
@@ -272,7 +288,7 @@ const toActiveSummary = async (
   record: IActiveSessionRecord,
   registry: ReturnType<typeof createProviderRegistry>,
   resolveRoot: (directory: string) => Promise<string | null>,
-  claudeWorkspaceOf: (nativeId: string) => string | undefined,
+  claude: IClaudeSessions,
 ): Promise<IThreadSummary | null> => {
   const base = { provider: record.provider, nativeId: record.nativeId, state: record.state };
   if (record.thread) {
@@ -289,10 +305,11 @@ const toActiveSummary = async (
       ownership: record.thread.ownership,
       managedId: record.thread.id,
       historyState: 'available',
+      terminal: null,
     };
   }
   if (record.provider === 'claude') {
-    const cwd = claudeWorkspaceOf(record.nativeId);
+    const cwd = claude.workspaceOf(record.nativeId);
     const workspaceRoot = cwd === undefined ? null : await resolveRoot(cwd);
     if (workspaceRoot === null) return null;
     return {
@@ -306,6 +323,7 @@ const toActiveSummary = async (
       ownership: 'external',
       managedId: null,
       historyState: record.history?.isSupported === false ? 'unavailable' : 'available',
+      terminal: null,
     };
   }
   let thread: IThreadSummary;
@@ -334,7 +352,7 @@ export const readActiveSessions = async (
   registry: ReturnType<typeof createProviderRegistry>,
   projection: IStore,
   allowedRoots: string[],
-  claudeWorkspaceOf: (nativeId: string) => string | undefined,
+  claude: IClaudeSessions,
 ): Promise<IActiveSessions> => {
   const records = await projection.listActiveSessions(MAX_PAGE_SIZE);
   // each directory is authorized once per read
@@ -349,8 +367,8 @@ export const readActiveSessions = async (
   };
   const data: IThreadSummary[] = [];
   for (const record of records.data) {
-    const summary = await toActiveSummary(record, registry, resolveRoot, claudeWorkspaceOf);
-    if (summary) data.push(summary);
+    const summary = await toActiveSummary(record, registry, resolveRoot, claude);
+    if (summary) data.push(withTerminal(summary, claude));
   }
   return { data, isTruncated: records.isTruncated };
 };

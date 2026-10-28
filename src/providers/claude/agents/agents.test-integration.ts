@@ -131,6 +131,16 @@ test(
           [stopped, 'unknown'],
         ]),
       );
+      // each running session names the terminal that runs it, with the ID `claude attach` takes
+      expect(
+        new Map(listed.result.data.map((thread) => [thread.nativeId, thread.terminal])),
+      ).toStrictEqual(
+        new Map([
+          [busy, { kind: 'interactive' }],
+          [background, { kind: 'background', attachId: 'background-1' }],
+          [stopped, null],
+        ]),
+      );
       // a question or a permission prompt reports waiting, for either kind of session
       await report(fixture, {
         agents: [
@@ -396,3 +406,84 @@ test('the active-sessions poll waits 30 seconds in the background and 5 while li
     stopHoldingDelays();
   }
 });
+
+test(
+  "a Claude session a terminal runs stays the terminal's: HQ neither adopts it nor sends a session it runs any input",
+  // each change waits for a five-second poll
+  { timeout: 40_000 },
+  async () => {
+    await withClaudeRuntime(async (fixture) => {
+      await live(fixture);
+      const submit = async (command: object) => {
+        const status = await fixture.runtime.request({ kind: 'status' });
+        if (status.kind !== 'status') throw new Error('Missing runtime status');
+        return fixture.runtime.request({
+          kind: 'action',
+          action: {
+            id: randomUUID(),
+            runtimeEpoch: status.result.runtimeEpoch,
+            command: command as never,
+          },
+        });
+      };
+      const terminal = randomUUID();
+      await writeFile(
+        fixture.transcript(terminal),
+        `${JSON.stringify(claudeRecord(fixture.workspaceRoot, terminal))}\n`,
+      );
+      const listing = (sessionId: string) => ({
+        pid: 7,
+        cwd: fixture.workspaceRoot,
+        kind: 'interactive',
+        sessionId,
+        status: 'idle',
+      });
+      await report(fixture, { agents: [listing(terminal)] });
+      await expect
+        .poll(async () => (await transitions(fixture)).map(summary), { timeout: 12_000 })
+        .toStrictEqual([[terminal, null, 'idle', 'opened', 'external']]);
+      const adoption = {
+        kind: 'thread-adopt',
+        provider: 'claude',
+        workspaceRoot: fixture.workspaceRoot,
+        nativeId: terminal,
+        name: 'from-terminal',
+        operatorConfirmation: 'A message from the app',
+      };
+      await expect(submit(adoption)).rejects.toMatchObject({ code: 'JG_AGENT_HQ_ACTION_CONFLICT' });
+      // once the terminal closes it, HQ takes it
+      await report(fixture, { agents: [] });
+      await expect
+        .poll(async () => (await transitions(fixture)).slice(1).map(summary), { timeout: 12_000 })
+        .toStrictEqual([[terminal, 'idle', 'closed', 'closed', 'external']]);
+      expect(await submit(adoption)).toMatchObject({ kind: 'action' });
+      // a session HQ started that a terminal then resumes takes no input from HQ
+      const created = await submit({
+        kind: 'thread-create',
+        provider: 'claude',
+        workspaceRoot: fixture.workspaceRoot,
+        name: 'resumed-in-terminal',
+      });
+      if (created.kind !== 'action' || !created.result.threadId) throw new Error('Missing thread');
+      const threadId = created.result.threadId;
+      let nativeId = '';
+      await expect
+        .poll(async () => {
+          const thread = await fixture.runtime.request({ kind: 'managed-thread', threadId });
+          nativeId = thread.kind === 'managed-thread' ? (thread.result?.nativeId ?? '') : '';
+          return thread.kind === 'managed-thread' ? thread.result?.state : null;
+        })
+        .toBe('idle');
+      const processes = async () =>
+        (await readFile(join(fixture.root, 'claude-pids.jsonl'), 'utf8')).trim().split('\n').length;
+      const before = await processes();
+      await report(fixture, { agents: [listing(nativeId)] });
+      const runsBefore = await runs(fixture);
+      await expect.poll(() => runs(fixture), { timeout: 12_000 }).toBeGreaterThan(runsBefore);
+      await expect(
+        submit({ kind: 'message', threadId, input: { kind: 'text', text: 'From the app' } }),
+      ).rejects.toMatchObject({ code: 'JG_AGENT_HQ_ACTION_CONFLICT' });
+      expect(await processes()).toBe(before);
+    });
+  },
+);

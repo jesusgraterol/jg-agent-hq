@@ -7,5 +7,6 @@ export {
 } from './utilities.js';
 
 // scoped read orchestration
+export type { IClaudeSessions } from './types.js';
 export { readActiveSessions, readNativeHistory, readUnstartedThreads } from './sessions.js';
 export type { IHistoryRequest } from './types.js';

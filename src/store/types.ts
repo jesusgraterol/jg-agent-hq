@@ -186,6 +186,7 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     workspaceRoot: z.string().min(1),
     page: ControlPageSchema,
   }),
+  z.strictObject({ kind: z.literal('thread-adopted'), threadId: z.uuid() }),
   z.strictObject({
     kind: z.literal('thread-unstarted'),
     provider: ManagedThreadSchema.shape.provider,
@@ -587,6 +588,13 @@ export type IStore = {
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   getUnstartedThread(provider: string, nativeId: string): Promise<IManagedThread | null>;
+  /**
+   * Whether a managed thread came from adopting a native session rather than from HQ creating it.
+   * @returns True for an adopted thread.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  isAdoptedThread(threadId: string): Promise<boolean>;
   /**
    * Reads one thread-scoped seek page without queued message bodies.
    * @returns One descending metadata page and whether another seek page exists.

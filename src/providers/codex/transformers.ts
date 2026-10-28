@@ -62,6 +62,7 @@ export const toThreadSummary = (thread: INativeThread): IThreadSummary =>
     ownership: 'external',
     managedId: null,
     historyState: 'available',
+    terminal: null,
   });
 
 /**

@@ -3114,3 +3114,65 @@ test.each([
       });
     }),
 );
+
+test("a request to a Codex session HQ adopted from a terminal is refused, since HQ's agent tools never join it", async () => {
+  await withCollaboration(async (fixture) => {
+    const status = await fixture.native.request({ kind: 'status' });
+    if (status.kind !== 'status') throw new Error('Missing runtime status');
+    const adopted = await fixture.native.request({
+      kind: 'action',
+      action: {
+        id: randomUUID(),
+        runtimeEpoch: status.result.runtimeEpoch,
+        command: {
+          kind: 'thread-adopt',
+          provider: 'codex',
+          workspaceRoot: fixture.native.workspaceRoot,
+          nativeId: 'thread-1023',
+          name: 'adopted-terminal',
+          operatorConfirmation: 'A message from the app',
+        },
+      },
+    });
+    if (adopted.kind !== 'action' || !adopted.result.threadId) throw new Error('Missing thread');
+    const agentId = adopted.result.threadId;
+    await expect
+      .poll(async () => {
+        const receipt = await fixture.native.request({
+          kind: 'receipt',
+          actionId: adopted.result.id,
+        });
+        return receipt.kind === 'receipt' ? receipt.result?.delivery : null;
+      })
+      .toBe('acknowledged');
+    await fixture.call({
+      kind: 'agent-add',
+      id: randomUUID(),
+      taskId: fixture.taskId,
+      agentId,
+      parentAgentId: null,
+      role: 'developer',
+      permissions: fixture.permissions,
+    });
+    const requestId = randomUUID();
+    await publish(fixture, requestId, agentId);
+    await dispatch(fixture, requestId);
+    await expect
+      .poll(async () => (await readRequest(fixture, requestId)).dispatchBlockedReason)
+      .toBe('provider-unavailable');
+    const request = await readRequest(fixture, requestId);
+    expect([request.state, request.currentActionId, request.dispatchCount]).toStrictEqual([
+      'open',
+      null,
+      0,
+    ]);
+    // nothing reached the session
+    expect(
+      (await readFile(join(fixture.native.root, 'calls.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { method: string; params: { threadId?: string } })
+        .filter((call) => call.method === 'turn/start' && call.params.threadId === 'thread-1023'),
+    ).toStrictEqual([]);
+  });
+});

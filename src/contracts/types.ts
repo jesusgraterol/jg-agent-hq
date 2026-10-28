@@ -180,6 +180,13 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
 export type IHqRequest = z.infer<typeof HqRequestSchema>;
 export type IHqRequestInput = z.input<typeof HqRequestSchema>;
 
+// how a terminal runs a Claude session: in its own window, or in Claude Code's background service
+export const SessionTerminalSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('interactive') }),
+  z.object({ kind: z.literal('background'), attachId: z.string().min(1).max(64) }),
+]);
+export type ISessionTerminal = z.infer<typeof SessionTerminalSchema>;
+
 // native discovery is external/read-only until explicitly adopted for control
 export const ThreadSummarySchema = z.object({
   provider: ProviderIdSchema,
@@ -194,6 +201,8 @@ export const ThreadSummarySchema = z.object({
   ownership: z.enum(['external', 'managed', 'uncertain']),
   managedId: z.uuid().nullable(),
   historyState: z.enum(['available', 'unavailable']),
+  // the terminal that runs the session, while one does; always null for Codex
+  terminal: SessionTerminalSchema.nullable(),
 });
 export type IThreadSummary = z.infer<typeof ThreadSummarySchema>;
 

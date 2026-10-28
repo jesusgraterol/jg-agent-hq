@@ -346,6 +346,7 @@ export const createStore = async (
       ),
     listThreads: (workspaceRoot, page) =>
       request({ kind: 'threads', workspaceRoot, page }, ManagedThreadPageSchema),
+    isAdoptedThread: (threadId) => request({ kind: 'thread-adopted', threadId }, z.boolean()),
     getUnstartedThread: (provider, nativeId) =>
       request({ kind: 'thread-unstarted', provider, nativeId }, ManagedThreadSchema.nullable()),
     listUnstartedThreads: (provider, workspaceRoot, limit) =>

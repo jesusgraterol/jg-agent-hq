@@ -245,6 +245,18 @@ export class ControlModel {
     };
   }
 
+  /** Whether a managed thread came from adopting a native session rather than from HQ creating it. */
+  public isAdoptedThread(threadId: string): boolean {
+    return (
+      this.__database
+        .prepare(
+          `SELECT 1 FROM hq_thread INNER JOIN hq_action ON hq_action.id = hq_thread.registration_action_id
+        WHERE hq_thread.id = ? AND hq_action.kind = 'thread-adopt'`,
+        )
+        .get(threadId) !== undefined
+    );
+  }
+
   /** Reads a managed thread by its native ID when no turn has started it. */
   public getUnstartedThread(
     provider: IManagedThread['provider'],

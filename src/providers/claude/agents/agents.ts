@@ -2,7 +2,11 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { delay } from 'jg-utilities';
 
-import type { IObservationPace, ISessionState } from '../../../contracts/index.js';
+import type {
+  IObservationPace,
+  ISessionState,
+  ISessionTerminal,
+} from '../../../contracts/index.js';
 import { isOwnedProcess } from '../../process.js';
 import { resolveWorkspaceTarget } from '../../../runtime/state/index.js';
 
@@ -35,8 +39,8 @@ export const toAgentState = (agent: IClaudeAgent): ISessionState =>
  * sessions inside the allowed workspaces, so a session missing from a run is closed. A failed,
  * late, oversized or malformed run changes nothing. Runs follow one another at the `background`
  * pace until `setPace` selects another, which takes effect with an immediate run.
- * @returns A handle that sets the pace, reports each listed session's `cwd` from the latest run,
- * and whose close stops polling and waits for a run in progress.
+ * @returns A handle that sets the pace, reports each listed session's `cwd` and the terminal that
+ * runs it from the latest run, and whose close stops polling and waits for a run in progress.
  */
 export const observeClaudeAgents = (
   record: (sessions: { nativeId: string; state: ISessionState }[]) => Promise<void>,
@@ -44,13 +48,14 @@ export const observeClaudeAgents = (
 ): {
   setPace(pace: IObservationPace): void;
   workspaceOf(nativeId: string): string | undefined;
+  terminalOf(nativeId: string): ISessionTerminal | null;
   close(): Promise<void>;
 } => {
   const lifetime = new AbortController();
   // whether each session directory is inside an allowed workspace, checked once per directory
   const allowedDirectories = new Map<string, boolean>();
-  // the cwd of each session the latest run listed, which no other source reports
-  let workspaces = new Map<string, string>();
+  // the cwd and terminal of each session the latest run listed, which no other source reports
+  let listedSessions = new Map<string, { cwd: string; terminal: ISessionTerminal }>();
   let pace = 'background' as IObservationPace;
   let wait = new AbortController();
   const isAllowed = async (directory: string): Promise<boolean> => {
@@ -78,7 +83,7 @@ export const observeClaudeAgents = (
       return;
     }
     const sessions: { nativeId: string; state: ISessionState }[] = [];
-    const listed = new Map<string, string>();
+    const listed = new Map<string, { cwd: string; terminal: ISessionTerminal }>();
     /*
      * An entry without a PID isn't running, whatever its state says, so it counts as missing; the
      * processes this runtime started, managed sessions and the metadata process, are its own.
@@ -86,10 +91,16 @@ export const observeClaudeAgents = (
     for (const agent of agents)
       if (agent.pid !== undefined && !isOwnedProcess(agent.pid) && (await isAllowed(agent.cwd))) {
         sessions.push({ nativeId: agent.sessionId, state: toAgentState(agent) });
-        listed.set(agent.sessionId, agent.cwd);
+        listed.set(agent.sessionId, {
+          cwd: agent.cwd,
+          terminal:
+            agent.kind === 'background' && agent.id
+              ? { kind: 'background', attachId: agent.id }
+              : { kind: 'interactive' },
+        });
       }
     if (lifetime.signal.aborted) return;
-    workspaces = listed;
+    listedSessions = listed;
     await record(sessions);
   };
   const running = (async () => {
@@ -107,7 +118,8 @@ export const observeClaudeAgents = (
       pace = next;
       wait.abort();
     },
-    workspaceOf: (nativeId) => workspaces.get(nativeId),
+    workspaceOf: (nativeId) => listedSessions.get(nativeId)?.cwd,
+    terminalOf: (nativeId) => listedSessions.get(nativeId)?.terminal ?? null,
     async close(): Promise<void> {
       lifetime.abort();
       await running;

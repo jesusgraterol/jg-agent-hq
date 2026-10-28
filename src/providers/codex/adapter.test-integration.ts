@@ -80,7 +80,7 @@ const createThread = async (fixture: IClaudeFixture, name: string) => {
   return (await thread(fixture, created.threadId!))!;
 };
 
-test('a session another Codex client drives stays external and takes input only after handover', async () => {
+test('a session another Codex client drives stays external, and HQ adopts it between turns without changing its settings', async () => {
   await withClaudeRuntime(async (fixture) => {
     await codex(fixture, { threadStatuses: { [EXTERNAL]: { type: 'active', activeFlags: [] } } });
     const listed = await fixture.runtime.request({
@@ -110,6 +110,18 @@ test('a session another Codex client drives stays external and takes input only 
       kind: 'items',
       result: { data: [{ text: 'Hello from the native history' }] },
     });
+    const adoption = {
+      kind: 'thread-adopt' as const,
+      provider: 'codex',
+      workspaceRoot: fixture.workspaceRoot,
+      nativeId: EXTERNAL,
+      name: 'adopted',
+      operatorConfirmation: 'A message from the app',
+    };
+    // Codex runs one turn at a time, so a session mid-turn waits for the turn to end
+    await expect(submit(fixture, adoption)).rejects.toMatchObject({
+      code: 'JG_AGENT_HQ_ACTION_CONFLICT',
+    });
     await broadcast(fixture, { type: 'active', activeFlags: ['waitingOnApproval'] });
     await broadcast(fixture, { type: 'idle' });
     await expect
@@ -118,27 +130,17 @@ test('a session another Codex client drives stays external and takes input only 
         [EXTERNAL, null, 'waiting', 'waiting-for-input', 'external'],
         [EXTERNAL, 'waiting', 'idle', 'turn-completed', 'external'],
       ]);
-    const handover = {
-      kind: 'thread-adopt' as const,
-      provider: 'codex',
-      workspaceRoot: fixture.workspaceRoot,
-      nativeId: EXTERNAL,
-      name: 'handover',
-      operatorConfirmation: 'Closed in the terminal',
-    };
-    // still loaded by the terminal, so it cannot be handed over
-    await expect(submit(fixture, handover)).rejects.toMatchObject({
-      code: 'JG_AGENT_HQ_ACTION_CONFLICT',
-    });
-    await broadcast(fixture, { type: 'notLoaded' });
-    await expect
-      .poll(async () => (await transitions(fixture)).slice(2).map(summary))
-      .toStrictEqual([[EXTERNAL, 'idle', 'closed', 'closed', 'external']]);
     expect((await calls(fixture)).some((call) => call.method === 'turn/start')).toBe(false);
-    const adopted = await submit(fixture, handover);
+    // between turns, still open in the terminal, HQ joins it without changing its settings
+    const adopted = await submit(fixture, adoption);
     await expect
       .poll(async () => (await receipt(fixture, adopted.id))?.delivery)
       .toBe('acknowledged');
+    expect(
+      (await calls(fixture))
+        .filter((call) => call.method === 'thread/resume')
+        .map((call) => call.params),
+    ).toStrictEqual([{ threadId: EXTERNAL, excludeTurns: true }]);
     const message = await submit(fixture, {
       kind: 'message',
       threadId: adopted.threadId!,
@@ -454,3 +456,102 @@ test(
     });
   },
 );
+
+test('a Codex session HQ closed shows the terminal that continues it, and resumes while the terminal has it loaded', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const managed = await createThread(fixture, 'closed-here');
+    const nativeId = managed.nativeId!;
+    // the terminal keeps the thread loaded after HQ releases it
+    await codex(fixture, { unsubscribeState: 'idle' });
+    await submit(fixture, { kind: 'thread-close', threadId: managed.id });
+    await expect.poll(async () => (await thread(fixture, managed.id))?.state).toBe('inactive');
+    const running = { type: 'active', activeFlags: [] };
+    await codex(fixture, {
+      threadStatuses: { [nativeId]: running },
+      emitOnce: true,
+      emit: [{ method: 'thread/status/changed', params: { threadId: nativeId, status: running } }],
+    });
+    await fixture.runtime.request({ kind: 'usage', provider: 'codex' });
+    await expect
+      .poll(async () =>
+        (await transitions(fixture))
+          .filter((transition) => transition.ownership === 'external')
+          .map(summary),
+      )
+      .toStrictEqual([[nativeId, null, 'running', 'turn-started', 'external']]);
+    expect(
+      await fixture.runtime.request({
+        kind: 'thread',
+        provider: 'codex',
+        workspaceRoot: fixture.workspaceRoot,
+        nativeId,
+      }),
+    ).toMatchObject({ kind: 'thread', result: { state: 'running', managedId: managed.id } });
+    // once the terminal's turn ends, HQ resumes the session it still has loaded
+    await codex(fixture, { threadStatuses: { [nativeId]: { type: 'idle' } } });
+    const resumed = await submit(fixture, {
+      kind: 'thread-resume',
+      threadId: managed.id,
+      operatorConfirmation: 'A message from the app',
+    });
+    await expect
+      .poll(async () => (await receipt(fixture, resumed.id))?.delivery)
+      .toBe('acknowledged');
+    expect((await thread(fixture, managed.id))?.state).toBe('idle');
+    expect(
+      (await calls(fixture))
+        .filter((call) => call.method === 'thread/resume')
+        .map((call) => call.params),
+    ).toStrictEqual([{ threadId: nativeId, excludeTurns: true }]);
+  });
+});
+
+test('an approval the terminal answers first settles the prompt HQ holds', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const managed = await createThread(fixture, 'shared-approval');
+    await codex(fixture, {
+      prompt: {
+        method: 'item/commandExecution/requestApproval',
+        params: {
+          startedAtMs: Date.now(),
+          command: 'curl -sI https://example.com',
+          cwd: fixture.workspaceRoot,
+          availableDecisions: ['accept', 'cancel'],
+        },
+      },
+    });
+    await submit(fixture, {
+      kind: 'message',
+      threadId: managed.id,
+      input: { kind: 'text', text: 'Fetch the page' },
+    });
+    await expect
+      .poll(async () => (await thread(fixture, managed.id))?.state)
+      .toBe('waiting-approval');
+    const approvals = async () => {
+      const response = await fixture.runtime.request({ kind: 'approvals', threadId: managed.id });
+      if (response.kind !== 'approvals') throw new Error('Missing approvals');
+      return response.result.data;
+    };
+    expect((await approvals()).map((approval) => approval.state)).toStrictEqual(['pending']);
+    // the daemon resolves the request that the terminal answered and HQ never did
+    await codex(fixture, {
+      holdTurn: true,
+      emitOnce: true,
+      emit: [
+        {
+          method: 'serverRequest/resolved',
+          params: { threadId: managed.nativeId, requestId: 'native-approval-1' },
+        },
+      ],
+    });
+    await fixture.runtime.request({ kind: 'usage', provider: 'codex' });
+    await expect
+      .poll(async () => (await approvals()).map((approval) => approval.state))
+      .toStrictEqual(['expired']);
+    // HQ never answered the request itself
+    await expect(readFile(join(fixture.root, 'replies.jsonl'), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+});

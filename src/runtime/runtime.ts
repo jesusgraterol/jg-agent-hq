@@ -146,6 +146,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       extensions.invalidate();
       accounts.invalidate();
     },
+    (nativeId) => claudeAgents.terminalOf(nativeId),
   );
   let resolveClosed: () => void = () => undefined;
   let rejectClosed: (error: unknown) => void = () => undefined;
@@ -350,20 +351,24 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       case 'active-sessions':
         return {
           kind: 'active-sessions',
-          result: await readActiveSessions(providers, projection, allowedRoots, (nativeId) =>
-            claudeAgents.workspaceOf(nativeId),
-          ),
+          result: await readActiveSessions(providers, projection, allowedRoots, claudeAgents),
         };
       case 'unstarted-threads':
         return {
           kind: 'unstarted-threads',
-          result: await readUnstartedThreads(command, projection, allowedRoots),
+          result: await readUnstartedThreads(command, projection, allowedRoots, claudeAgents),
         };
       case 'observation-pace':
         claudeAgents.setPace(command.pace);
         return { kind: 'observation-pace', result: { pace: command.pace } };
       default: {
-        const response = await readNativeHistory(command, providers, projection, allowedRoots);
+        const response = await readNativeHistory(
+          command,
+          providers,
+          projection,
+          allowedRoots,
+          claudeAgents,
+        );
         if (command.kind !== 'items' || response.kind !== 'items') return response;
         // live items reconcile against the persisted text before it is cut
         actions.live.reconcile(
@@ -391,7 +396,8 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     collaboration,
     actions,
     run: storage.run,
-    read: (command) => readNativeHistory(command, providers, projection, allowedRoots),
+    read: (command) =>
+      readNativeHistory(command, providers, projection, allowedRoots, claudeAgents),
   });
   providers.setAgentTools(agentTools.forProvider);
   const dispatch = createDispatch(

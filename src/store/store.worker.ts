@@ -203,6 +203,9 @@ const startWorker = async (): Promise<void> => {
           case 'threads':
             result = controls.listThreads(command.workspaceRoot, command.page);
             break;
+          case 'thread-adopted':
+            result = controls.isAdoptedThread(command.threadId);
+            break;
           case 'thread-unstarted':
             result = controls.getUnstartedThread(command.provider, command.nativeId);
             break;
