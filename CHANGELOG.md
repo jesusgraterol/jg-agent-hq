@@ -1,5 +1,14 @@
 # Changelog
 
+## 5.0.0
+
+- Read `items` newest first, its only order, with its cursor continuing toward older items; it read oldest first before. `textLimit`, from 1 to 65,536 and 65,536 by default, cuts each item's text on a code-point boundary and marks it `isTruncated`. `nativeItemId` with its `turnId` returns that item alone; Codex finds it by reading that turn's items 128 at a time.
+- Present history, live items and `session-evidence` as each CLI shows them, from one mapping per provider. History items gain `callId`, which pairs a tool call with its result, `outcome` and `files`, and the kinds gain `notice`; a provider's items must carry the new fields. Claude leaves out thinking and task notifications, and shows compaction summaries, local command output and interruption markers as notices, slash commands as `/name args`, `!` shell input and output as paired commands, Edit and Write results as file changes with their line counts, and results saved to a file as their size and preview. Codex leaves out reasoning, so a page can hold fewer items than its limit, and shows compaction as a notice and web searches and image views as tools. Outcome and files come from the full record before the text is cut.
+- Start a Claude turn only at a message the operator sends, including a slash command; task notifications, compaction summaries, local command output and `!` shell records belong to the turn before them. The Claude index stores each entry's presented kind and visibility, so `session-evidence` kind filters match what `items` shows.
+- Stop a managed Claude Code process whose session has been idle for 60 minutes, keeping the session idle with no state transition. Its skills, configuration and interrupt calls answer from what it kept, and input, renames, extension control and MCP reads reopen it with `--resume`, its settings and a new agent bridge. The session-less Claude read process closes after 5 minutes without a read.
+- Add `active-sessions`, which returns every running and waiting session, managed and observed, with its workspace, at most 128 and newest state change first, and `observation-pace`, which polls Claude's active sessions every 5 seconds at `live` and every 30 at `background`. The runtime starts at `background`; it polled every 5 seconds before. Providers may implement `readObservedThread` so their observed sessions are listed. Both are also CLI commands.
+- Change the storage schema in place. A database or snapshot written by 4.x is refused with `JG_AGENT_HQ_STORAGE_INVALID` naming the version that wrote it; start from a fresh state root.
+
 ## 4.0.2
 
 - Read Claude sessions whose transcript holds a hidden record written before the record it follows, such as an instructions attachment or a scheduled-task event. The reader rejected the whole session, so HQ couldn't name or show it; it now holds the record back until its parent is indexed.
