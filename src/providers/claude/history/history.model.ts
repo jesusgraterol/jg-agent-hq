@@ -539,12 +539,18 @@ export class ClaudeHistoryModel {
       row.updated_at = Math.max(row.updated_at, Math.trunc(stat.mtimeMs));
       let position = row.byte_offset;
       let lineStart = position;
-      let tail = Buffer.alloc(0);
       const chunk = Buffer.alloc(65_536);
       // hidden records whose parent comes later in the file, by location and awaited parent
       const heldBack: { offset: number; length: number; parentUuid: string }[] = [];
+      /*
+       * A record read again, because it spans chunks or was held back, lands in one buffer that
+       * grows to the longest such record. Each read replaces the last one's bytes, which
+       * `__record` has decoded by then.
+       */
+      let spill = Buffer.alloc(0);
       const reread = (offset: number, length: number): Buffer => {
-        const bytes = Buffer.alloc(length);
+        if (spill.length < length) spill = Buffer.allocUnsafe(length);
+        const bytes = spill.subarray(0, length);
         if (readSync(fd, bytes, 0, length, offset) !== length) this.__unavailable();
         return bytes;
       };
@@ -583,16 +589,24 @@ export class ClaudeHistoryModel {
             position,
           );
           if (count === 0) break;
+          const chunkStart = position;
           position += count;
           consume(count);
-          tail = Buffer.concat([tail, chunk.subarray(0, count)]);
-          for (let end = tail.indexOf(10); end !== -1; end = tail.indexOf(10)) {
-            if (end > MAX_RECORD_BYTES) this.__unavailable();
-            if (end > 0) indexRecord(tail.subarray(0, end), lineStart);
-            lineStart += end + 1;
-            tail = tail.subarray(end + 1);
+          // a record that started in an earlier chunk is read again whole, not joined from chunks
+          const read = chunk.subarray(0, count);
+          for (let end = read.indexOf(10); end !== -1; end = read.indexOf(10, end + 1)) {
+            const length = chunkStart + end - lineStart;
+            if (length > MAX_RECORD_BYTES) this.__unavailable();
+            if (length > 0)
+              indexRecord(
+                lineStart >= chunkStart
+                  ? read.subarray(lineStart - chunkStart, end)
+                  : reread(lineStart, length),
+                lineStart,
+              );
+            lineStart = chunkStart + end + 1;
           }
-          if (tail.length > MAX_RECORD_BYTES) this.__unavailable();
+          if (position - lineStart > MAX_RECORD_BYTES) this.__unavailable();
         }
         /*
          * A parent this read didn't reach is indexed as the root of its own turn: the projection

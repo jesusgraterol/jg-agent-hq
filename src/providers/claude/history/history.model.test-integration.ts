@@ -515,6 +515,146 @@ test('a record over a mebibyte, such as a tool result holding images, keeps its 
   });
 });
 
+// the indexed location of every entry of one session, in file order
+const readEntries = (stateRoot: string, nativeId: string) => {
+  const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'), { readOnly: true });
+  try {
+    return database
+      .prepare(
+        'SELECT uuid, byte_offset, byte_length FROM hq_claude_entry WHERE native_id = ? ORDER BY byte_offset',
+      )
+      .all(nativeId)
+      .map((row) => ({ ...row }));
+  } finally {
+    database.close();
+  }
+};
+
+// where each line of a transcript starts, and its length in bytes without the line end
+const locate = (lines: string[]) => {
+  let offset = 0;
+  return lines.map((line) => {
+    const location = { byte_offset: offset, byte_length: Buffer.byteLength(line) };
+    offset += location.byte_length + 1;
+    return location;
+  });
+};
+
+test('records that end at, just past or across 64 KiB read chunks are indexed where they lie', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, stateRoot, request }) => {
+    const nativeId = randomUUID();
+    // a record whose line is exactly `length` bytes, padded through its text
+    const sized = <T>(length: number, make: (text: string) => T): T =>
+      make('x'.repeat(length - JSON.stringify(make('')).length));
+    // its line end is the last byte of the first chunk
+    const prompt = sized(65_535, (text) => claudeRecord(workspaceRoot, nativeId, { text }));
+    // it fills the second chunk, and its line end is the first byte of the third
+    const answer = sized(65_536, (text) =>
+      claudeRecord(workspaceRoot, nativeId, { type: 'assistant', parentUuid: prompt.uuid, text }),
+    );
+    // a hidden record written before its parent, which spans the third to fifth chunks
+    const questionUuid = randomUUID();
+    const hidden = {
+      ...claudeRecord(workspaceRoot, nativeId, { parentUuid: questionUuid }),
+      type: 'attachment',
+      message: undefined,
+    };
+    const questionStart = 131_073 + JSON.stringify(hidden).length + 1;
+    const question = sized(270_000 - questionStart, (text) =>
+      claudeRecord(workspaceRoot, nativeId, {
+        uuid: questionUuid,
+        parentUuid: answer.uuid,
+        text,
+      }),
+    );
+    // several records in the fifth chunk, after the one that spans into it
+    const reply = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: hidden.uuid,
+      text: 'reply',
+    });
+    const followUp = claudeRecord(workspaceRoot, nativeId, {
+      parentUuid: reply.uuid,
+      text: 'follow-up',
+    });
+    const last = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: followUp.uuid,
+      text: 'last',
+    });
+    const records = [prompt, answer, hidden, question, reply, followUp, last];
+    const lines = records.map((record) => JSON.stringify(record));
+    const locations = locate(lines);
+    expect(locations.slice(0, 4).map((location) => location.byte_offset)).toStrictEqual([
+      0,
+      65_536,
+      131_073,
+      questionStart,
+    ]);
+    expect(locations.at(-1)!.byte_offset + locations.at(-1)!.byte_length).toBeLessThan(327_680);
+    await writeFile(transcript(nativeId), lines.join('\n') + '\n');
+    const items = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
+    expect(
+      items.kind === 'items' && items.result.data.map((item) => [item.nativeId, item.turnId]),
+    ).toStrictEqual([
+      [last.uuid, followUp.uuid],
+      [followUp.uuid, followUp.uuid],
+      [reply.uuid, question.uuid],
+      [question.uuid, question.uuid],
+      [answer.uuid, prompt.uuid],
+      [prompt.uuid, prompt.uuid],
+    ]);
+    expect(readEntries(stateRoot, nativeId)).toStrictEqual(
+      records.map((record, index) => ({ uuid: record.uuid, ...locations[index] })),
+    );
+  });
+});
+
+test('a record unfinished at the end of one indexing read is indexed whole by the next', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, stateRoot, request }) => {
+    const nativeId = randomUUID();
+    const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'prompt' });
+    const toolResult = (parentUuid: string) => ({
+      ...claudeRecord(workspaceRoot, nativeId, { parentUuid }),
+      message: { role: 'user', content: [{ type: 'tool_result', content: 'a'.repeat(6_000_000) }] },
+    });
+    // three results of about 6 MB, so the third runs past the 16 MiB one read indexes
+    const results: ReturnType<typeof toolResult>[] = [];
+    for (let index = 0; index < 3; index += 1)
+      results.push(toolResult(results.at(-1)?.uuid ?? prompt.uuid));
+    const answer = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: results.at(-1)!.uuid,
+      text: 'answer',
+    });
+    const records = [prompt, ...results, answer];
+    const lines = records.map((record) => JSON.stringify(record));
+    const locations = locate(lines);
+    expect(locations[3]!.byte_offset).toBeLessThan(16_777_216);
+    expect(locations[3]!.byte_offset + locations[3]!.byte_length).toBeGreaterThan(16_777_216);
+    await writeFile(transcript(nativeId), lines.join('\n') + '\n');
+    // each large record fills a page of its own
+    const pages: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await request({
+        kind: 'items',
+        provider: 'claude',
+        workspaceRoot,
+        nativeId,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      if (page.kind !== 'items') throw new Error('wrong response');
+      pages.push(...page.result.data.map((item) => item.nativeId));
+      cursor = page.result.nextCursor ?? undefined;
+    } while (cursor !== undefined);
+    expect(pages).toStrictEqual(records.map((record) => record.uuid).reverse());
+    expect(readEntries(stateRoot, nativeId)).toStrictEqual(
+      records.map((record, index) => ({ uuid: record.uuid, ...locations[index] })),
+    );
+  });
+});
+
 test.each(['truncate', 'replace'])(
   'file identity(%s) -> stale continuations rejected',
   async (operation) => {
