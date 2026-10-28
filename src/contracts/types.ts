@@ -32,13 +32,22 @@ import {
   ProviderStatusSchema,
 } from './providers/index.js';
 
-import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, PUBLIC_ERROR_MESSAGES } from './constants.js';
+import {
+  DEFAULT_PAGE_SIZE,
+  MAX_ITEM_TEXT_LENGTH,
+  MAX_PAGE_SIZE,
+  PUBLIC_ERROR_MESSAGES,
+} from './constants.js';
 import { SkillIdSchema, SkillPageSchema, SkillPreviewSchema } from './skills/index.js';
 
 import { NativeIdSchema, CursorSchema, NativeLineageSchema } from './identities/index.js';
 import { ProviderModelPageSchema, ProviderModelsRequestSchema } from './models/index.js';
 import { ConfigurationRequestSchema, SessionConfigurationSchema } from './configuration/index.js';
-import { SessionStateSchema, SessionTransitionPageSchema } from './sessions/index.js';
+import {
+  ObservationPaceSchema,
+  SessionStateSchema,
+  SessionTransitionPageSchema,
+} from './sessions/index.js';
 import { PlanCommandSchema, PlanResultSchema } from './plans/index.js';
 import {
   ActionPlanContextSchema,
@@ -88,12 +97,22 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({ kind: z.literal('thread'), ...TargetFields }),
   z.strictObject({ kind: z.literal('turns'), ...TargetFields, ...PageFields }),
-  z.strictObject({
-    kind: z.literal('items'),
-    ...TargetFields,
-    turnId: NativeIdSchema.optional(),
-    ...PageFields,
-  }),
+  // newest first: a page toward older items, or one item by its native ID within its turn
+  z
+    .strictObject({
+      kind: z.literal('items'),
+      ...TargetFields,
+      turnId: NativeIdSchema.optional(),
+      nativeItemId: NativeIdSchema.optional(),
+      textLimit: z.number().int().min(1).max(MAX_ITEM_TEXT_LENGTH).default(MAX_ITEM_TEXT_LENGTH),
+      ...PageFields,
+    })
+    .refine(
+      (command) =>
+        command.nativeItemId === undefined ||
+        (command.turnId !== undefined && command.cursor === undefined),
+      { message: 'One item is read within its turn, without a cursor', path: ['nativeItemId'] },
+    ),
   z.strictObject({ kind: z.literal('usage'), provider: TargetFields.provider }),
   z.strictObject({
     kind: z.literal('skills'),
@@ -150,6 +169,8 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     afterSequence: z.number().int().nonnegative().default(0),
     limit: z.number().int().min(1).max(128).default(32),
   }),
+  z.strictObject({ kind: z.literal('active-sessions') }),
+  z.strictObject({ kind: z.literal('observation-pace'), pace: ObservationPaceSchema }),
 ]);
 export type IHqRequest = z.infer<typeof HqRequestSchema>;
 export type IHqRequestInput = z.input<typeof HqRequestSchema>;
@@ -171,6 +192,13 @@ export const ThreadSummarySchema = z.object({
 });
 export type IThreadSummary = z.infer<typeof ThreadSummarySchema>;
 
+// every running and waiting session, newest state change first, with whether more are active
+export const ActiveSessionsSchema = z.object({
+  data: z.array(ThreadSummarySchema).max(MAX_PAGE_SIZE),
+  isTruncated: z.boolean(),
+});
+export type IActiveSessions = z.infer<typeof ActiveSessionsSchema>;
+
 export const TurnSummarySchema = z.object({
   nativeId: NativeIdSchema,
   state: z.enum(['completed', 'interrupted', 'failed', 'inProgress', 'unknown']),
@@ -179,7 +207,20 @@ export const TurnSummarySchema = z.object({
 });
 export type ITurnSummary = z.infer<typeof TurnSummarySchema>;
 
-// explicit presentation fields; unknown native item kinds are labeled unsupported
+// one file a file change touched, with the lines it added and removed
+export const HistoryFileSchema = z.object({
+  path: z.string().min(1).max(4096),
+  added: z.number().int().nonnegative(),
+  removed: z.number().int().nonnegative(),
+});
+export type IHistoryFile = z.infer<typeof HistoryFileSchema>;
+
+/*
+ * Explicit presentation fields; unknown native item kinds are labeled unsupported. `callId` pairs
+ * a tool call with its result, `outcome` is what the provider recorded, null when unknown or
+ * running, and `files` lists a file change's files; both come from the full record, so cutting
+ * the text never changes them.
+ */
 export const HistoryItemSchema = z.object({
   nativeId: NativeIdSchema,
   turnId: NativeIdSchema,
@@ -188,6 +229,9 @@ export const HistoryItemSchema = z.object({
   provenance: HistoryProvenanceSchema,
   text: z.string(),
   isTruncated: z.boolean(),
+  callId: z.string().min(1).max(4096).nullable(),
+  outcome: z.enum(['succeeded', 'failed']).nullable(),
+  files: z.array(HistoryFileSchema).max(MAX_PAGE_SIZE),
 });
 export type IHistoryItem = z.infer<typeof HistoryItemSchema>;
 export const LiveItemsSchema = z.object({
@@ -351,6 +395,11 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
   }),
   z.object({ kind: z.literal('live-items'), result: LiveItemsSchema }),
   z.object({ kind: z.literal('session-states'), result: SessionTransitionPageSchema }),
+  z.object({ kind: z.literal('active-sessions'), result: ActiveSessionsSchema }),
+  z.object({
+    kind: z.literal('observation-pace'),
+    result: z.object({ pace: ObservationPaceSchema }),
+  }),
 ]);
 export type IHqResponse = z.infer<typeof HqResponseSchema>;
 

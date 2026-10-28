@@ -2,6 +2,9 @@
 export const DEFAULT_PAGE_SIZE = 32;
 export const MAX_PAGE_SIZE = 128;
 
+// the most text one history item carries, in UTF-16 code units
+export const MAX_ITEM_TEXT_LENGTH = 65_536;
+
 // stable client codes for failures translated at IPC and browser boundaries
 export const PUBLIC_ERROR_CODES = {
   'invalid-request': 'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',

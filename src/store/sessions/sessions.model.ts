@@ -8,8 +8,44 @@ import {
   type ISessionTransition,
 } from '../../contracts/index.js';
 
+import { ActiveSessionRecordSchema, type IActiveSessionRecord } from './types.js';
+
 // closed observed sessions are forgotten after the same seven days that transitions are kept
 const RETENTION_MS = 604_800_000;
+
+const ActiveRowSchema = z.object({
+  provider: z.string(),
+  native_id: z.string(),
+  state: z.string(),
+  changed_at: z.number().int(),
+  thread: z.string().nullable(),
+  history: z.string().nullable(),
+});
+/*
+ * Running and waiting sessions by their latest state change. A stopping managed thread reports the
+ * state it stops, from its last transition, and an observed Claude session joins its indexed
+ * transcript, if any, by session ID.
+ */
+const ACTIVE_SESSIONS = `SELECT provider, native_id, state, changed_at, thread, history FROM (
+  SELECT hq_thread.provider, hq_thread.native_id,
+    coalesce(map.session_state, (SELECT state FROM hq_session_transition WHERE thread_id = hq_thread.id ORDER BY sequence DESC LIMIT 1), 'unknown') AS state,
+    coalesce((SELECT recorded_at FROM hq_session_transition WHERE thread_id = hq_thread.id ORDER BY sequence DESC LIMIT 1), hq_thread.updated_at) AS changed_at,
+    json_object('id', hq_thread.id, 'ownership', hq_thread.ownership, 'name', hq_thread.name,
+      'workspaceRoot', hq_thread.workspace_root, 'nativeLineage', json(hq_thread.native_lineage),
+      'createdAt', hq_thread.created_at, 'updatedAt', hq_thread.updated_at) AS thread,
+    NULL AS history
+  FROM hq_thread INNER JOIN hq_session_state_map AS map ON map.thread_state = hq_thread.state
+  WHERE hq_thread.native_id IS NOT NULL AND (map.session_state IS NULL OR map.session_state IN ('running', 'waiting'))
+  UNION ALL
+  SELECT observed.provider, observed.native_id, observed.state, observed.observed_at, NULL,
+    CASE WHEN observed.provider = 'claude' THEN (
+      SELECT json_object('name', name, 'createdAt', created_at, 'updatedAt', updated_at,
+        'isSupported', json(CASE WHEN supported = 1 THEN 'true' ELSE 'false' END))
+      FROM hq_claude_file WHERE native_id = observed.native_id AND workspace_state = 'matching'
+      ORDER BY updated_at DESC LIMIT 1
+    ) END
+  FROM hq_observed_session AS observed WHERE observed.state IN ('running', 'waiting')
+) WHERE state IN ('running', 'waiting') ORDER BY changed_at DESC, native_id DESC LIMIT ?`;
 
 const TransitionRowSchema = z.object({
   sequence: z.number().int(),
@@ -120,6 +156,30 @@ export class SessionsModel {
       const row = managed.get(provider, nativeId) ?? observed.get(provider, nativeId);
       return row ? [{ nativeId, state: SessionStateSchema.parse(row.state) }] : [];
     });
+  }
+
+  /**
+   * Reads running and waiting sessions, managed and observed, newest state change first.
+   * @returns At most `limit` records and whether more sessions are active.
+   */
+  public active(limit: number): { data: IActiveSessionRecord[]; isTruncated: boolean } {
+    const rows = this.__database
+      .prepare(ACTIVE_SESSIONS)
+      .all(limit + 1)
+      .map((row) => ActiveRowSchema.parse(row));
+    return {
+      data: rows.slice(0, limit).map((row) =>
+        ActiveSessionRecordSchema.parse({
+          provider: row.provider,
+          nativeId: row.native_id,
+          state: row.state,
+          changedAt: row.changed_at,
+          thread: row.thread === null ? null : JSON.parse(row.thread),
+          history: row.history === null ? null : JSON.parse(row.history),
+        }),
+      ),
+      isTruncated: rows.length > limit,
+    };
   }
 
   /** Reads transitions after a sequence, in order, with one row of lookahead for continuation. */

@@ -17,6 +17,13 @@ import {
   withClaudeRuntime,
   type IClaudeFixture,
 } from '../../scripts/test-support/claude-runtime.js';
+import { STORAGE_CONNECTION_SETTINGS } from '../storage/index.js';
+
+// a direct connection beside the running runtime, which waits out its writes as the runtime's own do
+const openDatabase = (stateRoot: string) =>
+  new DatabaseSync(join(stateRoot, 'hq.sqlite'), {
+    timeout: STORAGE_CONNECTION_SETTINGS.busyTimeoutMs,
+  });
 
 // jg-breakdown assigns milestone IDs; a null id writes a milestone without one
 const milestone = (ordinal: number, id: string | null, status = 'pending') =>
@@ -533,7 +540,7 @@ test.each(['complete-files', 'milestones-only', 'external-edit'] as const)(
         action: action(),
         expected: current.revision,
       };
-      const db = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
+      const db = openDatabase(fixture.stateRoot);
       try {
         db.exec(
           "CREATE TRIGGER prevent_completion BEFORE UPDATE ON hq_plan_operation WHEN NEW.state = 'completed' BEGIN SELECT RAISE(ABORT, 'injected persistence failure'); END;",
@@ -601,7 +608,7 @@ test('empty milestone reads, projection reuse and renumbered continuation remain
     const { command } = await plan.finalize();
     await plan.approve('plan');
     await plan.approve('sequence');
-    const db = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
+    const db = openDatabase(fixture.stateRoot);
     try {
       db.exec(
         "CREATE TRIGGER prevent_projection_delete BEFORE DELETE ON hq_plan_milestone BEGIN SELECT RAISE(ABORT, 'unnecessary projection rewrite'); END;",
@@ -649,7 +656,7 @@ test('a failed projection refresh rolls back rows and its source guard, then ret
       join(plan.directory, 'milestones.md'),
       content.replace('**Status:** pending', '**Status:** in progress'),
     );
-    const db = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
+    const db = openDatabase(fixture.stateRoot);
     try {
       db.exec(
         "CREATE TRIGGER prevent_projection_insert BEFORE INSERT ON hq_plan_milestone BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END;",

@@ -234,6 +234,9 @@ test('authorized native history is re-read after a delayed flush and large frame
         kind: 'agent-message',
         text: 'a'.repeat(65_536),
         isTruncated: true,
+        callId: null,
+        outcome: null,
+        files: [],
         provenance: {
           origin: 'agent',
           source: 'native-kind',
@@ -266,6 +269,166 @@ test('authorized native history is re-read after a delayed flush and large frame
         .filter((call) => call.method === 'thread/read')
         .every((call) => (call.params as { includeTurns: boolean }).includeTurns === false),
     ).toBe(true);
+  });
+});
+
+test('Codex items read newest first toward older ones, cut their text, and find one item in an old turn of a long thread', async () => {
+  await withRuntime(async ({ root, workspaceRoot, control, request }) => {
+    const target = {
+      kind: 'items',
+      provider: 'codex',
+      workspaceRoot,
+      nativeId: 'thread-1023',
+    } as const;
+    // an old turn longer than two listing pages, then a newer short one
+    await control({
+      items: [
+        ...Array.from({ length: 300 }, (_, index) => ({
+          turnId: 'turn-a',
+          item: { id: `a-${index}`, type: 'agentMessage', text: `older ${index}` },
+        })),
+        ...Array.from({ length: 3 }, (_, index) => ({
+          turnId: 'turn-b',
+          item: { id: `b-${index}`, type: 'agentMessage', text: `newer ${index}` },
+        })),
+      ],
+    });
+    const first = await request({ ...target, limit: 2 });
+    if (first.kind !== 'items') throw new Error('wrong response');
+    expect(first.result.data.map((item) => item.nativeId)).toStrictEqual(['b-2', 'b-1']);
+    const next = await request({ ...target, limit: 2, cursor: first.result.nextCursor! });
+    expect(next.kind === 'items' && next.result.data.map((item) => item.nativeId)).toStrictEqual([
+      'b-0',
+      'a-299',
+    ]);
+    const cut = await request({ ...target, limit: 1, textLimit: 5 });
+    expect(
+      cut.kind === 'items' && cut.result.data.map((item) => [item.text, item.isTruncated]),
+    ).toStrictEqual([['newer', true]]);
+    const oldest = await request({
+      ...target,
+      nativeItemId: 'a-0',
+      turnId: 'turn-a',
+      textLimit: 3,
+    });
+    expect(oldest.kind === 'items' && oldest.result).toMatchObject({
+      data: [{ nativeId: 'a-0', turnId: 'turn-a', text: 'old', isTruncated: true }],
+      nextCursor: null,
+    });
+    expect(oldest.kind === 'items' && oldest.result.data).toHaveLength(1);
+    // the lookup listed only that turn, newest first and 128 items at a time
+    const ListingSchema = z.object({
+      turnId: z.string().optional(),
+      limit: z.number(),
+      sortDirection: z.string(),
+    });
+    const lookups = CallsSchema.parse(
+      (await readFile(join(root, 'calls.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line)),
+    )
+      .filter((call) => call.method === 'thread/items/list')
+      .map((call) => ListingSchema.parse(call.params))
+      .filter((params) => params.turnId === 'turn-a');
+    expect(lookups).toStrictEqual(
+      Array.from({ length: 3 }, () => ({ turnId: 'turn-a', limit: 128, sortDirection: 'desc' })),
+    );
+    // an unknown item, and one outside the given turn, read as an empty page
+    for (const [nativeItemId, turnId] of [
+      ['a-missing', 'turn-a'],
+      ['b-0', 'turn-a'],
+    ] as const) {
+      const empty = await request({ ...target, nativeItemId, turnId });
+      expect(empty.kind === 'items' && empty.result).toMatchObject({ data: [], nextCursor: null });
+    }
+  });
+});
+
+test('Codex history leaves reasoning out, presents what the CLI shows and counts files past the text cut, as evidence does', async () => {
+  await withRuntime(async ({ workspaceRoot, control, request }) => {
+    const target = { provider: 'codex', workspaceRoot, nativeId: 'thread-1023' } as const;
+    const updated = Array.from({ length: 300 }, (_, index) => `+added line ${index}`);
+    const native = [
+      {
+        id: 'u-0',
+        type: 'userMessage',
+        clientId: null,
+        content: [{ type: 'text', text: 'Fix it' }],
+      },
+      { id: 'r-0', type: 'reasoning', summary: [], content: ['private'] },
+      { id: 'w-0', type: 'webSearch', query: 'zod strictObject', action: null, results: null },
+      { id: 'i-0', type: 'imageView', path: '/workspace/screen.png' },
+      {
+        id: 'c-0',
+        type: 'commandExecution',
+        command: 'ls',
+        aggregatedOutput: 'a.ts',
+        status: 'declined',
+      },
+      {
+        id: 'f-0',
+        type: 'fileChange',
+        status: 'completed',
+        changes: [
+          {
+            path: '/workspace/a.ts',
+            kind: { type: 'update', move_path: null },
+            diff: ['@@ -1,2 +1,301 @@', ' kept', '-removed', ...updated].join('\n'),
+          },
+          { path: '/workspace/b.ts', kind: { type: 'add' }, diff: 'one\ntwo\n' },
+        ],
+      },
+      { id: 'cc-0', type: 'contextCompaction' },
+      { id: 'r-1', type: 'reasoning', summary: [], content: ['private'] },
+    ];
+    await control({ items: native.map((item) => ({ turnId: 'turn-a', item })) });
+    const page = await request({ kind: 'items', ...target, textLimit: 2048 });
+    if (page.kind !== 'items') throw new Error('wrong response');
+    expect(
+      page.result.data.map(({ nativeId, kind, text, outcome, files }) => ({
+        nativeId,
+        kind,
+        text: text.length > 64 ? text.length : text,
+        outcome,
+        files,
+      })),
+    ).toStrictEqual([
+      { nativeId: 'cc-0', kind: 'notice', text: '', outcome: null, files: [] },
+      {
+        nativeId: 'f-0',
+        kind: 'file-change',
+        text: 2048,
+        outcome: 'succeeded',
+        files: [
+          { path: '/workspace/a.ts', added: 300, removed: 1 },
+          { path: '/workspace/b.ts', added: 2, removed: 0 },
+        ],
+      },
+      { nativeId: 'c-0', kind: 'command', text: 'ls\na.ts', outcome: 'failed', files: [] },
+      { nativeId: 'i-0', kind: 'tool', text: '/workspace/screen.png', outcome: null, files: [] },
+      { nativeId: 'w-0', kind: 'tool', text: 'zod strictObject', outcome: null, files: [] },
+      { nativeId: 'u-0', kind: 'user-message', text: 'Fix it', outcome: null, files: [] },
+    ]);
+    // a native page holding reasoning returns fewer items than its limit, and continues past it
+    const short = await request({ kind: 'items', ...target, limit: 2 });
+    if (short.kind !== 'items') throw new Error('wrong response');
+    expect(short.result.data.map((item) => item.nativeId)).toStrictEqual(['cc-0']);
+    expect(short.result.nextCursor).not.toBeNull();
+    for (const [kinds, ids] of [
+      [['notice'], ['cc-0']],
+      [
+        ['file-change', 'command'],
+        ['f-0', 'c-0'],
+      ],
+    ] as const) {
+      const evidence = await request({ kind: 'session-evidence', ...target, kinds: [...kinds] });
+      if (evidence.kind !== 'session-evidence') throw new Error('wrong response');
+      expect(evidence.result.data.map((item) => item.reference.itemId)).toStrictEqual(ids);
+      expect(evidence.result.data.map((item) => item.kind)).toStrictEqual(
+        ids.map((id) => page.result.data.find((item) => item.nativeId === id)!.kind),
+      );
+    }
   });
 });
 

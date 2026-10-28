@@ -39,6 +39,7 @@ export const HistoryKindSchema = z.enum([
   'command',
   'tool',
   'file-change',
+  'notice',
   'unsupported',
 ]);
 export const EvidenceRequestSchema = z.strictObject({
@@ -48,7 +49,7 @@ export const EvidenceRequestSchema = z.strictObject({
   nativeId: NativeIdSchema,
   turnId: NativeIdSchema.optional(),
   nativeItemId: NativeIdSchema.optional(),
-  kinds: z.array(HistoryKindSchema).min(1).max(6).optional(),
+  kinds: z.array(HistoryKindSchema).min(1).max(7).optional(),
   limit: z.number().int().min(1).max(128).default(32),
   cursor: CursorSchema.optional(),
 });

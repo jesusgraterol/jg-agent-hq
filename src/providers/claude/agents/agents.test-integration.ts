@@ -3,14 +3,25 @@ import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ISessionTransition } from 'jg-agent-hq/contracts';
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 
 import {
   claudeRecord,
+  countHeldDelays,
+  releaseHeldDelays,
+  startHoldingDelays,
+  stopHoldingDelays,
   withClaudeRuntime,
   writeFixtureControl,
   type IClaudeFixture,
 } from '../../../../scripts/test-support/index.js';
+
+// the pace test releases the waits between runs instead of waiting them out
+vi.mock('jg-utilities', async (original) => {
+  const actual = await original<typeof import('jg-utilities')>();
+  const { holdDelays } = await import('../../../../scripts/test-support/delays.js');
+  return { ...actual, delay: holdDelays(actual.delay) };
+});
 
 const transitions = async (fixture: IClaudeFixture): Promise<ISessionTransition[]> => {
   const response = await fixture.runtime.request({ kind: 'session-states', limit: 128 });
@@ -35,6 +46,9 @@ const runs = async (fixture: IClaudeFixture): Promise<number> => {
 };
 const report = (fixture: IClaudeFixture, control: object) =>
   writeFixtureControl(fixture.root, 'claude-agents.json', control);
+// these tests observe changes at the live pace, every 5 seconds
+const live = (fixture: IClaudeFixture) =>
+  fixture.runtime.request({ kind: 'observation-pace', pace: 'live' });
 
 test(
   'claude agents report running, waiting and idle sessions, and a session that disappears',
@@ -42,6 +56,7 @@ test(
   { timeout: 40_000 },
   async () => {
     await withClaudeRuntime(async (fixture) => {
+      await live(fixture);
       const [busy, blocked] = [randomUUID(), randomUUID()];
       for (const id of [busy, blocked])
         await writeFile(
@@ -149,6 +164,7 @@ test(
   { timeout: 90_000 },
   async () => {
     await withClaudeRuntime(async (fixture) => {
+      await live(fixture);
       const id = randomUUID();
       const agent = {
         pid: 1,
@@ -188,6 +204,7 @@ test(
   { timeout: 20_000 },
   async () => {
     await withClaudeRuntime(async (fixture) => {
+      await live(fixture);
       const status = await fixture.runtime.request({ kind: 'status' });
       if (status.kind !== 'status') throw new Error('Missing runtime status');
       const created = await fixture.runtime.request({
@@ -236,3 +253,36 @@ test(
     });
   },
 );
+
+test('the active-sessions poll waits 30 seconds in the background and 5 while live, and a new pace runs at once', async () => {
+  startHoldingDelays(5, 30);
+  try {
+    await withClaudeRuntime(async (fixture) => {
+      // the runtime starts in the background pace after its first run
+      await expect.poll(() => countHeldDelays(30)).toBe(1);
+      expect(countHeldDelays(5)).toBe(0);
+      const first = await runs(fixture);
+      expect(
+        await fixture.runtime.request({ kind: 'observation-pace', pace: 'live' }),
+      ).toStrictEqual({ kind: 'observation-pace', result: { pace: 'live' } });
+      await expect.poll(() => countHeldDelays(5)).toBe(1);
+      expect(countHeldDelays(30)).toBe(0);
+      expect(await runs(fixture)).toBe(first + 1);
+      expect(releaseHeldDelays(5)).toBe(1);
+      await expect.poll(() => runs(fixture)).toBe(first + 2);
+      await expect.poll(() => countHeldDelays(5)).toBe(1);
+      // the same pace again changes nothing
+      await live(fixture);
+      expect(countHeldDelays(5)).toBe(1);
+      expect(await runs(fixture)).toBe(first + 2);
+      await fixture.runtime.request({ kind: 'observation-pace', pace: 'background' });
+      await expect.poll(() => countHeldDelays(30)).toBe(1);
+      expect(countHeldDelays(5)).toBe(0);
+      expect(await runs(fixture)).toBe(first + 3);
+      expect(releaseHeldDelays(30)).toBe(1);
+      await expect.poll(() => runs(fixture)).toBe(first + 4);
+    });
+  } finally {
+    stopHoldingDelays();
+  }
+});

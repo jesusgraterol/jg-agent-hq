@@ -10,6 +10,9 @@ const item = {
   nativeType: 'agentMessage',
   text: 'hello',
   isTruncated: false,
+  callId: null,
+  outcome: null,
+  files: [],
   provenance: nativeProvenance('agent-message'),
 };
 

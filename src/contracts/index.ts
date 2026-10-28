@@ -16,6 +16,7 @@ export type { IExtensionControlCommand } from './extensions/index.js';
 // constants
 export {
   DEFAULT_PAGE_SIZE,
+  MAX_ITEM_TEXT_LENGTH,
   MAX_PAGE_SIZE,
   PUBLIC_ERROR_CODES,
   PUBLIC_ERROR_MESSAGES,
@@ -25,7 +26,9 @@ export {
 export {
   HqRequestSchema,
   ThreadSummarySchema,
+  ActiveSessionsSchema,
   TurnSummarySchema,
+  HistoryFileSchema,
   HistoryItemSchema,
   LiveItemsSchema,
   UsageWindowSchema,
@@ -60,7 +63,9 @@ export type {
   IHqRequest,
   IHqRequestInput,
   IThreadSummary,
+  IActiveSessions,
   ITurnSummary,
+  IHistoryFile,
   IHistoryItem,
   IUsageSnapshot,
   IUsageCredits,
@@ -365,9 +370,11 @@ export {
   SessionTransitionReasonSchema,
   SessionTransitionSchema,
   SessionTransitionPageSchema,
+  ObservationPaceSchema,
 } from './sessions/index.js';
 export type {
   ISessionState,
   ISessionTransitionReason,
   ISessionTransition,
+  IObservationPace,
 } from './sessions/index.js';

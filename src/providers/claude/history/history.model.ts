@@ -40,7 +40,7 @@ import {
 } from './utilities.js';
 
 // identifies the path and record interpretation used by persisted projection entries
-const HISTORY_PROJECTION_VERSION = 4;
+const HISTORY_PROJECTION_VERSION = 5;
 // one record, such as a tool result holding images, and an indexing read, which fits the largest
 const MAX_RECORD_BYTES = 8_388_608;
 const MAX_REFRESH_BYTES = 16_777_216;
@@ -228,21 +228,32 @@ export class ClaudeHistoryModel {
         },
       });
     }
-    const entries = this.__database
-      .prepare(
-        `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM hq_claude_entry
-      WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND byte_offset > ?
+    // items read newest first, the cursor holding the oldest offset read; one item is read by its UUID
+    const before = seek?.offset ?? Number.MAX_SAFE_INTEGER;
+    const entries = (
+      command.nativeItemId === undefined
+        ? this.__database
+            .prepare(
+              `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM hq_claude_entry
+      WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND byte_offset < ?
       ${command.turnId === undefined ? '' : 'AND turn_id = ?'}
-      ORDER BY byte_offset LIMIT ?`,
-      )
-      .all(
-        root,
-        command.nativeId,
-        offset,
-        ...(command.turnId === undefined ? [] : [command.turnId]),
-        command.limit + 1,
-      )
-      .map((entry) => EntryRowSchema.parse(entry));
+      ORDER BY byte_offset DESC LIMIT ?`,
+            )
+            .all(
+              root,
+              command.nativeId,
+              before,
+              ...(command.turnId === undefined ? [] : [command.turnId]),
+              command.limit + 1,
+            )
+        : this.__database
+            .prepare(
+              `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM hq_claude_entry
+      WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND uuid = ? AND turn_id = ?
+      LIMIT 1`,
+            )
+            .all(root, command.nativeId, command.nativeItemId, command.turnId ?? null)
+    ).map((entry) => EntryRowSchema.parse(entry));
     const page = entries.slice(0, command.limit);
     const fd = openTranscript(directory, command.nativeId);
     try {
@@ -251,7 +262,7 @@ export class ClaudeHistoryModel {
       const items = [];
       let size = 0;
       let readBytes = 0;
-      let lastOffset = offset;
+      let lastOffset = before;
       for (const entry of page) {
         // a page always reads its first record, which can be larger than the page budget
         if (readBytes > 0 && readBytes + entry.byte_length > MAX_PAGE_BYTES) break;
@@ -264,7 +275,8 @@ export class ClaudeHistoryModel {
         );
         if (record.uuid !== entry.uuid || !isClaudeWorkspaceCwd(record.cwd, root))
           this.__unavailable();
-        const item = toClaudeItem(record, entry.turn_id);
+        // the index stores only records the CLI shows, so a dropped one means it no longer matches
+        const item = toClaudeItem(record, entry.turn_id) ?? this.__unavailable();
         const itemSize = Buffer.byteLength(JSON.stringify(item));
         if (size + itemSize > MAX_PAGE_BYTES) break;
         size += itemSize;
@@ -365,7 +377,7 @@ export class ClaudeHistoryModel {
           !isClaudeWorkspaceCwd(record.cwd, command.workspaceRoot)
         )
           this.__unavailable();
-        items.push(toClaudeItem(record, entry.turn_id, true));
+        items.push(toClaudeItem(record, entry.turn_id, true) ?? this.__unavailable());
         lastOffset = entry.byte_offset;
         readBytes += entry.byte_length;
       }
@@ -699,20 +711,16 @@ export class ClaudeHistoryModel {
           )
           .get(root, nativeId, record.parentUuid)
       : undefined;
-    const visible = record.message !== undefined && !record.isMeta;
+    // the CLI's presentation decides what is shown, the kind evidence filters on and where turns start
+    const item =
+      record.message !== undefined && !record.isMeta ? toClaudeItem(record, record.uuid) : null;
+    const visible = item !== null;
     if (record.parentUuid === record.uuid) this.__unavailable();
     if (record.parentUuid && !parent) {
       if (visible) this.__unavailable();
       if (!isOrphanAllowed) return record.parentUuid;
     }
-    const textPrompt =
-      record.type === 'user' &&
-      !record.isMeta &&
-      (typeof record.message?.content === 'string' ||
-        (Array.isArray(record.message?.content) &&
-          record.message.content.some(
-            (block: unknown) => z.object({ type: z.literal('text') }).safeParse(block).success,
-          )));
+    const textPrompt = item?.kind === 'user-message';
     const turnId = textPrompt
       ? record.uuid
       : typeof parent?.turn_id === 'string'
@@ -763,7 +771,7 @@ export class ClaudeHistoryModel {
         visible ? 1 : 0,
         turnStart,
         anchorId,
-        visible ? toClaudeItem(record, turnId).kind : 'unsupported',
+        item?.kind ?? 'unsupported',
       );
     if (visible) {
       if (!isAppend && !isSameLeaf)

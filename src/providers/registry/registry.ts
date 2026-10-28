@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import {
   HistoryItemSchema,
+  ThreadSummarySchema,
   MAX_PROVIDERS,
   ApprovalPresentationSchema,
   AccountObservationSchema,
@@ -210,14 +211,10 @@ export const createProviderRegistry = (
       item: (nativeId, item, complete, replacedIds) =>
         deliver(() => {
           const normalized = HistoryItemSchema.parse(item);
-          const observed = normalized.provenance;
-          normalized.provenance = nativeProvenance(normalized.kind, observed.nativeInputId);
-          if (observed.origin === 'system' && observed.source === 'native-kind')
-            normalized.provenance = {
-              ...normalized.provenance,
-              origin: 'system',
-              source: 'native-kind',
-            };
+          normalized.provenance = nativeProvenance(
+            normalized.kind,
+            normalized.provenance.nativeInputId,
+          );
           handlers?.item(
             provider,
             NativeIdSchema.parse(nativeId),
@@ -447,6 +444,19 @@ export const createProviderRegistry = (
             invoke(async (call) =>
               validateProviderHistory(await adapter.readHistory(command, call), command, provider),
             ),
+          ...(adapter.readObservedThread
+            ? {
+                readObservedThread: (nativeId: string) =>
+                  invoke(async (call) => {
+                    const thread = ThreadSummarySchema.parse(
+                      await adapter.readObservedThread!(nativeId, call),
+                    );
+                    if (thread.provider !== provider || thread.nativeId !== nativeId)
+                      rejectProviderResponse();
+                    return thread;
+                  }),
+              }
+            : {}),
           readModels: (command) =>
             invoke(async (call) => {
               const page = ProviderModelPageSchema.parse(await adapter.readModels(command, call));

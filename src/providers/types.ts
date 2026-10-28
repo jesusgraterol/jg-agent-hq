@@ -25,6 +25,7 @@ import type {
   ILoginObservation,
   INativeControlResult,
   ISessionState,
+  IThreadSummary,
 } from '../contracts/index.js';
 import type { IProviderInputFile } from './inputs/index.js';
 import type {
@@ -141,6 +142,12 @@ export type IAgentProvider = {
   ): Promise<IProviderThread>;
   /** @returns One authorized, bounded native history response with query-bound continuation. */
   readHistory(command: IHistoryRequest, call: IProviderCall): Promise<IHqResponse>;
+  /**
+   * Reads a session another client drives by its identity alone, for active-session reads; a
+   * provider without it has its observed sessions left out of them.
+   * @returns The session's summary, whose workspace is where it runs.
+   */
+  readObservedThread?(nativeId: string, call: IProviderCall): Promise<IThreadSummary>;
   /** @returns Verified native metadata and explicit eligibility for adoption or reattachment. */
   inspectThread(
     nativeId: string,

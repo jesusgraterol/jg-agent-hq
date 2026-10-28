@@ -35,6 +35,7 @@ const main = async (): Promise<void> => {
       'native-id': { type: 'string' },
       'turn-id': { type: 'string' },
       'native-item-id': { type: 'string' },
+      'text-limit': { type: 'string' },
       'evidence-kind': { type: 'string', multiple: true },
       'thread-id': { type: 'string' },
       'server-name': { type: 'string' },
@@ -47,6 +48,7 @@ const main = async (): Promise<void> => {
       cursor: { type: 'string' },
       limit: { type: 'string' },
       'after-sequence': { type: 'string' },
+      pace: { type: 'string' },
       search: { type: 'string' },
       provider: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
@@ -55,7 +57,7 @@ const main = async (): Promise<void> => {
   const [kind] = positionals;
   if (values.help || !kind || kind === 'help') {
     process.stdout.write(
-      'jg-agent-hq serve|status|stop|capabilities|threads|thread|turns|items|sessions|session-evidence|usage|account|models|configuration|mcp-servers|mcp-tools|mcp-resources|managed-thread-name|suggest-thread-name|skills|skill-preview|plan-status|plan-milestones|session-states|request --state-root <path> [--provider <provider-id>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--server-name <name>] [--skill-id <id>] [--arguments <text>] [--directory <path>] [--after-sequence <sequence>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory, and --coordination-root for a separate existing coordination directory.\nsession-evidence accepts --native-item-id and repeated --evidence-kind.\nrequest reads one validated HQ command as JSON from stdin.\n',
+      'jg-agent-hq serve|status|stop|capabilities|threads|thread|turns|items|sessions|session-evidence|usage|account|models|configuration|mcp-servers|mcp-tools|mcp-resources|managed-thread-name|suggest-thread-name|skills|skill-preview|plan-status|plan-milestones|session-states|active-sessions|observation-pace|request --state-root <path> [--provider <provider-id>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--server-name <name>] [--skill-id <id>] [--arguments <text>] [--directory <path>] [--after-sequence <sequence>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory, and --coordination-root for a separate existing coordination directory.\nsession-evidence accepts --native-item-id and repeated --evidence-kind.\nitems reads newest first and accepts --text-limit <1..65536>, and --native-item-id with --turn-id for one item.\nobservation-pace takes --pace <live|background>.\nrequest reads one validated HQ command as JSON from stdin.\n',
     );
     return;
   }
@@ -118,6 +120,7 @@ const main = async (): Promise<void> => {
       values['native-id'] ||
       values['turn-id'] ||
       values['native-item-id'] ||
+      values['text-limit'] ||
       values['evidence-kind'] ||
       values['thread-id'] ||
       values['skill-id'] ||
@@ -236,7 +239,28 @@ const main = async (): Promise<void> => {
     );
     return;
   }
-  if (values.directory || values['after-sequence'])
+  if (kind === 'active-sessions' || kind === 'observation-pace') {
+    const allowed = new Set(kind === 'observation-pace' ? ['state-root', 'pace'] : ['state-root']);
+    if (Object.keys(values).some((key) => !allowed.has(key)))
+      throw new Exception('The HQ request is invalid', {
+        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+        data: { kind: 'invalid-request' },
+      });
+    const parsed = HqRequestSchema.safeParse(
+      kind === 'active-sessions' ? { kind } : { kind, pace: values.pace },
+    );
+    if (!parsed.success)
+      throw new Exception('The HQ request is invalid', {
+        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+        data: { kind: 'invalid-request' },
+        cause: parsed.error,
+      });
+    process.stdout.write(
+      `${JSON.stringify({ schemaVersion: 1, ...(await requestAgentHq(stateRoot, parsed.data)) })}\n`,
+    );
+    return;
+  }
+  if (values.directory || values['after-sequence'] || values.pace)
     throw new Exception('The HQ request is invalid', {
       code: 'JG_AGENT_HQ_REQUEST_INVALID',
       data: { kind: 'invalid-request' },
@@ -267,6 +291,7 @@ const main = async (): Promise<void> => {
       ['nativeId', values['native-id']],
       ['turnId', values['turn-id']],
       ['nativeItemId', values['native-item-id']],
+      ['textLimit', values['text-limit'] === undefined ? undefined : Number(values['text-limit'])],
       ['kinds', values['evidence-kind']],
       ['threadId', values['thread-id']],
       ['serverName', values['server-name']],

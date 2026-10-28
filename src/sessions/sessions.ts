@@ -1,10 +1,18 @@
 import { Exception } from 'jg-exception';
 
-import { HqResponseSchema, type IHqResponse, type IHqRequest } from '../contracts/index.js';
+import {
+  HqResponseSchema,
+  MAX_PAGE_SIZE,
+  type IActiveSessions,
+  type IHqResponse,
+  type IHqRequest,
+  type IThreadSummary,
+} from '../contracts/index.js';
 import { retainNativeLineage } from '../providers/index.js';
 import type { createProviderRegistry } from '../providers/registry/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 import type { IStore } from '../store/index.js';
+import type { IActiveSessionRecord } from '../store/sessions/index.js';
 
 import type { IHistoryRequest } from './types.js';
 import {
@@ -156,12 +164,8 @@ export const readNativeHistory = async (
     response.kind === 'session-evidence' || response.kind === 'items' ? response.result.data : [];
   if (items.length && 'nativeId' in command) {
     // provider assertions alone never establish an operator or an HQ action link
-    for (const item of items) {
-      const observed = item.provenance;
-      item.provenance = nativeProvenance(item.kind, observed.nativeInputId);
-      if (observed.origin === 'system' && observed.source === 'native-kind')
-        item.provenance = { ...item.provenance, origin: 'system', source: 'native-kind' };
-    }
+    for (const item of items)
+      item.provenance = nativeProvenance(item.kind, item.provenance.nativeInputId);
     const origins = await projection.getEvidenceOrigins({
       provider: command.provider,
       nativeId: command.nativeId,
@@ -183,4 +187,96 @@ export const readNativeHistory = async (
       data: { kind: 'agent-unavailable' },
     });
   return HqResponseSchema.parse(response);
+};
+
+/**
+ * Summarizes one active session, or returns null for one left out: outside the allowed workspaces,
+ * an observed Claude session the latest `claude agents --json` run didn't list, and an observed
+ * session its provider can't read, as observation itself leaves such a session out.
+ */
+const toActiveSummary = async (
+  record: IActiveSessionRecord,
+  registry: ReturnType<typeof createProviderRegistry>,
+  resolveRoot: (directory: string) => Promise<string | null>,
+  claudeWorkspaceOf: (nativeId: string) => string | undefined,
+): Promise<IThreadSummary | null> => {
+  const base = { provider: record.provider, nativeId: record.nativeId, state: record.state };
+  if (record.thread) {
+    const workspaceRoot = await resolveRoot(record.thread.workspaceRoot);
+    if (workspaceRoot === null) return null;
+    return {
+      ...base,
+      nativeLineage: record.thread.nativeLineage,
+      workspaceRoot,
+      name: record.thread.name,
+      createdAt: record.thread.createdAt,
+      updatedAt: record.thread.updatedAt,
+      nativeState: 'unknown',
+      ownership: record.thread.ownership,
+      managedId: record.thread.id,
+      historyState: 'available',
+    };
+  }
+  if (record.provider === 'claude') {
+    const cwd = claudeWorkspaceOf(record.nativeId);
+    const workspaceRoot = cwd === undefined ? null : await resolveRoot(cwd);
+    if (workspaceRoot === null) return null;
+    return {
+      ...base,
+      nativeLineage: { sessionId: record.nativeId, parentThreadId: null, forkedFromId: null },
+      workspaceRoot,
+      name: record.history?.name ?? null,
+      createdAt: record.history?.createdAt ?? record.changedAt,
+      updatedAt: record.history?.updatedAt ?? record.changedAt,
+      nativeState: 'unknown',
+      ownership: 'external',
+      managedId: null,
+      historyState: record.history?.isSupported === false ? 'unavailable' : 'available',
+    };
+  }
+  let thread: IThreadSummary;
+  try {
+    const adapter = await registry.get(record.provider);
+    if (!adapter.readObservedThread) return null;
+    thread = await adapter.readObservedThread(record.nativeId);
+  } catch {
+    return null;
+  }
+  const workspaceRoot = await resolveRoot(thread.workspaceRoot);
+  if (workspaceRoot === null) return null;
+  return { ...thread, ...base, workspaceRoot, ownership: 'external', managedId: null };
+};
+
+/**
+ * Reads every running and waiting session, managed and observed, newest state change first, each
+ * as the summary `threads` returns. An observed Claude session's workspace is the `cwd` the
+ * latest `claude agents --json` run reported, and other observed sessions' come from their
+ * provider's `readObservedThread`.
+ * @returns At most 128 summaries and whether more sessions are active.
+ * @throws
+ * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+ */
+export const readActiveSessions = async (
+  registry: ReturnType<typeof createProviderRegistry>,
+  projection: IStore,
+  allowedRoots: string[],
+  claudeWorkspaceOf: (nativeId: string) => string | undefined,
+): Promise<IActiveSessions> => {
+  const records = await projection.listActiveSessions(MAX_PAGE_SIZE);
+  // each directory is authorized once per read
+  const roots = new Map<string, Promise<string | null>>();
+  const resolveRoot = (directory: string): Promise<string | null> => {
+    let root = roots.get(directory);
+    if (!root) {
+      root = resolveWorkspaceTarget(directory, allowedRoots).catch(() => null);
+      roots.set(directory, root);
+    }
+    return root;
+  };
+  const data: IThreadSummary[] = [];
+  for (const record of records.data) {
+    const summary = await toActiveSummary(record, registry, resolveRoot, claudeWorkspaceOf);
+    if (summary) data.push(summary);
+  }
+  return { data, isTruncated: records.isTruncated };
 };

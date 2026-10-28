@@ -27,6 +27,10 @@ export const SessionTransitionReasonSchema = z.enum([
 ]);
 export type ISessionTransitionReason = z.infer<typeof SessionTransitionReasonSchema>;
 
+// how often Claude's active sessions are polled: `live` every 5 seconds, `background` every 30
+export const ObservationPaceSchema = z.enum(['live', 'background']);
+export type IObservationPace = z.infer<typeof ObservationPaceSchema>;
+
 /*
  * One recorded state change, in sequence order. A managed session carries its HQ thread ID and
  * may have no native ID while it is created; an observed session has only its native identity.

@@ -6,13 +6,57 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { expectToRejectCode } from 'jg-exception/testing';
 import { hasErrorCode } from 'jg-exception';
 import type { IActionCommand, IActionEnvelope, IManagedThread } from 'jg-agent-hq/contracts';
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
+import { z } from 'zod';
 
 import {
   claudeRecord,
   withClaudeRuntime,
   type IClaudeFixture,
 } from '../../../../scripts/test-support/claude-runtime.js';
+import {
+  countHeldDelays,
+  releaseHeldDelays,
+  startHoldingDelays,
+} from '../../../../scripts/test-support/delays.js';
+
+// the 60-minute idle period is released by the tests instead of waited out
+vi.mock('jg-utilities', async (original) => {
+  const actual = await original<typeof import('jg-utilities')>();
+  const { holdDelays } = await import('../../../../scripts/test-support/delays.js');
+  return { ...actual, delay: holdDelays(actual.delay) };
+});
+startHoldingDelays(3_600);
+
+const readStarts = async (fixture: IClaudeFixture) =>
+  (await readFile(join(fixture.root, 'claude-starts.jsonl'), 'utf8'))
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => z.object({ id: z.string(), args: z.array(z.string()) }).parse(JSON.parse(line)));
+const readPids = async (fixture: IClaudeFixture) =>
+  (await readFile(join(fixture.root, 'claude-pids.jsonl'), 'utf8'))
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => z.object({ pid: z.number().int() }).parse(JSON.parse(line)).pid);
+const isRunning = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+// ends the idle period of every waiting session and waits until their processes are gone
+const parkIdleSessions = async (fixture: IClaudeFixture, count = 1) => {
+  await expect.poll(() => countHeldDelays(3_600)).toBe(count);
+  const running = (await readPids(fixture)).filter(isRunning).length;
+  expect(releaseHeldDelays(3_600)).toBe(count);
+  await expect
+    .poll(async () => (await readPids(fixture)).filter(isRunning).length)
+    .toBe(running - count);
+};
 
 const actions = async (fixture: IClaudeFixture) => {
   const status = await fixture.request({ kind: 'status' });
@@ -164,6 +208,123 @@ test('Claude creates and names an idle native session, deduplicates input and re
     expect(thread).toMatchObject({
       result: { managedId: created.thread.id, ownership: 'managed' },
     });
+  });
+});
+
+test('Claude live items present what history will: thinking and notifications left out, a live edit as a file change', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create();
+    const [thinking, call, result, notification, answer] = Array.from({ length: 5 }, () =>
+      randomUUID(),
+    );
+    const path = join(fixture.workspaceRoot, 'a.ts');
+    const event = (body: unknown) => ({ type: 'stream_event', event: body });
+    await fixture.control({
+      frames: [
+        event({ type: 'message_start', message: { id: 'api-thinking' } }),
+        event({ type: 'content_block_start', index: 0, content_block: { type: 'thinking' } }),
+        {
+          type: 'assistant',
+          uuid: thinking,
+          message: {
+            id: 'api-thinking',
+            role: 'assistant',
+            content: [{ type: 'thinking', thinking: 'private', signature: 'sig' }],
+          },
+        },
+        event({ type: 'message_start', message: { id: 'api-edit' } }),
+        event({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_edit', name: 'Edit', input: {} },
+        }),
+        {
+          type: 'assistant',
+          uuid: call,
+          message: {
+            id: 'api-edit',
+            role: 'assistant',
+            content: [
+              { type: 'tool_use', id: 'toolu_edit', name: 'Edit', input: { file_path: path } },
+            ],
+          },
+        },
+        {
+          type: 'user',
+          uuid: result,
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'toolu_edit', content: 'updated' }],
+          },
+          tool_use_result: {
+            filePath: path,
+            structuredPatch: [
+              { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
+            ],
+          },
+        },
+        {
+          type: 'user',
+          uuid: notification,
+          message: { role: 'user', content: '<task-notification>\n</task-notification>' },
+        },
+        {
+          type: 'assistant',
+          uuid: answer,
+          message: {
+            id: 'api-answer',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Edited.' }],
+          },
+        },
+      ],
+    });
+    const input = await api.message(thread.id, 'Edit the file');
+    await api.until(
+      () => api.receipt(input.id),
+      (entry) => entry.completion === 'completed',
+    );
+    const shown = (item: {
+      nativeId: string;
+      kind: string;
+      text: string;
+      callId: string | null;
+      outcome: string | null;
+      files: unknown[];
+    }) => ({
+      nativeId: item.nativeId,
+      kind: item.kind,
+      text: item.text,
+      callId: item.callId,
+      outcome: item.outcome,
+      files: item.files,
+    });
+    const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
+    if (live.kind !== 'live-items') throw new Error('Missing live items');
+    const liveItems = live.result.data.map(shown);
+    expect(liveItems.map((item) => item.nativeId)).toStrictEqual([
+      expect.any(String),
+      call,
+      result,
+      answer,
+    ]);
+    expect(liveItems[2]).toStrictEqual({
+      nativeId: result,
+      kind: 'file-change',
+      text: `${path}\n@@ -1,1 +1,1 @@\n-old\n+new`,
+      callId: 'toolu_edit',
+      outcome: 'succeeded',
+      files: [{ path, added: 1, removed: 1 }],
+    });
+    const history = await fixture.request({
+      kind: 'items',
+      provider: 'claude',
+      workspaceRoot: fixture.workspaceRoot,
+      nativeId: thread.nativeId!,
+    });
+    if (history.kind !== 'items') throw new Error('Missing history');
+    expect(history.result.data.map(shown).reverse()).toStrictEqual(liveItems);
   });
 });
 
@@ -959,3 +1120,165 @@ test('Claude control checks native capabilities rather than rejecting a compatib
     expect(await api.thread(thread.id)).toMatchObject({ state: 'completed', ownership: 'managed' });
   });
 });
+
+test('an idle Claude session gives up its process after 60 minutes and answers reads, an interrupt and a stop without one', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create();
+    const input = await api.message(thread.id);
+    const done = await api.until(
+      () => api.receipt(input.id),
+      (entry) => entry.completion === 'completed',
+    );
+    const transitions = async () => {
+      const page = await fixture.request({ kind: 'session-states', limit: 128 });
+      if (page.kind !== 'session-states') throw new Error('Missing transitions');
+      return page.result.data;
+    };
+    const before = await transitions();
+    const { state } = await api.thread(thread.id);
+    await parkIdleSessions(fixture);
+    expect((await api.thread(thread.id)).state).toBe(state);
+    expect(await fixture.request({ kind: 'skills', threadId: thread.id })).toMatchObject({
+      kind: 'skills',
+      result: { state: 'available' },
+    });
+    expect(
+      await fixture.request({
+        kind: 'configuration',
+        provider: 'claude',
+        workspaceRoot: fixture.workspaceRoot,
+        threadId: thread.id,
+      }),
+    ).toMatchObject({ kind: 'configuration', result: { effective: { model: 'model-0000' } } });
+    // an interrupt is refused as any idle session's is
+    expect(
+      await api.submit(
+        api.envelope({
+          kind: 'interrupt',
+          threadId: thread.id,
+          expectedTurnId: done.nativeTurnId!,
+        }),
+      ),
+    ).toMatchObject({ delivery: 'failed', failure: 'state-conflict' });
+    expect((await api.thread(thread.id)).state).toBe(state);
+    expect(await transitions()).toStrictEqual(before);
+    const close = api.envelope({ kind: 'thread-close', threadId: thread.id });
+    await api.submit(close);
+    await api.settled(close.id);
+    expect((await api.thread(thread.id)).state).toBe('inactive');
+    // nothing reopened the session
+    expect(await readStarts(fixture)).toHaveLength(1);
+  });
+});
+
+test.each([
+  ['running', { holdTurn: true }, 'running'],
+  ['waiting for its operator', { prompt: 'question' }, 'waiting-input'],
+])('a Claude session %s never gives up its process', async (_label, control, state) => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create();
+    // a session's idle period starts when it opens, and its first turn ends that period
+    await expect.poll(() => countHeldDelays(3_600)).toBe(1);
+    await fixture.control(control);
+    const input = await api.message(thread.id);
+    await api.settled(input.id);
+    await api.until(
+      () => api.thread(thread.id),
+      (entry) => entry.state === state,
+    );
+    expect(countHeldDelays(3_600)).toBe(0);
+    expect(releaseHeldDelays(3_600)).toBe(0);
+    expect((await readPids(fixture)).every(isRunning)).toBe(true);
+  });
+});
+
+test('a parked Claude session reopens for a message and a rename with its settings and agent bridge', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const create = api.envelope({
+      kind: 'thread-create',
+      provider: 'claude',
+      workspaceRoot: fixture.workspaceRoot,
+      name: 'parked-session',
+      settings: {
+        permissionMode: 'plan',
+        systemInstructions: 'Answer briefly.',
+        developerInstructions: 'Name the files you read.',
+      },
+    });
+    const admitted = await api.submit(create);
+    await api.settled(create.id);
+    const thread = await api.thread(admitted.threadId!);
+    const turn = async (text: string) => {
+      const input = await api.message(thread.id, text);
+      await api.until(
+        () => api.receipt(input.id),
+        (entry) => entry.completion === 'completed',
+      );
+    };
+    await turn('First request');
+    await parkIdleSessions(fixture);
+    await turn('Second request');
+    await parkIdleSessions(fixture);
+    const rename = api.envelope({
+      kind: 'thread-rename',
+      threadId: thread.id,
+      name: 'renamed-session',
+    });
+    await api.submit(rename);
+    await api.settled(rename.id);
+    expect((await api.thread(thread.id)).name).toBe('renamed-session');
+    // every start passes the same flags and bridge, apart from the bridge's credential file
+    const flags = (args: string[]) =>
+      args
+        .filter((_arg, index) => !['--session-id', '--resume'].includes(args[index - 1] ?? ''))
+        .filter((arg) => arg !== '--session-id' && arg !== '--resume')
+        .map((arg, index, all) =>
+          all[index - 1] === '--mcp-config'
+            ? Object.keys(
+                z.object({ mcpServers: z.record(z.string(), z.unknown()) }).parse(JSON.parse(arg))
+                  .mcpServers,
+              )
+            : arg,
+        );
+    const starts = await readStarts(fixture);
+    expect(starts).toHaveLength(3);
+    expect(starts[0]!.args).toContain('--mcp-config');
+    expect(starts[0]!.args[starts[0]!.args.indexOf('--permission-mode') + 1]).toBe('plan');
+    for (const start of starts.slice(1)) {
+      expect(start.args[start.args.indexOf('--resume') + 1]).toBe(thread.nativeId);
+      expect(flags(start.args)).toStrictEqual(flags(starts[0]!.args));
+    }
+  });
+});
+
+test('a parked Claude session keeps its controlled slot, so 32 processes never run beside it and it still reopens', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create('parked-first');
+    await parkIdleSessions(fixture);
+    for (let index = 0; index < 31; index += 1) await api.create(`open-${index}`);
+    expect(
+      await api.submit(
+        api.envelope({
+          kind: 'thread-create',
+          provider: 'claude',
+          workspaceRoot: fixture.workspaceRoot,
+          name: 'one-too-many',
+        }),
+      ),
+    ).toMatchObject({ delivery: 'failed', failure: 'state-conflict' });
+    const input = await api.message(thread.id, 'Wake up');
+    await api.until(
+      () => api.receipt(input.id),
+      (entry) => entry.completion === 'completed',
+    );
+    expect(
+      (await readStarts(fixture)).filter((start) => start.id === thread.nativeId),
+    ).toHaveLength(2);
+    expect((await readPids(fixture)).filter(isRunning)).toHaveLength(32);
+  });
+  // starting 32 native sessions, one after another, is legitimately slow
+}, 120_000);

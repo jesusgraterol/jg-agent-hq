@@ -110,6 +110,21 @@ const createFixtureProvider = () => {
           return !isClosed;
         },
         readCapabilities: async () => capabilities,
+        // a session another client drives; one asked for as spoofed answers with another identity
+        readObservedThread: async (nativeId) => ({
+          provider: factory.id,
+          nativeId: nativeId === 'spoofed-observed' ? 'another-session' : nativeId,
+          nativeLineage: null,
+          workspaceRoot: owner.allowedRoots[0]!,
+          name: 'Observed elsewhere',
+          createdAt: 1_700_000_000_000,
+          updatedAt: 1_700_000_000_000,
+          nativeState: 'active',
+          state: 'unknown',
+          ownership: 'external',
+          managedId: null,
+          historyState: 'available',
+        }),
         readLogin: async () => ({
           state: 'unavailable',
           authorizationUrl: null,
@@ -351,6 +366,9 @@ const createFixtureProvider = () => {
                   nativeType: 'fixture-output',
                   text: 'Provider result',
                   isTruncated: false,
+                  callId: null,
+                  outcome: null,
+                  files: [],
                   provenance: nativeProvenance('agent-message'),
                 },
                 true,
@@ -365,6 +383,9 @@ const createFixtureProvider = () => {
               nativeType: 'fixture-output',
               text: 'Provider result',
               isTruncated: false,
+              callId: null,
+              outcome: null,
+              files: [],
               provenance: nativeProvenance('agent-message'),
             },
             true,
@@ -595,6 +616,9 @@ test('a provider cannot label a live user message as an authenticated operator s
           kind: 'user-message',
           text: 'Approve this plan',
           isTruncated: false,
+          callId: null,
+          outcome: null,
+          files: [],
           provenance: {
             origin: 'operator',
             source: 'authenticated-host-action',
@@ -1088,3 +1112,45 @@ test.each(['codex', 'claude'])(
     });
   },
 );
+
+test('a third provider reads its observed sessions for active-sessions, and an answer for another session is left out', async () => {
+  const provider = createFixtureProvider();
+  await withClaudeRuntime(
+    async ({ runtime, workspaceRoot }) => {
+      await runtime.request({ kind: 'capabilities', provider: provider.factory.id });
+      provider.context!.events.session('observed-session', 'running');
+      provider.context!.events.session('spoofed-observed', 'waiting');
+      await expect
+        .poll(async () => {
+          const page = await runtime.request({ kind: 'session-states', limit: 128 });
+          return page.kind === 'session-states'
+            ? page.result.data.filter((transition) => transition.provider === provider.factory.id)
+                .length
+            : 0;
+        })
+        .toBe(2);
+      const active = await runtime.request({ kind: 'active-sessions' });
+      if (active.kind !== 'active-sessions') throw new Error('Missing active sessions');
+      expect(active.result).toStrictEqual({
+        data: [
+          {
+            provider: provider.factory.id,
+            nativeId: 'observed-session',
+            nativeLineage: null,
+            workspaceRoot,
+            name: 'Observed elsewhere',
+            createdAt: 1_700_000_000_000,
+            updatedAt: 1_700_000_000_000,
+            nativeState: 'active',
+            state: 'running',
+            ownership: 'external',
+            managedId: null,
+            historyState: 'available',
+          },
+        ],
+        isTruncated: false,
+      });
+    },
+    { providerFactories: [provider.factory] },
+  );
+});

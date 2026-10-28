@@ -17,7 +17,7 @@ import {
   observeClaudeAgents,
 } from '../providers/index.js';
 import { createProviderRegistry } from '../providers/registry/index.js';
-import { readNativeHistory } from '../sessions/index.js';
+import { limitItemText, readActiveSessions, readNativeHistory } from '../sessions/index.js';
 import { suggestThreadName } from '../sessions/names/index.js';
 import { createSkills } from '../skills/index.js';
 import { createStore } from '../store/index.js';
@@ -342,14 +342,31 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           kind: 'session-states',
           result: await projection.listSessionTransitions(command.afterSequence, command.limit),
         };
+      case 'active-sessions':
+        return {
+          kind: 'active-sessions',
+          result: await readActiveSessions(providers, projection, allowedRoots, (nativeId) =>
+            claudeAgents.workspaceOf(nativeId),
+          ),
+        };
+      case 'observation-pace':
+        claudeAgents.setPace(command.pace);
+        return { kind: 'observation-pace', result: { pace: command.pace } };
       default: {
         const response = await readNativeHistory(command, providers, projection, allowedRoots);
-        if (command.kind === 'items' && response.kind === 'items')
-          actions.live.reconcile(
-            JSON.stringify([command.provider, command.nativeId]),
-            response.result.data,
-          );
-        return response;
+        if (command.kind !== 'items' || response.kind !== 'items') return response;
+        // live items reconcile against the persisted text before it is cut
+        actions.live.reconcile(
+          JSON.stringify([command.provider, command.nativeId]),
+          response.result.data,
+        );
+        return {
+          ...response,
+          result: {
+            ...response.result,
+            data: limitItemText(response.result.data, command.textLimit),
+          },
+        };
       }
     }
   };

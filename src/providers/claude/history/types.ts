@@ -54,8 +54,26 @@ export const RecordSchema = z.object({
   isCompactSummary: z.boolean().optional(),
   customTitle: z.string().max(4096).optional(),
   message: z.object({ role: z.string(), content: z.unknown() }).optional(),
+  // the CLI's own result metadata, such as an edit's patch, which live frames call tool_use_result
+  toolUseResult: z.unknown().optional(),
 });
 export type IRecord = z.infer<typeof RecordSchema>;
+// the file Claude Code records on an Edit or Write result; a created file's patch is empty
+export const FilePatchSchema = z.object({
+  filePath: z.string().min(1).max(4096),
+  type: z.string().optional(),
+  content: z.string().optional(),
+  structuredPatch: z.array(
+    z.object({
+      oldStart: z.number().int().nonnegative(),
+      oldLines: z.number().int().nonnegative(),
+      newStart: z.number().int().nonnegative(),
+      newLines: z.number().int().nonnegative(),
+      lines: z.array(z.string()),
+    }),
+  ),
+});
+export type IFilePatch = z.infer<typeof FilePatchSchema>;
 export const SeekSchema = z.strictObject({
   createdAt: z.number().int(),
   nativeId: z.uuid(),

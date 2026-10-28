@@ -26,7 +26,9 @@ export const nativeProvenance = (
       ? 'agent'
       : kind === 'tool' || kind === 'command' || kind === 'file-change'
         ? 'tool'
-        : 'unknown',
+        : kind === 'notice'
+          ? 'system'
+          : 'unknown',
   source: kind === 'unsupported' || kind === 'user-message' ? 'unknown' : 'native-kind',
   nativeInputId,
   actionId: null,

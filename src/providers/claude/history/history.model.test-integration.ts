@@ -67,8 +67,8 @@ test('native API diagnostics stay out of compacted conversation history and pres
       kind: 'items',
       result: {
         data: [
-          { nativeId: summary.uuid, text: 'Native compacted summary' },
           { nativeId: answer.uuid, text: 'After compaction' },
+          { nativeId: summary.uuid, text: 'Native compacted summary' },
         ],
       },
     });
@@ -128,8 +128,12 @@ test('empty discovery and byte-limited indexing/pages return honest boundaries',
       limit: 128,
     });
     if (first.kind !== 'items') throw new Error('wrong response');
+    // the page byte budget holds four of the six newest records
     expect(first.result.data.map((item) => item.nativeId)).toStrictEqual(
-      records.slice(0, 4).map((record) => record.uuid),
+      records
+        .slice(2)
+        .reverse()
+        .map((record) => record.uuid),
     );
     const last = await request({
       kind: 'items',
@@ -140,7 +144,10 @@ test('empty discovery and byte-limited indexing/pages return honest boundaries',
       cursor: first.result.nextCursor!,
     });
     expect(last.kind === 'items' && last.result.data.map((item) => item.nativeId)).toStrictEqual(
-      records.slice(4).map((record) => record.uuid),
+      records
+        .slice(0, 2)
+        .reverse()
+        .map((record) => record.uuid),
     );
     expect(last.kind === 'items' && last.result.nextCursor).toBeNull();
   });
@@ -220,8 +227,8 @@ test('native files are paged by chain position with truthful unknown execution s
     });
     if (initial.kind !== 'items') throw new Error('wrong response');
     expect(initial.result.data.map((item) => item.text)).toStrictEqual([
-      'first question',
-      'first answer',
+      'second answer',
+      'second question',
     ]);
     expect(initial.result.nextCursor).not.toBeNull();
     const final = HqResponseSchema.parse(
@@ -236,8 +243,8 @@ test('native files are paged by chain position with truthful unknown execution s
     );
     if (final.kind !== 'items') throw new Error('wrong response');
     expect(final.result.data.map((item) => item.text)).toStrictEqual([
-      'second question',
-      'second answer',
+      'first answer',
+      'first question',
     ]);
     expect(final.result.nextCursor).toBeNull();
     const turns = await request({ kind: 'turns', provider: 'claude', workspaceRoot, nativeId });
@@ -257,7 +264,7 @@ test('native files are paged by chain position with truthful unknown execution s
     });
     expect(
       selected.kind === 'items' && selected.result.data.map((item) => item.nativeId),
-    ).toStrictEqual([second.uuid, last.uuid]);
+    ).toStrictEqual([last.uuid, second.uuid]);
     await appendFile(
       transcript(nativeId),
       JSON.stringify({ type: 'custom-title', sessionId: nativeId, customTitle: 'Updated title' }) +
@@ -303,7 +310,7 @@ test('incomplete tails are retained, appends advance, and changed chain revision
     const partial = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
     expect(
       partial.kind === 'items' && partial.result.data.map((item) => item.nativeId),
-    ).toStrictEqual([first.uuid, answer.uuid]);
+    ).toStrictEqual([answer.uuid, first.uuid]);
     await appendFile(transcript(nativeId), text.slice(32) + '\n');
     const appended = await request({
       kind: 'items',
@@ -332,8 +339,8 @@ test('incomplete tails are retained, appends advance, and changed chain revision
     ).rejects.toThrow('Request is invalid');
     const branch = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
     expect(branch.kind === 'items' && branch.result.data.map((item) => item.text)).toStrictEqual([
-      'Example native message',
       'revised branch',
+      'Example native message',
     ]);
   });
 });
@@ -365,9 +372,9 @@ test('hidden native records preserve turn grouping and repeated message identiti
       first.kind === 'items' &&
         first.result.data.map((item) => [item.text, item.turnId, item.kind]),
     ).toStrictEqual([
-      ['prompt', prompt.uuid, 'user-message'],
-      ['initial answer', prompt.uuid, 'agent-message'],
       ['command output', prompt.uuid, 'tool'],
+      ['initial answer', prompt.uuid, 'agent-message'],
+      ['prompt', prompt.uuid, 'user-message'],
     ]);
     await appendFile(
       transcript(nativeId),
@@ -376,7 +383,7 @@ test('hidden native records preserve turn grouping and repeated message identiti
     const replaced = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
     expect(
       replaced.kind === 'items' && replaced.result.data.map((item) => item.text),
-    ).toStrictEqual(['prompt', 'final answer']);
+    ).toStrictEqual(['final answer', 'prompt']);
     const turns = await request({ kind: 'turns', provider: 'claude', workspaceRoot, nativeId });
     expect(turns.kind === 'turns' && turns.result.data.map((turn) => turn.nativeId)).toStrictEqual([
       prompt.uuid,
@@ -411,8 +418,8 @@ test('hidden records Claude Code writes before the records they follow keep the 
     expect(
       items.kind === 'items' && items.result.data.map((item) => [item.text, item.turnId]),
     ).toStrictEqual([
-      ['prompt', prompt.uuid],
       ['answer', prompt.uuid],
+      ['prompt', prompt.uuid],
     ]);
     const turns = await request({ kind: 'turns', provider: 'claude', workspaceRoot, nativeId });
     expect(turns.kind === 'turns' && turns.result.data.map((turn) => turn.nativeId)).toStrictEqual([
@@ -441,8 +448,8 @@ test('a hidden record whose parent never appears keeps its session readable, and
     );
     const items = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
     expect(items.kind === 'items' && items.result.data.map((item) => item.text)).toStrictEqual([
-      'prompt',
       'answer',
+      'prompt',
     ]);
     const unknownId = randomUUID();
     const reply = claudeRecord(workspaceRoot, unknownId, {
@@ -492,7 +499,7 @@ test('a record over a mebibyte, such as a tool result holding images, keeps its 
       pages.push(page.result.data.map((item) => item.kind));
       cursor = page.result.nextCursor ?? undefined;
     } while (cursor !== undefined);
-    expect(pages).toStrictEqual([['user-message'], ['tool'], ['agent-message']]);
+    expect(pages).toStrictEqual([['agent-message'], ['tool'], ['user-message']]);
     const evidence = await request({
       kind: 'session-evidence',
       provider: 'claude',
@@ -598,7 +605,7 @@ test.each([
     });
     if (first.kind !== 'items') throw new Error('wrong response');
     expect(first.result.data.map((item) => [item.nativeId, item.text])).toStrictEqual([
-      [question.uuid, 'qualified question'],
+      [answer.uuid, 'qualified answer'],
     ]);
     expect(first.result.nextCursor).not.toBeNull();
     const last = await request({
@@ -611,7 +618,7 @@ test.each([
     });
     if (last.kind !== 'items') throw new Error('wrong response');
     expect(last.result.data.map((item) => [item.nativeId, item.text])).toStrictEqual([
-      [answer.uuid, 'qualified answer'],
+      [question.uuid, 'qualified question'],
     ]);
     expect(last.result.nextCursor).toBeNull();
   });
@@ -727,9 +734,9 @@ test('additive fields and unknown ordered content remain explicit without invent
       items.kind === 'items' &&
         items.result.data.map((item) => [item.nativeId, item.kind, item.turnId, item.text]),
     ).toStrictEqual([
-      [question.uuid, 'user-message', question.uuid, 'Example native message'],
-      [unknown.uuid, 'unsupported', question.uuid, '[Unsupported native content]'],
       [answer.uuid, 'agent-message', question.uuid, 'Known answer'],
+      [unknown.uuid, 'unsupported', question.uuid, '[Unsupported native content]'],
+      [question.uuid, 'user-message', question.uuid, 'Example native message'],
     ]);
   });
 });
@@ -797,8 +804,8 @@ test.each(['existing', 'removed'])(
       );
       const items = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
       expect(items.kind === 'items' && items.result.data.map((item) => item.text)).toStrictEqual([
-        'Example native message',
         'Subdirectory response',
+        'Example native message',
       ]);
     });
   },
@@ -921,7 +928,7 @@ test(
     await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
       const nativeId = randomUUID();
       let parentUuid: string | null = null;
-      const records = [];
+      const records: ReturnType<typeof claudeRecord>[] = [];
       for (let index = 0; index < 1024; index += 1) {
         const record = claudeRecord(workspaceRoot, nativeId, {
           parentUuid,
@@ -948,14 +955,253 @@ test(
         });
         if (page.kind !== 'items') throw new Error('wrong response');
         expect(page.result.data.length).toBeLessThanOrEqual(128);
-        if (seen.length === 0) {
-          expect(page.result.data[0]?.text).toBe('a'.repeat(65_535));
-          expect(page.result.data[0]?.isTruncated).toBe(true);
+        const oldest = page.result.data.find((item) => item.nativeId === records[0]!.uuid);
+        if (oldest) {
+          expect(oldest.text).toBe('a'.repeat(65_535));
+          expect(oldest.isTruncated).toBe(true);
         }
         seen.push(...page.result.data.map((item) => item.nativeId));
         cursor = page.result.nextCursor ?? undefined;
       } while (cursor);
-      expect(seen).toStrictEqual(records.map((record) => record.uuid));
+      // newest first, each page continuing toward older items until the oldest
+      expect(seen).toStrictEqual(records.map((record) => record.uuid).reverse());
     });
   },
 );
+
+test('items cut text at their text limit on a code-point boundary, and read one item within its turn', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'abc😀def' });
+    const hidden = {
+      ...claudeRecord(workspaceRoot, nativeId, { parentUuid: prompt.uuid }),
+      type: 'attachment',
+      message: undefined,
+    };
+    const answer = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: hidden.uuid,
+      text: 'x'.repeat(100),
+    });
+    const next = claudeRecord(workspaceRoot, nativeId, { parentUuid: answer.uuid, text: 'next' });
+    const reply = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: next.uuid,
+      text: 'reply',
+    });
+    await writeFile(
+      transcript(nativeId),
+      [prompt, hidden, answer, next, reply].map((record) => JSON.stringify(record)).join('\n') +
+        '\n',
+    );
+    const target = { kind: 'items', provider: 'claude', workspaceRoot, nativeId } as const;
+    const cut = await request({ ...target, textLimit: 4 });
+    // the emoji's surrogate pair would straddle the limit, so its text stops before it
+    expect(
+      cut.kind === 'items' && cut.result.data.map((item) => [item.text, item.isTruncated]),
+    ).toStrictEqual([
+      ['repl', true],
+      ['next', false],
+      ['xxxx', true],
+      ['abc', true],
+    ]);
+    const one = await request({
+      ...target,
+      nativeItemId: answer.uuid,
+      turnId: prompt.uuid,
+      textLimit: 10,
+    });
+    expect(one.kind === 'items' && one.result).toMatchObject({
+      data: [
+        { nativeId: answer.uuid, turnId: prompt.uuid, text: 'x'.repeat(10), isTruncated: true },
+      ],
+      nextCursor: null,
+    });
+    expect(one.kind === 'items' && one.result.data).toHaveLength(1);
+    // a hidden item, an unknown one, and one outside the given turn read as an empty page
+    for (const [nativeItemId, turnId] of [
+      [hidden.uuid, prompt.uuid],
+      [randomUUID(), prompt.uuid],
+      [answer.uuid, next.uuid],
+    ] as const) {
+      const empty = await request({ ...target, nativeItemId, turnId });
+      expect(empty.kind === 'items' && empty.result).toMatchObject({ data: [], nextCursor: null });
+    }
+    // one item is read only within its turn, and without a cursor
+    await expect(request({ ...target, nativeItemId: answer.uuid })).rejects.toThrow(
+      'The HQ request is invalid',
+    );
+    const page = await request({ ...target, limit: 1 });
+    if (page.kind !== 'items') throw new Error('wrong response');
+    await expect(
+      request({
+        ...target,
+        nativeItemId: answer.uuid,
+        turnId: prompt.uuid,
+        cursor: page.result.nextCursor!,
+      }),
+    ).rejects.toThrow('The HQ request is invalid');
+  });
+});
+
+test('the index stores what the CLI shows: hidden thinking and notifications, presented kinds, and turns started by the operator', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const records: ({ uuid: string } & Record<string, unknown>)[] = [];
+    const add = (
+      type: 'user' | 'assistant',
+      content: unknown,
+      extra: Record<string, unknown> = {},
+    ) => {
+      const record: { uuid: string } & Record<string, unknown> = {
+        ...claudeRecord(workspaceRoot, nativeId, { type, parentUuid: records.at(-1)?.uuid }),
+        message: { role: type, content },
+        ...extra,
+      };
+      records.push(record);
+      return record;
+    };
+    const prompt = add('user', 'Fix the login');
+    const thinking = add('assistant', [{ type: 'thinking', thinking: 'private', signature: 's' }]);
+    const answer = add('assistant', [{ type: 'text', text: 'Looking' }]);
+    const edit = add('assistant', [
+      { type: 'tool_use', id: 'toolu_edit', name: 'Edit', input: { file_path: 'a.ts' } },
+    ]);
+    const edited = add(
+      'user',
+      [{ type: 'tool_result', tool_use_id: 'toolu_edit', content: 'ok' }],
+      {
+        toolUseResult: {
+          filePath: join(workspaceRoot, 'a.ts'),
+          structuredPatch: [
+            { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
+          ],
+        },
+      },
+    );
+    const write = add('assistant', [
+      { type: 'tool_use', id: 'toolu_write', name: 'Write', input: { file_path: 'b.ts' } },
+    ]);
+    const written = add(
+      'user',
+      [{ type: 'tool_result', tool_use_id: 'toolu_write', content: 'created' }],
+      {
+        toolUseResult: {
+          type: 'create',
+          filePath: join(workspaceRoot, 'b.ts'),
+          content: 'one\ntwo\n',
+          structuredPatch: [],
+        },
+      },
+    );
+    const notification = add(
+      'user',
+      '<task-notification>\n<task-id>t</task-id>\n</task-notification>',
+    );
+    const noted = add('assistant', [{ type: 'text', text: 'Noted' }]);
+    const summary = add('user', 'Summary of the earlier conversation', { isCompactSummary: true });
+    const command = add(
+      'user',
+      '<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>main</command-args>',
+    );
+    const output = add('user', '<local-command-stdout>Reviewed</local-command-stdout>');
+    const shell = add('user', '<bash-input> ls</bash-input>');
+    const listing = add('user', '<bash-stdout>a.ts</bash-stdout><bash-stderr></bash-stderr>');
+    const interrupted = add('user', [
+      { type: 'text', text: '[Request interrupted by user for tool use]' },
+    ]);
+    await writeFile(
+      transcript(nativeId),
+      records.map((record) => JSON.stringify(record)).join('\n') + '\n',
+    );
+    const target = { provider: 'claude', workspaceRoot, nativeId } as const;
+    const shown = (
+      record: { uuid: string },
+      turn: { uuid: string },
+      kind: string,
+      text: string,
+      extra: { callId?: string; outcome?: string; files?: unknown[] } = {},
+    ) => ({
+      id: record.uuid,
+      turnId: turn.uuid,
+      kind,
+      text,
+      callId: extra.callId ?? null,
+      outcome: extra.outcome ?? null,
+      files: extra.files ?? [],
+    });
+    const all = await request({ kind: 'items', ...target });
+    if (all.kind !== 'items') throw new Error('wrong response');
+    expect(
+      all.result.data.map(({ nativeId: id, turnId, kind, text, callId, outcome, files }) => ({
+        id,
+        turnId,
+        kind,
+        text,
+        callId,
+        outcome,
+        files,
+      })),
+    ).toStrictEqual([
+      shown(interrupted, command, 'notice', '[Request interrupted by user for tool use]'),
+      shown(listing, command, 'command', 'a.ts', { callId: shell.uuid }),
+      shown(shell, command, 'command', 'ls', { callId: shell.uuid }),
+      shown(output, command, 'notice', 'Reviewed'),
+      shown(command, command, 'user-message', '/review main'),
+      shown(summary, prompt, 'notice', 'Summary of the earlier conversation'),
+      shown(noted, prompt, 'agent-message', 'Noted'),
+      shown(written, prompt, 'file-change', `${join(workspaceRoot, 'b.ts')}\none\ntwo\n`, {
+        callId: 'toolu_write',
+        outcome: 'succeeded',
+        files: [{ path: join(workspaceRoot, 'b.ts'), added: 2, removed: 0 }],
+      }),
+      shown(write, prompt, 'tool', 'Write\n{"file_path":"b.ts"}', { callId: 'toolu_write' }),
+      shown(
+        edited,
+        prompt,
+        'file-change',
+        `${join(workspaceRoot, 'a.ts')}\n@@ -1,1 +1,1 @@\n-old\n+new`,
+        {
+          callId: 'toolu_edit',
+          outcome: 'succeeded',
+          files: [{ path: join(workspaceRoot, 'a.ts'), added: 1, removed: 1 }],
+        },
+      ),
+      shown(edit, prompt, 'tool', 'Edit\n{"file_path":"a.ts"}', { callId: 'toolu_edit' }),
+      shown(answer, prompt, 'agent-message', 'Looking'),
+      shown(prompt, prompt, 'user-message', 'Fix the login'),
+    ]);
+    expect(JSON.stringify(all)).not.toContain(thinking.uuid);
+    expect(JSON.stringify(all)).not.toContain(notification.uuid);
+    // only the operator's messages start turns
+    const turns = await request({ kind: 'turns', ...target });
+    expect(turns.kind === 'turns' && turns.result.data.map((turn) => turn.nativeId)).toStrictEqual([
+      prompt.uuid,
+      command.uuid,
+    ]);
+    // a page past a hidden notification still fills its limit
+    const first = await request({ kind: 'items', ...target, limit: 6 });
+    if (first.kind !== 'items') throw new Error('wrong response');
+    const second = await request({
+      kind: 'items',
+      ...target,
+      limit: 6,
+      cursor: first.result.nextCursor!,
+    });
+    expect(
+      second.kind === 'items' && second.result.data.map((item) => item.nativeId),
+    ).toStrictEqual([noted, written, write, edited, edit, answer].map((record) => record.uuid));
+    // evidence filters on the same presented kinds
+    for (const [kinds, ids] of [
+      [['notice'], [interrupted.uuid, output.uuid, summary.uuid]],
+      [['file-change'], [written.uuid, edited.uuid]],
+      [['command'], [listing.uuid, shell.uuid]],
+    ] as const) {
+      const evidence = await request({ kind: 'session-evidence', ...target, kinds: [...kinds] });
+      if (evidence.kind !== 'session-evidence') throw new Error('wrong response');
+      expect(evidence.result.data.map((item) => [item.reference.itemId, item.text])).toStrictEqual(
+        ids.map((id) => [id, all.result.data.find((item) => item.nativeId === id)!.text]),
+      );
+    }
+  });
+});

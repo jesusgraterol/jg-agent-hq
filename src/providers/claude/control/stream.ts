@@ -13,6 +13,7 @@ const FrameSchema = z.object({ type: z.string(), session_id: z.string().optional
 const MessageSchema = z.object({
   uuid: z.string().min(1).max(4096),
   message: z.object({ role: z.string(), content: z.unknown() }),
+  tool_use_result: z.unknown().optional(),
 });
 const ResultSchema = z.object({
   subtype: z.string(),
@@ -45,7 +46,12 @@ const MessageStartSchema = z.object({
 const BlockStartSchema = z.object({
   event: z.object({
     index: z.number().int().min(0).max(127),
-    content_block: z.object({ type: z.string(), text: z.string().optional() }),
+    content_block: z.object({
+      type: z.string(),
+      id: z.string().optional(),
+      name: z.string().optional(),
+      text: z.string().optional(),
+    }),
   }),
 });
 const BlockDeltaSchema = z.object({
@@ -112,7 +118,15 @@ export const receiveClaudeMessage = (
       isClaudeInterruptionMarker(message.message.content)
     )
       return;
-    const item = toClaudeItem(RecordSchema.parse({ ...message, type: frame.type }), input.id);
+    const item = toClaudeItem(
+      RecordSchema.parse({
+        type: frame.type,
+        uuid: message.uuid,
+        message: message.message,
+        toolUseResult: message.tool_use_result,
+      }),
+      input.id,
+    );
     // final wrappers may share an API message ID while containing different content blocks
     const content = z
       .object({ message: z.object({ id: z.string().optional(), content: z.unknown() }) })
@@ -143,7 +157,7 @@ export const receiveClaudeMessage = (
           replacedIds.push(preview[1].id);
         }
       }
-    events?.item(session.id, item, true, replacedIds);
+    if (item) events?.item(session.id, item, true, replacedIds);
     if (frame.type === 'user') {
       const results = ToolResultsSchema.safeParse(message.message.content);
       if (results.success)
@@ -172,19 +186,19 @@ export const receiveClaudeMessage = (
       const block = BlockStartSchema.parse(raw).event;
       if (!session.apiMessageId) unavailable();
       const id = `live:${input.id}:${session.apiMessageId}:${block.index}`;
-      session.previews.set(block.index, { id, type: block.content_block.type });
-      events?.item(
-        session.id,
-        toClaudeItem(
-          {
-            type: 'assistant',
-            uuid: id,
-            message: { role: 'assistant', content: [block.content_block] },
-          },
-          input.id,
-        ),
-        false,
+      const preview = toClaudeItem(
+        {
+          type: 'assistant',
+          uuid: id,
+          message: { role: 'assistant', content: [block.content_block] },
+        },
+        input.id,
       );
+      // a block the CLI leaves out, such as thinking, has no preview to show or replace
+      if (preview) {
+        session.previews.set(block.index, { id, type: block.content_block.type });
+        events?.item(session.id, preview, false);
+      }
     } else if (event.type === 'content_block_delta') {
       const block = BlockDeltaSchema.parse(raw).event;
       if (block.delta.type === 'text_delta') {

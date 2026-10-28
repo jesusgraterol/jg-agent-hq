@@ -266,6 +266,33 @@ test('session-states reads transitions after a sequence through the installed co
   });
 });
 
+test('active-sessions and observation-pace work through the installed command', async () => {
+  await withClaudeRuntime(async ({ stateRoot }) => {
+    const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
+    const run = promisify(execFile);
+    const read = async (...args: string[]) =>
+      JSON.parse((await run(process.execPath, [cli, ...args, '--state-root', stateRoot])).stdout);
+    expect(await read('active-sessions')).toStrictEqual({
+      schemaVersion: 1,
+      kind: 'active-sessions',
+      result: { data: [], isTruncated: false },
+    });
+    for (const pace of ['live', 'background'])
+      expect(await read('observation-pace', '--pace', pace)).toStrictEqual({
+        schemaVersion: 1,
+        kind: 'observation-pace',
+        result: { pace },
+      });
+    for (const args of [
+      ['observation-pace', '--pace', 'fast'],
+      ['observation-pace'],
+      ['active-sessions', '--limit', '1'],
+      ['threads', '--pace', 'live'],
+    ])
+      await expect(read(...args)).rejects.toThrow();
+  });
+});
+
 test('installed plan commands and stdin finalization work without a private plan registry', async () => {
   await withClaudeRuntime(async ({ stateRoot, workspaceRoot }) => {
     const directory = join(workspaceRoot, 'ordinary-plan');
@@ -381,6 +408,12 @@ const withWrittenState = async (
 };
 
 test.each([
+  [
+    // the hash of the schema jg-agent-hq 4.0.2 wrote, whose entry index had no notice kind
+    'the 4.0.2 schema',
+    "UPDATE hq_schema SET schema_hash = '062346e252b338d94d126c3f55f50851e003691b1be51de46b6e43b5b09615ae', package_version = '4.0.2'",
+    'The HQ storage is invalid: written by jg-agent-hq 4.0.2',
+  ],
   [
     'a newer schema',
     `UPDATE hq_schema SET schema_hash = '${'0'.repeat(64)}', package_version = '9.9.9'`,

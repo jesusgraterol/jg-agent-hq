@@ -1127,6 +1127,55 @@ test('a normal completion advances queued work once; interruption pauses the que
   }
 });
 
+test('Codex live items present what history will, leaving reasoning out', async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('live-presentation');
+    await fixture.control({
+      turnItems: [
+        { id: 'live-reasoning', type: 'reasoning', summary: [], content: ['private'] },
+        {
+          id: 'live-change',
+          type: 'fileChange',
+          status: 'completed',
+          changes: [{ path: '/workspace/a.ts', kind: { type: 'add' }, diff: 'one\ntwo\n' }],
+        },
+      ],
+    });
+    await fixture.submit(
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Add a file' },
+      }),
+    );
+    await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.state === 'completed',
+    );
+    const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
+    if (live.kind !== 'live-items') throw new Error('Missing live items');
+    expect(
+      live.result.data.map(({ nativeId, kind, outcome, files }) => ({
+        nativeId,
+        kind,
+        outcome,
+        files,
+      })),
+    ).toStrictEqual([
+      { nativeId: 'live-1', kind: 'agent-message', outcome: null, files: [] },
+      {
+        nativeId: 'live-change',
+        kind: 'file-change',
+        outcome: 'succeeded',
+        files: [{ path: '/workspace/a.ts', added: 2, removed: 0 }],
+      },
+    ]);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('live items remain available through native flush; lifecycle replay is bounded and ordered', async () => {
   const fixture = await setup();
   try {

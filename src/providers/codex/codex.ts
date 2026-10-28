@@ -443,7 +443,7 @@ export const createCodexProvider = async (
         z.object({ thread: NativeThreadSchema.refine((thread) => thread.id === nativeId) }),
         await connection.request('thread/read', { threadId: nativeId, includeTurns: false }),
       );
-      return { workspaceRoot: thread.cwd, isEphemeral: thread.ephemeral === true };
+      return { thread: toThreadSummary(thread), isEphemeral: thread.ephemeral === true };
     },
     async listTurns(nativeId, limit, cursor) {
       const page = parseNative(
@@ -465,7 +465,7 @@ export const createCodexProvider = async (
         });
       return { data: page.data.map(toTurnSummary), nextCursor: page.nextCursor };
     },
-    async listItems(nativeId, limit, cursor, turnId, evidence = false) {
+    async listItems(nativeId, limit, cursor, turnId, fullBody = false) {
       const page = parseNative(
         NativeItemPageSchema,
         await connection.request('thread/items/list', {
@@ -473,7 +473,7 @@ export const createCodexProvider = async (
           turnId,
           limit,
           cursor,
-          sortDirection: evidence ? 'desc' : 'asc',
+          sortDirection: 'desc',
         }),
       );
       if (page.data.length > limit)
@@ -484,7 +484,8 @@ export const createCodexProvider = async (
           },
         });
       return {
-        data: page.data.map((item) => toHistoryItem(item, evidence)),
+        // reasoning is left out, so a page can hold fewer items than its limit
+        data: page.data.flatMap((item) => toHistoryItem(item, fullBody) ?? []),
         nextCursor: page.nextCursor,
       };
     },
