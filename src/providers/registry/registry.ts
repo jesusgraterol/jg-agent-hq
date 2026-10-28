@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import {
   HistoryItemSchema,
+  ThreadSummarySchema,
   MAX_PROVIDERS,
   ApprovalPresentationSchema,
   AccountObservationSchema,
@@ -443,6 +444,19 @@ export const createProviderRegistry = (
             invoke(async (call) =>
               validateProviderHistory(await adapter.readHistory(command, call), command, provider),
             ),
+          ...(adapter.readObservedThread
+            ? {
+                readObservedThread: (nativeId: string) =>
+                  invoke(async (call) => {
+                    const thread = ThreadSummarySchema.parse(
+                      await adapter.readObservedThread!(nativeId, call),
+                    );
+                    if (thread.provider !== provider || thread.nativeId !== nativeId)
+                      rejectProviderResponse();
+                    return thread;
+                  }),
+              }
+            : {}),
           readModels: (command) =>
             invoke(async (call) => {
               const page = ProviderModelPageSchema.parse(await adapter.readModels(command, call));

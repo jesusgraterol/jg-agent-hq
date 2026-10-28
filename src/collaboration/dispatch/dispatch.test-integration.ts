@@ -11,6 +11,7 @@ import type { IDispatchResponse, IRequestSpecification } from 'jg-agent-hq/contr
 import {
   countHeldDelays,
   releaseHeldDelays,
+  startHoldingDelays,
   withCollaboration,
   writeFixtureControl,
   type ICollaborationFixture,
@@ -23,8 +24,9 @@ vi.setConfig({ expect: { poll: { timeout: 30_000 } } });
 vi.mock('jg-utilities', async (original) => {
   const actual = await original<typeof import('jg-utilities')>();
   const { holdDelays } = await import('../../../scripts/test-support/delays.js');
-  return { ...actual, delay: holdDelays(actual.delay, [3_600]) };
+  return { ...actual, delay: holdDelays(actual.delay) };
 });
+startHoldingDelays(3_600);
 
 const readRequest = async (fixture: ICollaborationFixture, requestId: string) => {
   const response = await fixture.call({ kind: 'request-read', taskId: fixture.taskId, requestId });

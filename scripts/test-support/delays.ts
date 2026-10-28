@@ -1,19 +1,19 @@
 // waits of chosen lengths, such as idle periods, which a test releases instead of waiting them out
 const held = new Map<number, Set<() => void>>();
+const holding = new Set<number>();
 
 type IDelay = (seconds: number, options?: { signal?: AbortSignal }) => Promise<void>;
 
 /**
- * Wraps a delay so waits of the given lengths resolve only when a test releases them; an abort
- * still rejects them at once. Other waits pass through.
+ * Wraps a delay so waits of the lengths being held resolve only when a test releases them; an
+ * abort still rejects them at once. Other waits pass through.
  * @param delay The real delay.
- * @param lengths The wait lengths, in seconds, to hold.
  * @returns The delay to install with `vi.mock`.
  */
 export const holdDelays =
-  (delay: IDelay, lengths: number[]): IDelay =>
+  (delay: IDelay): IDelay =>
   (seconds, options) => {
-    if (!lengths.includes(seconds)) return delay(seconds, options);
+    if (!holding.has(seconds)) return delay(seconds, options);
     const signal = options?.signal;
     return new Promise((resolve, reject) => {
       if (signal?.aborted) {
@@ -35,6 +35,19 @@ export const holdDelays =
       waiting.add(release);
     });
   };
+
+/**
+ * Holds every later wait of the given lengths until a test releases it.
+ * @param lengths The wait lengths, in seconds.
+ */
+export const startHoldingDelays = (...lengths: number[]): void => {
+  for (const seconds of lengths) holding.add(seconds);
+};
+
+/** Lets later waits of every length pass through again. */
+export const stopHoldingDelays = (): void => {
+  holding.clear();
+};
 
 /**
  * Counts the held waits of one length that are still pending.

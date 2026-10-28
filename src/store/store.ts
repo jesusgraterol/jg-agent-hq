@@ -33,6 +33,7 @@ import {
   ApprovalIdentitySchema,
   ApprovalPageSchema,
 } from './control/index.js';
+import { ActiveSessionRecordsSchema } from './sessions/index.js';
 import {
   StoreRequestSchema,
   StoreResponseSchema,
@@ -285,6 +286,8 @@ export const createStore = async (
       ),
     listSessionTransitions: (afterSequence, limit) =>
       request({ kind: 'session-transitions', afterSequence, limit }, SessionTransitionPageSchema),
+    listActiveSessions: (limit) =>
+      request({ kind: 'sessions-active', limit }, ActiveSessionRecordsSchema),
     getThreadPlan: (threadId) =>
       request({ kind: 'thread-plan-read', threadId }, ActionPlanContextSchema.nullable()),
     getPlanThreads: (directory) =>

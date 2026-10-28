@@ -84,6 +84,7 @@ import {
   type IDispatch,
   type IObservationResult,
 } from './control/index.js';
+import type { IActiveSessionRecord } from './sessions/index.js';
 
 // worker messages are closed, bounded operations rather than arbitrary SQL
 export const StoreCommandSchema = z.discriminatedUnion('kind', [
@@ -155,6 +156,7 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     afterSequence: z.number().int().nonnegative(),
     limit: z.number().int().min(1).max(128),
   }),
+  z.strictObject({ kind: z.literal('sessions-active'), limit: z.number().int().min(1).max(128) }),
   z.strictObject({ kind: z.literal('thread-plan-read'), threadId: z.uuid() }),
   z.strictObject({ kind: z.literal('plan-threads'), directory: z.string() }),
   z.strictObject({ kind: z.literal('queue-peek'), threadId: z.uuid() }),
@@ -411,6 +413,14 @@ export type IStore = {
     afterSequence: number,
     limit: number,
   ): Promise<{ data: ISessionTransition[]; hasMore: boolean }>;
+  /** Reads running and waiting sessions, managed and observed, newest state change first.
+   * @returns At most `limit` records and whether more sessions are active.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  listActiveSessions(
+    limit: number,
+  ): Promise<{ data: IActiveSessionRecord[]; isTruncated: boolean }>;
   /** Reads a thread's exact current plan binding.
    * @returns Its guided context, or null.
    * @throws

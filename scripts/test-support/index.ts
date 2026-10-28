@@ -15,4 +15,10 @@ export type { ICollaborationFixture } from './collaboration.js';
 export { callCodexTool, withAgentBridge } from './agent-tools.js';
 
 // held waits, such as idle periods, released by the test
-export { holdDelays, countHeldDelays, releaseHeldDelays } from './delays.js';
+export {
+  holdDelays,
+  startHoldingDelays,
+  stopHoldingDelays,
+  countHeldDelays,
+  releaseHeldDelays,
+} from './delays.js';

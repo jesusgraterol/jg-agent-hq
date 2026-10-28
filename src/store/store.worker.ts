@@ -149,6 +149,9 @@ const startWorker = async (): Promise<void> => {
           case 'session-transitions':
             result = sessions.transitions(command.afterSequence, command.limit);
             break;
+          case 'sessions-active':
+            result = sessions.active(command.limit);
+            break;
           case 'thread-plan-read':
             result = plans.getThreadPlan(command.threadId);
             break;

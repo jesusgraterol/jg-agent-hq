@@ -13,7 +13,9 @@ export type IProviderRegistration = { factory: IAgentProviderFactory; isBuiltIn:
 
 // runtime callers receive concrete operations with cancellation owned by the registry
 export type IBoundAgentProvider = {
-  [K in keyof IAgentProvider]: IAgentProvider[K] extends (...inputs: infer TInputs) => infer TResult
+  [K in keyof IAgentProvider]: NonNullable<IAgentProvider[K]> extends (
+    ...inputs: infer TInputs
+  ) => infer TResult
     ? TInputs extends [...infer TOperationInputs, IProviderCall]
       ? (...inputs: TOperationInputs) => TResult
       : IAgentProvider[K]

@@ -8,6 +8,7 @@ import { z } from 'zod';
 import {
   countHeldDelays,
   releaseHeldDelays,
+  startHoldingDelays,
   withClaudeRuntime,
 } from '../../../scripts/test-support/index.js';
 
@@ -15,8 +16,9 @@ import {
 vi.mock('jg-utilities', async (original) => {
   const actual = await original<typeof import('jg-utilities')>();
   const { holdDelays } = await import('../../../scripts/test-support/delays.js');
-  return { ...actual, delay: holdDelays(actual.delay, [300]) };
+  return { ...actual, delay: holdDelays(actual.delay) };
 });
+startHoldingDelays(300);
 
 test('native usage preserves independent account windows and never sends a user prompt or scans behavior', async () => {
   await withClaudeRuntime(async ({ root, request }) => {

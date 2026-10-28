@@ -14,14 +14,19 @@ import {
   withClaudeRuntime,
   type IClaudeFixture,
 } from '../../../../scripts/test-support/claude-runtime.js';
-import { countHeldDelays, releaseHeldDelays } from '../../../../scripts/test-support/delays.js';
+import {
+  countHeldDelays,
+  releaseHeldDelays,
+  startHoldingDelays,
+} from '../../../../scripts/test-support/delays.js';
 
 // the 60-minute idle period is released by the tests instead of waited out
 vi.mock('jg-utilities', async (original) => {
   const actual = await original<typeof import('jg-utilities')>();
   const { holdDelays } = await import('../../../../scripts/test-support/delays.js');
-  return { ...actual, delay: holdDelays(actual.delay, [3_600]) };
+  return { ...actual, delay: holdDelays(actual.delay) };
 });
+startHoldingDelays(3_600);
 
 const readStarts = async (fixture: IClaudeFixture) =>
   (await readFile(join(fixture.root, 'claude-starts.jsonl'), 'utf8'))

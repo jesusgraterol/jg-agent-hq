@@ -1,10 +1,16 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { delay } from 'jg-utilities';
 
-import type { ISessionState } from '../../../contracts/index.js';
+import type { IObservationPace, ISessionState } from '../../../contracts/index.js';
 import { resolveWorkspaceTarget } from '../../../runtime/state/index.js';
 
-import { AGENTS_DEADLINE_MS, AGENTS_OUTPUT_BYTES, AGENTS_POLL_INTERVAL_MS } from './constants.js';
+import {
+  AGENTS_BACKGROUND_SECONDS,
+  AGENTS_DEADLINE_MS,
+  AGENTS_LIVE_SECONDS,
+  AGENTS_OUTPUT_BYTES,
+} from './constants.js';
 import { ClaudeAgentsSchema, type IClaudeAgent } from './types.js';
 
 const run = promisify(execFile);
@@ -27,17 +33,26 @@ export const toAgentState = (agent: IClaudeAgent): ISessionState => {
 /**
  * Polls `claude agents --json` while the runtime runs and records the complete list of active
  * sessions inside the allowed workspaces, so a session missing from a run is closed. A failed,
- * late, oversized or malformed run changes nothing.
- * @returns A handle whose close stops polling and waits for a run in progress.
+ * late, oversized or malformed run changes nothing. Runs follow one another at the `background`
+ * pace until `setPace` selects another, which takes effect with an immediate run.
+ * @returns A handle that sets the pace, reports each listed session's `cwd` from the latest run,
+ * and whose close stops polling and waits for a run in progress.
  */
 export const observeClaudeAgents = (
   record: (sessions: { nativeId: string; state: ISessionState }[]) => Promise<void>,
   allowedRoots: string[],
-): { close(): Promise<void> } => {
+): {
+  setPace(pace: IObservationPace): void;
+  workspaceOf(nativeId: string): string | undefined;
+  close(): Promise<void>;
+} => {
   const lifetime = new AbortController();
   // whether each session directory is inside an allowed workspace, checked once per directory
   const allowedDirectories = new Map<string, boolean>();
-  let running: Promise<void> | undefined;
+  // the cwd of each session the latest run listed, which no other source reports
+  let workspaces = new Map<string, string>();
+  let pace = 'background' as IObservationPace;
+  let wait = new AbortController();
   const isAllowed = async (directory: string): Promise<boolean> => {
     let isInside = allowedDirectories.get(directory);
     if (isInside === undefined) {
@@ -63,25 +78,33 @@ export const observeClaudeAgents = (
       return;
     }
     const sessions: { nativeId: string; state: ISessionState }[] = [];
+    const listed = new Map<string, string>();
     for (const agent of agents)
-      if (await isAllowed(agent.cwd))
+      if (await isAllowed(agent.cwd)) {
         sessions.push({ nativeId: agent.sessionId, state: toAgentState(agent) });
-    if (!lifetime.signal.aborted) await record(sessions);
+        listed.set(agent.sessionId, agent.cwd);
+      }
+    if (lifetime.signal.aborted) return;
+    workspaces = listed;
+    await record(sessions);
   };
-  const start = (): void => {
-    if (running || lifetime.signal.aborted) return;
-    running = poll()
-      .catch(() => undefined)
-      .finally(() => {
-        running = undefined;
-      });
-  };
-  const timer = setInterval(start, AGENTS_POLL_INTERVAL_MS);
-  timer.unref();
-  start();
+  const running = (async () => {
+    while (!lifetime.signal.aborted) {
+      await poll().catch(() => undefined);
+      wait = new AbortController();
+      await delay(pace === 'live' ? AGENTS_LIVE_SECONDS : AGENTS_BACKGROUND_SECONDS, {
+        signal: AbortSignal.any([lifetime.signal, wait.signal]),
+      }).catch(() => undefined);
+    }
+  })();
   return {
+    setPace(next: IObservationPace): void {
+      if (next === pace) return;
+      pace = next;
+      wait.abort();
+    },
+    workspaceOf: (nativeId) => workspaces.get(nativeId),
     async close(): Promise<void> {
-      clearInterval(timer);
       lifetime.abort();
       await running;
     },

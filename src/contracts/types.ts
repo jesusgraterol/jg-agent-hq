@@ -43,7 +43,11 @@ import { SkillIdSchema, SkillPageSchema, SkillPreviewSchema } from './skills/ind
 import { NativeIdSchema, CursorSchema, NativeLineageSchema } from './identities/index.js';
 import { ProviderModelPageSchema, ProviderModelsRequestSchema } from './models/index.js';
 import { ConfigurationRequestSchema, SessionConfigurationSchema } from './configuration/index.js';
-import { SessionStateSchema, SessionTransitionPageSchema } from './sessions/index.js';
+import {
+  ObservationPaceSchema,
+  SessionStateSchema,
+  SessionTransitionPageSchema,
+} from './sessions/index.js';
 import { PlanCommandSchema, PlanResultSchema } from './plans/index.js';
 import {
   ActionPlanContextSchema,
@@ -165,6 +169,8 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     afterSequence: z.number().int().nonnegative().default(0),
     limit: z.number().int().min(1).max(128).default(32),
   }),
+  z.strictObject({ kind: z.literal('active-sessions') }),
+  z.strictObject({ kind: z.literal('observation-pace'), pace: ObservationPaceSchema }),
 ]);
 export type IHqRequest = z.infer<typeof HqRequestSchema>;
 export type IHqRequestInput = z.input<typeof HqRequestSchema>;
@@ -185,6 +191,13 @@ export const ThreadSummarySchema = z.object({
   historyState: z.enum(['available', 'unavailable']),
 });
 export type IThreadSummary = z.infer<typeof ThreadSummarySchema>;
+
+// every running and waiting session, newest state change first, with whether more are active
+export const ActiveSessionsSchema = z.object({
+  data: z.array(ThreadSummarySchema).max(MAX_PAGE_SIZE),
+  isTruncated: z.boolean(),
+});
+export type IActiveSessions = z.infer<typeof ActiveSessionsSchema>;
 
 export const TurnSummarySchema = z.object({
   nativeId: NativeIdSchema,
@@ -382,6 +395,11 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
   }),
   z.object({ kind: z.literal('live-items'), result: LiveItemsSchema }),
   z.object({ kind: z.literal('session-states'), result: SessionTransitionPageSchema }),
+  z.object({ kind: z.literal('active-sessions'), result: ActiveSessionsSchema }),
+  z.object({
+    kind: z.literal('observation-pace'),
+    result: z.object({ pace: ObservationPaceSchema }),
+  }),
 ]);
 export type IHqResponse = z.infer<typeof HqResponseSchema>;
 

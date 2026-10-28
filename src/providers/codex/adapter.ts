@@ -48,10 +48,10 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
         .then(async () => {
           let isAllowed = allowedSessions.get(nativeId);
           if (isAllowed === undefined) {
-            const thread = await native.readObservedThread(nativeId);
+            const observed = await native.readObservedThread(nativeId);
             isAllowed =
-              !thread.isEphemeral &&
-              (await resolveWorkspaceTarget(thread.workspaceRoot, context.allowedRoots)
+              !observed.isEphemeral &&
+              (await resolveWorkspaceTarget(observed.thread.workspaceRoot, context.allowedRoots)
                 .then(() => true)
                 .catch(() => false));
             if (allowedSessions.size >= 1024)
@@ -298,6 +298,7 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
         };
       },
       readHistory,
+      readObservedThread: async (nativeId) => (await native.readObservedThread(nativeId)).thread,
       readConfiguration: (command, nativeId, call) =>
         native.readConfiguration(command, nativeId, call.signal),
       forkThread: async (requestId, nativeId) =>

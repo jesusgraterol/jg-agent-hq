@@ -26,6 +26,7 @@ export {
 export {
   HqRequestSchema,
   ThreadSummarySchema,
+  ActiveSessionsSchema,
   TurnSummarySchema,
   HistoryFileSchema,
   HistoryItemSchema,
@@ -62,6 +63,7 @@ export type {
   IHqRequest,
   IHqRequestInput,
   IThreadSummary,
+  IActiveSessions,
   ITurnSummary,
   IHistoryFile,
   IHistoryItem,
@@ -368,9 +370,11 @@ export {
   SessionTransitionReasonSchema,
   SessionTransitionSchema,
   SessionTransitionPageSchema,
+  ObservationPaceSchema,
 } from './sessions/index.js';
 export type {
   ISessionState,
   ISessionTransitionReason,
   ISessionTransition,
+  IObservationPace,
 } from './sessions/index.js';

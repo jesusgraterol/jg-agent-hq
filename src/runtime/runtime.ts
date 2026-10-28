@@ -17,7 +17,7 @@ import {
   observeClaudeAgents,
 } from '../providers/index.js';
 import { createProviderRegistry } from '../providers/registry/index.js';
-import { limitItemText, readNativeHistory } from '../sessions/index.js';
+import { limitItemText, readActiveSessions, readNativeHistory } from '../sessions/index.js';
 import { suggestThreadName } from '../sessions/names/index.js';
 import { createSkills } from '../skills/index.js';
 import { createStore } from '../store/index.js';
@@ -342,6 +342,16 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           kind: 'session-states',
           result: await projection.listSessionTransitions(command.afterSequence, command.limit),
         };
+      case 'active-sessions':
+        return {
+          kind: 'active-sessions',
+          result: await readActiveSessions(providers, projection, allowedRoots, (nativeId) =>
+            claudeAgents.workspaceOf(nativeId),
+          ),
+        };
+      case 'observation-pace':
+        claudeAgents.setPace(command.pace);
+        return { kind: 'observation-pace', result: { pace: command.pace } };
       default: {
         const response = await readNativeHistory(command, providers, projection, allowedRoots);
         if (command.kind !== 'items' || response.kind !== 'items') return response;
