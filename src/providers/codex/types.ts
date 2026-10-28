@@ -112,6 +112,8 @@ export type ICodexEvents = {
   request(id: string | number, method: string, params: unknown): void;
   lateResponse(id: string, result: unknown, error: unknown): void;
   unavailable(): void;
+  // the connection opened again after the daemon restarted or the transport stopped
+  connected(): void;
 };
 
 // native read models and explicit control operations; execution settings remain with Codex
@@ -152,6 +154,8 @@ export type ICodexProvider = {
   readThread(nativeId: string): Promise<IThreadSummary>;
   /** @returns A session's summary, with its workspace, and whether Codex doesn't save it. */
   readObservedThread(nativeId: string): Promise<{ thread: IThreadSummary; isEphemeral: boolean }>;
+  /** @returns One page of the IDs of the threads the daemon has loaded, for any client. */
+  listLoadedThreads(cursor?: string): Promise<INativePage<string>>;
   listTurns(nativeId: string, limit: number, cursor?: string): Promise<INativePage<ITurnSummary>>;
   /** @returns One page of items newest first, with full text when `fullBody` is set. */
   listItems(

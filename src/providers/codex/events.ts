@@ -41,6 +41,7 @@ export const createCodexEvents = (
   native: ICodexProvider,
   events: IAgentProviderEvents,
   observeSession: (nativeId: string, state: ISessionState) => void,
+  observeLoaded: () => void,
 ): ICodexEvents => {
   const turns = new Map<
     string,
@@ -259,5 +260,6 @@ export const createCodexEvents = (
       events.outcome(outcome, thread);
     },
     unavailable: () => events.unavailable(),
+    connected: () => observeLoaded(),
   };
 };

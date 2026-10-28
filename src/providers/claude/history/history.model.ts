@@ -136,15 +136,15 @@ export class ClaudeHistoryModel {
         .prepare(
           `SELECT native_id, workspace_root, identity, file_size, byte_offset, revision,
         leaf_id, name, created_at, updated_at, supported, workspace_state FROM hq_claude_file
-        WHERE workspace_root = ? AND workspace_state = 'matching' AND (? IS NULL OR created_at < ? OR (created_at = ? AND native_id < ?))
+        WHERE workspace_root = ? AND workspace_state = 'matching' AND (? IS NULL OR updated_at < ? OR (updated_at = ? AND native_id < ?))
         AND (? IS NULL OR instr(lower(coalesce(name, '')), lower(?)) > 0)
-        ORDER BY created_at DESC, native_id DESC LIMIT ?`,
+        ORDER BY updated_at DESC, native_id DESC LIMIT ?`,
         )
         .all(
           root,
-          seek?.createdAt ?? null,
-          seek?.createdAt ?? null,
-          seek?.createdAt ?? null,
+          seek?.updatedAt ?? null,
+          seek?.updatedAt ?? null,
+          seek?.updatedAt ?? null,
           seek?.nativeId ?? null,
           command.search ?? null,
           command.search ?? null,
@@ -160,7 +160,7 @@ export class ClaudeHistoryModel {
           source: 'native',
           nextCursor: encodeHistoryCursor(
             rows.length > command.limit && last
-              ? JSON.stringify({ createdAt: last.created_at, nativeId: last.native_id })
+              ? JSON.stringify({ updatedAt: last.updated_at, nativeId: last.native_id })
               : null,
             filters,
           ),

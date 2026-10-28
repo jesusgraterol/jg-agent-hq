@@ -17,7 +17,12 @@ import {
   observeClaudeAgents,
 } from '../providers/index.js';
 import { createProviderRegistry } from '../providers/registry/index.js';
-import { limitItemText, readActiveSessions, readNativeHistory } from '../sessions/index.js';
+import {
+  limitItemText,
+  readActiveSessions,
+  readNativeHistory,
+  readUnstartedThreads,
+} from '../sessions/index.js';
 import { suggestThreadName } from '../sessions/names/index.js';
 import { createSkills } from '../skills/index.js';
 import { createStore } from '../store/index.js';
@@ -348,6 +353,11 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           result: await readActiveSessions(providers, projection, allowedRoots, (nativeId) =>
             claudeAgents.workspaceOf(nativeId),
           ),
+        };
+      case 'unstarted-threads':
+        return {
+          kind: 'unstarted-threads',
+          result: await readUnstartedThreads(command, projection, allowedRoots),
         };
       case 'observation-pace':
         claudeAgents.setPace(command.pace);

@@ -3,8 +3,10 @@ import { z } from 'zod';
 import { abortable, createDeadline } from 'jg-utilities';
 
 import type { IUsageSnapshot, ISessionSettings, IOutputSchema } from '../../contracts/index.js';
+import { NativeIdSchema } from '../../contracts/identities/index.js';
 import type { IProviderAgentTools } from '../../agent-tools/index.js';
 
+import { LOADED_THREADS_PAGE_SIZE } from './constants.js';
 import { createCodexRpc } from './rpc.js';
 import { createCodexExtensions } from './extensions/index.js';
 import { createCodexAccounts } from './accounts/index.js';
@@ -254,6 +256,7 @@ export const createCodexProvider = async (
       extensionRequests.clear();
       events?.unavailable();
     },
+    opened: () => events?.connected(),
     notify: (method, params) => {
       authentication?.notify(method, params);
       events?.notify(method, params);
@@ -346,7 +349,8 @@ export const createCodexProvider = async (
           limit,
           cursor,
           searchTerm: search,
-          sortKey: 'created_at',
+          // last activity first, as the CLI's own session list orders them
+          sortKey: 'updated_at',
           sortDirection: 'desc',
           useStateDbOnly: true,
         }),
@@ -444,6 +448,19 @@ export const createCodexProvider = async (
         await connection.request('thread/read', { threadId: nativeId, includeTurns: false }),
       );
       return { thread: toThreadSummary(thread), isEphemeral: thread.ephemeral === true };
+    },
+    async listLoadedThreads(cursor) {
+      const page = parseNative(
+        z.object({
+          data: z.array(NativeIdSchema).max(LOADED_THREADS_PAGE_SIZE),
+          nextCursor: z.string().max(4096).nullable().optional(),
+        }),
+        await connection.request('thread/loaded/list', {
+          limit: LOADED_THREADS_PAGE_SIZE,
+          cursor,
+        }),
+      );
+      return { data: page.data, nextCursor: page.nextCursor ?? null };
     },
     async listTurns(nativeId, limit, cursor) {
       const page = parseNative(

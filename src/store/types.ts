@@ -187,6 +187,17 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     page: ControlPageSchema,
   }),
   z.strictObject({
+    kind: z.literal('thread-unstarted'),
+    provider: ManagedThreadSchema.shape.provider,
+    nativeId: z.string().min(1).max(4096),
+  }),
+  z.strictObject({
+    kind: z.literal('threads-unstarted'),
+    provider: ManagedThreadSchema.shape.provider,
+    workspaceRoot: z.string().min(1),
+    limit: z.number().int().min(1).max(128),
+  }),
+  z.strictObject({
     kind: z.literal('actions'),
     threadId: z.uuid(),
     page: ControlPageSchema,
@@ -558,6 +569,24 @@ export type IStore = {
     workspaceRoot: string,
     page: IControlPage,
   ): Promise<{ data: IManagedThread[]; hasMore: boolean }>;
+  /**
+   * Reads one provider's managed threads in a workspace that no turn has started, newest first.
+   * @returns At most `limit` threads and whether more exist.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  listUnstartedThreads(
+    provider: string,
+    workspaceRoot: string,
+    limit: number,
+  ): Promise<{ data: IManagedThread[]; isTruncated: boolean }>;
+  /**
+   * Reads a managed thread by its native ID when no turn has started it.
+   * @returns The thread, or null when none is registered or a turn has started.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  getUnstartedThread(provider: string, nativeId: string): Promise<IManagedThread | null>;
   /**
    * Reads one thread-scoped seek page without queued message bodies.
    * @returns One descending metadata page and whether another seek page exists.

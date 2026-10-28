@@ -258,6 +258,8 @@ test('authorized native history is re-read after a delayed flush and large frame
         [
           'initialize',
           'initialized',
+          // each connection reads the daemon's loaded threads for sessions already running
+          'thread/loaded/list',
           'thread/read',
           'thread/turns/list',
           'thread/items/list',

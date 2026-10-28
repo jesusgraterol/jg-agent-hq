@@ -1,12 +1,16 @@
 import { Exception } from 'jg-exception';
 
 import {
+  DEFAULT_PAGE_SIZE,
   HqResponseSchema,
   MAX_PAGE_SIZE,
   type IActiveSessions,
   type IHqResponse,
   type IHqRequest,
+  type IManagedThread,
+  type ISessionState,
   type IThreadSummary,
+  type IUnstartedThreads,
 } from '../contracts/index.js';
 import { retainNativeLineage } from '../providers/index.js';
 import type { createProviderRegistry } from '../providers/registry/index.js';
@@ -106,6 +110,19 @@ export const readNativeHistory = async (
     );
     return HqResponseSchema.parse(result);
   }
+  // a thread HQ created has no native history until its first turn, so its record answers
+  if (command.kind === 'thread' || command.kind === 'items') {
+    const unstarted = await projection.getUnstartedThread(command.provider, command.nativeId);
+    if (unstarted?.workspaceRoot === workspaceRoot) {
+      if (command.kind === 'items')
+        return HqResponseSchema.parse({
+          kind: 'items',
+          result: { data: [], history: 'persisted', source: 'native', nextCursor: null },
+        });
+      const [summary] = await toManagedSummaries(projection, [unstarted]);
+      return HqResponseSchema.parse({ kind: 'thread', result: summary });
+    }
+  }
   const adapter = await registry.get(command.provider);
   const response = await adapter.readHistory({ ...command, workspaceRoot });
   const threads =
@@ -187,6 +204,63 @@ export const readNativeHistory = async (
       data: { kind: 'agent-unavailable' },
     });
   return HqResponseSchema.parse(response);
+};
+
+/**
+ * Summarizes managed threads as `threads` does, each in the state its record maps to.
+ * @returns One summary per thread, in order.
+ * @throws
+ * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+ */
+const toManagedSummaries = async (
+  projection: IStore,
+  threads: IManagedThread[],
+): Promise<IThreadSummary[]> => {
+  const states = new Map<string, ISessionState>();
+  for (const provider of new Set(threads.map((thread) => thread.provider)))
+    for (const session of await projection.getSessionStates(
+      provider,
+      threads.flatMap((thread) =>
+        thread.provider === provider && thread.nativeId ? [thread.nativeId] : [],
+      ),
+    ))
+      states.set(JSON.stringify([provider, session.nativeId]), session.state);
+  return threads.map((thread) => ({
+    provider: thread.provider,
+    nativeId: thread.nativeId!,
+    nativeLineage: thread.nativeLineage,
+    workspaceRoot: thread.workspaceRoot,
+    name: thread.name,
+    createdAt: thread.createdAt,
+    updatedAt: thread.updatedAt,
+    nativeState: 'unknown',
+    state: states.get(JSON.stringify([thread.provider, thread.nativeId])) ?? 'unknown',
+    ownership: thread.ownership,
+    managedId: thread.id,
+    historyState: 'available',
+  }));
+};
+
+/**
+ * Reads one workspace's managed threads that no turn has started, newest first, so a session HQ
+ * created shows before Claude or Codex has written any history.
+ * @returns At most 32 summaries and whether more such threads exist.
+ * @throws
+ * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+ * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+ */
+export const readUnstartedThreads = async (
+  command: Extract<IHqRequest, { kind: 'unstarted-threads' }>,
+  projection: IStore,
+  allowedRoots: string[],
+): Promise<IUnstartedThreads> => {
+  const workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, allowedRoots);
+  const page = await projection.listUnstartedThreads(
+    command.provider,
+    workspaceRoot,
+    DEFAULT_PAGE_SIZE,
+  );
+  return { data: await toManagedSummaries(projection, page.data), isTruncated: page.isTruncated };
 };
 
 /**

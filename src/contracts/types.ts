@@ -170,6 +170,11 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     limit: z.number().int().min(1).max(128).default(32),
   }),
   z.strictObject({ kind: z.literal('active-sessions') }),
+  z.strictObject({
+    kind: z.literal('unstarted-threads'),
+    provider: TargetFields.provider,
+    workspaceRoot: TargetFields.workspaceRoot,
+  }),
   z.strictObject({ kind: z.literal('observation-pace'), pace: ObservationPaceSchema }),
 ]);
 export type IHqRequest = z.infer<typeof HqRequestSchema>;
@@ -198,6 +203,13 @@ export const ActiveSessionsSchema = z.object({
   isTruncated: z.boolean(),
 });
 export type IActiveSessions = z.infer<typeof ActiveSessionsSchema>;
+
+// one workspace's managed threads that no turn has started yet, newest first, with whether more exist
+export const UnstartedThreadsSchema = z.object({
+  data: z.array(ThreadSummarySchema).max(DEFAULT_PAGE_SIZE),
+  isTruncated: z.boolean(),
+});
+export type IUnstartedThreads = z.infer<typeof UnstartedThreadsSchema>;
 
 export const TurnSummarySchema = z.object({
   nativeId: NativeIdSchema,
@@ -396,6 +408,7 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('live-items'), result: LiveItemsSchema }),
   z.object({ kind: z.literal('session-states'), result: SessionTransitionPageSchema }),
   z.object({ kind: z.literal('active-sessions'), result: ActiveSessionsSchema }),
+  z.object({ kind: z.literal('unstarted-threads'), result: UnstartedThreadsSchema }),
   z.object({
     kind: z.literal('observation-pace'),
     result: z.object({ pace: ObservationPaceSchema }),

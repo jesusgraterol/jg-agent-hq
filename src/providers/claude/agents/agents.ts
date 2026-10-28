@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { delay } from 'jg-utilities';
 
 import type { IObservationPace, ISessionState } from '../../../contracts/index.js';
+import { isOwnedProcess } from '../../process.js';
 import { resolveWorkspaceTarget } from '../../../runtime/state/index.js';
 
 import {
@@ -16,19 +17,18 @@ import { ClaudeAgentsSchema, type IClaudeAgent } from './types.js';
 const run = promisify(execFile);
 
 /**
- * Maps a native report to the shared session state: an interactive session reports `waiting` on a
- * question or permission prompt, and a background one `blocked`.
+ * Maps a running session's report to the shared session state. A session waiting on a question or
+ * a permission prompt reports `status: "waiting"`, as an interactive one may also report
+ * `blocked`; a background session at work reports `state: "working"` and no status.
  */
-export const toAgentState = (agent: IClaudeAgent): ISessionState => {
-  const reported = agent.status ?? agent.state;
-  return reported === 'busy'
+export const toAgentState = (agent: IClaudeAgent): ISessionState =>
+  agent.status === 'busy' || agent.state === 'working'
     ? 'running'
-    : reported === 'waiting' || reported === 'blocked'
+    : agent.status === 'waiting' || agent.status === 'blocked'
       ? 'waiting'
-      : reported === 'idle'
+      : agent.status === 'idle'
         ? 'idle'
         : 'unknown';
-};
 
 /**
  * Polls `claude agents --json` while the runtime runs and records the complete list of active
@@ -79,8 +79,12 @@ export const observeClaudeAgents = (
     }
     const sessions: { nativeId: string; state: ISessionState }[] = [];
     const listed = new Map<string, string>();
+    /*
+     * An entry without a PID isn't running, whatever its state says, so it counts as missing; the
+     * processes this runtime started, managed sessions and the metadata process, are its own.
+     */
     for (const agent of agents)
-      if (await isAllowed(agent.cwd)) {
+      if (agent.pid !== undefined && !isOwnedProcess(agent.pid) && (await isAllowed(agent.cwd))) {
         sessions.push({ nativeId: agent.sessionId, state: toAgentState(agent) });
         listed.set(agent.sessionId, agent.cwd);
       }

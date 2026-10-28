@@ -4,6 +4,8 @@ import { z } from 'zod';
 export const ClaudeAgentSchema = z.object({
   sessionId: z.string().min(1).max(4096),
   cwd: z.string().min(1).max(4096),
+  // present only while the session's process runs
+  pid: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   status: z.string().max(64).optional(),
   state: z.string().max(64).optional(),
 });

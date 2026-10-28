@@ -346,6 +346,13 @@ export const createStore = async (
       ),
     listThreads: (workspaceRoot, page) =>
       request({ kind: 'threads', workspaceRoot, page }, ManagedThreadPageSchema),
+    getUnstartedThread: (provider, nativeId) =>
+      request({ kind: 'thread-unstarted', provider, nativeId }, ManagedThreadSchema.nullable()),
+    listUnstartedThreads: (provider, workspaceRoot, limit) =>
+      request(
+        { kind: 'threads-unstarted', provider, workspaceRoot, limit },
+        z.object({ data: z.array(ManagedThreadSchema).max(128), isTruncated: z.boolean() }),
+      ),
     listActions: (threadId, page) => request({ kind: 'actions', threadId, page }, ActionPageSchema),
     listProviderActions: (provider, page) =>
       request({ kind: 'provider-actions', provider, page }, ActionPageSchema),

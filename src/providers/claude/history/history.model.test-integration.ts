@@ -8,6 +8,7 @@ import {
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -286,6 +287,38 @@ test('native files are paged by chain position with truthful unknown execution s
         cursor: initial.result.nextCursor!,
       }),
     ).rejects.toThrow('Request is invalid');
+  });
+});
+
+test('sessions list by last activity, newest first, and their cursor continues in that order', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    // the session started first was the last one active
+    const [earlier, later] = [randomUUID(), randomUUID()];
+    const started = { [earlier]: '2026-10-19T10:00:00.000Z', [later]: '2026-10-19T12:00:00.000Z' };
+    const active = { [earlier]: '2026-10-21T09:00:00.000Z', [later]: '2026-10-20T09:00:00.000Z' };
+    for (const nativeId of [earlier, later]) {
+      await writeFile(
+        transcript(nativeId),
+        `${JSON.stringify(claudeRecord(workspaceRoot, nativeId, { timestamp: started[nativeId] }))}\n`,
+      );
+      const at = new Date(active[nativeId]!);
+      await utimes(transcript(nativeId), at, at);
+    }
+    const first = await request({ kind: 'threads', provider: 'claude', workspaceRoot, limit: 1 });
+    if (first.kind !== 'threads') throw new Error('wrong response');
+    expect(first.result.data.map((thread) => [thread.nativeId, thread.updatedAt])).toStrictEqual([
+      [earlier, Date.parse(active[earlier]!)],
+    ]);
+    const next = await request({
+      kind: 'threads',
+      provider: 'claude',
+      workspaceRoot,
+      limit: 1,
+      cursor: first.result.nextCursor!,
+    });
+    if (next.kind !== 'threads') throw new Error('wrong response');
+    expect(next.result.data.map((thread) => thread.nativeId)).toStrictEqual([later]);
+    expect(next.result.nextCursor).toBeNull();
   });
 });
 
@@ -1023,6 +1056,8 @@ test(
   async () => {
     await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
       const ids: string[] = [];
+      // every session was last active at the same moment, so only native IDs order them
+      const activity = new Date('2026-10-19T12:00:00.000Z');
       for (let index = 0; index < 1024; index += 1) {
         const nativeId = randomUUID();
         ids.push(nativeId);
@@ -1030,6 +1065,7 @@ test(
           transcript(nativeId),
           JSON.stringify(claudeRecord(workspaceRoot, nativeId)) + '\n',
         );
+        await utimes(transcript(nativeId), activity, activity);
       }
       ids.sort().reverse();
       let cursor: string | undefined;

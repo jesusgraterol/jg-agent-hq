@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import type { IActionCommand, IActionReceipt, ISessionTransition } from 'jg-agent-hq/contracts';
 import { expect, test } from 'vitest';
 
@@ -286,3 +287,170 @@ test('a Codex daemon restart leaves sessions uncertain, resends nothing and reco
     expect((await calls(fixture)).filter((call) => call.method === 'turn/start')).toHaveLength(1);
   });
 });
+
+test('the daemon loaded threads record their states on every connect, skipping ephemeral ones', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const running = { type: 'active', activeFlags: [] };
+    // a terminal session running before HQ connects reports no status change of its own
+    await codex(fixture, {
+      loadedThreads: [EXTERNAL, 'thread-1022'],
+      threadStatuses: { [EXTERNAL]: running, 'thread-1022': running },
+      ephemeralThreads: ['thread-1022'],
+    });
+    await fixture.runtime.request({ kind: 'usage', provider: 'codex' });
+    await expect
+      .poll(async () => (await transitions(fixture)).map(summary))
+      .toStrictEqual([[EXTERNAL, null, 'running', 'turn-started', 'external']]);
+    // the turn ends while the daemon restarts, and the reconnect reads the loaded threads again
+    await codex(fixture, { mode: 'exit-on-list' });
+    await expect(
+      fixture.runtime.request({
+        kind: 'threads',
+        provider: 'codex',
+        workspaceRoot: fixture.workspaceRoot,
+      }),
+    ).rejects.toMatchObject({ code: 'JG_AGENT_HQ_CODEX_FAILED' });
+    await codex(fixture, {
+      loadedThreads: [EXTERNAL],
+      threadStatuses: { [EXTERNAL]: { type: 'idle' } },
+    });
+    await fixture.runtime.request({ kind: 'usage', provider: 'codex' });
+    await expect
+      .poll(
+        async () =>
+          (await transitions(fixture)).at(-1) && summary((await transitions(fixture)).at(-1)!),
+      )
+      .toStrictEqual(expect.arrayContaining([EXTERNAL, 'idle', 'external']));
+    expect(
+      (await transitions(fixture)).some((transition) => transition.nativeId === 'thread-1022'),
+    ).toBe(false);
+  });
+});
+
+test('Codex threads are listed by last activity', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    await fixture.runtime.request({
+      kind: 'threads',
+      provider: 'codex',
+      workspaceRoot: fixture.workspaceRoot,
+      limit: 1,
+    });
+    expect(
+      (await calls(fixture))
+        .filter((call) => call.method === 'thread/list')
+        .map((call) => call.params as { sortKey: string; sortDirection: string }),
+    ).toStrictEqual([expect.objectContaining({ sortKey: 'updated_at', sortDirection: 'desc' })]);
+  });
+});
+
+test(
+  'unstarted threads list the sessions HQ created that no turn has started, which read without native history',
+  // the test starts, runs, closes and archives several sessions through the fake daemon
+  { timeout: 30_000 },
+  async () => {
+    await withClaudeRuntime(async (fixture) => {
+      const unstarted = async () => {
+        const response = await fixture.runtime.request({
+          kind: 'unstarted-threads',
+          provider: 'codex',
+          workspaceRoot: fixture.workspaceRoot,
+        });
+        if (response.kind !== 'unstarted-threads') throw new Error('Missing unstarted threads');
+        return response.result;
+      };
+      const fresh = await createThread(fixture, 'fresh');
+      const worked = await createThread(fixture, 'worked');
+      await submit(fixture, {
+        kind: 'message',
+        threadId: worked.id,
+        input: { kind: 'text', text: 'Start' },
+      });
+      await expect.poll(async () => (await thread(fixture, worked.id))?.state).toBe('completed');
+      const closed = await createThread(fixture, 'closed');
+      await submit(fixture, { kind: 'thread-close', threadId: closed.id });
+      await expect.poll(async () => (await thread(fixture, closed.id))?.state).toBe('inactive');
+      const archived = await createThread(fixture, 'archived');
+      await submit(fixture, { kind: 'thread-archive', threadId: archived.id });
+      await expect.poll(async () => (await thread(fixture, archived.id))?.isArchived).toBe(true);
+      // a fork starts with its source's native history, so it isn't an empty session
+      const fork = await submit(fixture, {
+        kind: 'thread-fork',
+        threadId: worked.id,
+        name: 'fork',
+      });
+      await expect.poll(async () => (await thread(fixture, fork.threadId!))?.state).toBe('idle');
+      expect(await unstarted()).toStrictEqual({
+        data: [
+          expect.objectContaining({
+            provider: 'codex',
+            nativeId: fresh.nativeId,
+            name: 'fresh',
+            workspaceRoot: fixture.workspaceRoot,
+            state: 'idle',
+            ownership: 'managed',
+            managedId: fresh.id,
+            historyState: 'available',
+          }),
+        ],
+        isTruncated: false,
+      });
+      // its own reads answer from the record instead of native history
+      const target = {
+        provider: 'codex',
+        workspaceRoot: fixture.workspaceRoot,
+        nativeId: fresh.nativeId!,
+      };
+      expect(await fixture.runtime.request({ kind: 'thread', ...target })).toMatchObject({
+        kind: 'thread',
+        result: { nativeId: fresh.nativeId, managedId: fresh.id, state: 'idle' },
+      });
+      expect(await fixture.runtime.request({ kind: 'items', ...target })).toMatchObject({
+        kind: 'items',
+        result: { data: [], nextCursor: null },
+      });
+      expect(
+        (await calls(fixture)).some(
+          (call) =>
+            call.method === 'thread/items/list' &&
+            (call.params as { threadId: string }).threadId === fresh.nativeId,
+        ),
+      ).toBe(false);
+      // at most 32 sessions are open at once, so newer unstarted records are written directly
+      const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { timeout: 5_000 });
+      try {
+        const insert = database.prepare(
+          `INSERT INTO hq_thread (id, provider, native_id, name, workspace_root, ownership, state,
+          registration_action_id, created_at, updated_at)
+          SELECT ?, provider, ?, ?, workspace_root, ownership, state, registration_action_id, ?, ?
+          FROM hq_thread WHERE id = ?`,
+        );
+        for (let index = 0; index < 32; index += 1)
+          insert.run(
+            randomUUID(),
+            `native-more-${index}`,
+            `more-${index}`,
+            Date.now() + index,
+            Date.now() + index,
+            fresh.id,
+          );
+        // a session whose creation Codex never acknowledged has no native ID yet
+        database
+          .prepare(
+            `INSERT INTO hq_thread (id, provider, native_id, name, workspace_root, ownership, state,
+            registration_action_id, created_at, updated_at)
+            SELECT ?, provider, NULL, 'unacknowledged', workspace_root, ownership, 'creating',
+            registration_action_id, ?, ? FROM hq_thread WHERE id = ?`,
+          )
+          .run(randomUUID(), Date.now() + 64, Date.now() + 64, fresh.id);
+      } finally {
+        database.close();
+      }
+      const cut = await unstarted();
+      expect(cut.isTruncated).toBe(true);
+      expect(cut.data).toHaveLength(32);
+      // newest first, so the first session falls past the cut, and the unacknowledged one isn't listed
+      expect(cut.data[0]?.name).toBe('more-31');
+      expect(cut.data.some((session) => session.nativeId === fresh.nativeId)).toBe(false);
+    });
+  },
+);
