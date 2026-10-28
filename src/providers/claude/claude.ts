@@ -1,4 +1,5 @@
 import { Exception, isException } from 'jg-exception';
+import { delay } from 'jg-utilities';
 import { scheduler } from 'node:timers/promises';
 import { z } from 'zod';
 
@@ -19,6 +20,9 @@ import { readClaudeModels } from './models/index.js';
 import { toClaudeConfiguration } from './configuration/index.js';
 import { toClaudeAccount } from './accounts/index.js';
 
+// the session-less read process closes after this long without a read, and reopens on the next one
+const METADATA_IDLE_SECONDS = 300;
+
 /**
  * Lazily connects read-only Claude capabilities; Codex needs no Claude installation.
  * @returns The read adapter with independent usage and transcript availability.
@@ -29,6 +33,11 @@ export const createClaudeProvider = (store: IStore) => {
   const metadataReads = new Set<Promise<Awaited<ReturnType<typeof createClaudeRpc>>>>();
   let isClosing = false;
   let generation = 0;
+  let reads = 0;
+  let idleClose: AbortController | undefined;
+  // a closing idle read process, whose failure surfaces at shutdown
+  let retiring: Promise<void> | undefined;
+  let version: string | null = null;
   let refresh: Promise<IUsageSnapshot> | undefined;
   const unavailable = (): IUsageSnapshot => ({
     provider: 'claude',
@@ -48,6 +57,7 @@ export const createClaudeProvider = (store: IStore) => {
         latest = unavailable();
       } else latest = { ...latest, state: latest.observedAt === null ? 'unavailable' : 'stale' };
     });
+    version = connection.version;
     return connection;
   };
   const open = () => {
@@ -59,6 +69,43 @@ export const createClaudeProvider = (store: IStore) => {
         }),
       );
     return (opening ??= connect());
+  };
+  /** Closes the read process once it has gone unused, so the next read opens a fresh one. */
+  const retire = (): void => {
+    idleClose = undefined;
+    const native = connection;
+    if (!native || reads > 0 || isClosing) return;
+    connection = undefined;
+    opening = undefined;
+    retiring = native.close();
+    retiring.catch(() => undefined);
+  };
+  /**
+   * Runs one read on the session-less process, opening it when it is closed.
+   * @returns The read's result; the process closes after the idle period without another read.
+   * @throws
+   * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+   * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+   */
+  const withMetadata = async <T>(
+    read: (native: Awaited<ReturnType<typeof createClaudeRpc>>) => Promise<T>,
+  ): Promise<T> => {
+    idleClose?.abort();
+    idleClose = undefined;
+    reads += 1;
+    try {
+      return await read(await open());
+    } finally {
+      reads -= 1;
+      if (reads === 0 && !isClosing) {
+        const controller = new AbortController();
+        idleClose = controller;
+        void delay(METADATA_IDLE_SECONDS, { signal: controller.signal }).then(
+          retire,
+          () => undefined,
+        );
+      }
+    }
   };
   /** Runs one bounded metadata read and confirms native shutdown before releasing its slot. */
   const withReadConnection = async <T>(
@@ -103,6 +150,8 @@ export const createClaudeProvider = (store: IStore) => {
      * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
      */
     async invalidateAuthentication(): Promise<void> {
+      idleClose?.abort();
+      idleClose = undefined;
       generation += 1;
       latest = unavailable();
       if (opening) {
@@ -120,7 +169,7 @@ export const createClaudeProvider = (store: IStore) => {
      * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
      */
     async ensureReady(): Promise<void> {
-      await open();
+      await withMetadata(async () => undefined);
     },
     /**
      * Reads current native model choices without a user prompt.
@@ -131,8 +180,9 @@ export const createClaudeProvider = (store: IStore) => {
      * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
      */
     async readModels(command: IProviderModelsRequest): Promise<IProviderModelPage> {
-      const native = await open();
-      return readClaudeModels(await native.requestControl({ subtype: 'list_models' }), command);
+      return withMetadata(async (native) =>
+        readClaudeModels(await native.requestControl({ subtype: 'list_models' }), command),
+      );
     },
     /**
      * Opens a workspace-scoped read lane without a user prompt or model turn.
@@ -167,8 +217,9 @@ export const createClaudeProvider = (store: IStore) => {
       );
     },
 
+    // the last observed version stays known while the read process is closed
     get version() {
-      return connection?.version ?? null;
+      return connection?.version ?? version;
     },
     get isAvailable() {
       return connection?.isAvailable ?? false;
@@ -188,7 +239,7 @@ export const createClaudeProvider = (store: IStore) => {
      */
     async readHistory(command: IHistoryRequest): Promise<IHqResponse> {
       const deadline = Date.now() + 30_000;
-      await open();
+      await withMetadata(async () => undefined);
       while (!isClosing && Date.now() < deadline) {
         const result = await store.readClaudeHistory(command);
         if (result.kind !== 'indexing') return result;
@@ -209,17 +260,17 @@ export const createClaudeProvider = (store: IStore) => {
       if (refresh) return refresh;
       return (refresh = (async () => {
         try {
-          const native = await open();
-          const epoch = generation;
-          const parsed = ClaudeUsageSchema.safeParse(await native.requestUsage());
-          if (!parsed.success)
-            throw new Exception('The Claude integration failed', {
-              code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-              data: { kind: 'agent-unavailable' },
-              cause: parsed.error,
-            });
-          if (epoch !== generation) return latest;
-          latest = toClaudeUsageSnapshot(parsed.data, Date.now());
+          await withMetadata(async (native) => {
+            const epoch = generation;
+            const parsed = ClaudeUsageSchema.safeParse(await native.requestUsage());
+            if (!parsed.success)
+              throw new Exception('The Claude integration failed', {
+                code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+                data: { kind: 'agent-unavailable' },
+                cause: parsed.error,
+              });
+            if (epoch === generation) latest = toClaudeUsageSnapshot(parsed.data, Date.now());
+          });
         } catch {
           latest = { ...latest, state: latest.observedAt === null ? 'unavailable' : 'stale' };
         } finally {
@@ -242,8 +293,11 @@ export const createClaudeProvider = (store: IStore) => {
      */
     async close(): Promise<void> {
       isClosing = true;
-      const results = await Promise.allSettled(
-        [...(opening ? [opening] : []), ...metadataReads].map(async (starting) => {
+      idleClose?.abort();
+      idleClose = undefined;
+      const results = await Promise.allSettled([
+        ...(retiring ? [retiring] : []),
+        ...[...(opening ? [opening] : []), ...metadataReads].map(async (starting) => {
           let native: Awaited<ReturnType<typeof createClaudeRpc>>;
           try {
             native = await starting;
@@ -257,7 +311,7 @@ export const createClaudeProvider = (store: IStore) => {
           }
           await native.close();
         }),
-      );
+      ]);
       const failed = results.find((result) => result.status === 'rejected');
       if (failed?.status === 'rejected') throw failed.reason;
     },

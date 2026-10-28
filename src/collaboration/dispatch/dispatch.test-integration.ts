@@ -9,6 +9,8 @@ import { z } from 'zod';
 import type { IDispatchResponse, IRequestSpecification } from 'jg-agent-hq/contracts';
 
 import {
+  countHeldDelays,
+  releaseHeldDelays,
   withCollaboration,
   writeFixtureControl,
   type ICollaborationFixture,
@@ -16,6 +18,13 @@ import {
 
 // every case starts native processes and collects state through IPC and SQLite
 vi.setConfig({ expect: { poll: { timeout: 30_000 } } });
+
+// a Claude agent's 60-minute idle period is released by the test that needs it
+vi.mock('jg-utilities', async (original) => {
+  const actual = await original<typeof import('jg-utilities')>();
+  const { holdDelays } = await import('../../../scripts/test-support/delays.js');
+  return { ...actual, delay: holdDelays(actual.delay, [3_600]) };
+});
 
 const readRequest = async (fixture: ICollaborationFixture, requestId: string) => {
   const response = await fixture.call({ kind: 'request-read', taskId: fixture.taskId, requestId });
@@ -715,6 +724,67 @@ test('Claude installs the envelope through idle resume and preserves live settin
       isComplete: true,
     });
     expect((await readRequest(fixture, requestId)).dispatchCount).toBe(1);
+  }));
+
+test('a request to a Claude agent that gave up its idle process reopens it once, with the envelope and its agent bridge', async () =>
+  withCollaboration(async (fixture) => {
+    const status = await fixture.native.request({ kind: 'status' });
+    if (status.kind !== 'status') throw new Error('Missing runtime epoch');
+    await writeFixtureControl(fixture.native.root, 'claude-control.json', {
+      outputText: 'An ordinary conversation.',
+    });
+    const action = await fixture.native.request({
+      kind: 'action',
+      action: {
+        id: randomUUID(),
+        runtimeEpoch: status.result.runtimeEpoch,
+        command: {
+          kind: 'message',
+          threadId: fixture.agentIds[1]!,
+          input: { kind: 'text', text: 'Ordinary first turn' },
+        },
+      },
+    });
+    if (action.kind !== 'action') throw new Error('Missing native receipt');
+    await expect
+      .poll(async () => {
+        const result = await fixture.native.request({
+          kind: 'receipt',
+          actionId: action.result.id,
+        });
+        return result.kind === 'receipt' ? result.result?.completion : null;
+      })
+      .toBe('completed');
+    const readStarts = async () =>
+      (await readFile(join(fixture.native.root, 'claude-starts.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) =>
+          z.object({ id: z.string(), args: z.array(z.string()) }).parse(JSON.parse(line)),
+        );
+    const [first] = await readStarts();
+    // the agent's turn ended its idle period, so its process goes once that period passes
+    await expect.poll(() => countHeldDelays(3_600)).toBe(1);
+    expect(releaseHeldDelays(3_600)).toBe(1);
+    const requestId = randomUUID();
+    await writeFixtureControl(fixture.native.root, 'claude-control.json', {
+      structuredOutput: {
+        requestId,
+        outcome: 'completed',
+        report: 'Selected findings.',
+        childRequestIds: [],
+        requiredAuthority: null,
+      },
+    });
+    await publish(fixture, requestId, fixture.agentIds[1]!);
+    await dispatch(fixture, requestId);
+    await expect.poll(async () => (await readRequest(fixture, requestId)).state).toBe('resolved');
+    const starts = await readStarts();
+    expect(starts).toHaveLength(2);
+    const args = starts[1]!.args;
+    expect(args[args.indexOf('--resume') + 1]).toBe(first!.id);
+    expect(args).toContain('--json-schema');
+    expect(args).toContain('--mcp-config');
   }));
 
 test('a busy agent retains a directed request until its native boundary and checks capacity again', async () =>

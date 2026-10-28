@@ -42,6 +42,12 @@ export type IClaudeSession = {
   input?: IClaudeInput;
   apiMessageId?: string;
   previews: Map<number, { id: string; type: string }>;
+  // what an idle session answers with while it has no process, until input reopens it
+  parked?: { configuration: unknown; agents: unknown; permissionMode: unknown };
+  // cancels the wait that parks the session after its idle period
+  idleStop?: AbortController;
+  // a park or a reopen in progress, which every other call waits for
+  transition?: Promise<void>;
   requests: Map<
     string,
     { toolId: string | null; scopedId: string; fingerprint: string; isWritten: boolean }

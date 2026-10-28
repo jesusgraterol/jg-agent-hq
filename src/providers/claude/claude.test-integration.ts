@@ -2,10 +2,21 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { HqResponseSchema } from 'jg-agent-hq/contracts';
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
-import { withClaudeRuntime } from '../../../scripts/test-support/index.js';
+import {
+  countHeldDelays,
+  releaseHeldDelays,
+  withClaudeRuntime,
+} from '../../../scripts/test-support/index.js';
+
+// the read process's 5-minute idle period is released by the test instead of waited out
+vi.mock('jg-utilities', async (original) => {
+  const actual = await original<typeof import('jg-utilities')>();
+  const { holdDelays } = await import('../../../scripts/test-support/delays.js');
+  return { ...actual, delay: holdDelays(actual.delay, [300]) };
+});
 
 test('native usage preserves independent account windows and never sends a user prompt or scans behavior', async () => {
   await withClaudeRuntime(async ({ root, request }) => {
@@ -259,5 +270,48 @@ test('shutdown rejects a held native usage request and confirms the owned proces
     await runtime.close();
     const response = await pending;
     expect(response.kind === 'usage' && response.result.state).toBe('unavailable');
+  });
+});
+
+test('the session-less read process closes after 5 minutes unused and opens again on the next read', async () => {
+  await withClaudeRuntime(async ({ root, request }) => {
+    const readPids = async () =>
+      (await readFile(join(root, 'claude-read-pids.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => z.object({ pid: z.number().int() }).parse(JSON.parse(line)).pid);
+    const isRunning = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const claudeStatus = async () => {
+      const status = await request({ kind: 'status' });
+      if (status.kind !== 'status') throw new Error('Missing status');
+      return status.result.providers.find((provider) => provider.provider === 'claude');
+    };
+    await request({ kind: 'usage', provider: 'claude' });
+    await request({ kind: 'models', provider: 'claude' });
+    const [pid] = await readPids();
+    expect(await readPids()).toHaveLength(1);
+    // the second read restarted the idle period, so one wait remains
+    await expect.poll(() => countHeldDelays(300)).toBe(1);
+    expect(releaseHeldDelays(300)).toBe(1);
+    await expect.poll(() => isRunning(pid!)).toBe(false);
+    // the adapter reads as unused, keeping the version it observed
+    expect(await claudeStatus()).toStrictEqual({
+      provider: 'claude',
+      state: 'idle',
+      version: '2.1.304',
+    });
+    expect(await request({ kind: 'usage', provider: 'claude' })).toMatchObject({
+      kind: 'usage',
+      result: { state: 'available' },
+    });
+    expect(await readPids()).toHaveLength(2);
   });
 });

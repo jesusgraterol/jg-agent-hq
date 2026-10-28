@@ -13,3 +13,6 @@ export type { ICollaborationFixture } from './collaboration.js';
 
 // native tool connections
 export { callCodexTool, withAgentBridge } from './agent-tools.js';
+
+// held waits, such as idle periods, released by the test
+export { holdDelays, countHeldDelays, releaseHeldDelays } from './delays.js';
