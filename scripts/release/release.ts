@@ -3,6 +3,11 @@ import { Exception, extractMessage } from 'jg-exception';
 
 import { RegistryReleaseSchema, ReleaseVersionSchema, type IRegistryFetch } from './types.ts';
 
+// how long npm may take to serve a release it accepted, which took over three minutes in 2026-10
+const PUBLICATION_DEADLINE_MS = 600_000;
+// how often the registry is asked for the release meanwhile
+const PUBLICATION_POLL_MS = 5_000;
+
 /**
  * Reads one exact npm version without redirects, unbounded bodies or indefinite network work.
  * @returns The validated release, or null only for an HTTP 404.
@@ -121,27 +126,44 @@ export const needsPublication = async (
 
 /**
  * Waits for npm's asynchronous processing of one submitted release, checking its exact bytes.
+ * When npm doesn't serve it in time, the release is still published: rerunning the job confirms
+ * its archive and deploys the website.
+ * @param version The submitted version.
+ * @param integrity The tested archive's integrity.
+ * @param deadlineMs How long npm may take to serve it.
  * @returns Completion once the registry serves the tested archive's integrity.
  * @throws
  * - JG_AGENT_HQ_RELEASE_CHECK_FAILED: The HQ package release check failed
  */
-export const waitForPublication = async (version: string, integrity: string): Promise<void> => {
+export const waitForPublication = async (
+  version: string,
+  integrity: string,
+  deadlineMs = PUBLICATION_DEADLINE_MS,
+): Promise<void> => {
   if (!ReleaseVersionSchema.safeParse(version).success)
     throw new Exception(
       'The HQ package release check failed: a stable semantic version is required',
       { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
     );
-  const signal = AbortSignal.timeout(180000);
-  for (;;) {
-    const release = await readRelease(version, fetch, signal);
-    if (release) {
-      if (release.dist.integrity !== integrity)
-        throw new Exception(
-          'The HQ package release check failed: published contents differ from the tested archive',
-          { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
-        );
-      return;
+  const signal = AbortSignal.timeout(deadlineMs);
+  try {
+    for (;;) {
+      const release = await readRelease(version, fetch, signal);
+      if (release) {
+        if (release.dist.integrity !== integrity)
+          throw new Exception(
+            'The HQ package release check failed: published contents differ from the tested archive',
+            { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
+          );
+        return;
+      }
+      await setTimeout(PUBLICATION_POLL_MS, undefined, { signal });
     }
-    await setTimeout(5000, undefined, { signal });
+  } catch (error) {
+    if (!signal.aborted) throw error;
+    throw new Exception(
+      `The HQ package release check failed: npm accepted ${version} but didn't serve it before the deadline; rerun the publish job, which confirms the published archive and deploys the website`,
+      { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED', cause: error },
+    );
   }
 };

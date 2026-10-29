@@ -74,7 +74,8 @@ jobs:
     needs: check
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # npm may take up to the release script's 10 minutes to serve an accepted release
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
