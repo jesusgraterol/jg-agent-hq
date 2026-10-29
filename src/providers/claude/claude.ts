@@ -233,6 +233,7 @@ export const createClaudeProvider = (store: IStore) => {
      * @throws
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
      * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+     * - JG_AGENT_HQ_IMAGE_UNAVAILABLE: The HQ image is unavailable
      * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
      * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed

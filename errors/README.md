@@ -53,6 +53,7 @@ These contracts use the named codes below. An Exception's `data.kind` classifies
 | JG_AGENT_HQ_SKILL_UNAVAILABLE          | The HQ skill is unavailable                                      |
 | JG_AGENT_HQ_PLAN_INVALID               | The HQ plan is invalid                                           |
 | JG_AGENT_HQ_PLAN_FAILED                | The HQ plan operation failed                                     |
+| JG_AGENT_HQ_IMAGE_UNAVAILABLE          | The HQ image is unavailable                                      |
 
 State safety rejects non-private ownership, symlinks and non-regular files. ACTION_KEY_UNAVAILABLE also rejects a valid-length key whose fingerprint differs from the database stamp, before opening a writer. Runtime ownership is never reclaimed automatically. Transport failure includes malformed, oversized or incomplete frames and bounded-request/lifecycle failures. Native history and subscription failures remain unavailable, never successful empty results. Claude control rejects missing or non-idle initialization, invalid native session identities and malformed lifecycle evidence. Failed delivery remains uncertain when no exact native rejection or acknowledgement establishes its outcome.
 
@@ -91,6 +92,7 @@ The local client translates a remote failure into an Exception with the named cl
 | `state-conflict`          | JG_AGENT_HQ_CLIENT_STATE_CONFLICT          | State changed. Refresh before continuing. |
 | `agent-unavailable`       | JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE       | Coding agent is unavailable.              |
 | `operation-failed`        | JG_AGENT_HQ_CLIENT_OPERATION_FAILED        | Operation could not be completed.         |
+| `image-unavailable`       | JG_AGENT_HQ_CLIENT_IMAGE_UNAVAILABLE       | Image is unavailable.                     |
 
 ## Website tooling
 

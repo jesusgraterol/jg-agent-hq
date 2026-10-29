@@ -19,6 +19,7 @@ import type { IStore } from '../store/index.js';
 import type { IActiveSessionRecord } from '../store/sessions/index.js';
 
 import type { IClaudeSessions, IHistoryRequest } from './types.js';
+import { imageUnavailable } from './utilities.js';
 import {
   evidencePosition,
   verifyEvidencePage,
@@ -38,6 +39,7 @@ import {
  * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
  * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
  * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+ * - JG_AGENT_HQ_IMAGE_UNAVAILABLE: The HQ image is unavailable
  * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
  * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
  * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
@@ -113,7 +115,12 @@ export const readNativeHistory = async (
     return HqResponseSchema.parse(result);
   }
   // a thread HQ created has no native history until its first turn, so its record answers
-  if (command.kind === 'thread' || command.kind === 'items') {
+  if (
+    command.kind === 'thread' ||
+    command.kind === 'items' ||
+    command.kind === 'item-detail' ||
+    command.kind === 'item-image'
+  ) {
     const unstarted = await projection.getUnstartedThread(command.provider, command.nativeId);
     if (unstarted?.workspaceRoot === workspaceRoot) {
       if (command.kind === 'items')
@@ -121,6 +128,9 @@ export const readNativeHistory = async (
           kind: 'items',
           result: { data: [], history: 'persisted', source: 'native', nextCursor: null },
         });
+      if (command.kind === 'item-detail')
+        return HqResponseSchema.parse({ kind: 'item-detail', result: null });
+      if (command.kind === 'item-image') return imageUnavailable();
       const [summary] = await toManagedSummaries(projection, [unstarted]);
       return HqResponseSchema.parse({ kind: 'thread', result: withTerminal(summary!, claude) });
     }
@@ -181,7 +191,11 @@ export const readNativeHistory = async (
     );
   }
   const items =
-    response.kind === 'session-evidence' || response.kind === 'items' ? response.result.data : [];
+    response.kind === 'session-evidence' || response.kind === 'items'
+      ? response.result.data
+      : response.kind === 'item-detail' && response.result
+        ? [response.result.item]
+        : [];
   if (items.length && 'nativeId' in command) {
     // provider assertions alone never establish an operator or an HQ action link
     for (const item of items)

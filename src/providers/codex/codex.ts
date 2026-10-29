@@ -2,14 +2,16 @@ import { Exception, isException } from 'jg-exception';
 import { z } from 'zod';
 import { abortable, createDeadline } from 'jg-utilities';
 
-import type {
-  IUsageSnapshot,
-  ISessionSettings,
-  IOutputSchema,
-  ITurnSummary,
+import {
+  MAX_PAGE_SIZE,
+  type IUsageSnapshot,
+  type ISessionSettings,
+  type IOutputSchema,
+  type ITurnSummary,
 } from '../../contracts/index.js';
 import { NativeIdSchema } from '../../contracts/identities/index.js';
 import type { IProviderAgentTools } from '../../agent-tools/index.js';
+import { decodeBase64Image, imageUnavailable, readImageFile } from '../../sessions/index.js';
 
 import {
   LOADED_THREADS_PAGE_SIZE,
@@ -32,9 +34,17 @@ import {
   NativeTurnSchema,
   type ICodexEvents,
   type ICodexProvider,
+  type INativeItem,
   type INativePage,
 } from './types.js';
-import { toHistoryItem, toThreadSummary, toTurnSummary, toUsageSnapshot } from './transformers.js';
+import {
+  toHistoryItem,
+  toImageSources,
+  toItemDetail,
+  toThreadSummary,
+  toTurnSummary,
+  toUsageSnapshot,
+} from './transformers.js';
 import { parseNative } from './validations.js';
 import { toCodexModels } from './models/index.js';
 import { HOST_SKILL_SCOPE, readSkillRoots, toCapabilityRoots } from './skill-roots/index.js';
@@ -342,6 +352,36 @@ export const createCodexProvider = async (
     }
     return turns;
   };
+  /**
+   * Finds one item of a turn; Codex has no lookup of one item, so the turn's items are read,
+   * 128 at a time, until it appears.
+   * @returns The native item, or null when the turn holds no such item.
+   * @throws
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   */
+  const findItem = async (
+    nativeId: string,
+    turnId: string,
+    nativeItemId: string,
+  ): Promise<INativeItem | null> => {
+    let cursor: string | undefined;
+    do {
+      const page = parseNative(
+        NativeItemPageSchema,
+        await connection.request('thread/items/list', {
+          threadId: nativeId,
+          turnId,
+          limit: MAX_PAGE_SIZE,
+          cursor,
+          sortDirection: 'desc',
+        }),
+      );
+      const entry = page.data.find((candidate) => candidate.item.id === nativeItemId);
+      if (entry) return entry;
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    return null;
+  };
   return {
     hasAgentTools: (nativeId) => toolSessions.has(nativeId),
     ...createCodexExtensions(connection),
@@ -541,6 +581,20 @@ export const createCodexProvider = async (
         ),
         nextCursor: page.nextCursor,
       };
+    },
+    async readItemDetail(nativeId, turnId, nativeItemId) {
+      const entry = await findItem(nativeId, turnId, nativeItemId);
+      if (!entry) return null;
+      const turns = await readItemTurns(nativeId, new Set([entry.turnId]));
+      const item = toHistoryItem(entry, turns.get(entry.turnId));
+      return item && { item, ...toItemDetail(entry) };
+    },
+    async readItemImage(nativeId, turnId, nativeItemId, index) {
+      const entry = await findItem(nativeId, turnId, nativeItemId);
+      const source = entry && toImageSources(entry)[index];
+      if (source?.kind === 'path') return readImageFile(source.path);
+      if (source?.kind === 'data') return decodeBase64Image(source.data);
+      return imageUnavailable();
     },
     readUsage,
     async readSkills(workspaceRoot) {

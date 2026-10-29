@@ -7,7 +7,7 @@ import { toTurnResult } from '../../results/index.js';
 import { DispatchResponseSchema } from '../../../contracts/collaboration/index.js';
 
 import type { IClaudeControlEvents, IClaudeSession } from './types.js';
-import { createClaudePrompt } from './permissions.js';
+import { createClaudePrompt, readOwnToolInput } from './permissions.js';
 
 const FrameSchema = z.object({ type: z.string(), session_id: z.string().optional() });
 const MessageSchema = z.object({
@@ -272,6 +272,23 @@ export const receiveClaudeMessage = (
   } else if (frame.type === 'control_request') {
     const request = RequestSchema.parse(raw);
     if (!input || !session.connection) unavailable();
+    // HQ's own agent tools run without asking: the bridge already scopes them to this session
+    const ownInput = session.agentBridge
+      ? readOwnToolInput(request.request, session.agentBridge.serverName)
+      : null;
+    if (ownInput) {
+      void session.connection
+        .write({
+          type: 'control_response',
+          response: {
+            subtype: 'success',
+            request_id: request.request_id,
+            response: { behavior: 'allow', updatedInput: ownInput },
+          },
+        })
+        .catch(() => events?.unavailable(session.id));
+      return;
+    }
     const parsed = createClaudePrompt(
       request.request,
       session.id,

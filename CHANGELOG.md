@@ -1,5 +1,13 @@
 # Changelog
 
+## 6.1.0
+
+- Run HQ's own agent tools in Claude sessions without asking. A permission request for a tool of the session's agent bridge, named `mcp__<bridge server>__<tool>`, is allowed with its input unchanged and records no approval; every other tool still asks.
+- Add `item-detail`, which returns one item of a turn with what a developer inspects in it: `command` with its output, exit code and duration, `tool` with its server, name, input and result, `files` with each changed file's diff, and `images`, every image it holds or names. Output and results longer than 65,536 UTF-16 code units keep their last 65,536. A Claude tool result takes its command or tool name from the call it answers.
+- Add `item-image`, which returns one of an item's images in base64 when its first bytes are PNG, JPEG, GIF or WebP and it is at most 8 MiB: a Claude `base64` image block, or a Codex image view's or attached image's file, which is refused when it is a symbolic link or not a regular file, or its `data:` URL. No URL is fetched. Anything else fails with the new `image-unavailable` kind, `JG_AGENT_HQ_CLIENT_IMAGE_UNAVAILABLE`.
+- Both reads are also CLI commands. A provider's `readHistory` receives them, and an answer of another kind fails the read with `JG_AGENT_HQ_PROVIDER_FAILED`; its other reads are unchanged.
+- Keep 6.0.0's storage schema, so databases and snapshots written by 5.x and 6.0.0 open as they are.
+
 ## 6.0.0
 
 - List `threads` by last activity, newest first, for Claude and Codex, with cursors that continue in that order; they were listed by creation time.

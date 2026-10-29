@@ -527,6 +527,50 @@ test('Claude permissions preserve native input and cannot grant a session-wide a
   });
 });
 
+test('Claude runs the agent tools HQ serves without asking for approval', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture),
+      { thread } = await api.create();
+    await fixture.control({ prompt: 'permission', toolName: 'mcp__{bridge}__read_session' });
+    const input = await api.message(thread.id);
+    await api.until(
+      () => api.receipt(input.id),
+      (entry) => entry.completion === 'completed',
+    );
+    const all = await fixture.request({ kind: 'approvals', threadId: thread.id });
+    expect(all).toMatchObject({ kind: 'approvals', result: { data: [] } });
+    expect(
+      (await api.calls()).find((call) => call.type === 'control_response')!.response,
+    ).toStrictEqual({
+      subtype: 'success',
+      request_id: 'native-request',
+      response: { behavior: 'allow', updatedInput: { repository: 'example' } },
+    });
+  });
+});
+
+test.each([
+  ['a tool of another MCP server', 'mcp__fixture-server__inspect'],
+  ['a name that only contains the prefix', 'mcp__other_mcp__{bridge}__read_session'],
+  ['a tool of a server named after the bridge', 'mcp__{bridge}__other__read'],
+])('Claude asks before running %s', async (_case, toolName) => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture),
+      { thread } = await api.create();
+    await fixture.control({ prompt: 'permission', toolName });
+    await api.message(thread.id);
+    const [prompt] = await api.until(
+      () => api.approvals(thread.id),
+      (rows) => rows.length === 1,
+    );
+    expect(prompt).toMatchObject({
+      kind: 'permission',
+      presentation: { decisions: ['accept', 'decline'] },
+    });
+    expect((await api.calls()).some((call) => call.type === 'control_response')).toBe(false);
+  });
+});
+
 test('Claude cancellation never acknowledges a written reply', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture),
