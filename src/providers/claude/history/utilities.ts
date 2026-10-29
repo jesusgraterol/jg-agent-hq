@@ -208,6 +208,15 @@ const toUserPresentation = (record: IRecord, text: string): IPresentation | null
   return { ...base, kind: 'user-message', text };
 };
 
+// the text a user record's input sent: its whole content, or its first block when that is text
+const readInputText = (record: IRecord): string | null => {
+  const content = record.message?.content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return null;
+  const first = BlockSchema.safeParse(content[0]).data;
+  return first?.type === 'text' ? (first.text ?? null) : null;
+};
+
 /** Presents a native record as the CLI shows it, or null for one it leaves out. */
 const toPresentation = (record: IRecord): IPresentation | null => {
   const base = { nativeType: record.type, callId: null, outcome: null, files: [] };
@@ -296,10 +305,10 @@ export const toClaudeItem = (
     ...presentation,
     nativeId: record.uuid,
     turnId,
-    provenance: nativeProvenance(
-      presentation.kind,
-      presentation.kind === 'user-message' ? record.uuid : null,
-    ),
+    provenance:
+      presentation.kind === 'user-message'
+        ? nativeProvenance(presentation.kind, record.uuid, readInputText(record))
+        : nativeProvenance(presentation.kind),
     text: text.slice(0, end),
     isTruncated: end < text.length,
     createdAt: Number.isFinite(createdAt) ? createdAt : null,

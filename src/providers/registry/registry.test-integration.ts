@@ -628,6 +628,7 @@ test('a provider cannot label a live user message as an authenticated operator s
             origin: 'operator',
             source: 'authenticated-host-action',
             nativeInputId: 'unverified-input',
+            nativeInputSha256: null,
             actionId: randomUUID(),
             contentBoundary: 'untrusted',
             grantsAuthority: false,

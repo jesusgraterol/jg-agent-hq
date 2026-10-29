@@ -1,5 +1,11 @@
 # Changelog
 
+## 8.0.0
+
+- Correlate a message HQ sent with a skill or attached files, or one longer than a page keeps, with the action that sent it. Correlation hashed the message's whole presented text, which for Codex holds a `[skill]` line and its attached files after the text, and for Claude a `[Native document]` or image line, and it skipped a message a page cut, so all of them stayed `unknown`. Provenance now matches the SHA-256 of the text the native input sent, before the parts the same input added and before any cut. A Codex reviewer's review request, which always carries its skill, now reads `agent-input`.
+- Breaking: `provenance` gains `nativeInputSha256`, the SHA-256 of the text a user message's native input sent, or null, and a provider's items must carry it beside `nativeInputId`. Content a message holds after its sent text, such as an attached file, is no longer kept `unknown` on that account.
+- Keep 7.0.0's storage schema, so databases and snapshots written by 5.x through 7.x open as they are.
+
 ## 7.0.0
 
 - Return an item's image only when it is at most 4 MiB, instead of 8 MiB, so one read holds less memory in a host that runs the runtime in its own process. An image over 4 MiB fails with `image-unavailable`. Its base64 now fits in one IPC response, so the CLI reads every image `item-image` returns.

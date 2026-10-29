@@ -24,9 +24,8 @@ import {
   evidencePosition,
   verifyEvidencePage,
   evidenceCursor,
-  evidenceHash,
   utf8Chunk,
-  nativeProvenance,
+  resetProvenance,
   EVIDENCE_SOURCE_PAGE_SIZE,
 } from './evidence/index.js';
 
@@ -197,19 +196,19 @@ export const readNativeHistory = async (
         ? [response.result.item]
         : [];
   if (items.length && 'nativeId' in command) {
-    // provider assertions alone never establish an operator or an HQ action link
-    for (const item of items)
-      item.provenance = nativeProvenance(item.kind, item.provenance.nativeInputId);
+    /*
+     * Provider assertions alone never establish an operator or an HQ action link. A user message
+     * links to the action whose input it holds by its native input and the hash of the text that
+     * input sent, so attachments and a cut text don't hide it.
+     */
+    for (const item of items) item.provenance = resetProvenance(item.kind, item.provenance);
     const origins = await projection.getEvidenceOrigins({
       provider: command.provider,
       nativeId: command.nativeId,
-      items: items.map((item) => ({
-        nativeInputId:
-          item.kind === 'user-message' && (!('isTruncated' in item) || !item.isTruncated)
-            ? item.provenance.nativeInputId
-            : null,
+      items: items.map(({ kind, provenance, ...item }) => ({
+        nativeInputId: kind === 'user-message' ? provenance.nativeInputId : null,
         turnId: 'reference' in item ? item.reference.turnId : item.turnId,
-        sha256: 'reference' in item ? item.reference.sha256 : evidenceHash(item.text),
+        sha256: provenance.nativeInputSha256,
       })),
     });
     for (const [index, origin] of origins.entries())

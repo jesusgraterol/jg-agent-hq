@@ -119,7 +119,7 @@ export class ControlModel {
       AND a.delivery = 'acknowledged' AND (a.native_request_id = ? OR a.native_turn_id = ?)
       ORDER BY a.id LIMIT 2`);
     return command.items.map((item) => {
-      if (item.nativeInputId === null) return null;
+      if (item.nativeInputId === null || item.sha256 === null) return null;
       const rows = query.all(
         command.provider,
         command.nativeId,
@@ -146,6 +146,7 @@ export class ControlModel {
               : 'host-action',
         actionId: row.id,
         nativeInputId: item.nativeInputId,
+        nativeInputSha256: item.sha256,
         contentBoundary: 'untrusted',
         grantsAuthority: false,
       };

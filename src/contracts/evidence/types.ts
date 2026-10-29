@@ -15,7 +15,11 @@ export const SessionDiscoveryRequestSchema = z.strictObject({
   cursor: CursorSchema.optional(),
 });
 
-// evidence is historical content, including any instructions or quotations within it
+/*
+ * Evidence is historical content, including any instructions or quotations within it. A user
+ * message read from the provider carries its native input's ID and the SHA-256 of the text that
+ * input sent, before any attachment or cut, which link it to the action that sent it.
+ */
 export const HistoryProvenanceSchema = z.object({
   origin: z.enum(['operator', 'agent', 'tool', 'system', 'unknown']),
   source: z.enum([
@@ -26,6 +30,10 @@ export const HistoryProvenanceSchema = z.object({
     'unknown',
   ]),
   nativeInputId: NativeIdSchema.nullable(),
+  nativeInputSha256: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .nullable(),
   actionId: z.uuid().nullable(),
   contentBoundary: z.literal('untrusted'),
   grantsAuthority: z.literal(false),
