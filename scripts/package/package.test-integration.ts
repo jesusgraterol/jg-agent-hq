@@ -193,7 +193,7 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
         timeout: 10_000,
       });
       expect(help).toContain(
-        'serve|status|stop|capabilities|threads|thread|turns|items|sessions|session-evidence|usage',
+        'serve|status|stop|capabilities|threads|thread|turns|items|item-detail|sessions|session-evidence|usage',
       );
       expect(help).not.toContain('upgrade');
       const installedManifest = JSON.parse(

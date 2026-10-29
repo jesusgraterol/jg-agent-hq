@@ -509,6 +509,168 @@ test('Codex history leaves reasoning out, presents what the CLI shows and counts
   });
 });
 
+test('a Codex item detail reads a command, tools, file diffs and the images an item names', async () => {
+  await withRuntime(async ({ workspaceRoot, control, request }) => {
+    const target = { provider: 'codex', workspaceRoot, nativeId: 'thread-1023' } as const;
+    const output = `${'x'.repeat(70_000)}the end`;
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+    const native = [
+      {
+        id: 'u-0',
+        type: 'userMessage',
+        clientId: null,
+        content: [
+          { type: 'text', text: 'Look', text_elements: [] },
+          { type: 'image', url: `data:image/png;base64,${png.toString('base64')}` },
+          { type: 'localImage', path: '/workspace/shot.png' },
+          { type: 'image', url: 'https://example.com/a.png' },
+        ],
+      },
+      {
+        id: 'c-0',
+        type: 'commandExecution',
+        command: 'pnpm test',
+        aggregatedOutput: output,
+        exitCode: 1,
+        durationMs: 2500,
+        status: 'failed',
+      },
+      {
+        id: 'm-0',
+        type: 'mcpToolCall',
+        server: 'docs',
+        tool: 'search',
+        status: 'completed',
+        arguments: { query: 'zod' },
+        result: {
+          content: [{ type: 'text', text: 'Found' }],
+          structuredContent: null,
+          _meta: null,
+        },
+        error: null,
+        durationMs: 40,
+      },
+      {
+        id: 'd-0',
+        type: 'dynamicToolCall',
+        namespace: null,
+        tool: 'hq_identity',
+        status: 'inProgress',
+        arguments: {},
+        contentItems: null,
+        success: null,
+        durationMs: null,
+      },
+      {
+        id: 'f-0',
+        type: 'fileChange',
+        status: 'completed',
+        changes: [
+          {
+            path: '/workspace/a.ts',
+            kind: { type: 'update', move_path: null },
+            diff: '@@ -1,1 +1,1 @@\n-old\n+new',
+          },
+          { path: '/workspace/b.ts', kind: { type: 'add' }, diff: 'one\ntwo\n' },
+          { path: '/workspace/c.ts', kind: { type: 'delete' }, diff: 'gone\n' },
+        ],
+      },
+      { id: 'i-0', type: 'imageView', path: '/workspace/screen.png' },
+      { id: 'r-0', type: 'reasoning', summary: [], content: ['private'] },
+    ];
+    await control({ items: native.map((item) => ({ turnId: 'turn-a', item })) });
+    const detail = async (nativeItemId: string) => {
+      const response = await request({
+        kind: 'item-detail',
+        ...target,
+        turnId: 'turn-a',
+        nativeItemId,
+      });
+      if (response.kind !== 'item-detail') throw new Error('wrong response');
+      if (!response.result) return null;
+      const { item, ...parts } = response.result;
+      return { nativeId: item.nativeId, ...parts };
+    };
+    const none = { command: null, tool: null, files: [], images: [] };
+    expect(await detail('u-0')).toStrictEqual({
+      nativeId: 'u-0',
+      ...none,
+      images: [
+        { index: 0, mediaType: 'image/png', byteCount: png.length },
+        { index: 1, mediaType: null, byteCount: null },
+        { index: 2, mediaType: null, byteCount: null },
+      ],
+    });
+    // output longer than 65,536 code units keeps its end
+    expect(await detail('c-0')).toStrictEqual({
+      nativeId: 'c-0',
+      ...none,
+      command: {
+        command: 'pnpm test',
+        output: output.slice(-65_536),
+        isOutputStartCut: true,
+        exitCode: 1,
+        durationMs: 2500,
+      },
+    });
+    expect(await detail('m-0')).toStrictEqual({
+      nativeId: 'm-0',
+      ...none,
+      tool: {
+        server: 'docs',
+        name: 'search',
+        input: '{"query":"zod"}',
+        result:
+          '{"content":[{"type":"text","text":"Found"}],"structuredContent":null,"_meta":null}',
+        isResultStartCut: false,
+      },
+    });
+    expect(await detail('d-0')).toStrictEqual({
+      nativeId: 'd-0',
+      ...none,
+      tool: {
+        server: null,
+        name: 'hq_identity',
+        input: '{}',
+        result: null,
+        isResultStartCut: false,
+      },
+    });
+    // a created or deleted file without hunks is its whole content, every line added or removed
+    expect(await detail('f-0')).toStrictEqual({
+      nativeId: 'f-0',
+      ...none,
+      files: [
+        { path: '/workspace/a.ts', added: 1, removed: 1, diff: '@@ -1,1 +1,1 @@\n-old\n+new' },
+        { path: '/workspace/b.ts', added: 2, removed: 0, diff: '@@ -0,0 +1,2 @@\n+one\n+two' },
+        { path: '/workspace/c.ts', added: 0, removed: 1, diff: '@@ -1,1 +0,0 @@\n-gone' },
+      ],
+    });
+    expect(await detail('i-0')).toStrictEqual({
+      nativeId: 'i-0',
+      ...none,
+      images: [{ index: 0, mediaType: null, byteCount: null }],
+    });
+    // reasoning, an unknown item and one read in another turn have no detail
+    expect(await detail('r-0')).toBeNull();
+    expect(await detail('missing')).toBeNull();
+    expect(
+      await request({ kind: 'item-detail', ...target, turnId: 'turn-b', nativeItemId: 'c-0' }),
+    ).toStrictEqual({ kind: 'item-detail', result: null });
+    // the item is the one an items read of that item returns
+    const one = await request({ kind: 'items', ...target, turnId: 'turn-a', nativeItemId: 'c-0' });
+    const read = await request({
+      kind: 'item-detail',
+      ...target,
+      turnId: 'turn-a',
+      nativeItemId: 'c-0',
+    });
+    expect(read.kind === 'item-detail' && read.result?.item).toStrictEqual(
+      one.kind === 'items' && one.result.data[0],
+    );
+  });
+});
+
 test('workspace authorization precedes native access and rejects symlink escapes and cross-workspace history', async () => {
   await withRuntime(async ({ root, workspaceRoot, control, request }) => {
     const outside = join(root, 'outside');

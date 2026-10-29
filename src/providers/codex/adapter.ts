@@ -128,6 +128,15 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
       await verifyRoot(thread.workspaceRoot, command.workspaceRoot);
       thread.workspaceRoot = command.workspaceRoot;
       if (command.kind === 'thread') return { kind: 'thread' as const, result: thread };
+      if (command.kind === 'item-detail')
+        return {
+          kind: 'item-detail' as const,
+          result: await native.readItemDetail(
+            command.nativeId,
+            command.turnId,
+            command.nativeItemId,
+          ),
+        };
       if (command.kind === 'session-evidence') {
         const page = await native.listItems(
           command.nativeId,

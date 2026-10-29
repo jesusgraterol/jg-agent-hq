@@ -4,8 +4,18 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { Exception, hasErrorCode } from 'jg-exception';
 import { z } from 'zod';
 
-import { MAX_ITEM_TEXT_LENGTH, type IHistoryItem } from '../../../contracts/index.js';
-import { countLines } from '../../../sessions/index.js';
+import {
+  MAX_ITEM_IMAGES,
+  MAX_ITEM_TEXT_LENGTH,
+  type IHistoryItem,
+  type IItemDetail,
+} from '../../../contracts/index.js';
+import {
+  countLines,
+  describeBase64Image,
+  keepTextEnd,
+  toWholeFileDiff,
+} from '../../../sessions/index.js';
 import { nativeProvenance } from '../../../sessions/evidence/index.js';
 
 import { FilePatchSchema, type IFilePatch, type IRecord } from './types.js';
@@ -115,6 +125,7 @@ const BlockSchema = z.object({
   input: z.unknown().optional(),
   tool_use_id: z.string().min(1).max(4096).optional(),
   is_error: z.boolean().optional(),
+  source: z.unknown().optional(),
 });
 type IBlock = z.infer<typeof BlockSchema>;
 type IPresentation = Pick<
@@ -142,6 +153,13 @@ const toResultText = (block: IBlock): string => {
     : block.content;
 };
 
+// an edit's hunks as unified diff lines
+const toPatchLines = (patch: IFilePatch): string[] =>
+  patch.structuredPatch.flatMap((hunk) => [
+    `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`,
+    ...hunk.lines,
+  ]);
+
 /** Reads an Edit or Write result's file, counting every line of a created file as added. */
 const toFileChange = (patch: IFilePatch): Pick<IPresentation, 'text' | 'files'> => {
   if (patch.type === 'create' && patch.content !== undefined)
@@ -149,10 +167,7 @@ const toFileChange = (patch: IFilePatch): Pick<IPresentation, 'text' | 'files'> 
       text: `${patch.filePath}\n${patch.content}`,
       files: [{ path: patch.filePath, added: countLines(patch.content), removed: 0 }],
     };
-  const lines = patch.structuredPatch.flatMap((hunk) => [
-    `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`,
-    ...hunk.lines,
-  ]);
+  const lines = toPatchLines(patch);
   return {
     text: [patch.filePath, ...lines].join('\n'),
     files: [
@@ -289,4 +304,182 @@ export const toClaudeItem = (
     isTruncated: end < text.length,
     createdAt: Number.isFinite(createdAt) ? createdAt : null,
   };
+};
+
+// a record's content blocks, without the ones that don't parse
+const toBlocks = (record: IRecord): IBlock[] => {
+  const content = record.message?.content;
+  return Array.isArray(content)
+    ? content.flatMap((block: unknown) => BlockSchema.safeParse(block).data ?? [])
+    : [];
+};
+// a record's text, when it holds text alone
+const toText = (record: IRecord): string | undefined => {
+  const content = record.message?.content;
+  if (typeof content === 'string') return content;
+  const blocks = toBlocks(record);
+  return Array.isArray(content) &&
+    blocks.length > 0 &&
+    blocks.every((block) => block.type === 'text')
+    ? blocks.map((block) => block.text ?? '').join('\n')
+    : undefined;
+};
+// the result Claude Code records on a Bash call
+const ShellResultSchema = z.object({ stdout: z.string(), stderr: z.string() });
+const Base64SourceSchema = z.object({ type: z.literal('base64'), data: z.string() });
+const MCP_TOOL = /^mcp__(.+?)__(.+)$/;
+
+/** Presents a command with its output, keeping the output's end; Claude records no exit code. */
+const toCommandDetail = (command: string | null, output: string | null): IItemDetail['command'] => {
+  const kept = output === null ? null : keepTextEnd(output);
+  return {
+    command,
+    output: kept?.text ?? null,
+    isOutputStartCut: kept?.isStartCut ?? false,
+    exitCode: null,
+    durationMs: null,
+  };
+};
+
+/** Presents a tool call or result, an MCP tool's name split into its server and tool. */
+const toToolDetail = (
+  name: string | null,
+  input: string | null,
+  result: string | null,
+): IItemDetail['tool'] => {
+  const mcp = name === null ? null : MCP_TOOL.exec(name);
+  const kept = result === null ? null : keepTextEnd(result);
+  return {
+    server: mcp ? mcp[1]! : null,
+    name: mcp ? mcp[2]! : name,
+    input,
+    result: kept?.text ?? null,
+    isResultStartCut: kept?.isStartCut ?? false,
+  };
+};
+
+// a tool result's text: its string content, or the text of its content blocks
+const toResultBody = (block: IBlock): string =>
+  Array.isArray(block.content)
+    ? block.content
+        .flatMap((part: unknown) => BlockSchema.safeParse(part).data ?? [])
+        .filter((part) => part.type === 'text')
+        .map((part) => part.text ?? '')
+        .join('\n')
+    : toResultText(block);
+
+// a Bash call's command
+const toShellCommand = (input: unknown): string | null =>
+  z.object({ command: z.string() }).safeParse(input).data?.command ?? null;
+
+/** Lists the images a record holds, in its message and in its tool results' content, in order. */
+const toImages = (record: IRecord): IItemDetail['images'] =>
+  toBlocks(record)
+    .flatMap((block) =>
+      block.type === 'tool_result' && Array.isArray(block.content)
+        ? block.content.flatMap((part: unknown) => BlockSchema.safeParse(part).data ?? [])
+        : [block],
+    )
+    .filter((block) => block.type === 'image')
+    .slice(0, MAX_ITEM_IMAGES)
+    .map((block, index) => {
+      const source = Base64SourceSchema.safeParse(block.source);
+      return {
+        index,
+        ...(source.success
+          ? describeBase64Image(source.data.data)
+          : { mediaType: null, byteCount: null }),
+      };
+    });
+
+/**
+ * Tells whether an item answers an earlier record of its turn: a tool result its call, or a `!`
+ * shell output the input it follows.
+ * @param record The item's record.
+ * @param item The item, as history presents it.
+ * @returns Whether the item has a call to pair it with.
+ */
+export const isClaudeAnswer = (record: IRecord, item: IHistoryItem): boolean =>
+  item.callId !== null &&
+  (item.nativeType === 'tool-result' || (item.kind === 'command' && item.callId !== record.uuid));
+
+/**
+ * Tells whether a record is the call an answering item follows.
+ * @param candidate The record, one of the item's ancestors.
+ * @param item The answering item.
+ * @returns Whether the record holds the item's tool call, or is the shell input it follows.
+ */
+export const isClaudeCallFor = (candidate: IRecord, item: IHistoryItem): boolean =>
+  item.nativeType === 'tool-result'
+    ? toBlocks(candidate).some((block) => block.type === 'tool_use' && block.id === item.callId)
+    : candidate.uuid === item.callId;
+
+/**
+ * Reads what a developer inspects in one record beyond its display text: a Bash command or `!`
+ * shell input with its output, a tool call or result, an Edit or Write patch, and the images it
+ * holds. A result takes its command or tool name from the call it answers.
+ * @param record The item's record.
+ * @param call The call it answers, or null when it answers none or the call isn't found.
+ * @returns The detail's parts; the item itself comes from `toClaudeItem`.
+ */
+export const toClaudeDetail = (
+  record: IRecord,
+  call: IRecord | null,
+): Omit<IItemDetail, 'item'> => {
+  const detail: Omit<IItemDetail, 'item'> = {
+    command: null,
+    tool: null,
+    files: [],
+    images: toImages(record),
+  };
+  const text = toText(record);
+  if (record.type === 'user' && text !== undefined) {
+    const input = SHELL_INPUT.exec(text);
+    const output = SHELL_OUTPUT.exec(text);
+    if (input) detail.command = toCommandDetail(input[1]!.trim(), null);
+    else if (output) {
+      const callInput = SHELL_INPUT.exec((call && toText(call)) ?? '');
+      detail.command = toCommandDetail(
+        callInput ? callInput[1]!.trim() : null,
+        [output[1], output[2]].filter(Boolean).join('\n'),
+      );
+    }
+    return detail;
+  }
+  const blocks = toBlocks(record);
+  const result = blocks.find((block) => block.type === 'tool_result');
+  if (result && blocks.every((block) => block.type === 'tool_result')) {
+    const use =
+      call &&
+      toBlocks(call).find((block) => block.type === 'tool_use' && block.id === result.tool_use_id);
+    const patch = FilePatchSchema.safeParse(record.toolUseResult);
+    if (patch.success)
+      detail.files = [
+        patch.data.type === 'create' && patch.data.content !== undefined
+          ? {
+              path: patch.data.filePath,
+              added: countLines(patch.data.content),
+              removed: 0,
+              diff: toWholeFileDiff(patch.data.content, '+'),
+            }
+          : {
+              ...toFileChange(patch.data).files[0]!,
+              diff: toPatchLines(patch.data).join('\n'),
+            },
+      ];
+    if (use?.name === 'Bash') {
+      const shell = ShellResultSchema.safeParse(record.toolUseResult);
+      detail.command = toCommandDetail(
+        toShellCommand(use.input),
+        shell.success
+          ? [shell.data.stdout, shell.data.stderr].filter(Boolean).join('\n')
+          : toResultBody(result),
+      );
+    } else detail.tool = toToolDetail(use?.name ?? null, null, toResultBody(result));
+    return detail;
+  }
+  const use = blocks.find((block) => block.type === 'tool_use' && block.name);
+  if (use?.name === 'Bash') detail.command = toCommandDetail(toShellCommand(use.input), null);
+  else if (use) detail.tool = toToolDetail(use.name!, JSON.stringify(use.input ?? {}), null);
+  return detail;
 };

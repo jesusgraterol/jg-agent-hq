@@ -1220,6 +1220,241 @@ test('items cut text at their text limit on a code-point boundary, and read one 
   });
 });
 
+test('an item detail pairs each result with its call: Bash output, edits, writes, MCP tools, shell commands and images', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const records: ({ uuid: string } & Record<string, unknown>)[] = [];
+    const add = (
+      type: 'user' | 'assistant',
+      content: unknown,
+      extra: Record<string, unknown> = {},
+    ) => {
+      const record: { uuid: string } & Record<string, unknown> = {
+        ...claudeRecord(workspaceRoot, nativeId, { type, parentUuid: records.at(-1)?.uuid }),
+        message: { role: type, content },
+        ...extra,
+      };
+      records.push(record);
+      return record;
+    };
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+    const gif = Buffer.from('GIF89a\u0001\u0000\u0001\u0000');
+    const base64 = (data: string) => ({ type: 'base64', media_type: 'image/png', data });
+    const prompt = add('user', [
+      { type: 'text', text: 'Look at these' },
+      { type: 'image', source: base64(png.toString('base64')) },
+      { type: 'image', source: base64(Buffer.from('not an image').toString('base64')) },
+      { type: 'image', source: { type: 'url', url: 'https://example.com/a.png' } },
+    ]);
+    // two parallel calls, then their results, so the Bash result's call is two records up
+    const bash = add('assistant', [
+      { type: 'tool_use', id: 'toolu_bash', name: 'Bash', input: { command: 'ls -la' } },
+    ]);
+    const edit = add('assistant', [
+      { type: 'tool_use', id: 'toolu_edit', name: 'Edit', input: { file_path: 'a.ts' } },
+    ]);
+    const output = `${'x'.repeat(70_000)}the end`;
+    const listed = add('user', [{ type: 'tool_result', tool_use_id: 'toolu_bash', content: 'x' }], {
+      toolUseResult: { stdout: output, stderr: 'warning', interrupted: false },
+    });
+    const edited = add(
+      'user',
+      [{ type: 'tool_result', tool_use_id: 'toolu_edit', content: 'The file was updated' }],
+      {
+        toolUseResult: {
+          filePath: join(workspaceRoot, 'a.ts'),
+          structuredPatch: [
+            { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
+          ],
+        },
+      },
+    );
+    add('assistant', [
+      { type: 'tool_use', id: 'toolu_write', name: 'Write', input: { file_path: 'b.ts' } },
+    ]);
+    const written = add(
+      'user',
+      [{ type: 'tool_result', tool_use_id: 'toolu_write', content: 'File created' }],
+      {
+        toolUseResult: {
+          type: 'create',
+          filePath: join(workspaceRoot, 'b.ts'),
+          content: 'one\ntwo\n',
+          structuredPatch: [],
+        },
+      },
+    );
+    const search = add('assistant', [
+      { type: 'tool_use', id: 'toolu_mcp', name: 'mcp__docs__search', input: { query: 'zod' } },
+    ]);
+    const found = add('user', [
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_mcp',
+        content: [
+          { type: 'text', text: 'Found' },
+          { type: 'image', source: { ...base64(gif.toString('base64')), media_type: 'image/gif' } },
+        ],
+      },
+    ]);
+    const shell = add('user', '<bash-input>git status</bash-input>');
+    const status = add('user', '<bash-stdout>clean</bash-stdout><bash-stderr></bash-stderr>');
+    await writeFile(
+      transcript(nativeId),
+      records.map((record) => JSON.stringify(record)).join('\n') + '\n',
+    );
+    const target = { provider: 'claude', workspaceRoot, nativeId } as const;
+    const detail = async (record: { uuid: string }) => {
+      const response = await request({
+        kind: 'item-detail',
+        ...target,
+        turnId: prompt.uuid,
+        nativeItemId: record.uuid,
+      });
+      if (response.kind !== 'item-detail' || !response.result) throw new Error('missing detail');
+      const { item, ...parts } = response.result;
+      return { nativeId: item.nativeId, ...parts };
+    };
+    const none = { command: null, tool: null, files: [], images: [] };
+    const command = (text: string | null, out: string | null, isOutputStartCut = false) => ({
+      command: text,
+      output: out,
+      isOutputStartCut,
+      exitCode: null,
+      durationMs: null,
+    });
+    const tool = (extra: Record<string, unknown>) => ({
+      server: null,
+      name: null,
+      input: null,
+      result: null,
+      isResultStartCut: false,
+      ...extra,
+    });
+    expect(await detail(prompt)).toStrictEqual({
+      nativeId: prompt.uuid,
+      ...none,
+      images: [
+        { index: 0, mediaType: 'image/png', byteCount: png.length },
+        { index: 1, mediaType: null, byteCount: 12 },
+        { index: 2, mediaType: null, byteCount: null },
+      ],
+    });
+    expect(await detail(bash)).toStrictEqual({
+      nativeId: bash.uuid,
+      ...none,
+      command: command('ls -la', null),
+    });
+    // the result keeps the output's last 65,536 code units, stdout then stderr
+    const kept = `${output}\nwarning`.slice(-65_536);
+    expect(await detail(listed)).toStrictEqual({
+      nativeId: listed.uuid,
+      ...none,
+      command: command('ls -la', kept, true),
+    });
+    expect(await detail(edit)).toStrictEqual({
+      nativeId: edit.uuid,
+      ...none,
+      tool: tool({ name: 'Edit', input: '{"file_path":"a.ts"}' }),
+    });
+    expect(await detail(edited)).toStrictEqual({
+      nativeId: edited.uuid,
+      ...none,
+      tool: tool({ name: 'Edit', result: 'The file was updated' }),
+      files: [
+        {
+          path: join(workspaceRoot, 'a.ts'),
+          added: 1,
+          removed: 1,
+          diff: '@@ -1,1 +1,1 @@\n-old\n+new',
+        },
+      ],
+    });
+    expect(await detail(written)).toStrictEqual({
+      nativeId: written.uuid,
+      ...none,
+      tool: tool({ name: 'Write', result: 'File created' }),
+      files: [
+        {
+          path: join(workspaceRoot, 'b.ts'),
+          added: 2,
+          removed: 0,
+          diff: '@@ -0,0 +1,2 @@\n+one\n+two',
+        },
+      ],
+    });
+    expect(await detail(search)).toStrictEqual({
+      nativeId: search.uuid,
+      ...none,
+      tool: tool({ server: 'docs', name: 'search', input: '{"query":"zod"}' }),
+    });
+    expect(await detail(found)).toStrictEqual({
+      nativeId: found.uuid,
+      ...none,
+      tool: tool({ server: 'docs', name: 'search', result: 'Found' }),
+      images: [{ index: 0, mediaType: 'image/gif', byteCount: gif.length }],
+    });
+    expect(await detail(shell)).toStrictEqual({
+      nativeId: shell.uuid,
+      ...none,
+      command: command('git status', null),
+    });
+    expect(await detail(status)).toStrictEqual({
+      nativeId: status.uuid,
+      ...none,
+      command: command('git status', 'clean'),
+    });
+    // the item is the one an items read of that item returns
+    const one = await request({
+      kind: 'items',
+      ...target,
+      turnId: prompt.uuid,
+      nativeItemId: listed.uuid,
+    });
+    const read = await request({
+      kind: 'item-detail',
+      ...target,
+      turnId: prompt.uuid,
+      nativeItemId: listed.uuid,
+    });
+    expect(read.kind === 'item-detail' && read.result?.item).toStrictEqual(
+      one.kind === 'items' && one.result.data[0],
+    );
+  });
+});
+
+test('an item detail is null for an unknown or hidden item, or one read in another turn', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'First' });
+    const hidden = {
+      ...claudeRecord(workspaceRoot, nativeId, { parentUuid: prompt.uuid }),
+      type: 'attachment',
+      message: undefined,
+    };
+    const next = claudeRecord(workspaceRoot, nativeId, { parentUuid: hidden.uuid, text: 'Next' });
+    await writeFile(
+      transcript(nativeId),
+      [prompt, hidden, next].map((record) => JSON.stringify(record)).join('\n') + '\n',
+    );
+    for (const [nativeItemId, turnId] of [
+      [randomUUID(), prompt.uuid],
+      [hidden.uuid, prompt.uuid],
+      [prompt.uuid, next.uuid],
+    ] as const)
+      expect(
+        await request({
+          kind: 'item-detail',
+          provider: 'claude',
+          workspaceRoot,
+          nativeId,
+          turnId,
+          nativeItemId,
+        }),
+      ).toStrictEqual({ kind: 'item-detail', result: null });
+  });
+});
+
 test('the index stores what the CLI shows: hidden thinking and notifications, presented kinds, and turns started by the operator', async () => {
   await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
     const nativeId = randomUUID();

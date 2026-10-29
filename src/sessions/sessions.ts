@@ -113,7 +113,7 @@ export const readNativeHistory = async (
     return HqResponseSchema.parse(result);
   }
   // a thread HQ created has no native history until its first turn, so its record answers
-  if (command.kind === 'thread' || command.kind === 'items') {
+  if (command.kind === 'thread' || command.kind === 'items' || command.kind === 'item-detail') {
     const unstarted = await projection.getUnstartedThread(command.provider, command.nativeId);
     if (unstarted?.workspaceRoot === workspaceRoot) {
       if (command.kind === 'items')
@@ -121,6 +121,8 @@ export const readNativeHistory = async (
           kind: 'items',
           result: { data: [], history: 'persisted', source: 'native', nextCursor: null },
         });
+      if (command.kind === 'item-detail')
+        return HqResponseSchema.parse({ kind: 'item-detail', result: null });
       const [summary] = await toManagedSummaries(projection, [unstarted]);
       return HqResponseSchema.parse({ kind: 'thread', result: withTerminal(summary!, claude) });
     }
@@ -181,7 +183,11 @@ export const readNativeHistory = async (
     );
   }
   const items =
-    response.kind === 'session-evidence' || response.kind === 'items' ? response.result.data : [];
+    response.kind === 'session-evidence' || response.kind === 'items'
+      ? response.result.data
+      : response.kind === 'item-detail' && response.result
+        ? [response.result.item]
+        : [];
   if (items.length && 'nativeId' in command) {
     // provider assertions alone never establish an operator or an HQ action link
     for (const item of items)

@@ -34,6 +34,7 @@ import {
 
 import {
   DEFAULT_PAGE_SIZE,
+  MAX_ITEM_IMAGES,
   MAX_ITEM_TEXT_LENGTH,
   MAX_PAGE_SIZE,
   PUBLIC_ERROR_MESSAGES,
@@ -113,6 +114,13 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
         (command.turnId !== undefined && command.cursor === undefined),
       { message: 'One item is read within its turn, without a cursor', path: ['nativeItemId'] },
     ),
+  // one item's detail, by its native ID within its turn
+  z.strictObject({
+    kind: z.literal('item-detail'),
+    ...TargetFields,
+    turnId: NativeIdSchema,
+    nativeItemId: NativeIdSchema,
+  }),
   z.strictObject({ kind: z.literal('usage'), provider: TargetFields.provider }),
   z.strictObject({
     kind: z.literal('skills'),
@@ -257,6 +265,59 @@ export const HistoryItemSchema = z.object({
   createdAt: z.number().int().nullable(),
 });
 export type IHistoryItem = z.infer<typeof HistoryItemSchema>;
+
+// the image formats HQ recognizes by their first bytes
+export const ItemImageMediaTypeSchema = z.enum([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+]);
+export type IItemImageMediaType = z.infer<typeof ItemImageMediaTypeSchema>;
+
+/*
+ * What a developer inspects in one item, beyond its display text. Each part is null, or empty,
+ * when the item has none, and a field the provider doesn't record is null. Output and results
+ * keep their last 65,536 UTF-16 code units, with the start-cut flag set when they lost their
+ * start. `images` lists every image the item holds or names, in order, by its index, with its
+ * format and size when the item holds the image itself.
+ */
+export const ItemDetailSchema = z.object({
+  item: HistoryItemSchema,
+  command: z
+    .object({
+      command: z.string().nullable(),
+      output: z.string().max(MAX_ITEM_TEXT_LENGTH).nullable(),
+      isOutputStartCut: z.boolean(),
+      exitCode: z.number().int().nullable(),
+      durationMs: z.number().int().nonnegative().nullable(),
+    })
+    .nullable(),
+  tool: z
+    .object({
+      server: z.string().nullable(),
+      name: z.string().nullable(),
+      input: z.string().nullable(),
+      result: z.string().max(MAX_ITEM_TEXT_LENGTH).nullable(),
+      isResultStartCut: z.boolean(),
+    })
+    .nullable(),
+  files: z.array(HistoryFileSchema.extend({ diff: z.string() })).max(MAX_PAGE_SIZE),
+  images: z
+    .array(
+      z.object({
+        index: z
+          .number()
+          .int()
+          .min(0)
+          .max(MAX_ITEM_IMAGES - 1),
+        mediaType: ItemImageMediaTypeSchema.nullable(),
+        byteCount: z.number().int().nonnegative().nullable(),
+      }),
+    )
+    .max(MAX_ITEM_IMAGES),
+});
+export type IItemDetail = z.infer<typeof ItemDetailSchema>;
 export const LiveItemsSchema = z.object({
   revision: z.number().int().nonnegative(),
   unchanged: z.boolean(),
@@ -377,6 +438,8 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
       history: z.literal('persisted'),
     }),
   }),
+  // null for an unknown or hidden item, or one in another turn
+  z.object({ kind: z.literal('item-detail'), result: ItemDetailSchema.nullable() }),
   z.object({ kind: z.literal('usage'), result: UsageSnapshotSchema }),
   z.object({ kind: z.literal('skills'), result: SkillPageSchema }),
   z.object({ kind: z.literal('skill-preview'), result: SkillPreviewSchema }),

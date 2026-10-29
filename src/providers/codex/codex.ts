@@ -2,11 +2,12 @@ import { Exception, isException } from 'jg-exception';
 import { z } from 'zod';
 import { abortable, createDeadline } from 'jg-utilities';
 
-import type {
-  IUsageSnapshot,
-  ISessionSettings,
-  IOutputSchema,
-  ITurnSummary,
+import {
+  MAX_PAGE_SIZE,
+  type IUsageSnapshot,
+  type ISessionSettings,
+  type IOutputSchema,
+  type ITurnSummary,
 } from '../../contracts/index.js';
 import { NativeIdSchema } from '../../contracts/identities/index.js';
 import type { IProviderAgentTools } from '../../agent-tools/index.js';
@@ -34,7 +35,13 @@ import {
   type ICodexProvider,
   type INativePage,
 } from './types.js';
-import { toHistoryItem, toThreadSummary, toTurnSummary, toUsageSnapshot } from './transformers.js';
+import {
+  toHistoryItem,
+  toItemDetail,
+  toThreadSummary,
+  toTurnSummary,
+  toUsageSnapshot,
+} from './transformers.js';
 import { parseNative } from './validations.js';
 import { toCodexModels } from './models/index.js';
 import { HOST_SKILL_SCOPE, readSkillRoots, toCapabilityRoots } from './skill-roots/index.js';
@@ -541,6 +548,30 @@ export const createCodexProvider = async (
         ),
         nextCursor: page.nextCursor,
       };
+    },
+    async readItemDetail(nativeId, turnId, nativeItemId) {
+      // Codex has no lookup of one item, so its turn's items are read until it appears
+      let cursor: string | undefined;
+      do {
+        const page = parseNative(
+          NativeItemPageSchema,
+          await connection.request('thread/items/list', {
+            threadId: nativeId,
+            turnId,
+            limit: MAX_PAGE_SIZE,
+            cursor,
+            sortDirection: 'desc',
+          }),
+        );
+        const entry = page.data.find((candidate) => candidate.item.id === nativeItemId);
+        if (entry) {
+          const turns = await readItemTurns(nativeId, new Set([entry.turnId]));
+          const item = toHistoryItem(entry, turns.get(entry.turnId));
+          return item && { item, ...toItemDetail(entry) };
+        }
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor);
+      return null;
     },
     readUsage,
     async readSkills(workspaceRoot) {

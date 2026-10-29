@@ -5,6 +5,7 @@ import {
   UsageCreditsSchema,
   UsageResetCreditsSchema,
   type IHistoryItem,
+  type IItemDetail,
   type INativeSkillInput,
   type IThreadSummary,
   type ITurnSummary,
@@ -165,6 +166,17 @@ export type ICodexProvider = {
     turnId?: string,
     fullBody?: boolean,
   ): Promise<INativePage<IHistoryItem>>;
+  /**
+   * Reads one item of a turn with its detail.
+   * @returns The detail, or null when the turn holds no such item or Codex leaves it out.
+   * @throws
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   */
+  readItemDetail(
+    nativeId: string,
+    turnId: string,
+    nativeItemId: string,
+  ): Promise<IItemDetail | null>;
   readUsage(): Promise<IUsageSnapshot>;
   /**
    * Reads one native model page without starting inference.

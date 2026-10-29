@@ -7,6 +7,7 @@ import { z } from 'zod';
 import {
   HqResponseSchema,
   type IHqRequest,
+  type IItemDetail,
   type IThreadSummary,
   type IEvidenceRequest,
   type IEvidencePage,
@@ -31,11 +32,15 @@ import {
   SeekSchema,
   type IFileRow,
   type IClaudeHistoryRead,
+  type IRecord,
 } from './types.js';
 import {
+  isClaudeAnswer,
+  isClaudeCallFor,
   isClaudeWorkspaceCwd,
   openTranscript,
   projectDirectory,
+  toClaudeDetail,
   toClaudeItem,
 } from './utilities.js';
 
@@ -48,6 +53,8 @@ const MAX_REFRESH_BYTES = 16_777_216;
 const MAX_PAGE_BYTES = 4_194_304;
 // hidden records awaiting a parent later in the file; Claude Code writes them a few lines early
 const MAX_HELD_BACK_RECORDS = 64;
+// the ancestors a result's call is looked for in, enough for 16 parallel calls and their results
+const MAX_CALL_DISTANCE = 32;
 const CHAIN = `WITH RECURSIVE current_chain AS (
   SELECT workspace_root, native_id, uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible
   FROM hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?
@@ -87,6 +94,7 @@ export class ClaudeHistoryModel {
         command.kind !== 'thread' &&
         command.kind !== 'turns' &&
         command.kind !== 'items' &&
+        command.kind !== 'item-detail' &&
         command.kind !== 'session-evidence') ||
       command.provider !== 'claude'
     )
@@ -117,7 +125,9 @@ export class ClaudeHistoryModel {
   private __read(command: IHistoryRequest): IClaudeHistoryRead {
     const root = command.workspaceRoot;
     const { cursor, ...filters } =
-      command.kind === 'thread' ? { ...command, cursor: undefined } : command;
+      command.kind === 'thread' || command.kind === 'item-detail'
+        ? { ...command, cursor: undefined }
+        : command;
     const continuation =
       command.kind === 'session-evidence' ? undefined : decodeHistoryCursor(cursor, filters);
     if (command.kind === 'session-evidence') evidencePosition(command);
@@ -186,6 +196,11 @@ export class ClaudeHistoryModel {
     if (command.kind === 'thread') return { kind: 'thread', result: this.__summary(row) };
     if (command.kind === 'session-evidence')
       return { kind: 'session-evidence', result: this.__evidence(command, row, directory) };
+    if (command.kind === 'item-detail')
+      return HqResponseSchema.parse({
+        kind: 'item-detail',
+        result: this.__itemDetail(command, row, directory),
+      });
     const seek = continuation ? this.__parseCursor(EntrySeekSchema, continuation) : undefined;
     if (seek && seek.revision !== row.revision)
       throw new Exception('The HQ cursor does not match this request', {
@@ -300,6 +315,75 @@ export class ClaudeHistoryModel {
     } finally {
       closeSync(fd);
     }
+  }
+
+  /**
+   * Reads one visible item of a turn with its detail. A tool result, or a `!` shell output, is
+   * paired with the call it answers among its nearest ancestors in the turn.
+   * @returns The detail, or null when the turn holds no such visible item.
+   */
+  private __itemDetail(
+    command: Extract<IHistoryRequest, { kind: 'item-detail' }>,
+    row: IFileRow,
+    directory: string,
+  ): IItemDetail | null {
+    const root = command.workspaceRoot;
+    const entry = this.__entry(root, command.nativeId, command.nativeItemId);
+    if (!entry || entry.is_visible !== 1 || entry.turn_id !== command.turnId) return null;
+    const fd = openTranscript(directory, command.nativeId);
+    try {
+      if (this.__identity(fd) !== row.identity || fstatSync(fd).size < row.file_size)
+        this.__unavailable();
+      const record = this.__readEntry(fd, entry, root);
+      const item = toClaudeItem(record, entry.turn_id) ?? this.__unavailable();
+      let call: IRecord | null = null;
+      if (isClaudeAnswer(record, item)) {
+        let parent = entry.parent_uuid;
+        let budget = MAX_REFRESH_BYTES;
+        for (let step = 0; parent !== null && step < MAX_CALL_DISTANCE; step += 1) {
+          const ancestor = this.__entry(root, command.nativeId, parent);
+          if (!ancestor || ancestor.turn_id !== entry.turn_id || ancestor.byte_length > budget)
+            break;
+          budget -= ancestor.byte_length;
+          const candidate = this.__readEntry(fd, ancestor, root);
+          if (isClaudeCallFor(candidate, item)) {
+            call = candidate;
+            break;
+          }
+          parent = ancestor.parent_uuid;
+        }
+      }
+      return { item, ...toClaudeDetail(record, call) };
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  // one current entry of a session's index, visible or not
+  private __entry(
+    root: string,
+    nativeId: string,
+    uuid: string,
+  ): z.infer<typeof EntryRowSchema> | null {
+    const entry = this.__database
+      .prepare(
+        `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM hq_claude_entry
+      WHERE workspace_root = ? AND native_id = ? AND uuid = ? AND is_current = 1`,
+      )
+      .get(root, nativeId, uuid);
+    return entry === undefined ? null : EntryRowSchema.parse(entry);
+  }
+
+  // reads an entry's record, which must still be the one the index found there
+  private __readEntry(fd: number, entry: z.infer<typeof EntryRowSchema>, root: string): IRecord {
+    const bytes = Buffer.alloc(entry.byte_length);
+    if (readSync(fd, bytes, 0, bytes.length, entry.byte_offset) !== bytes.length)
+      this.__unavailable();
+    const record = RecordSchema.parse(
+      JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
+    );
+    if (record.uuid !== entry.uuid || !isClaudeWorkspaceCwd(record.cwd, root)) this.__unavailable();
+    return record;
   }
 
   private __summary(row: IFileRow): IThreadSummary {

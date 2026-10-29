@@ -9,5 +9,5 @@ export type IClaudeSessions = {
 // reads with explicit native identities or a scoped discovery target
 export type IHistoryRequest = Extract<
   IHqRequest,
-  { kind: 'threads' | 'thread' | 'turns' | 'items' | 'session-evidence' }
+  { kind: 'threads' | 'thread' | 'turns' | 'items' | 'item-detail' | 'session-evidence' }
 >;

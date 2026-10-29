@@ -167,6 +167,15 @@ export const validateProviderHistory = (
         ))
     )
       rejectProviderResponse();
+  } else if (response.kind === 'item-detail') {
+    // a detail is of the requested item, within its turn
+    if (
+      command.kind !== 'item-detail' ||
+      (response.result !== null &&
+        (response.result.item.nativeId !== command.nativeItemId ||
+          response.result.item.turnId !== command.turnId))
+    )
+      rejectProviderResponse();
   } else rejectProviderResponse();
   return response;
 };

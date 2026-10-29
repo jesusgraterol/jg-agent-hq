@@ -16,6 +16,7 @@ export type { IExtensionControlCommand } from './extensions/index.js';
 // constants
 export {
   DEFAULT_PAGE_SIZE,
+  MAX_ITEM_IMAGES,
   MAX_ITEM_TEXT_LENGTH,
   MAX_PAGE_SIZE,
   PUBLIC_ERROR_CODES,
@@ -32,6 +33,8 @@ export {
   TurnSummarySchema,
   HistoryFileSchema,
   HistoryItemSchema,
+  ItemImageMediaTypeSchema,
+  ItemDetailSchema,
   LiveItemsSchema,
   UsageWindowSchema,
   UsageSnapshotSchema,
@@ -71,6 +74,8 @@ export type {
   ITurnSummary,
   IHistoryFile,
   IHistoryItem,
+  IItemImageMediaType,
+  IItemDetail,
   IUsageSnapshot,
   IUsageCredits,
   IUsageResetCredits,

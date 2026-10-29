@@ -6,9 +6,11 @@ import {
   ThreadSummarySchema,
   TurnSummarySchema,
   HistoryItemSchema,
+  MAX_ITEM_IMAGES,
   MAX_ITEM_TEXT_LENGTH,
   type IHistoryFile,
   type IHistoryItem,
+  type IItemDetail,
   type IThreadSummary,
   type ITurnSummary,
   type IUsageSnapshot,
@@ -16,7 +18,12 @@ import {
   type ISessionState,
 } from '../../contracts/index.js';
 
-import { countLines } from '../../sessions/index.js';
+import {
+  countLines,
+  describeBase64Image,
+  keepTextEnd,
+  toWholeFileDiff,
+} from '../../sessions/index.js';
 import { nativeProvenance } from '../../sessions/evidence/index.js';
 
 import type { INativeItem, INativeThread, INativeTurn, INativeUsage } from './types.js';
@@ -237,6 +244,112 @@ export const toHistoryItem = (
           ? turn.startedAt
           : (turn.completedAt ?? turn.startedAt),
   });
+};
+
+// the fields a detail reads beyond what history presents
+const CommandDetailSchema = CommandSchema.extend({
+  exitCode: z.number().int().nullable().optional(),
+  durationMs: z.number().int().nonnegative().nullable().optional(),
+});
+const DynamicToolSchema = ToolSchema.extend({ namespace: z.string().nullable().optional() });
+const UserImagesSchema = z.object({
+  content: z
+    .array(z.object({ type: z.string(), url: z.string().optional() }).catchall(z.unknown()))
+    .max(128),
+});
+const BASE64_DATA_URL = /^data:[^,]*;base64,/;
+
+/** Presents one change's diff; an added or deleted file without hunks is its whole content. */
+const toChangeDiff = (change: z.infer<typeof ChangesSchema>['changes'][number]): string => {
+  if (change.diff.split('\n').some((line) => line.startsWith('@@'))) return change.diff;
+  if (change.kind.type === 'add') return toWholeFileDiff(change.diff, '+');
+  if (change.kind.type === 'delete') return toWholeFileDiff(change.diff, '-');
+  return change.diff;
+};
+
+/** Presents a tool call with its input and result as JSON text, the result keeping its end. */
+const toToolDetail = (
+  server: string | null,
+  name: string,
+  input: unknown,
+  result: unknown,
+): IItemDetail['tool'] => {
+  const kept = result === undefined || result === null ? null : keepTextEnd(JSON.stringify(result));
+  return {
+    server,
+    name,
+    input: JSON.stringify(input ?? null),
+    result: kept?.text ?? null,
+    isResultStartCut: kept?.isStartCut ?? false,
+  };
+};
+
+/**
+ * Reads what a developer inspects in one native item beyond its display text: a command with its
+ * output, exit code and duration, a tool call, a file change's diffs, or the images it names.
+ * @returns The detail's parts; the item itself comes from `toHistoryItem`.
+ * @throws
+ * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+ */
+export const toItemDetail = ({ item }: INativeItem): Omit<IItemDetail, 'item'> => {
+  const detail: Omit<IItemDetail, 'item'> = { command: null, tool: null, files: [], images: [] };
+  switch (item.type) {
+    case 'commandExecution': {
+      const command = parseNative(CommandDetailSchema, item);
+      const output =
+        command.aggregatedOutput == null ? null : keepTextEnd(command.aggregatedOutput);
+      detail.command = {
+        command: command.command,
+        output: output?.text ?? null,
+        isOutputStartCut: output?.isStartCut ?? false,
+        exitCode: command.exitCode ?? null,
+        durationMs: command.durationMs ?? null,
+      };
+      break;
+    }
+    case 'mcpToolCall': {
+      const tool = parseNative(ToolSchema, item);
+      detail.tool = toToolDetail(
+        tool.server ?? null,
+        tool.tool,
+        tool.arguments,
+        tool.result ?? tool.error,
+      );
+      break;
+    }
+    case 'dynamicToolCall': {
+      const tool = parseNative(DynamicToolSchema, item);
+      detail.tool = toToolDetail(
+        tool.namespace ?? null,
+        tool.tool,
+        tool.arguments,
+        tool.contentItems,
+      );
+      break;
+    }
+    case 'fileChange':
+      detail.files = parseNative(ChangesSchema, item).changes.map((change) => ({
+        ...toHistoryFile(change),
+        diff: toChangeDiff(change),
+      }));
+      break;
+    case 'imageView':
+      detail.images = [{ index: 0, mediaType: null, byteCount: null }];
+      break;
+    case 'userMessage':
+      // an image the message holds as a data URL is described; a path or other URL is only named
+      detail.images = parseNative(UserImagesSchema, item)
+        .content.filter((part) => part.type === 'image' || part.type === 'localImage')
+        .slice(0, MAX_ITEM_IMAGES)
+        .map((part, index) => ({
+          index,
+          ...(part.type === 'image' && part.url !== undefined && BASE64_DATA_URL.test(part.url)
+            ? describeBase64Image(part.url.slice(part.url.indexOf(',') + 1))
+            : { mediaType: null, byteCount: null }),
+        }));
+      break;
+  }
+  return detail;
 };
 
 /**

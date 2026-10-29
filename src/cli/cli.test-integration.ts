@@ -11,7 +11,11 @@ import { createAgentHq } from 'jg-agent-hq';
 import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
-import { installCodexFixture, withClaudeRuntime } from '../../scripts/test-support/index.js';
+import {
+  claudeRecord,
+  installCodexFixture,
+  withClaudeRuntime,
+} from '../../scripts/test-support/index.js';
 
 test('dedicated CLI provider selection reads Claude capabilities and reports unavailable provider data', async () => {
   await withClaudeRuntime(async ({ stateRoot }) => {
@@ -290,6 +294,50 @@ test('active-sessions and observation-pace work through the installed command', 
       ['threads', '--pace', 'live'],
     ])
       await expect(read(...args)).rejects.toThrow();
+  });
+});
+
+test('item-detail reads one item through the installed command', async () => {
+  await withClaudeRuntime(async ({ stateRoot, workspaceRoot, transcript }) => {
+    const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
+    const run = promisify(execFile);
+    const read = async (...args: string[]) =>
+      JSON.parse((await run(process.execPath, [cli, ...args, '--state-root', stateRoot])).stdout);
+    const nativeId = randomUUID();
+    const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'List the files' });
+    const call = {
+      ...claudeRecord(workspaceRoot, nativeId, { type: 'assistant', parentUuid: prompt.uuid }),
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'toolu_ls', name: 'Bash', input: { command: 'ls' } }],
+      },
+    };
+    await writeFile(
+      transcript(nativeId),
+      [prompt, call].map((record) => JSON.stringify(record)).join('\n') + '\n',
+    );
+    const target = [
+      'item-detail',
+      '--provider',
+      'claude',
+      '--workspace-root',
+      workspaceRoot,
+      '--native-id',
+      nativeId,
+    ];
+    expect(
+      await read(...target, '--turn-id', prompt.uuid, '--native-item-id', call.uuid),
+    ).toMatchObject({
+      schemaVersion: 1,
+      kind: 'item-detail',
+      result: {
+        item: { nativeId: call.uuid, kind: 'tool' },
+        command: { command: 'ls', output: null },
+        tool: null,
+      },
+    });
+    // one item is read only within its turn
+    await expect(read(...target, '--native-item-id', call.uuid)).rejects.toThrow();
   });
 });
 
