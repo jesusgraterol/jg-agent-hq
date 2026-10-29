@@ -184,6 +184,14 @@ const toFileChange = (patch: IFilePatch): Pick<IPresentation, 'text' | 'files'> 
  * Presents an operator-side text record; a task notification, which the CLI doesn't show, is
  * dropped, and a `!` shell output takes its input's UUID as its call.
  */
+// the `/name args` the operator typed, which Claude records as command markup, or null for other text
+const readCommandText = (text: string): string | null => {
+  const name = COMMAND.test(text) ? COMMAND_NAME.exec(text)?.[1] : undefined;
+  if (!name) return null;
+  const args = COMMAND_ARGS.exec(text)?.[1]?.trim();
+  return args ? `/${name} ${args}` : `/${name}`;
+};
+
 const toUserPresentation = (record: IRecord, text: string): IPresentation | null => {
   const base = { nativeType: record.type, callId: null, outcome: null, files: [] };
   if (text.startsWith('<task-notification>')) return null;
@@ -200,21 +208,19 @@ const toUserPresentation = (record: IRecord, text: string): IPresentation | null
       text: [output[1], output[2]].filter(Boolean).join('\n'),
       callId: record.parentUuid ?? null,
     };
-  const name = COMMAND.test(text) ? COMMAND_NAME.exec(text)?.[1] : undefined;
-  if (name) {
-    const args = COMMAND_ARGS.exec(text)?.[1]?.trim();
-    return { ...base, kind: 'user-message', text: args ? `/${name} ${args}` : `/${name}` };
-  }
-  return { ...base, kind: 'user-message', text };
+  return { ...base, kind: 'user-message', text: readCommandText(text) ?? text };
 };
 
-// the text a user record's input sent: its whole content, or its first block when that is text
+/*
+ * The text a user record's input sent: its whole content, or its first block when that is text,
+ * with a slash command or skill as the `/name args` that was sent, not the markup Claude records.
+ */
 const readInputText = (record: IRecord): string | null => {
   const content = record.message?.content;
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return null;
-  const first = BlockSchema.safeParse(content[0]).data;
-  return first?.type === 'text' ? (first.text ?? null) : null;
+  const first = Array.isArray(content) ? BlockSchema.safeParse(content[0]).data : undefined;
+  const text =
+    typeof content === 'string' ? content : first?.type === 'text' ? (first.text ?? null) : null;
+  return text === null ? null : (readCommandText(text) ?? text);
 };
 
 /** Presents a native record as the CLI shows it, or null for one it leaves out. */
