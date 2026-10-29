@@ -241,6 +241,7 @@ test('authorized native history is re-read after a delayed flush and large frame
           origin: 'agent',
           source: 'native-kind',
           nativeInputId: null,
+          nativeInputSha256: null,
           actionId: null,
           contentBoundary: 'untrusted',
           grantsAuthority: false,

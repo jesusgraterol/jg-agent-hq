@@ -394,6 +394,67 @@ test.each(['codex', 'claude'])(
   },
 );
 
+test.each(['codex', 'claude'])(
+  "a %s host input sent with an attachment, and past a page's cut, still correlates with its action receipt",
+  async (provider) => {
+    await withClaudeRuntime(async (fixture) => {
+      const created = await submit(fixture, {
+        kind: 'thread-create',
+        provider,
+        workspaceRoot: fixture.workspaceRoot,
+        name: 'attached-origin',
+      });
+      const thread = await fixture.request({ kind: 'managed-thread', threadId: created.threadId! });
+      if (thread.kind !== 'managed-thread' || !thread.result?.nativeId)
+        throw new Error('Missing thread');
+      await writeFile(join(fixture.workspaceRoot, 'note.txt'), 'A trusted UTF-8 document.');
+      // longer than the 2,048 characters a history page keeps of an item
+      const text = `Review this work against its plan. ${'x'.repeat(3000)}`;
+      const sent = await submit(fixture, {
+        kind: 'message',
+        threadId: created.threadId!,
+        input: { kind: 'text', text, files: [{ path: 'note.txt', mediaType: 'text/plain' }] },
+      });
+      // Codex keeps a skill and an attached file as parts after the message's text
+      if (provider === 'codex')
+        await writeFixtureControl(fixture.root, 'control.json', {
+          items: [
+            {
+              turnId: sent.nativeTurnId,
+              item: {
+                id: 'host-item',
+                clientId: sent.nativeRequestId,
+                type: 'userMessage',
+                content: [
+                  { type: 'text', text },
+                  { type: 'skill', name: 'hq-review', path: '/skills/hq-review/SKILL.md' },
+                  { type: 'text', text: 'File note.txt:\nA trusted UTF-8 document.' },
+                ],
+              },
+            },
+          ],
+        });
+      const page = await fixture.request({
+        kind: 'items',
+        provider,
+        workspaceRoot: fixture.workspaceRoot,
+        nativeId: thread.result.nativeId,
+        textLimit: 2048,
+      });
+      if (page.kind !== 'items') throw new Error('Missing items');
+      const message = page.result.data.find((item) => item.kind === 'user-message');
+      expect(message?.isTruncated).toBe(true);
+      expect(message?.provenance).toMatchObject({
+        origin: 'unknown',
+        source: 'host-action',
+        actionId: sent.id,
+        nativeInputSha256: createHash('sha256').update(text).digest('hex'),
+        grantsAuthority: false,
+      });
+    });
+  },
+);
+
 test('authenticated browser submissions retain historical operator evidence across restart', async () => {
   await withClaudeRuntime(async (fixture) => {
     const created = await submit(fixture, {

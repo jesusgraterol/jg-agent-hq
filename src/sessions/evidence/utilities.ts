@@ -16,10 +16,17 @@ export const EVIDENCE_RESPONSE_BYTES = 65_536;
 export const EVIDENCE_SOURCE_PAGE_SIZE = 8;
 const PAYLOAD_BYTES = EVIDENCE_RESPONSE_BYTES - 4096 - 16_384;
 
-/** Returns native evidence of a kind, without inferring operator identity from a user role. */
+/**
+ * Returns native evidence of a kind, without inferring operator identity from a user role.
+ * @param kind The item's kind.
+ * @param nativeInputId The native input a user message came from, when the provider names one.
+ * @param nativeInputText The text that input sent, before attachments or a cut, which is hashed.
+ * @returns The provenance, which links to no action until the store matches one.
+ */
 export const nativeProvenance = (
   kind: IHistoryItem['kind'],
   nativeInputId: string | null = null,
+  nativeInputText: string | null = null,
 ): IHistoryProvenance => ({
   origin:
     kind === 'agent-message'
@@ -31,9 +38,26 @@ export const nativeProvenance = (
           : 'unknown',
   source: kind === 'unsupported' || kind === 'user-message' ? 'unknown' : 'native-kind',
   nativeInputId,
+  nativeInputSha256:
+    nativeInputId === null || nativeInputText === null ? null : evidenceHash(nativeInputText),
   actionId: null,
   contentBoundary: 'untrusted',
   grantsAuthority: false,
+});
+
+/**
+ * Keeps only the native input link a provider's item names, so provider assertions alone never
+ * establish an operator or an HQ action link.
+ * @param kind The item's kind.
+ * @param provenance The provenance the provider gave the item.
+ * @returns The provenance, with its native input ID and text hash and no action.
+ */
+export const resetProvenance = (
+  kind: IHistoryItem['kind'],
+  { nativeInputId, nativeInputSha256 }: IHistoryProvenance,
+): IHistoryProvenance => ({
+  ...nativeProvenance(kind, nativeInputId),
+  nativeInputSha256: nativeInputId === null ? null : nativeInputSha256,
 });
 
 /** Hashes exactly the normalized UTF-8 evidence content. */

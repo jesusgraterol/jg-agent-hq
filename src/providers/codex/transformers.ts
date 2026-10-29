@@ -157,17 +157,21 @@ export const toHistoryItem = (
 ): IHistoryItem | null => {
   let kind: IHistoryItem['kind'] = 'unsupported';
   let text = '';
+  // the text part a user message's input sent first, which links it to the action that sent it
+  let inputText: string | null = null;
   let files: IHistoryFile[] = [];
   let outcome: IHistoryItem['outcome'] = null;
   switch (item.type) {
     case 'reasoning':
       return null;
-    case 'userMessage':
+    case 'userMessage': {
       kind = 'user-message';
-      text = parseNative(TextPartsSchema, item)
-        .content.map((part) => ('text' in part ? part.text : `[${part.type}]`))
-        .join('\n');
+      const { content } = parseNative(TextPartsSchema, item);
+      text = content.map((part) => ('text' in part ? part.text : `[${part.type}]`)).join('\n');
+      const [first] = content;
+      inputText = first && 'text' in first ? first.text : null;
       break;
+    }
     case 'agentMessage':
       kind = 'agent-message';
       text = parseNative(MessageSchema, item).text;
@@ -230,6 +234,7 @@ export const toHistoryItem = (
     provenance: nativeProvenance(
       kind,
       kind === 'user-message' && typeof item.clientId === 'string' ? item.clientId : null,
+      inputText,
     ),
     text: text.slice(0, end),
     isTruncated: end < text.length,

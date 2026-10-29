@@ -26,6 +26,7 @@ const item = (nativeId: string, turnId: string) => ({
     origin: 'agent',
     source: 'native-kind',
     nativeInputId: null,
+    nativeInputSha256: null,
     actionId: null,
     contentBoundary: 'untrusted',
     grantsAuthority: false,

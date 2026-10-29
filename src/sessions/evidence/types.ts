@@ -10,7 +10,10 @@ export const EvidenceOriginsRequestSchema = z.strictObject({
       z.strictObject({
         nativeInputId: z.string().min(1).max(4096).nullable(),
         turnId: z.string().min(1).max(4096),
-        sha256: z.string().regex(/^[a-f0-9]{64}$/),
+        sha256: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/)
+          .nullable(),
       }),
     )
     .max(128),
