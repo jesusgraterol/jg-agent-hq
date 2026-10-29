@@ -65,6 +65,19 @@ test('registry transport failure never becomes permission to publish', async () 
   ).rejects.toThrow('offline');
 });
 
+test("a release npm doesn't serve before the deadline fails saying a rerun finishes it", async () => {
+  try {
+    vi.stubGlobal('fetch', async () => new Response(null, { status: 404 }));
+    await expectToRejectCode(
+      waitForPublication('0.3.0', 'sha512-tested', 50),
+      'JG_AGENT_HQ_RELEASE_CHECK_FAILED',
+      "npm accepted 0.3.0 but didn't serve it before the deadline; rerun the publish job",
+    );
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
 test('publication visibility requires the exact submitted archive integrity', async () => {
   try {
     vi.stubGlobal('fetch', async () => published('0.3.0'));
