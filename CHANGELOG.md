@@ -1,5 +1,10 @@
 # Changelog
 
+## 8.0.1
+
+- Link a Claude message that invokes a skill or slash command to the action that sent it. Claude records the `/name args` it received as command markup, so its hash never matched the action's and a Claude reviewer's review request stayed `unknown`. `nativeInputSha256` now hashes the `/name args` the markup holds.
+- Keep 7.0.0's storage schema, so databases and snapshots written by 5.x through 8.0.0 open as they are.
+
 ## 8.0.0
 
 - Correlate a message HQ sent with a skill or attached files, or one longer than a page keeps, with the action that sent it. Correlation hashed the message's whole presented text, which for Codex holds a `[skill]` line and its attached files after the text, and for Claude a `[Native document]` or image line, and it skipped a message a page cut, so all of them stayed `unknown`. Provenance now matches the SHA-256 of the text the native input sent, before the parts the same input added and before any cut. A Codex reviewer's review request, which always carries its skill, now reads `agent-input`.
