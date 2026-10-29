@@ -35,6 +35,7 @@ import { createLineDecoder } from './framing.js';
  * - JG_AGENT_HQ_CLIENT_STATE_CONFLICT: State changed. Refresh before continuing.
  * - JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE: Coding agent is unavailable.
  * - JG_AGENT_HQ_CLIENT_OPERATION_FAILED: Operation could not be completed.
+ * - JG_AGENT_HQ_CLIENT_IMAGE_UNAVAILABLE: Image is unavailable.
  */
 export const requestAgentHq = async (
   stateRoot: string,

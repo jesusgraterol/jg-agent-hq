@@ -176,6 +176,8 @@ export const validateProviderHistory = (
           response.result.item.turnId !== command.turnId))
     )
       rejectProviderResponse();
+  } else if (response.kind === 'item-image') {
+    if (command.kind !== 'item-image') rejectProviderResponse();
   } else rejectProviderResponse();
   return response;
 };

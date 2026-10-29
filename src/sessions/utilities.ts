@@ -3,8 +3,10 @@ import { Exception, extractMessage } from 'jg-exception';
 import { z } from 'zod';
 
 import {
+  MAX_ITEM_IMAGE_BYTES,
   MAX_ITEM_TEXT_LENGTH,
   type IHistoryItem,
+  type IItemImage,
   type IItemImageMediaType,
 } from '../contracts/index.js';
 
@@ -144,3 +146,47 @@ export const describeBase64Image = (
   mediaType: toImageMediaType(Buffer.from(data.slice(0, 16), 'base64')),
   byteCount: Buffer.byteLength(data, 'base64'),
 });
+
+/**
+ * Refuses an image HQ doesn't return: one the item doesn't hold, one that isn't a recognized
+ * image or is over 8 MiB, a file that is a symbolic link or not a regular file, or a URL.
+ * @param cause The failure that made the image unreadable, when there is one.
+ * @throws
+ * - JG_AGENT_HQ_IMAGE_UNAVAILABLE: The HQ image is unavailable
+ */
+export const imageUnavailable = (cause?: unknown): never => {
+  throw new Exception('The HQ image is unavailable', {
+    code: 'JG_AGENT_HQ_IMAGE_UNAVAILABLE',
+    data: { kind: 'image-unavailable' },
+    ...(cause === undefined ? {} : { cause }),
+  });
+};
+
+/**
+ * Returns an image's bytes when they are a recognized image of at most 8 MiB.
+ * @param bytes The image's bytes.
+ * @returns The image, its format set by its first bytes.
+ * @throws
+ * - JG_AGENT_HQ_IMAGE_UNAVAILABLE: The HQ image is unavailable
+ */
+export const toItemImage = (bytes: Uint8Array): IItemImage => {
+  const mediaType = bytes.length <= MAX_ITEM_IMAGE_BYTES ? toImageMediaType(bytes) : null;
+  return mediaType
+    ? {
+        mediaType,
+        data: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64'),
+      }
+    : imageUnavailable();
+};
+
+/**
+ * Decodes an image an item holds as base64, measuring it before decoding it.
+ * @param data The image's base64 text.
+ * @returns The image.
+ * @throws
+ * - JG_AGENT_HQ_IMAGE_UNAVAILABLE: The HQ image is unavailable
+ */
+export const decodeBase64Image = (data: string): IItemImage =>
+  Buffer.byteLength(data, 'base64') <= MAX_ITEM_IMAGE_BYTES
+    ? toItemImage(Buffer.from(data, 'base64'))
+    : imageUnavailable();

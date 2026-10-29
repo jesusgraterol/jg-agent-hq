@@ -297,14 +297,24 @@ test('active-sessions and observation-pace work through the installed command', 
   });
 });
 
-test('item-detail reads one item through the installed command', async () => {
+test('item-detail and item-image read one item through the installed command', async () => {
   await withClaudeRuntime(async ({ stateRoot, workspaceRoot, transcript }) => {
     const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
     const run = promisify(execFile);
     const read = async (...args: string[]) =>
       JSON.parse((await run(process.execPath, [cli, ...args, '--state-root', stateRoot])).stdout);
     const nativeId = randomUUID();
-    const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'List the files' });
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex').toString('base64');
+    const prompt = {
+      ...claudeRecord(workspaceRoot, nativeId),
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'List the files' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: png } },
+        ],
+      },
+    };
     const call = {
       ...claudeRecord(workspaceRoot, nativeId, { type: 'assistant', parentUuid: prompt.uuid }),
       message: {
@@ -338,6 +348,21 @@ test('item-detail reads one item through the installed command', async () => {
     });
     // one item is read only within its turn
     await expect(read(...target, '--native-item-id', call.uuid)).rejects.toThrow();
+    const image = [
+      'item-image',
+      ...target.slice(1),
+      '--turn-id',
+      prompt.uuid,
+      '--native-item-id',
+      prompt.uuid,
+    ];
+    expect(await read(...image, '--index', '0')).toStrictEqual({
+      schemaVersion: 1,
+      kind: 'item-image',
+      result: { mediaType: 'image/png', data: png },
+    });
+    await expect(read(...image, '--index', '1')).rejects.toThrow();
+    await expect(read(...image, '--index', '64')).rejects.toThrow();
   });
 });
 

@@ -1,6 +1,13 @@
+import { expectToThrowCode } from 'jg-exception/testing';
 import { expect, test } from 'vitest';
 
-import { keepTextEnd, toImageMediaType, toWholeFileDiff } from './utilities.js';
+import {
+  decodeBase64Image,
+  keepTextEnd,
+  toImageMediaType,
+  toItemImage,
+  toWholeFileDiff,
+} from './utilities.js';
 
 test.each([
   ['an output at the limit', 'a'.repeat(65_536), 'a'.repeat(65_536), false],
@@ -32,4 +39,39 @@ test.each([
   ['', null],
 ])('toImageMediaType(%s) -> %s', (head, mediaType) => {
   expect(toImageMediaType(Buffer.from(head, 'hex'))).toBe(mediaType);
+});
+
+// a PNG signature followed by zeros, as large as a test needs
+const png = (size: number) => {
+  const bytes = Buffer.alloc(size);
+  Buffer.from('89504e470d0a1a0a', 'hex').copy(bytes);
+  return bytes;
+};
+
+test('toItemImage(an 8 MiB PNG) -> its base64 data', () => {
+  const bytes = png(8_388_608);
+  expect(toItemImage(bytes)).toStrictEqual({
+    mediaType: 'image/png',
+    data: bytes.toString('base64'),
+  });
+});
+
+test.each([
+  ['a PNG one byte over 8 MiB', png(8_388_609)],
+  ['text', Buffer.from('not an image')],
+  ['nothing', Buffer.alloc(0)],
+])('toItemImage(%s) -> image-unavailable', (_case, bytes) => {
+  expectToThrowCode(
+    () => toItemImage(bytes),
+    'JG_AGENT_HQ_IMAGE_UNAVAILABLE',
+    'The HQ image is unavailable',
+  );
+});
+
+test('decodeBase64Image(an 8 MiB PNG) -> the image, and one byte more -> image-unavailable', () => {
+  expect(decodeBase64Image(png(8_388_608).toString('base64')).mediaType).toBe('image/png');
+  expectToThrowCode(
+    () => decodeBase64Image(png(8_388_609).toString('base64')),
+    'JG_AGENT_HQ_IMAGE_UNAVAILABLE',
+  );
 });

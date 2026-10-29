@@ -254,7 +254,11 @@ const CommandDetailSchema = CommandSchema.extend({
 const DynamicToolSchema = ToolSchema.extend({ namespace: z.string().nullable().optional() });
 const UserImagesSchema = z.object({
   content: z
-    .array(z.object({ type: z.string(), url: z.string().optional() }).catchall(z.unknown()))
+    .array(
+      z
+        .object({ type: z.string(), url: z.string().optional(), path: z.string().optional() })
+        .catchall(z.unknown()),
+    )
     .max(128),
 });
 const BASE64_DATA_URL = /^data:[^,]*;base64,/;
@@ -282,6 +286,35 @@ const toToolDetail = (
     result: kept?.text ?? null,
     isResultStartCut: kept?.isStartCut ?? false,
   };
+};
+
+/**
+ * Lists the images a native item holds or names, in order: an image view's file, and a user
+ * message's attached files and images, an image it holds as a data URL described by its data.
+ * @returns At most 64 sources: a file's path, base64 data, or a URL HQ never fetches.
+ * @throws
+ * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+ */
+export const toImageSources = ({
+  item,
+}: Pick<INativeItem, 'item'>): (
+  | { kind: 'path'; path: string }
+  | { kind: 'data'; data: string }
+  | { kind: 'url' }
+)[] => {
+  if (item.type === 'imageView')
+    return [{ kind: 'path', path: parseNative(z.object({ path: z.string() }), item).path }];
+  if (item.type !== 'userMessage') return [];
+  return parseNative(UserImagesSchema, item)
+    .content.filter((part) => part.type === 'image' || part.type === 'localImage')
+    .slice(0, MAX_ITEM_IMAGES)
+    .map((part) => {
+      if (part.type === 'localImage' && part.path !== undefined)
+        return { kind: 'path', path: part.path };
+      if (part.type === 'image' && part.url !== undefined && BASE64_DATA_URL.test(part.url))
+        return { kind: 'data', data: part.url.slice(part.url.indexOf(',') + 1) };
+      return { kind: 'url' };
+    });
 };
 
 /**
@@ -333,22 +366,13 @@ export const toItemDetail = ({ item }: INativeItem): Omit<IItemDetail, 'item'> =
         diff: toChangeDiff(change),
       }));
       break;
-    case 'imageView':
-      detail.images = [{ index: 0, mediaType: null, byteCount: null }];
-      break;
-    case 'userMessage':
-      // an image the message holds as a data URL is described; a path or other URL is only named
-      detail.images = parseNative(UserImagesSchema, item)
-        .content.filter((part) => part.type === 'image' || part.type === 'localImage')
-        .slice(0, MAX_ITEM_IMAGES)
-        .map((part, index) => ({
-          index,
-          ...(part.type === 'image' && part.url !== undefined && BASE64_DATA_URL.test(part.url)
-            ? describeBase64Image(part.url.slice(part.url.indexOf(',') + 1))
-            : { mediaType: null, byteCount: null }),
-        }));
-      break;
   }
+  detail.images = toImageSources({ item }).map((source, index) => ({
+    index,
+    ...(source.kind === 'data'
+      ? describeBase64Image(source.data)
+      : { mediaType: null, byteCount: null }),
+  }));
   return detail;
 };
 

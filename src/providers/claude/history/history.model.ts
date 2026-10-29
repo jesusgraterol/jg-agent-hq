@@ -8,13 +8,16 @@ import {
   HqResponseSchema,
   type IHqRequest,
   type IItemDetail,
+  type IItemImage,
   type IThreadSummary,
   type IEvidenceRequest,
   type IEvidencePage,
 } from '../../../contracts/index.js';
 import {
+  decodeBase64Image,
   decodeHistoryCursor,
   encodeHistoryCursor,
+  imageUnavailable,
   type IHistoryRequest,
 } from '../../../sessions/index.js';
 import {
@@ -41,6 +44,7 @@ import {
   openTranscript,
   projectDirectory,
   toClaudeDetail,
+  toClaudeImageData,
   toClaudeItem,
 } from './utilities.js';
 
@@ -85,6 +89,7 @@ export class ClaudeHistoryModel {
    * @returns A validated result or a private marker requesting another bounded indexing batch.
    * @throws
    * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+   * - JG_AGENT_HQ_IMAGE_UNAVAILABLE: The HQ image is unavailable
    * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
    * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
    */
@@ -95,6 +100,7 @@ export class ClaudeHistoryModel {
         command.kind !== 'turns' &&
         command.kind !== 'items' &&
         command.kind !== 'item-detail' &&
+        command.kind !== 'item-image' &&
         command.kind !== 'session-evidence') ||
       command.provider !== 'claude'
     )
@@ -125,7 +131,7 @@ export class ClaudeHistoryModel {
   private __read(command: IHistoryRequest): IClaudeHistoryRead {
     const root = command.workspaceRoot;
     const { cursor, ...filters } =
-      command.kind === 'thread' || command.kind === 'item-detail'
+      command.kind === 'thread' || command.kind === 'item-detail' || command.kind === 'item-image'
         ? { ...command, cursor: undefined }
         : command;
     const continuation =
@@ -200,6 +206,11 @@ export class ClaudeHistoryModel {
       return HqResponseSchema.parse({
         kind: 'item-detail',
         result: this.__itemDetail(command, row, directory),
+      });
+    if (command.kind === 'item-image')
+      return HqResponseSchema.parse({
+        kind: 'item-image',
+        result: this.__itemImage(command, row, directory),
       });
     const seek = continuation ? this.__parseCursor(EntrySeekSchema, continuation) : undefined;
     if (seek && seek.revision !== row.revision)
@@ -354,6 +365,33 @@ export class ClaudeHistoryModel {
         }
       }
       return { item, ...toClaudeDetail(record, call) };
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  /**
+   * Reads one image a visible item of a turn holds in its record.
+   * @returns The image.
+   * @throws
+   * - JG_AGENT_HQ_IMAGE_UNAVAILABLE: The HQ image is unavailable
+   * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+   */
+  private __itemImage(
+    command: Extract<IHistoryRequest, { kind: 'item-image' }>,
+    row: IFileRow,
+    directory: string,
+  ): IItemImage {
+    const root = command.workspaceRoot;
+    const entry = this.__entry(root, command.nativeId, command.nativeItemId);
+    if (!entry || entry.is_visible !== 1 || entry.turn_id !== command.turnId)
+      return imageUnavailable();
+    const fd = openTranscript(directory, command.nativeId);
+    try {
+      if (this.__identity(fd) !== row.identity || fstatSync(fd).size < row.file_size)
+        this.__unavailable();
+      const data = toClaudeImageData(this.__readEntry(fd, entry, root))[command.index];
+      return data ? decodeBase64Image(data) : imageUnavailable();
     } finally {
       closeSync(fd);
     }

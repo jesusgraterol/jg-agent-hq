@@ -13,6 +13,7 @@ import {
 } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { expectToRejectCode } from 'jg-exception/testing';
 import { createAgentHq } from 'jg-agent-hq';
 import { HqResponseSchema } from 'jg-agent-hq/contracts';
 import { expect, test } from 'vitest';
@@ -1419,6 +1420,101 @@ test('an item detail pairs each result with its call: Bash output, edits, writes
     });
     expect(read.kind === 'item-detail' && read.result?.item).toStrictEqual(
       one.kind === 'items' && one.result.data[0],
+    );
+  });
+});
+
+test('an item image is a base64 image a record holds, in its message or a tool result, and nothing else', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request, runtime }) => {
+    const nativeId = randomUUID();
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+    const gif = Buffer.from('GIF89a\u0001\u0000\u0001\u0000');
+    const base64 = (data: Buffer) => ({
+      type: 'base64',
+      media_type: 'image/png',
+      data: data.toString('base64'),
+    });
+    const prompt = {
+      ...claudeRecord(workspaceRoot, nativeId),
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Look' },
+          { type: 'image', source: base64(png) },
+          { type: 'image', source: base64(Buffer.from('not an image')) },
+          { type: 'image', source: { type: 'url', url: 'https://example.com/a.png' } },
+        ],
+      },
+    };
+    const call = {
+      ...claudeRecord(workspaceRoot, nativeId, { type: 'assistant', parentUuid: prompt.uuid }),
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'toolu_shot', name: 'Screenshot', input: {} }],
+      },
+    };
+    const shot = {
+      ...claudeRecord(workspaceRoot, nativeId, { parentUuid: call.uuid }),
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_shot',
+            content: [{ type: 'image', source: base64(gif) }],
+          },
+        ],
+      },
+    };
+    // a meta record holds an image the CLI doesn't show
+    const hidden = {
+      ...claudeRecord(workspaceRoot, nativeId, { parentUuid: shot.uuid }),
+      isMeta: true,
+      message: { role: 'user', content: [{ type: 'image', source: base64(png) }] },
+    };
+    await writeFile(
+      transcript(nativeId),
+      [prompt, call, shot, hidden].map((record) => JSON.stringify(record)).join('\n') + '\n',
+    );
+    const image = (record: { uuid: string }, index: number) => ({
+      kind: 'item-image' as const,
+      provider: 'claude',
+      workspaceRoot,
+      nativeId,
+      turnId: prompt.uuid,
+      nativeItemId: record.uuid,
+      index,
+    });
+    expect(await request(image(prompt, 0))).toStrictEqual({
+      kind: 'item-image',
+      result: { mediaType: 'image/png', data: png.toString('base64') },
+    });
+    expect(await request(image(shot, 0))).toStrictEqual({
+      kind: 'item-image',
+      result: { mediaType: 'image/gif', data: gif.toString('base64') },
+    });
+    // a non-image, a URL, an index past the item's images, a hidden record and another turn
+    for (const [record, index] of [
+      [prompt, 1],
+      [prompt, 2],
+      [prompt, 3],
+      [call, 0],
+      [hidden, 0],
+    ] as const)
+      await expectToRejectCode(
+        request(image(record, index)),
+        'JG_AGENT_HQ_CLIENT_IMAGE_UNAVAILABLE',
+        'Image is unavailable.',
+      );
+    await expectToRejectCode(
+      request({ ...image(prompt, 0), turnId: randomUUID() }),
+      'JG_AGENT_HQ_CLIENT_IMAGE_UNAVAILABLE',
+    );
+    // in process, the runtime throws its own code
+    await expectToRejectCode(
+      runtime.request(image(prompt, 1)),
+      'JG_AGENT_HQ_IMAGE_UNAVAILABLE',
+      'The HQ image is unavailable',
     );
   });
 });

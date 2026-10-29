@@ -372,8 +372,12 @@ const toResultBody = (block: IBlock): string =>
 const toShellCommand = (input: unknown): string | null =>
   z.object({ command: z.string() }).safeParse(input).data?.command ?? null;
 
-/** Lists the images a record holds, in its message and in its tool results' content, in order. */
-const toImages = (record: IRecord): IItemDetail['images'] =>
+/**
+ * Lists the images a record holds, in its message and in its tool results' content, in order.
+ * @param record The record.
+ * @returns At most 64 images, each its base64 data, or null for one that has no base64 source.
+ */
+export const toClaudeImageData = (record: IRecord): (string | null)[] =>
   toBlocks(record)
     .flatMap((block) =>
       block.type === 'tool_result' && Array.isArray(block.content)
@@ -382,15 +386,14 @@ const toImages = (record: IRecord): IItemDetail['images'] =>
     )
     .filter((block) => block.type === 'image')
     .slice(0, MAX_ITEM_IMAGES)
-    .map((block, index) => {
-      const source = Base64SourceSchema.safeParse(block.source);
-      return {
-        index,
-        ...(source.success
-          ? describeBase64Image(source.data.data)
-          : { mediaType: null, byteCount: null }),
-      };
-    });
+    .map((block) => Base64SourceSchema.safeParse(block.source).data?.data ?? null);
+
+// describes each image a record holds, by its index
+const toImages = (record: IRecord): IItemDetail['images'] =>
+  toClaudeImageData(record).map((data, index) => ({
+    index,
+    ...(data === null ? { mediaType: null, byteCount: null } : describeBase64Image(data)),
+  }));
 
 /**
  * Tells whether an item answers an earlier record of its turn: a tool result its call, or a `!`

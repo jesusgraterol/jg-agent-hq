@@ -34,6 +34,7 @@ import {
 
 import {
   DEFAULT_PAGE_SIZE,
+  MAX_ITEM_IMAGE_BYTES,
   MAX_ITEM_IMAGES,
   MAX_ITEM_TEXT_LENGTH,
   MAX_PAGE_SIZE,
@@ -120,6 +121,18 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     ...TargetFields,
     turnId: NativeIdSchema,
     nativeItemId: NativeIdSchema,
+  }),
+  // one image of an item, by its index in the item's detail
+  z.strictObject({
+    kind: z.literal('item-image'),
+    ...TargetFields,
+    turnId: NativeIdSchema,
+    nativeItemId: NativeIdSchema,
+    index: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_ITEM_IMAGES - 1),
   }),
   z.strictObject({ kind: z.literal('usage'), provider: TargetFields.provider }),
   z.strictObject({
@@ -318,6 +331,16 @@ export const ItemDetailSchema = z.object({
     .max(MAX_ITEM_IMAGES),
 });
 export type IItemDetail = z.infer<typeof ItemDetailSchema>;
+
+// an image's bytes in base64, recognized by its first bytes and at most 8 MiB
+export const ItemImageSchema = z.object({
+  mediaType: ItemImageMediaTypeSchema,
+  data: z
+    .string()
+    .max(Math.ceil(MAX_ITEM_IMAGE_BYTES / 3) * 4)
+    .regex(/^[A-Za-z0-9+/]*={0,2}$/),
+});
+export type IItemImage = z.infer<typeof ItemImageSchema>;
 export const LiveItemsSchema = z.object({
   revision: z.number().int().nonnegative(),
   unchanged: z.boolean(),
@@ -440,6 +463,7 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
   }),
   // null for an unknown or hidden item, or one in another turn
   z.object({ kind: z.literal('item-detail'), result: ItemDetailSchema.nullable() }),
+  z.object({ kind: z.literal('item-image'), result: ItemImageSchema }),
   z.object({ kind: z.literal('usage'), result: UsageSnapshotSchema }),
   z.object({ kind: z.literal('skills'), result: SkillPageSchema }),
   z.object({ kind: z.literal('skill-preview'), result: SkillPreviewSchema }),

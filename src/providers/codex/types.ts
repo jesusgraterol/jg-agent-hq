@@ -6,6 +6,7 @@ import {
   UsageResetCreditsSchema,
   type IHistoryItem,
   type IItemDetail,
+  type IItemImage,
   type INativeSkillInput,
   type IThreadSummary,
   type ITurnSummary,
@@ -177,6 +178,19 @@ export type ICodexProvider = {
     turnId: string,
     nativeItemId: string,
   ): Promise<IItemDetail | null>;
+  /**
+   * Reads one image an item of a turn holds or names, by its index in the item's detail.
+   * @returns A promise that resolves to the image.
+   * @throws
+   * - JG_AGENT_HQ_IMAGE_UNAVAILABLE: The HQ image is unavailable
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   */
+  readItemImage(
+    nativeId: string,
+    turnId: string,
+    nativeItemId: string,
+    index: number,
+  ): Promise<IItemImage>;
   readUsage(): Promise<IUsageSnapshot>;
   /**
    * Reads one native model page without starting inference.

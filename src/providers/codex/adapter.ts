@@ -137,6 +137,16 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
             command.nativeItemId,
           ),
         };
+      if (command.kind === 'item-image')
+        return {
+          kind: 'item-image' as const,
+          result: await native.readItemImage(
+            command.nativeId,
+            command.turnId,
+            command.nativeItemId,
+            command.index,
+          ),
+        };
       if (command.kind === 'session-evidence') {
         const page = await native.listItems(
           command.nativeId,
