@@ -671,7 +671,7 @@ test('a Codex item detail reads a command, tools, file diffs and the images an i
   });
 });
 
-test('a Codex item image is a regular image file or data URL of at most 8 MiB, never a link, a pipe or a URL', async () => {
+test('a Codex item image is a regular image file or data URL of at most 4 MiB, never a link, a pipe or a URL', async () => {
   await withRuntime(async ({ workspaceRoot, control, request, runtime }) => {
     const target = { provider: 'codex', workspaceRoot, nativeId: 'thread-1023' } as const;
     const png = (size: number) => {
@@ -684,8 +684,8 @@ test('a Codex item image is a regular image file or data URL of at most 8 MiB, n
     await writeFile(file('screen.png'), png(16));
     await writeFile(file('photo.jpg'), jpeg);
     await writeFile(file('notes.png'), 'not an image');
-    await writeFile(file('largest.png'), png(8_388_608));
-    await writeFile(file('too-large.png'), png(8_388_609));
+    await writeFile(file('largest.png'), png(4_194_304));
+    await writeFile(file('too-large.png'), png(4_194_305));
     await symlink(file('screen.png'), file('link.png'));
     await execute('mkfifo', [file('pipe.png')]);
     await mkdir(file('folder.png'));
@@ -711,12 +711,12 @@ test('a Codex item image is a regular image file or data URL of at most 8 MiB, n
             content: [
               { type: 'text', text: 'Look', text_elements: [] },
               ...attached.map((path) => ({ type: 'localImage', path })),
-              // a data URL over 8 MiB can't reach HQ: its listing is larger than one Codex frame
               { type: 'image', url: `data:image/png;base64,${png(16).toString('base64')}` },
               {
                 type: 'image',
                 url: `data:image/png;base64,${Buffer.from('text').toString('base64')}`,
               },
+              { type: 'image', url: `data:image/png;base64,${png(4_194_305).toString('base64')}` },
               { type: 'image', url: 'https://example.com/a.png' },
             ],
           },
@@ -743,13 +743,13 @@ test('a Codex item image is a regular image file or data URL of at most 8 MiB, n
       kind: 'item-image',
       result: { mediaType: 'image/png', data: png(16).toString('base64') },
     });
-    // an 8 MiB image is returned in process; its base64 is larger than one IPC frame
-    const largest = await runtime.request(image('u-0', 2));
-    expect(largest.kind === 'item-image' && largest.result.data).toBe(
-      png(8_388_608).toString('base64'),
-    );
-    // text, an image over 8 MiB, a link, a pipe, a folder, a missing or relative path, a data URL
-    // of text, a URL, an index past the item's images, and an item without images
+    // a 4 MiB image's base64 fits in one IPC frame
+    expect(await request(image('u-0', 2))).toStrictEqual({
+      kind: 'item-image',
+      result: { mediaType: 'image/png', data: png(4_194_304).toString('base64') },
+    });
+    // text, an image over 4 MiB, a link, a pipe, a folder, a missing or relative path, a data URL
+    // of text or over 4 MiB, a URL, an index past the item's images, and an item without images
     for (const [nativeItemId, index] of [
       ['u-0', 1],
       ['u-0', 3],
@@ -761,6 +761,7 @@ test('a Codex item image is a regular image file or data URL of at most 8 MiB, n
       ['u-0', 10],
       ['u-0', 11],
       ['u-0', 12],
+      ['u-0', 13],
       ['i-0', 1],
       ['missing', 0],
     ] as const)

@@ -9,8 +9,8 @@ import { imageUnavailable, toItemImage } from './utilities.js';
 
 /**
  * Reads an image file an item names. A file that is itself a symbolic link is refused, as the
- * open doesn't follow it, a pipe is never waited on, and only a regular file of at most 8 MiB is
- * read; a file that grew past 8 MiB since it was measured is refused.
+ * open doesn't follow it, a pipe is never waited on, and only a regular file of at most 4 MiB is
+ * read; a file that grew past 4 MiB since it was measured is refused.
  * @param path The file's absolute path.
  * @returns A promise that resolves to the image.
  * @throws

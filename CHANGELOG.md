@@ -1,5 +1,10 @@
 # Changelog
 
+## 7.0.0
+
+- Return an item's image only when it is at most 4 MiB, instead of 8 MiB, so one read holds less memory in a host that runs the runtime in its own process. An image over 4 MiB fails with `image-unavailable`. Its base64 now fits in one IPC response, so the CLI reads every image `item-image` returns.
+- Keep 6.x's storage schema, so databases and snapshots written by 5.x and 6.x open as they are.
+
 ## 6.1.0
 
 - Run HQ's own agent tools in Claude sessions without asking. A permission request for a tool of the session's agent bridge, named `mcp__<bridge server>__<tool>`, is allowed with its input unchanged and records no approval; every other tool still asks.
