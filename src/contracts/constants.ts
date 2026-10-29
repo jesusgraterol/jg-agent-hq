@@ -7,7 +7,7 @@ export const MAX_ITEM_TEXT_LENGTH = 65_536;
 
 // the most images one item's detail lists, and the largest one HQ returns, in bytes
 export const MAX_ITEM_IMAGES = 64;
-export const MAX_ITEM_IMAGE_BYTES = 8_388_608;
+export const MAX_ITEM_IMAGE_BYTES = 4_194_304;
 
 // stable client codes for failures translated at IPC and browser boundaries
 export const PUBLIC_ERROR_CODES = {

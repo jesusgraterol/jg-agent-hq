@@ -48,8 +48,8 @@ const png = (size: number) => {
   return bytes;
 };
 
-test('toItemImage(an 8 MiB PNG) -> its base64 data', () => {
-  const bytes = png(8_388_608);
+test('toItemImage(a 4 MiB PNG) -> its base64 data', () => {
+  const bytes = png(4_194_304);
   expect(toItemImage(bytes)).toStrictEqual({
     mediaType: 'image/png',
     data: bytes.toString('base64'),
@@ -57,7 +57,7 @@ test('toItemImage(an 8 MiB PNG) -> its base64 data', () => {
 });
 
 test.each([
-  ['a PNG one byte over 8 MiB', png(8_388_609)],
+  ['a PNG one byte over 4 MiB', png(4_194_305)],
   ['text', Buffer.from('not an image')],
   ['nothing', Buffer.alloc(0)],
 ])('toItemImage(%s) -> image-unavailable', (_case, bytes) => {
@@ -68,10 +68,10 @@ test.each([
   );
 });
 
-test('decodeBase64Image(an 8 MiB PNG) -> the image, and one byte more -> image-unavailable', () => {
-  expect(decodeBase64Image(png(8_388_608).toString('base64')).mediaType).toBe('image/png');
+test('decodeBase64Image(a 4 MiB PNG) -> the image, and one byte more -> image-unavailable', () => {
+  expect(decodeBase64Image(png(4_194_304).toString('base64')).mediaType).toBe('image/png');
   expectToThrowCode(
-    () => decodeBase64Image(png(8_388_609).toString('base64')),
+    () => decodeBase64Image(png(4_194_305).toString('base64')),
     'JG_AGENT_HQ_IMAGE_UNAVAILABLE',
   );
 });

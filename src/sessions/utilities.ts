@@ -149,7 +149,7 @@ export const describeBase64Image = (
 
 /**
  * Refuses an image HQ doesn't return: one the item doesn't hold, one that isn't a recognized
- * image or is over 8 MiB, a file that is a symbolic link or not a regular file, or a URL.
+ * image or is over 4 MiB, a file that is a symbolic link or not a regular file, or a URL.
  * @param cause The failure that made the image unreadable, when there is one.
  * @throws
  * - JG_AGENT_HQ_IMAGE_UNAVAILABLE: The HQ image is unavailable
@@ -163,7 +163,7 @@ export const imageUnavailable = (cause?: unknown): never => {
 };
 
 /**
- * Returns an image's bytes when they are a recognized image of at most 8 MiB.
+ * Returns an image's bytes when they are a recognized image of at most 4 MiB.
  * @param bytes The image's bytes.
  * @returns The image, its format set by its first bytes.
  * @throws

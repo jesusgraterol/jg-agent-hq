@@ -332,7 +332,7 @@ export const ItemDetailSchema = z.object({
 });
 export type IItemDetail = z.infer<typeof ItemDetailSchema>;
 
-// an image's bytes in base64, recognized by its first bytes and at most 8 MiB
+// an image's bytes in base64, recognized by its first bytes and at most 4 MiB
 export const ItemImageSchema = z.object({
   mediaType: ItemImageMediaTypeSchema,
   data: z
