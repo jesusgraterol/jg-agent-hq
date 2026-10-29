@@ -83,8 +83,10 @@ export const startClaudeControl = () => {
     out({...message,isReplay:true});
     if(settings.prompt){
      hasPrompt=true;
-     const tool=settings.prompt==='question'?'AskUserQuestion':'Bash';
-     const toolInput=tool==='Bash'?{command:settings.largeCommand?'echo '+ 'x'.repeat(16384)+' visible-end':'echo example'}:{questions:[{question:'Which color?',header:'Color',multiSelect:!!settings.multiSelect,options:[{label:'Red',description:'First'},{label:'Blue',description:'Second'}]}]};
+     // {bridge} in a scripted tool name stands for the agent bridge's server name
+     const bridge=Object.keys(JSON.parse(flag('--mcp-config')??'{"mcpServers":{}}').mcpServers)[0]??'none';
+     const tool=settings.toolName?settings.toolName.replace('{bridge}',bridge):settings.prompt==='question'?'AskUserQuestion':'Bash';
+     const toolInput=tool==='Bash'?{command:settings.largeCommand?'echo '+ 'x'.repeat(16384)+' visible-end':'echo example'}:tool==='AskUserQuestion'?{questions:[{question:'Which color?',header:'Color',multiSelect:!!settings.multiSelect,options:[{label:'Red',description:'First'},{label:'Blue',description:'Second'}]}]}:{repository:'example'};
      const uuid=randomUUID();out({type:'assistant',uuid,message:{role:'assistant',content:[{type:'tool_use',id:'tool-request',name:tool,input:toolInput}]}});
      record(uuid,'assistant',[{type:'tool_use',id:'tool-request',name:tool,input:toolInput}],leaf);leaf=uuid;
      out({type:'stream_event',event:{type:'message_delta',delta:{stop_reason:'tool_use',stop_sequence:null}}});

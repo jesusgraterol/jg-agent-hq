@@ -52,6 +52,12 @@ const RequestSchema = z.strictObject({
   description: z.string().max(8192).optional(),
   requires_user_interaction: z.boolean().optional(),
 });
+// the fields that identify a tool request, whatever else the CLI sends with it
+const ToolRequestSchema = z.object({
+  subtype: z.literal('can_use_tool'),
+  tool_name: z.string(),
+  input: z.record(z.string(), z.unknown()),
+});
 const ElicitationRequestSchema = z.strictObject({
   subtype: z.literal('elicitation'),
   mcp_server_name: z.string().min(1).max(256),
@@ -65,6 +71,25 @@ const ElicitationRequestSchema = z.strictObject({
   display_name: z.string().max(4096).optional(),
   description: z.string().max(8192).optional(),
 });
+
+/**
+ * Reads a tool request for one of HQ's own agent tools, which the session's agent bridge serves.
+ * A tool name holds no `__`, so a server whose name only starts with the bridge's, such as
+ * `<bridge>__other`, never passes for it.
+ * @param raw The native control request.
+ * @param serverName The name the session's agent bridge has in its MCP configuration.
+ * @returns The request's tool input, or null for any other request.
+ */
+export const readOwnToolInput = (
+  raw: unknown,
+  serverName: string,
+): Record<string, unknown> | null => {
+  const request = ToolRequestSchema.safeParse(raw);
+  const prefix = `mcp__${serverName}__`;
+  if (!request.success || !request.data.tool_name.startsWith(prefix)) return null;
+  const tool = request.data.tool_name.slice(prefix.length);
+  return tool.length > 0 && !tool.includes('__') ? request.data.input : null;
+};
 
 /**
  * Binds a native tool request to one turn without accepting arbitrary tool-input edits.
