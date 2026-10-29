@@ -455,6 +455,52 @@ test.each(['codex', 'claude'])(
   },
 );
 
+test('a Claude skill input, which Claude records as command markup, correlates with its action receipt', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const created = await submit(fixture, {
+      kind: 'thread-create',
+      provider: 'claude',
+      workspaceRoot: fixture.workspaceRoot,
+      name: 'command-origin',
+    });
+    const thread = await fixture.request({ kind: 'managed-thread', threadId: created.threadId! });
+    if (thread.kind !== 'managed-thread' || !thread.result?.nativeId)
+      throw new Error('Missing thread');
+    const text = '/jg-review-session Review this work against its plan.';
+    const sent = await submit(fixture, {
+      kind: 'message',
+      threadId: created.threadId!,
+      input: { kind: 'text', text },
+    });
+    // Claude Code records the skill as command markup, which the fake CLI doesn't
+    const transcript = fixture.transcript(thread.result.nativeId);
+    const records = (await readFile(transcript, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; message?: { content: unknown } });
+    for (const record of records)
+      if (record.type === 'user' && record.message?.content === text)
+        record.message.content =
+          '<command-message>jg-review-session</command-message>\n<command-name>/jg-review-session</command-name>\n<command-args>Review this work against its plan.</command-args>';
+    await writeFile(transcript, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+
+    const page = await fixture.request({
+      kind: 'items',
+      provider: 'claude',
+      workspaceRoot: fixture.workspaceRoot,
+      nativeId: thread.result.nativeId,
+    });
+    if (page.kind !== 'items') throw new Error('Missing items');
+    const message = page.result.data.find((item) => item.kind === 'user-message');
+    expect(message?.text).toBe(text);
+    expect(message?.provenance).toMatchObject({
+      source: 'host-action',
+      actionId: sent.id,
+      nativeInputSha256: createHash('sha256').update(text).digest('hex'),
+    });
+  });
+});
+
 test('authenticated browser submissions retain historical operator evidence across restart', async () => {
   await withClaudeRuntime(async (fixture) => {
     const created = await submit(fixture, {
