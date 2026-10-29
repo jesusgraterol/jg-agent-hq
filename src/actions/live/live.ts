@@ -120,7 +120,11 @@ export class LiveItems {
     };
   }
 
-  /** Drops completed items only after their normalized persisted content matches exactly. */
+  /**
+   * Drops completed items once persisted history holds them: with exactly matching normalized
+   * content, or, for an item with an outcome, the same final outcome, since a provider can shorten
+   * long output when it saves it, as Codex does.
+   */
   public reconcile(nativeId: string, persisted: IHistoryItem[]): void {
     const thread = this.__threads.get(nativeId);
     if (!thread) return;
@@ -131,8 +135,8 @@ export class LiveItems {
         entry?.isComplete &&
         entry.item.nativeType === item.nativeType &&
         entry.item.kind === item.kind &&
-        entry.item.text === item.text &&
-        entry.item.isTruncated === item.isTruncated
+        ((entry.item.text === item.text && entry.item.isTruncated === item.isTruncated) ||
+          (item.outcome !== null && entry.item.outcome === item.outcome))
       ) {
         this.__bytes -= entry.bytes;
         thread.items.delete(key);

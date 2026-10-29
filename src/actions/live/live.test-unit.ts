@@ -46,6 +46,44 @@ test('unchanged live reads avoid copying bodies; append, completion, reconciliat
   expect(live.read('thread').hasGap).toBe(true);
 });
 
+test('a finished command whose saved output the provider shortened is no longer awaiting flush', () => {
+  const live = new LiveItems();
+  const command = {
+    ...item,
+    kind: 'command' as const,
+    nativeType: 'commandExecution',
+    text: `/bin/bash -lc 'cat README.md'\n${'line\n'.repeat(64)}`,
+    outcome: 'succeeded' as const,
+  };
+  live.open('thread');
+  live.put('thread', command, true);
+  live.reconcile('thread', [
+    {
+      ...command,
+      text: "/bin/bash -lc 'cat README.md'\nline\n... command output truncated for persistence ...\nline\n",
+    },
+  ]);
+  expect(live.read('thread').data).toStrictEqual([]);
+});
+
+test.each([
+  ['still running', null],
+  ['ended otherwise', 'failed'],
+] as const)('a finished command stays awaiting flush when its saved copy is %s', (_, outcome) => {
+  const live = new LiveItems();
+  const command = {
+    ...item,
+    kind: 'command' as const,
+    nativeType: 'commandExecution',
+    text: "/bin/bash -lc 'pnpm test'\npassed",
+    outcome: 'succeeded' as const,
+  };
+  live.open('thread');
+  live.put('thread', command, true);
+  live.reconcile('thread', [{ ...command, text: "/bin/bash -lc 'pnpm test'\n", outcome }]);
+  expect(live.read('thread').data).toStrictEqual([{ ...command, state: 'awaiting-flush' }]);
+});
+
 test('host provenance enrichment does not keep an already persisted native body awaiting flush', () => {
   const live = new LiveItems();
   const input = {
