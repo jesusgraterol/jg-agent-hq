@@ -1,5 +1,10 @@
 # Changelog
 
+## 8.0.2
+
+- Clear a finished command, tool call or file change from the live window once history holds it with the same outcome. Codex shortens long command output when it saves it, so the saved text never matched the live text and the item stayed `awaiting-flush` until the window evicted it. An item without an outcome, such as a message, still needs exactly matching content.
+- Keep 7.0.0's storage schema, so databases and snapshots written by 5.x through 8.0.1 open as they are.
+
 ## 8.0.1
 
 - Link a Claude message that invokes a skill or slash command to the action that sent it. Claude records the `/name args` it received as command markup, so its hash never matched the action's and a Claude reviewer's review request stayed `unknown`. `nativeInputSha256` now hashes the `/name args` the markup holds.
