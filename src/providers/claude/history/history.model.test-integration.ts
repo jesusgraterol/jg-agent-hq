@@ -379,6 +379,77 @@ test('incomplete tails are retained, appends advance, and changed chain revision
   });
 });
 
+test('reads over unchanged transcripts write nothing to SQLite, while an append and a removal are indexed', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, stateRoot, transcript, request }) => {
+    const sessions = [randomUUID(), randomUUID()].map((nativeId) => {
+      const question = claudeRecord(workspaceRoot, nativeId, { text: 'Unchanged question' });
+      const answer = claudeRecord(workspaceRoot, nativeId, {
+        type: 'assistant',
+        parentUuid: question.uuid,
+        text: 'Unchanged answer',
+      });
+      return { nativeId, question, answer };
+    });
+    for (const { nativeId, question, answer } of sessions)
+      await writeFile(
+        transcript(nativeId),
+        `${JSON.stringify(question)}\n${JSON.stringify(answer)}\n`,
+      );
+    const listed = async () => {
+      const threads = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+      if (threads.kind !== 'threads') throw new Error('wrong response');
+      return threads.result.data.map((thread) => thread.nativeId).sort();
+    };
+    // a discovery scan, then every read of one session, each of which inspects its transcript
+    const readAll = async () => {
+      expect(await listed()).toStrictEqual(sessions.map(({ nativeId }) => nativeId).sort());
+      for (const { nativeId } of sessions)
+        for (const kind of ['thread', 'turns', 'items', 'session-evidence'] as const)
+          expect(
+            await request({ kind, provider: 'claude', workspaceRoot, nativeId }),
+          ).toMatchObject({ kind });
+    };
+    await readAll();
+    const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'), { readOnly: true });
+    try {
+      // data_version changes whenever another connection commits a change to the database
+      const readVersion = () => database.prepare('PRAGMA data_version').get()?.data_version;
+      const indexed = readVersion();
+      await readAll();
+      expect(readVersion()).toBe(indexed);
+      const [kept, removed] = sessions;
+      const appended = claudeRecord(workspaceRoot, kept!.nativeId, {
+        parentUuid: kept!.answer.uuid,
+        text: 'Appended question',
+      });
+      await appendFile(transcript(kept!.nativeId), JSON.stringify(appended) + '\n');
+      const items = await request({
+        kind: 'items',
+        provider: 'claude',
+        workspaceRoot,
+        nativeId: kept!.nativeId,
+      });
+      expect(items.kind === 'items' && items.result.data.map((item) => item.text)).toStrictEqual([
+        'Appended question',
+        'Unchanged answer',
+        'Unchanged question',
+      ]);
+      expect(readVersion()).not.toBe(indexed);
+      await rm(transcript(removed!.nativeId));
+      expect(await listed()).toStrictEqual([kept!.nativeId]);
+      expect({
+        ...database
+          .prepare(
+            'SELECT (SELECT count(*) FROM hq_claude_file WHERE native_id = ?) AS files, (SELECT count(*) FROM hq_claude_entry WHERE native_id = ?) AS entries',
+          )
+          .get(removed!.nativeId, removed!.nativeId),
+      }).toStrictEqual({ files: 0, entries: 0 });
+    } finally {
+      database.close();
+    }
+  });
+});
+
 test('hidden native records preserve turn grouping and repeated message identities replace their rendered content', async () => {
   await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
     const nativeId = randomUUID();

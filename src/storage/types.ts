@@ -12,6 +12,7 @@ export const StorageDescriptorSchema = z.object({
     busyTimeoutMs: z.literal(STORAGE_CONNECTION_SETTINGS.busyTimeoutMs),
     journalMode: z.literal(STORAGE_CONNECTION_SETTINGS.journalMode),
     synchronous: z.literal(STORAGE_CONNECTION_SETTINGS.synchronous),
+    journalSizeLimitBytes: z.literal(STORAGE_CONNECTION_SETTINGS.journalSizeLimitBytes),
   }),
 });
 export type IStorageDescriptor = z.infer<typeof StorageDescriptorSchema>;

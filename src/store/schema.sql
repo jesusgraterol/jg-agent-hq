@@ -5,23 +5,6 @@ CREATE TABLE hq_schema (
   package_version TEXT NOT NULL CHECK (length(package_version) BETWEEN 1 AND 64)
 ) STRICT;
 
-CREATE TABLE hq_native_history_index (
-  provider TEXT NOT NULL CHECK (length(provider) > 0),
-  native_id TEXT NOT NULL CHECK (length(native_id) > 0),
-  workspace_root TEXT NOT NULL,
-  name TEXT,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  native_state TEXT NOT NULL,
-  observed_at INTEGER NOT NULL,
-  runtime_epoch TEXT NOT NULL,
-  continuation_cursor TEXT,
-  CONSTRAINT hq_pk_nhi__provider_native_id PRIMARY KEY (provider, native_id)
-) STRICT;
-
-CREATE INDEX hq_idx_nhi__provider_workspace_root_created_at_native_id
-ON hq_native_history_index (provider, workspace_root, created_at DESC, native_id DESC);
-
 CREATE TABLE hq_thread (
   id TEXT NOT NULL,
   provider TEXT NOT NULL CHECK (length(provider) > 0),
@@ -149,11 +132,12 @@ CREATE INDEX hq_idx_ba__submitted_epoch ON hq_browser_action (json_extract(recei
 WHERE json_extract(receipt, '$.state') = 'submitted';
 CREATE UNIQUE INDEX hq_uidx_ba__native_action ON hq_browser_action (json_extract(receipt, '$.nativeActionId'));
 
+-- a transcript's index; modified_at is its modification time once the index reached its end, else null
 CREATE TABLE hq_claude_file (
   workspace_root TEXT NOT NULL, native_id TEXT NOT NULL, identity TEXT NOT NULL,
-  file_size INTEGER NOT NULL, byte_offset INTEGER NOT NULL, revision TEXT NOT NULL,
+  file_size INTEGER NOT NULL, modified_at REAL, byte_offset INTEGER NOT NULL, revision TEXT NOT NULL,
   leaf_id TEXT, name TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-  supported INTEGER NOT NULL, seen TEXT NOT NULL, workspace_state TEXT NOT NULL,
+  supported INTEGER NOT NULL, workspace_state TEXT NOT NULL,
   CONSTRAINT hq_pk_cf__workspace_root_native_id PRIMARY KEY (workspace_root, native_id)
 ) STRICT;
 CREATE INDEX hq_idx_cf__workspace_root_created_at_native_id_desc

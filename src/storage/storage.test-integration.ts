@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
@@ -12,7 +12,11 @@ import type { IBrowserAction } from 'jg-agent-hq/contracts';
 import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
-import { withClaudeRuntime, writeFixtureControl } from '../../scripts/test-support/index.js';
+import {
+  claudeRecord,
+  withClaudeRuntime,
+  writeFixtureControl,
+} from '../../scripts/test-support/index.js';
 
 const createGate = () => {
   let resolve: () => void = () => undefined;
@@ -58,6 +62,7 @@ test('shared storage retains application tables and user_version across current-
         busyTimeoutMs: 5000,
         journalMode: 'wal',
         synchronous: 'full',
+        journalSizeLimitBytes: 16_777_216,
       },
     });
     expect(descriptor.schemaHash).toMatch(/^[a-f0-9]{64}$/);
@@ -108,6 +113,39 @@ test('shared storage retains application tables and user_version across current-
     } finally {
       await reopened.close();
     }
+  });
+});
+
+test("HQ's connection shrinks a WAL file a host grew back to the 16 MiB journal size limit", async () => {
+  await withClaudeRuntime(async ({ runtime, workspaceRoot, transcript, request }) => {
+    const limit = runtime.storage.connectionSettings.journalSizeLimitBytes;
+    const walSize = async () => (await stat(`${runtime.storage.databasePath}-wal`)).size;
+    // a host connection without the limit or automatic checkpoints grows the WAL past it
+    const host = openStorage(runtime.storage);
+    try {
+      host.exec(
+        'PRAGMA wal_autocheckpoint = 0; CREATE TABLE app_blob (id INTEGER PRIMARY KEY, body BLOB NOT NULL) STRICT',
+      );
+      const insert = host.prepare('INSERT INTO app_blob (body) VALUES (?)');
+      for (let index = 0; index < 20; index += 1) insert.run(Buffer.alloc(1_048_576, index));
+    } finally {
+      host.close();
+    }
+    expect(await walSize()).toBeGreaterThan(limit);
+    /*
+     * Indexing two new transcripts commits several HQ writes: the first one checkpoints the WAL,
+     * and a later one starts it over and truncates it to the limit.
+     */
+    for (const nativeId of [randomUUID(), randomUUID()])
+      await writeFile(
+        transcript(nativeId),
+        `${JSON.stringify(claudeRecord(workspaceRoot, nativeId))}\n`,
+      );
+    expect(await request({ kind: 'threads', provider: 'claude', workspaceRoot })).toMatchObject({
+      kind: 'threads',
+      result: { data: [{}, {}] },
+    });
+    expect(await walSize()).toBeLessThanOrEqual(limit);
   });
 });
 

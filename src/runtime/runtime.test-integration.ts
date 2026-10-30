@@ -121,24 +121,14 @@ test('owner-only IPC survives abandoned clients; shutdown releases SQLite and th
     await runtime.close();
     await runtime.closed;
     expect(await readdir(stateRoot)).toStrictEqual(['action.key', 'hq.sqlite']);
+    // native discovery pages are read, never copied into SQLite
     const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'), { readOnly: true });
     try {
-      const rows = database
-        .prepare(
-          'SELECT native_id, runtime_epoch, continuation_cursor FROM hq_native_history_index ORDER BY native_id',
-        )
-        .all();
-      expect(rows).toHaveLength(32);
-      expect(rows[0]).toMatchObject({
-        runtime_epoch: first.result.runtimeEpoch,
-        continuation_cursor: reply.result.nextCursor,
-      });
       expect(
         database
-          .prepare('PRAGMA table_info(hq_native_history_index)')
-          .all()
-          .map((column) => column.name),
-      ).not.toContain('text');
+          .prepare("SELECT name FROM sqlite_schema WHERE name LIKE 'hq_native_history%'")
+          .all(),
+      ).toStrictEqual([]);
     } finally {
       database.close();
     }

@@ -184,10 +184,6 @@ export const readNativeHistory = async (
       thread.state = states.get(thread.nativeId) ?? thread.state;
       thread.terminal = withTerminal(thread, claude).terminal;
     }
-    await projection.remember(
-      threads,
-      response.kind === 'threads' ? response.result.nextCursor : null,
-    );
   }
   const items =
     response.kind === 'session-evidence' || response.kind === 'items'

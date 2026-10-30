@@ -12,7 +12,11 @@ import { expectToRejectCode } from 'jg-exception/testing';
 import { afterEach, expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
-import { withClaudeRuntime, writeFixtureControl } from '../../scripts/test-support/index.js';
+import {
+  claudeRecord,
+  withClaudeRuntime,
+  writeFixtureControl,
+} from '../../scripts/test-support/index.js';
 
 const faults = vi.hoisted(() => ({ target: '' }));
 vi.mock('node:fs/promises', async (original) => {
@@ -121,6 +125,92 @@ test('WAL-aware capture includes host tables and key but no plan files; offline 
     } finally {
       host.close();
     }
+  });
+});
+
+test('a snapshot leaves out the Claude history index and keeps host rowids; a restored runtime rebuilds the index from the transcripts', async () => {
+  await withClaudeRuntime(async ({ runtime, root, workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const question = claudeRecord(workspaceRoot, nativeId, { text: 'Kept in the transcript' });
+    await writeFile(transcript(nativeId), `${JSON.stringify(question)}\n`);
+    expect(await request({ kind: 'threads', provider: 'claude', workspaceRoot })).toMatchObject({
+      kind: 'threads',
+      result: { data: [{ nativeId }] },
+    });
+    // a host table without an integer key, whose rowids a plain VACUUM would renumber
+    const host = new DatabaseSync(runtime.storage.databasePath);
+    try {
+      host.exec('CREATE TABLE app_event (body TEXT NOT NULL) STRICT');
+      for (const body of ['first', 'second', 'third'])
+        host.prepare('INSERT INTO app_event (body) VALUES (?)').run(body);
+      host.prepare('DELETE FROM app_event WHERE body = ?').run('second');
+    } finally {
+      host.close();
+    }
+    const readState = (databasePath: string) => {
+      const database = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        return {
+          ...database
+            .prepare(
+              'SELECT (SELECT count(*) FROM hq_claude_file) AS files, (SELECT count(*) FROM hq_claude_entry) AS entries',
+            )
+            .get(),
+          events: database
+            .prepare('SELECT rowid, body FROM app_event ORDER BY rowid')
+            .all()
+            .map((row) => ({ ...row })),
+        };
+      } finally {
+        database.close();
+      }
+    };
+    const events = [
+      { rowid: 1, body: 'first' },
+      { rowid: 3, body: 'third' },
+    ];
+    expect(readState(runtime.storage.databasePath)).toStrictEqual({ files: 1, entries: 1, events });
+    const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
+    expect(readState(join(snapshot.directory, 'hq.sqlite'))).toStrictEqual({
+      files: 0,
+      entries: 0,
+      events,
+    });
+    expect((await readdir(snapshot.directory)).sort()).toStrictEqual([
+      'action.key',
+      'complete.json',
+      'hq.sqlite',
+      'manifest.jsonl',
+    ]);
+    const restored = await restoreHqSnapshot({
+      snapshotDirectory: snapshot.directory,
+      destination: join(root, 'recovery'),
+    });
+    const reopened = await createAgentHq({
+      stateRoot: restored.stateRoot,
+      allowedRoots: [workspaceRoot],
+    });
+    try {
+      expect(
+        await reopened.request({ kind: 'threads', provider: 'claude', workspaceRoot }),
+      ).toMatchObject({ kind: 'threads', result: { data: [{ nativeId }] } });
+      const items = await reopened.request({
+        kind: 'items',
+        provider: 'claude',
+        workspaceRoot,
+        nativeId,
+      });
+      expect(items.kind === 'items' && items.result.data.map((item) => item.text)).toStrictEqual([
+        'Kept in the transcript',
+      ]);
+    } finally {
+      await reopened.close();
+    }
+    expect(readState(join(restored.stateRoot, 'hq.sqlite'))).toStrictEqual({
+      files: 1,
+      entries: 1,
+      events,
+    });
   });
 });
 

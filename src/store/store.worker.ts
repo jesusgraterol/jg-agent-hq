@@ -1,6 +1,5 @@
 import { readFile } from 'node:fs/promises';
 import { parentPort, workerData } from 'node:worker_threads';
-import { backup, DatabaseSync } from 'node:sqlite';
 import { Exception, extractMessage, isException } from 'jg-exception';
 
 import { getErrorKind } from '../errors/index.js';
@@ -12,6 +11,7 @@ import { ControlModel } from './control/index.js';
 import { SessionsModel } from './sessions/index.js';
 import { StoreRequestSchema, StoreWorkerSchema } from './types.js';
 import { openDatabase } from './schema.js';
+import { backupForSnapshot } from './snapshot.js';
 
 const options = StoreWorkerSchema.parse(workerData);
 if (!parentPort) throw new Exception('The HQ store failed', { code: 'JG_AGENT_HQ_STORE_FAILED' });
@@ -34,13 +34,6 @@ const startWorker = async (): Promise<void> => {
     const sessions = new SessionsModel(database);
     const controls = new ControlModel(database, options.runtimeEpoch, options.actionKey);
     const claudeHistory = new ClaudeHistoryModel(database);
-    const remember = database.prepare(`INSERT INTO hq_native_history_index
-  (provider, native_id, workspace_root, name, created_at, updated_at, native_state, observed_at, runtime_epoch, continuation_cursor)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  ON CONFLICT(provider, native_id) DO UPDATE SET
-  workspace_root = excluded.workspace_root, name = excluded.name, created_at = excluded.created_at, updated_at = excluded.updated_at,
-  native_state = excluded.native_state, observed_at = excluded.observed_at,
-  runtime_epoch = excluded.runtime_epoch, continuation_cursor = excluded.continuation_cursor`);
     port.on('message', async (message: unknown) => {
       const parsed = StoreRequestSchema.safeParse(message);
       if (!parsed.success)
@@ -59,16 +52,9 @@ const startWorker = async (): Promise<void> => {
         }
         let result: unknown = null;
         switch (command.kind) {
-          case 'snapshot-backup': {
-            await backup(database, command.destination);
-            const copy = new DatabaseSync(command.destination);
-            try {
-              copy.exec('PRAGMA journal_mode = DELETE');
-            } finally {
-              copy.close();
-            }
+          case 'snapshot-backup':
+            await backupForSnapshot(database, command.destination);
             break;
-          }
           case 'evidence-origins':
             result = controls.getEvidenceOrigins(command.request);
             break;
@@ -177,29 +163,6 @@ const startWorker = async (): Promise<void> => {
           case 'release':
             controls.releaseControls();
             break;
-          case 'remember': {
-            database.exec('BEGIN IMMEDIATE');
-            try {
-              for (const thread of command.threads)
-                remember.run(
-                  thread.provider,
-                  thread.nativeId,
-                  thread.workspaceRoot,
-                  thread.name,
-                  thread.createdAt,
-                  thread.updatedAt,
-                  thread.nativeState,
-                  command.observedAt,
-                  options.runtimeEpoch,
-                  command.nextCursor,
-                );
-              database.exec('COMMIT');
-            } catch (error) {
-              database.exec('ROLLBACK');
-              throw error;
-            }
-            break;
-          }
         }
         port.postMessage({ kind: 'result', id, result, error: null });
       } catch (error) {

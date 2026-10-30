@@ -29,7 +29,9 @@ export const shareStorage = async (input: {
       enableForeignKeyConstraints: storage.connectionSettings.foreignKeys,
     });
     try {
-      database.exec('PRAGMA synchronous = FULL; BEGIN IMMEDIATE');
+      database.exec(
+        `PRAGMA synchronous = FULL; PRAGMA journal_size_limit = ${storage.connectionSettings.journalSizeLimitBytes}; BEGIN IMMEDIATE`,
+      );
       try {
         database.exec(
           'CREATE TABLE IF NOT EXISTS app_preference (id INTEGER PRIMARY KEY CHECK (id = 1), label TEXT NOT NULL) STRICT',

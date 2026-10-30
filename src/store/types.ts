@@ -5,10 +5,8 @@ import {
   type IBrowserAction,
   type IBrowserReceipt,
   MAX_PAGE_SIZE,
-  ThreadSummarySchema,
   ManagedThreadSchema,
   ErrorKindSchema,
-  type IThreadSummary,
   type IActionReceipt,
   type IManagedThread,
   type IActionSummary,
@@ -71,12 +69,6 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     state: BrowserReceiptSchema.shape.state.exclude(['submitted']),
   }),
   z.strictObject({ kind: z.literal('claude-history'), request: HqRequestSchema }),
-  z.strictObject({
-    kind: z.literal('remember'),
-    threads: z.array(ThreadSummarySchema).max(MAX_PAGE_SIZE),
-    nextCursor: z.string().max(16_384).nullable(),
-    observedAt: z.number().int(),
-  }),
   z.strictObject({
     kind: z.literal('sessions-observe'),
     provider: z.string(),
@@ -195,7 +187,8 @@ export type IStore = {
    */
   prepareStorageMaintenance(): Promise<boolean>;
   /**
-   * Copies the worker's database through SQLite's WAL-aware backup API.
+   * Copies the worker's database through SQLite's WAL-aware backup API, without the Claude history
+   * projection, which a restored runtime rebuilds from the transcripts.
    * Local backup completion has no metadata-command deadline; maintenance stays held until it settles.
    * @returns Completion after the backup connection has closed.
    * @throws
@@ -290,13 +283,6 @@ export type IStore = {
    * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
    */
   readClaudeHistory(command: IHistoryRequest): Promise<IClaudeHistoryRead>;
-  /**
-   * Persists one native discovery page without transcript bodies.
-   * @returns A promise resolved after the discovery transaction commits.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  remember(threads: IThreadSummary[], nextCursor: string | null): Promise<void>;
   /**
    * Reads one selected receipt, including its undelivered queued text.
    * @returns The selected receipt, or null when its UUID is unknown.

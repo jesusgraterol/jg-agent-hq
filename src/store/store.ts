@@ -6,7 +6,6 @@ import {
   BrowserReceiptSchema,
   ActionReceiptSchema,
   ManagedThreadSchema,
-  type IThreadSummary,
   HistoryProvenanceSchema,
   SessionStateSchema,
   SessionTransitionPageSchema,
@@ -261,10 +260,6 @@ export const createStore = async (
       request({ kind: 'session-transitions', afterSequence, limit }, SessionTransitionPageSchema),
     listActiveSessions: (limit) =>
       request({ kind: 'sessions-active', limit }, ActiveSessionRecordsSchema),
-    /** Persists only discovery metadata, not transcript bodies. */
-    remember: async (threads: IThreadSummary[], nextCursor: string | null) => {
-      await request({ kind: 'remember', threads, nextCursor, observedAt: Date.now() }, z.null());
-    },
     getAction: (id) => request({ kind: 'action-read', id }, ActionReceiptSchema.nullable()),
     getThread: (id) => request({ kind: 'thread-read', id }, ManagedThreadSchema.nullable()),
     getThreadByName: (name) =>
