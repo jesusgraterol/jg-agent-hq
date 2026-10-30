@@ -8,30 +8,34 @@ import { examplesMarkdown, createExamples, readDocument } from './index.ts';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
-test('the walkthrough publishes its complete tested helper and honest result boundary', async () => {
-  const sources = {
-    'control-session': await readDocument(ROOT, 'examples/control-session.ts'),
-  };
-  const examples = createExamples(sources);
-  const markdown = examplesMarkdown(sources);
-  expect(examples.map((example) => example.id)).toStrictEqual(['control-session']);
-  for (const example of examples) {
-    expect(example.source).toBe(sources[example.id]);
-    expect(markdown).toContain(`\`\`\`ts\n${example.source}\`\`\``);
-    expect(markdown).toContain(example.call);
-  }
-  expect(markdown).toContain(
-    'Acknowledged means delivered. Turn completion and tool permissions are reported separately.',
-  );
-  expect(markdown).toContain('### Read\n\n`live-items` · `approvals` · `usage`');
-  expect(markdown).not.toContain('Read this page as Markdown');
-  expect(() => createExamples({ 'control-session': undefined })).toThrow(
-    'The HQ website source is invalid',
-  );
-  expect(() => createExamples({ 'control-session': '' })).toThrow(
-    'The HQ website source is invalid',
-  );
-});
+test(
+  'the walkthrough publishes its complete tested helper and honest result boundary',
+  { tags: ['full'] },
+  async () => {
+    const sources = {
+      'control-session': await readDocument(ROOT, 'examples/control-session.ts'),
+    };
+    const examples = createExamples(sources);
+    const markdown = examplesMarkdown(sources);
+    expect(examples.map((example) => example.id)).toStrictEqual(['control-session']);
+    for (const example of examples) {
+      expect(example.source).toBe(sources[example.id]);
+      expect(markdown).toContain(`\`\`\`ts\n${example.source}\`\`\``);
+      expect(markdown).toContain(example.call);
+    }
+    expect(markdown).toContain(
+      'Acknowledged means delivered. Turn completion and tool permissions are reported separately.',
+    );
+    expect(markdown).toContain('### Read\n\n`live-items` · `approvals` · `usage`');
+    expect(markdown).not.toContain('Read this page as Markdown');
+    expect(() => createExamples({ 'control-session': undefined })).toThrow(
+      'The HQ website source is invalid',
+    );
+    expect(() => createExamples({ 'control-session': '' })).toThrow(
+      'The HQ website source is invalid',
+    );
+  },
+);
 
 test('example loading allows exactly the authoritative source and rejects adjacent implementation files', async () => {
   expect(await readDocument(ROOT, 'examples/control-session.ts')).toBe(

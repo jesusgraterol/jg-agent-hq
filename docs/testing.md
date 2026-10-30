@@ -14,7 +14,9 @@ Essential protects consequential guarantees, including expensive ones. All unass
 | Inputs and results                             | Authorized regular files, traversal/link/content-hash refusal, queued delivery integrity, complete bounded results, output-schema validation, and worst-case admitted frame sizes.                                                       |
 | Action waits and live state                    | Notification/read races, bounded revision/gap state, completion/flush reconciliation, and shutdown cancellation.                                                                                                                         |
 
-Full-only scenarios currently cover native item timestamp projections and extra read-only history kind/text examples. Those projected fields do not drive admission, permission decisions, receipt deadlines, or cursor identity. The native thread-list sort-parameter check stays essential because it verifies the requested ordering for native pagination. Reasoning omission, bounded output, full file-change evidence, state/outcome mapping, and capability-root scope remain essential in the same mixed files.
+The remaining native families stay essential: Claude history qualification and exact session evidence protect ownership, private diagnostics, revision-bound pagination, and complete Unicode-safe results; configuration/models/skills protect allowed native capabilities and process bounds; locks protect exclusive ownership and explicit recovery; storage, transition retention, snapshots and encrypted archives protect durable state, host schema ownership, integrity and no replay. CLI tests exercise the same authority and recovery boundaries through the installed command. Package/release tests protect the actual public consumer and exact-archive publication guards. Large history cases remain essential because they uniquely establish bounded reads and stable continuation under concurrent inserts.
+
+Full-only native scenarios cover item timestamp projections and extra read-only history kind/text examples. Those projected fields do not drive admission, permission decisions, receipt deadlines, or cursor identity. The native thread-list sort-parameter check stays essential because it verifies the requested ordering for native pagination. Reasoning omission, bounded output, full file-change evidence, state/outcome mapping, and capability-root scope remain essential in the same mixed files.
 
 Use the native essential selections after building:
 
@@ -26,7 +28,15 @@ pnpm test:integration --tagsFilter='!full'
 
 No suite environment variable leaks into a later invocation. Omit the filter for complete granular/focused coverage. Empty required selections fail. Entirely full-only files must be excluded before imports when one is introduced; the current assessed files all contain essential coverage.
 
-Full is reserved for explicit local requests, with complete focused coverage still required for affected behavior. No full CI input, schedule, or recurring manual routine is added. The published root manifest still composes complete categories, and its shortcut changes wait for the next normal release. Current CI also uses those complete categories until its native essential routing is adopted; classification alone does not change that invocation.
+Full is reserved for explicit local requests, with complete focused coverage still required for affected behavior. No full CI input, schedule, or recurring manual routine is added. The published root manifest still composes complete categories, and its shortcut changes wait for the next normal release. CI temporarily composes one package build, the native essential unit/integration selections above, existing type/format gates, and the website essential check. It retains the consumer-tested release producer and both Node versions. This composition is removed when the root aliases land.
+
+## Website boundary
+
+`pnpm --dir website test` and `check` select essential; `test:full` and `check:full` include every existing category. Granular unit, integration, E2E, and `:artifact` commands remain complete. Both aggregate checks build once. Full runs locally only when explicitly requested; changed website behavior still requires complete focused coverage.
+
+Essential website tests enforce unsafe URL/Markdown rejection, exact bounded regular-file source access, rejection of adjacent private/test sources, real damaged-output privacy checks, and the exact-release/deployment gate. Ordinary content/link rendering, names, metadata/image permutations, asset reproduction, and all production-browser E2E are full-only. Entirely full-only unit/asset files are excluded by essential commands before imports.
+
+The existing production build always runs its DOM/artifact verifier. It uses Chromium to reject leaked tests, private paths and invalid output, so essential CI retains the required Chromium installation. This is required build preparation, not an additional browser smoke test. Removing it would break the build; the production verifier and its guarantees are unchanged.
 
 ## Integration isolation
 
@@ -69,3 +79,5 @@ On Linux with Node.js 24.15.0 and Vitest 5.0.3 (2026-10-30), the same 482 cases 
 | Controlled observer intervals and parallel files | 2       | 274.65, 229.46, and 236.47 seconds |
 
 The median is 236.47 seconds, about 56% below baseline. The agents file fell from 92.19 seconds to roughly 23 seconds while keeping its real native timeout checks. All 482 cases were selected in this comparison; this gain comes from test-owned wait controls and independent files. The clean package build took 3.92 seconds separately. These measurements exclude dependency installation and website work, and remain local evidence until observed in Actions.
+
+After classification, the essential native selection retains 150 of 165 unit cases and 481 of 482 integration cases. The latter passed in 207.57 seconds in the final local run, with retries disabled. The 16 full-only native cases cover timestamps and extra history presentation examples; consequential integration families remain selected. Website essential selects 14 unit and 4 integration cases; complete categories retain 42 unit, 16 integration, and 26 browser E2E cases. The mixed output test was split without removing its privacy or image-dimension assertions.

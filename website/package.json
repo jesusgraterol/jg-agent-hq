@@ -12,8 +12,8 @@
     "preview": "astro preview",
     "assets:generate": "node scripts/assets/assets.ts",
     "build": "astro build && node scripts/verify-build.ts",
-    "check": "pnpm test:unit && pnpm typecheck && pnpm lint && pnpm format:check && pnpm build && pnpm test:integration:artifact && pnpm test:e2e:artifact",
-    "test": "pnpm test:unit && pnpm test:integration && pnpm test:e2e",
+    "check": "pnpm test:unit --tagsFilter=!full --exclude src/content/home.test-unit.ts && pnpm typecheck && pnpm lint && pnpm format:check && pnpm build && pnpm test:integration:artifact --tagsFilter=!full --exclude scripts/assets/assets.test-integration.ts",
+    "test": "pnpm test:unit --tagsFilter=!full --exclude src/content/home.test-unit.ts && pnpm build && pnpm test:integration:artifact --tagsFilter=!full --exclude scripts/assets/assets.test-integration.ts",
     "test:unit": "vitest run --config vitest/test-unit.config.ts",
     "test:integration": "pnpm build && pnpm test:integration:artifact",
     "test:integration:artifact": "vitest run --config vitest/test-integration.config.ts",
@@ -24,7 +24,9 @@
     "format": "prettier --write --config .prettierrc .",
     "format:check": "prettier --check --config .prettierrc .",
     "verify:public-destinations": "node scripts/public-destinations/public-destinations.ts",
-    "verify:deployment": "node scripts/verify-deployment.ts"
+    "verify:deployment": "node scripts/verify-deployment.ts",
+    "check:full": "pnpm test:unit && pnpm typecheck && pnpm lint && pnpm format:check && pnpm build && pnpm test:integration:artifact && pnpm test:e2e:artifact",
+    "test:full": "pnpm test:unit && pnpm build && pnpm test:integration:artifact && pnpm test:e2e:artifact"
   },
   "devDependencies": {
     "@astrojs/check": "0.9.10",

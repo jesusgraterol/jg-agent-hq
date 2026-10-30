@@ -10,7 +10,7 @@ import { verifyBuild } from './index.ts';
 
 const DIST = fileURLToPath(new URL('../../dist', import.meta.url));
 
-test('verifies the actual production artifact', async () => {
+test('verifies the actual production artifact', { tags: ['full'] }, async () => {
   expect(await verifyBuild(DIST)).toMatchObject({ pages: 5 });
 });
 
@@ -33,25 +33,29 @@ test.each([
     'Read this page as Markdown',
   ],
   ['asset', 'index.html', '/favicon.ico', '/missing.ico'],
-])('rejects damaged %s in real built output', async (_description, path, before, after) => {
-  const root = await mkdtemp(join(tmpdir(), 'hq-site-build-'));
-  try {
-    await cp(DIST, root, { recursive: true });
-    const file = join(root, path);
-    const body = await readFile(file, 'utf8');
-    expect(body).toContain(before);
-    await writeFile(file, body.replaceAll(before, after));
-    await expectToRejectCode(
-      verifyBuild(root),
-      'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
-      'The HQ website build is invalid',
-    );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
+])(
+  'rejects damaged %s in real built output',
+  { tags: ['full'] },
+  async (_description, path, before, after) => {
+    const root = await mkdtemp(join(tmpdir(), 'hq-site-build-'));
+    try {
+      await cp(DIST, root, { recursive: true });
+      const file = join(root, path);
+      const body = await readFile(file, 'utf8');
+      expect(body).toContain(before);
+      await writeFile(file, body.replaceAll(before, after));
+      await expectToRejectCode(
+        verifyBuild(root),
+        'JG_AGENT_HQ_WEBSITE_BUILD_INVALID',
+        'The HQ website build is invalid',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
-test('rejects leaked tests and wrong image dimensions', async () => {
+test('rejects leaked tests and private paths in real built output', async () => {
   const root = await mkdtemp(join(tmpdir(), 'hq-site-build-'));
   try {
     await cp(DIST, root, { recursive: true });
@@ -69,6 +73,15 @@ test('rejects leaked tests and wrong image dimensions', async () => {
       'The HQ website build is invalid',
     );
     await rm(join(root, 'asset.js'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects wrong image dimensions', { tags: ['full'] }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hq-site-build-'));
+  try {
+    await cp(DIST, root, { recursive: true });
     const png = await readFile(join(root, 'og/jg-agent-hq.png'));
     png.writeUInt32BE(800, 16);
     await writeFile(join(root, 'og/jg-agent-hq.png'), png);

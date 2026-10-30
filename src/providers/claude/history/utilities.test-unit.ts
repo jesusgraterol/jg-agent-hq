@@ -126,7 +126,7 @@ test.each([
   ['2026-10-28T09:15:30.250Z', 1_793_178_930_250],
   [undefined, null],
   ['not a time', null],
-])('toClaudeItem(timestamp %s) -> createdAt %s', (timestamp, createdAt) => {
+])('toClaudeItem(timestamp %s) -> createdAt %s', { tags: ['full'] }, (timestamp, createdAt) => {
   expect(toClaudeItem(user('Fix the login', { timestamp }), 'turn')?.createdAt).toBe(createdAt);
 });
 

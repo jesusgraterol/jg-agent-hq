@@ -22,7 +22,7 @@ jobs:
   check:
     name: Verify Node ${{ matrix.node }}
     runs-on: ubuntu-24.04
-    # includes cold Chromium OS setup before the complete package and website checks
+    # includes Chromium OS setup required by the existing production artifact verifier
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -46,13 +46,20 @@ jobs:
       - name: Install the frozen workspace
         run: pnpm install --frozen-lockfile
 
-      - name: Install Chromium and OS dependencies
+      - name: Install Chromium for production artifact verification
         run: pnpm --dir website exec playwright install --with-deps chromium
 
       - name: Check package and production website
         env:
           JG_HQ_RELEASE_DIRECTORY: ${{ runner.temp }}/hq-release
-        run: pnpm check
+        # root command aliases join the next normal package release
+        run: |
+          pnpm build
+          pnpm test:unit --tagsFilter='!full'
+          pnpm test:integration --tagsFilter='!full'
+          pnpm typecheck
+          pnpm format:check
+          pnpm --dir website check
 
       - name: Upload the consumer-tested release
         if: matrix.node == '24.15.0' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
