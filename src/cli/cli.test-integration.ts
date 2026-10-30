@@ -421,9 +421,15 @@ test.each([
     'The HQ storage is invalid: written by jg-agent-hq 8.0.2',
   ],
   [
+    // the hash of the schema jg-agent-hq 9.0.0 wrote, whose Claude history index sorted by creation
+    'the 9.0.0 schema',
+    "UPDATE hq_schema SET schema_hash = '285c2e16237fc293a83cebd85c7283b0ba655f8efcf0ac262ed2c367ba85e913', package_version = '9.0.0'",
+    'The HQ storage is invalid: written by jg-agent-hq 9.0.0',
+  ],
+  [
     'a newer schema',
-    `UPDATE hq_schema SET schema_hash = '${'0'.repeat(64)}', package_version = '9.9.9'`,
-    'The HQ storage is invalid: written by jg-agent-hq 9.9.9',
+    `UPDATE hq_schema SET schema_hash = '${'0'.repeat(64)}', package_version = '99.0.0'`,
+    'The HQ storage is invalid: written by jg-agent-hq 99.0.0',
   ],
   [
     'a stamp without a package version',

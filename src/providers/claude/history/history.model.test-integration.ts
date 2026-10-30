@@ -323,6 +323,67 @@ test('sessions list by last activity, newest first, and their cursor continues i
   });
 });
 
+test('sessions last active at the same moment continue by native ID, each listed once', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const [first, second, earlier] = [randomUUID(), randomUUID(), randomUUID()];
+    const active = {
+      [first]: '2026-10-21T09:00:00.000Z',
+      [second]: '2026-10-21T09:00:00.000Z',
+      [earlier]: '2026-10-20T09:00:00.000Z',
+    };
+    for (const nativeId of [first, second, earlier]) {
+      await writeFile(
+        transcript(nativeId),
+        `${JSON.stringify(claudeRecord(workspaceRoot, nativeId))}\n`,
+      );
+      const at = new Date(active[nativeId]!);
+      await utimes(transcript(nativeId), at, at);
+    }
+    const listed: string[] = [];
+    let cursor: string | null = null;
+    for (let index = 0; index < 3; index += 1) {
+      const page = await request({
+        kind: 'threads',
+        provider: 'claude',
+        workspaceRoot,
+        limit: 1,
+        ...(cursor ? { cursor } : {}),
+      });
+      if (page.kind !== 'threads') throw new Error('wrong response');
+      listed.push(...page.result.data.map((thread) => thread.nativeId));
+      cursor = page.result.nextCursor;
+    }
+    // equal activity falls back to the native ID, newest order descending
+    expect(listed).toStrictEqual([...[first, second].sort().reverse(), earlier]);
+    expect(cursor).toBeNull();
+  });
+});
+
+test('the thread list seeks its last-activity index instead of sorting transcripts', async () => {
+  await withClaudeRuntime(async ({ stateRoot, runtime }) => {
+    await runtime.close();
+    const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'), { readOnly: true });
+    try {
+      for (const after of ['', 'AND (updated_at, native_id) < (?, ?)']) {
+        const plan = JSON.stringify(
+          database
+            .prepare(
+              `EXPLAIN QUERY PLAN SELECT native_id FROM hq_claude_file
+              WHERE workspace_root = ? AND workspace_state = 'matching' ${after}
+              AND (? IS NULL OR instr(lower(coalesce(name, '')), lower(?)) > 0)
+              ORDER BY updated_at DESC, native_id DESC LIMIT ?`,
+            )
+            .all('/workspace', ...(after ? [100, 'native'] : []), null, null, 51),
+        );
+        expect(plan).toContain('hq_idx_cf__workspace_root_updated_at_native_id_desc');
+        expect(plan).not.toContain('TEMP B-TREE');
+      }
+    } finally {
+      database.close();
+    }
+  });
+});
+
 test('incomplete tails are retained, appends advance, and changed chain revisions reject stale continuations', async () => {
   await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
     const nativeId = randomUUID();

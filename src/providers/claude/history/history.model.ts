@@ -183,20 +183,19 @@ export class ClaudeHistoryModel {
     if (command.kind === 'threads') {
       const seek = continuation ? this.__parseCursor(SeekSchema, continuation) : undefined;
       if (!seek && !this.__refresh(directory, root)) return { kind: 'indexing' };
+      // a row-value seek, so a continuation starts in the index rather than scanning earlier pages
+      const after = seek ? 'AND (updated_at, native_id) < (?, ?)' : '';
       const rows = this.__database
         .prepare(
           `SELECT native_id, workspace_root, identity, file_size, modified_at, byte_offset, revision,
         leaf_id, name, created_at, updated_at, supported, workspace_state FROM hq_claude_file
-        WHERE workspace_root = ? AND workspace_state = 'matching' AND (? IS NULL OR updated_at < ? OR (updated_at = ? AND native_id < ?))
+        WHERE workspace_root = ? AND workspace_state = 'matching' ${after}
         AND (? IS NULL OR instr(lower(coalesce(name, '')), lower(?)) > 0)
         ORDER BY updated_at DESC, native_id DESC LIMIT ?`,
         )
         .all(
           root,
-          seek?.updatedAt ?? null,
-          seek?.updatedAt ?? null,
-          seek?.updatedAt ?? null,
-          seek?.nativeId ?? null,
+          ...(seek ? [seek.updatedAt, seek.nativeId] : []),
           command.search ?? null,
           command.search ?? null,
           command.limit + 1,
