@@ -47,15 +47,19 @@ test.each([
   ['agentMessage', 'running', { startedAt: 1_000, completedAt: null }, 1_000],
   ['agentMessage', 'untimed', { startedAt: null, completedAt: null }, null],
   ['agentMessage', 'unknown', undefined, null],
-])('toHistoryItem(%s, %s turn) -> createdAt %s', (type, _turnState, turn, createdAt) => {
-  const item =
-    type === 'userMessage'
-      ? { id: 'item', type, content: [{ type: 'text', text: 'Fix it' }] }
-      : type === 'agentMessage'
-        ? { id: 'item', type, text: 'Done' }
-        : { id: 'item', type, command: 'ls', aggregatedOutput: '', status: 'completed' };
-  expect(toHistoryItem({ turnId: 'turn', item }, turn)?.createdAt).toBe(createdAt);
-});
+])(
+  'toHistoryItem(%s, %s turn) -> createdAt %s',
+  { tags: ['full'] },
+  (type, _turnState, turn, createdAt) => {
+    const item =
+      type === 'userMessage'
+        ? { id: 'item', type, content: [{ type: 'text', text: 'Fix it' }] }
+        : type === 'agentMessage'
+          ? { id: 'item', type, text: 'Done' }
+          : { id: 'item', type, command: 'ls', aggregatedOutput: '', status: 'completed' };
+    expect(toHistoryItem({ turnId: 'turn', item }, turn)?.createdAt).toBe(createdAt);
+  },
+);
 
 test('reasoning is left out as it is read', () => {
   expect(present({ type: 'reasoning', summary: ['plan'], content: ['private'] })).toBeNull();
@@ -70,7 +74,7 @@ test.each([
   ],
   [{ type: 'imageView', path: '/workspace/screen.png' }, 'tool', '/workspace/screen.png'],
   [{ type: 'hookPrompt', fragments: [] }, 'unsupported', ''],
-])('toHistoryItem(%o) -> %s', (item, kind, text) => {
+])('toHistoryItem(%o) -> %s', { tags: ['full'] }, (item, kind, text) => {
   expect(present(item)).toStrictEqual({ kind, text, callId: null, outcome: null, files: [] });
 });
 

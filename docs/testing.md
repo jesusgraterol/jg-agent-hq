@@ -2,6 +2,32 @@
 
 Package tests consume built public exports. Run `pnpm build` before focused tests; `pnpm check:package` builds once, runs the unit and integration categories, typechecks, and checks formatting. `pnpm test:unit` and `pnpm test:integration` keep their complete categories. The website has its own README and verification boundary.
 
+## Essential and full selections
+
+Essential protects consequential guarantees, including expensive ones. All unassessed cases remain selected until their family is reviewed. Granular and focused commands stay complete by default; native `full` tags exclude secondary coverage only when an essential filter is explicitly applied.
+
+| Assessed boundary                              | Essential guarantee                                                                                                                                                                                                                      |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Actions, accounts, and extensions              | Exact action/request correlation, admission deduplication, permission scope, private prompt/login data, authentication isolation, no replay, and required recovery. Real 30-second late acknowledgements stay essential.                 |
+| Runtime, browser-host admission, and contracts | Private IPC/process ownership, SQLite integrity, schema/key preservation, operator isolation, drain-before-shutdown, exact credits, bounded observations, and account-specific freshness. Browser-host tests protect backend authority.  |
+| Claude/Codex control and provider registry     | External-session ownership, native lifecycle confirmation, fail-closed capabilities, cross-session/provider isolation, raw-frame bounds, websocket protocol/keepalive, confirmed child-process teardown, and native pagination ordering. |
+| Inputs and results                             | Authorized regular files, traversal/link/content-hash refusal, queued delivery integrity, complete bounded results, output-schema validation, and worst-case admitted frame sizes.                                                       |
+| Action waits and live state                    | Notification/read races, bounded revision/gap state, completion/flush reconciliation, and shutdown cancellation.                                                                                                                         |
+
+Full-only scenarios currently cover native item timestamp projections and extra read-only history kind/text examples. Those projected fields do not drive admission, permission decisions, receipt deadlines, or cursor identity. The native thread-list sort-parameter check stays essential because it verifies the requested ordering for native pagination. Reasoning omission, bounded output, full file-change evidence, state/outcome mapping, and capability-root scope remain essential in the same mixed files.
+
+Use the native essential selections after building:
+
+```sh
+pnpm build
+pnpm test:unit --tagsFilter='!full'
+pnpm test:integration --tagsFilter='!full'
+```
+
+No suite environment variable leaks into a later invocation. Omit the filter for complete granular/focused coverage. Empty required selections fail. Entirely full-only files must be excluded before imports when one is introduced; the current assessed files all contain essential coverage.
+
+Full is reserved for explicit local requests, with complete focused coverage still required for affected behavior. No full CI input, schedule, or recurring manual routine is added. The published root manifest still composes complete categories, and its shortcut changes wait for the next normal release. Current CI also uses those complete categories until its native essential routing is adopted; classification alone does not change that invocation.
+
 ## Integration isolation
 
 Integration files run on two isolated fork workers, with tests within a file remaining sequential. Keep each test's SQLite database, Unix socket, workspace, native configuration, fixture control files, and lock state under its own temporary root. Process environment and module mocks stay within the owning worker. Do not introduce fixed shared paths or ports, process-wide working-directory changes, or state that depends on another file's execution order.
@@ -42,4 +68,4 @@ On Linux with Node.js 24.15.0 and Vitest 5.0.3 (2026-10-30), the same 482 cases 
 | Original intervals and serial files              | 1       | 543.13 seconds                     |
 | Controlled observer intervals and parallel files | 2       | 274.65, 229.46, and 236.47 seconds |
 
-The median is 236.47 seconds, about 56% below baseline. The agents file fell from 92.19 seconds to roughly 23 seconds while keeping its real native timeout checks. All current cases remain selected; this gain comes from test-owned wait controls and independent files. The clean package build took 3.92 seconds separately. These measurements exclude dependency installation and website work, and remain local evidence until observed in Actions.
+The median is 236.47 seconds, about 56% below baseline. The agents file fell from 92.19 seconds to roughly 23 seconds while keeping its real native timeout checks. All 482 cases were selected in this comparison; this gain comes from test-owned wait controls and independent files. The clean package build took 3.92 seconds separately. These measurements exclude dependency installation and website work, and remain local evidence until observed in Actions.

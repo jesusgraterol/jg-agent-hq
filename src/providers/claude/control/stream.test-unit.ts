@@ -179,41 +179,45 @@ test('live frames and previews present what history will: thinking and notificat
   expect(session.previews.size).toBe(0);
 });
 
-test('a live item is timed when its frame arrives, a preview and its record alike', () => {
-  vi.useFakeTimers({ toFake: ['Date'] });
-  const session = createSession();
-  const { events, items } = createEvents();
-  vi.setSystemTime(new Date('2026-10-28T09:00:00.000Z'));
-  receiveClaudeMessage(
-    session,
-    streamEvent({ type: 'message_start', message: { id: 'api' } }),
-    events,
-  );
-  receiveClaudeMessage(
-    session,
-    streamEvent({
-      type: 'content_block_start',
-      index: 0,
-      content_block: { type: 'text', text: '' },
-    }),
-    events,
-  );
-  vi.setSystemTime(new Date('2026-10-28T09:00:05.000Z'));
-  receiveClaudeMessage(
-    session,
-    {
-      type: 'assistant',
-      session_id: 'session',
-      uuid: 'answer',
-      message: { id: 'api', role: 'assistant', content: [{ type: 'text', text: 'Done' }] },
-    },
-    events,
-  );
-  expect(items.map(({ item }) => [item.nativeId, item.createdAt])).toStrictEqual([
-    ['live:input:api:0', Date.parse('2026-10-28T09:00:00.000Z')],
-    ['answer', Date.parse('2026-10-28T09:00:05.000Z')],
-  ]);
-});
+test(
+  'a live item is timed when its frame arrives, a preview and its record alike',
+  { tags: ['full'] },
+  () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const session = createSession();
+    const { events, items } = createEvents();
+    vi.setSystemTime(new Date('2026-10-28T09:00:00.000Z'));
+    receiveClaudeMessage(
+      session,
+      streamEvent({ type: 'message_start', message: { id: 'api' } }),
+      events,
+    );
+    receiveClaudeMessage(
+      session,
+      streamEvent({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      }),
+      events,
+    );
+    vi.setSystemTime(new Date('2026-10-28T09:00:05.000Z'));
+    receiveClaudeMessage(
+      session,
+      {
+        type: 'assistant',
+        session_id: 'session',
+        uuid: 'answer',
+        message: { id: 'api', role: 'assistant', content: [{ type: 'text', text: 'Done' }] },
+      },
+      events,
+    );
+    expect(items.map(({ item }) => [item.nativeId, item.createdAt])).toStrictEqual([
+      ['live:input:api:0', Date.parse('2026-10-28T09:00:00.000Z')],
+      ['answer', Date.parse('2026-10-28T09:00:05.000Z')],
+    ]);
+  },
+);
 
 test('an MCP tool request prompts for approval and writes nothing', async () => {
   const written: unknown[] = [];
