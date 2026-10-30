@@ -16,7 +16,7 @@ import {
   type IClaudeFixture,
 } from '../../../../scripts/test-support/index.js';
 
-// the pace test releases the waits between runs instead of waiting them out
+// observer intervals are released by each test; native deadlines and process I/O stay real
 vi.mock('jg-utilities', async (original) => {
   const actual = await original<typeof import('jg-utilities')>();
   const { holdDelays } = await import('../../../../scripts/test-support/delays.js');
@@ -44,21 +44,48 @@ const runs = async (fixture: IClaudeFixture): Promise<number> => {
     return 0;
   }
 };
+
+/** Runs a real isolated runtime with test-controlled observer intervals. */
+const withPollingRuntime = async (
+  run: (fixture: IClaudeFixture) => Promise<void>,
+): Promise<void> => {
+  startHoldingDelays(5, 30);
+  try {
+    await withClaudeRuntime(run);
+  } finally {
+    stopHoldingDelays();
+  }
+  expect(countHeldDelays(5)).toBe(0);
+  expect(countHeldDelays(30)).toBe(0);
+};
+
+/** Releases one observer interval and waits for the native run and its state writes to finish. */
+const pollAgents = async (fixture: IClaudeFixture): Promise<void> => {
+  await expect.poll(() => countHeldDelays(5), { timeout: 12_000 }).toBe(1);
+  const before = await runs(fixture);
+  expect(releaseHeldDelays(5)).toBe(1);
+  // the late-output fixture must still reach its real ten-second native process deadline
+  await expect.poll(() => countHeldDelays(5), { timeout: 12_000 }).toBe(1);
+  expect(await runs(fixture)).toBe(before + 1);
+};
+
 // transitions one poll records together have no fixed order among themselves
 const byNativeId = (left: unknown[], right: unknown[]) =>
   String(left[0]).localeCompare(String(right[0]));
-const report = (fixture: IClaudeFixture, control: object) =>
-  writeFixtureControl(fixture.root, 'claude-agents.json', control);
-// these tests observe changes at the live pace, every 5 seconds
+const report = async (fixture: IClaudeFixture, control: object): Promise<void> => {
+  await writeFixtureControl(fixture.root, 'claude-agents.json', control);
+  await pollAgents(fixture);
+};
+// live pace requests five-second intervals; pollAgents releases each one
 const live = (fixture: IClaudeFixture) =>
   fixture.runtime.request({ kind: 'observation-pace', pace: 'live' });
 
 test(
   'claude agents report states by their fields, and a session that stops running disappears',
-  // four five-second polls observe each change
+  // each recorded state change follows a separately released observer poll
   { timeout: 40_000 },
   async () => {
-    await withClaudeRuntime(async (fixture) => {
+    await withPollingRuntime(async (fixture) => {
       await live(fixture);
       const [busy, background, stopped] = [randomUUID(), randomUUID(), randomUUID()];
       for (const id of [busy, background, stopped])
@@ -211,10 +238,10 @@ test(
 
 test(
   'claude agents entries for the processes this runtime started are left out, whatever session they name',
-  // one five-second poll after the session is created
+  // one completed observer poll after the session is created
   { timeout: 20_000 },
   async () => {
-    await withClaudeRuntime(async (fixture) => {
+    await withPollingRuntime(async (fixture) => {
       await live(fixture);
       const status = await fixture.runtime.request({ kind: 'status' });
       if (status.kind !== 'status') throw new Error('Missing runtime status');
@@ -280,10 +307,10 @@ test(
 
 test(
   'a late, oversized or malformed claude agents run changes nothing',
-  // the late run holds its ten-second deadline, and the next run waits for a five-second tick
+  // late native runs retain their real ten-second deadline; only observer intervals are released
   { timeout: 90_000 },
   async () => {
-    await withClaudeRuntime(async (fixture) => {
+    await withPollingRuntime(async (fixture) => {
       await live(fixture);
       const id = randomUUID();
       const agent = {
@@ -302,10 +329,11 @@ test(
         { oversized: true },
         { malformed: true },
       ]) {
-        await report(fixture, control);
         const before = await runs(fixture);
-        // a later run proves the bad one ended without changing the recorded state
-        await expect.poll(() => runs(fixture), { timeout: 30_000 }).toBeGreaterThan(before + 1);
+        await report(fixture, control);
+        // two completed native attempts prove the bad response never changes recorded state
+        await pollAgents(fixture);
+        expect(await runs(fixture)).toBe(before + 2);
         expect((await transitions(fixture)).map(summary)).toStrictEqual([
           [id, null, 'running', 'turn-started', 'external'],
         ]);
@@ -320,10 +348,10 @@ test(
 
 test(
   'claude agents never report a session this runtime manages as external',
-  // one five-second poll after the session is created
+  // one completed observer poll after the session is created
   { timeout: 20_000 },
   async () => {
-    await withClaudeRuntime(async (fixture) => {
+    await withPollingRuntime(async (fixture) => {
       await live(fixture);
       const status = await fixture.runtime.request({ kind: 'status' });
       if (status.kind !== 'status') throw new Error('Missing runtime status');
@@ -350,6 +378,7 @@ test(
           return thread.kind === 'managed-thread' ? thread.result?.state : null;
         })
         .toBe('idle');
+      const before = await runs(fixture);
       await report(fixture, {
         agents: [
           {
@@ -361,8 +390,7 @@ test(
           },
         ],
       });
-      const before = await runs(fixture);
-      await expect.poll(() => runs(fixture), { timeout: 12_000 }).toBeGreaterThan(before);
+      expect(await runs(fixture)).toBe(before + 1);
       expect(
         (await transitions(fixture)).map((transition) => [
           transition.threadId,
@@ -409,10 +437,10 @@ test('the active-sessions poll waits 30 seconds in the background and 5 while li
 
 test(
   "a Claude session a terminal runs stays the terminal's: HQ neither adopts it nor sends a session it runs any input",
-  // each change waits for a five-second poll
+  // each change follows a separately released observer poll
   { timeout: 40_000 },
   async () => {
-    await withClaudeRuntime(async (fixture) => {
+    await withPollingRuntime(async (fixture) => {
       await live(fixture);
       const submit = async (command: object) => {
         const status = await fixture.runtime.request({ kind: 'status' });

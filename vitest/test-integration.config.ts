@@ -15,7 +15,8 @@ export default defineConfig({
       'scripts/**/*.test-integration.ts',
       'examples/**/*.test-integration.ts',
     ],
-    fileParallelism: false,
-    maxWorkers: 1,
+    pool: 'forks',
+    fileParallelism: true,
+    maxWorkers: 2,
   },
 });
