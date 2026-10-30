@@ -21,7 +21,7 @@ describe('canonical source policy', () => {
       'https://github.com/jesusgraterol/jg-agent-hq/blob/main/docs/recovery.md#restore',
     ],
     ['https://example.com/reference', 'README.md', 'https://example.com/reference'],
-  ])('resolveDocumentLink(%s, %s) -> %s', (href, source, expected) => {
+  ])('resolveDocumentLink(%s, %s) -> %s', { tags: ['full'] }, (href, source, expected) => {
     expect(resolveDocumentLink(href, source)).toBe(expected);
   });
 
@@ -60,12 +60,16 @@ describe('canonical source policy', () => {
     );
   });
 
-  test('rewrites reference definitions but retains literal code examples', async () => {
-    const processor = await createSatteriMarkdownProcessor({
-      mdastPlugins: [canonicalMarkdownPlugin],
-    });
-    const result = await processor.render('[API][api]\n\n[api]: api/README.md\n\n`<directory>`');
-    expect(result.code).toContain('href="/docs/api/"');
-    expect(result.code).toContain('&lt;directory&gt;');
-  });
+  test(
+    'rewrites reference definitions but retains literal code examples',
+    { tags: ['full'] },
+    async () => {
+      const processor = await createSatteriMarkdownProcessor({
+        mdastPlugins: [canonicalMarkdownPlugin],
+      });
+      const result = await processor.render('[API][api]\n\n[api]: api/README.md\n\n`<directory>`');
+      expect(result.code).toContain('href="/docs/api/"');
+      expect(result.code).toContain('&lt;directory&gt;');
+    },
+  );
 });

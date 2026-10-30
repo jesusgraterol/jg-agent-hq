@@ -422,30 +422,36 @@ test('native archive, unarchive and revert retain identities and never resume im
   }
 });
 
-test('live Codex items take their running turn start as their time', async () => {
-  const fixture = await setup();
-  try {
-    const { thread } = await fixture.create('times');
-    const message = fixture.envelope({
-      kind: 'message',
-      threadId: thread.id,
-      input: { kind: 'text', text: 'Time it' },
-    });
-    await fixture.submit(message);
-    await expect.poll(() => fixture.receipt(message.id)).toMatchObject({ completion: 'completed' });
-    // the fake starts turn N at 1,800,000,000 + N seconds
-    const turnNumber = Number(
-      /^native-turn-(\d+)$/.exec((await fixture.receipt(message.id)).nativeTurnId!)![1],
-    );
-    const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
-    if (live.kind !== 'live-items') throw new Error('wrong response');
-    expect(live.result.data.map((item) => [item.text, item.createdAt])).toStrictEqual([
-      ['Live response', (1_800_000_000 + turnNumber) * 1000],
-    ]);
-  } finally {
-    await fixture.close();
-  }
-});
+test(
+  'live Codex items take their running turn start as their time',
+  { tags: ['full'] },
+  async () => {
+    const fixture = await setup();
+    try {
+      const { thread } = await fixture.create('times');
+      const message = fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Time it' },
+      });
+      await fixture.submit(message);
+      await expect
+        .poll(() => fixture.receipt(message.id))
+        .toMatchObject({ completion: 'completed' });
+      // the fake starts turn N at 1,800,000,000 + N seconds
+      const turnNumber = Number(
+        /^native-turn-(\d+)$/.exec((await fixture.receipt(message.id)).nativeTurnId!)![1],
+      );
+      const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
+      if (live.kind !== 'live-items') throw new Error('wrong response');
+      expect(live.result.data.map((item) => [item.text, item.createdAt])).toStrictEqual([
+        ['Live response', (1_800_000_000 + turnNumber) * 1000],
+      ]);
+    } finally {
+      await fixture.close();
+    }
+  },
+);
 
 test.each([false, true])(
   'native compaction correlates its turn when acknowledgement arrives first: %s',

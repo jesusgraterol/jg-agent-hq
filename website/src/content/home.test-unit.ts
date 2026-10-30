@@ -19,7 +19,7 @@ const names = [
   ...HOME_CONTENT.more.items.map(({ name }) => name),
 ];
 
-describe('homepage names', () => {
+describe('homepage names', { tags: ['full'] }, () => {
   test.each([...new Set(names)])('%s appears in README.md or api/README.md', (name) => {
     expect(canonical).toContain(name);
   });

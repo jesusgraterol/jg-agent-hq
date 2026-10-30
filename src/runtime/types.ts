@@ -82,6 +82,7 @@ export type IAgentHq = {
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
    * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+   * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
    * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
    * - JG_AGENT_HQ_IMAGE_UNAVAILABLE: The HQ image is unavailable
    * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed

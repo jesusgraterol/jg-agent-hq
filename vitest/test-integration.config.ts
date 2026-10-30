@@ -3,6 +3,7 @@ import { configDefaults, defineConfig } from 'vitest/config';
 // built public exports, real processes and isolated package consumers
 export default defineConfig({
   test: {
+    tags: [{ name: 'full', description: 'Secondary native-history presentation coverage.' }],
     exclude: [
       ...configDefaults.exclude,
       '**/_archive/**',
@@ -15,7 +16,8 @@ export default defineConfig({
       'scripts/**/*.test-integration.ts',
       'examples/**/*.test-integration.ts',
     ],
-    fileParallelism: false,
-    maxWorkers: 1,
+    pool: 'forks',
+    fileParallelism: true,
+    maxWorkers: 2,
   },
 });

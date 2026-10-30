@@ -223,3 +223,25 @@ test('a cursor whose transition was pruned is reset, and latestSequence stays th
     }
   });
 });
+
+test("an observed session's Claude history is found by its native ID through an index", async () => {
+  await withClaudeRuntime(async (fixture) => {
+    await fixture.runtime.close();
+    const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
+    try {
+      const plan = JSON.stringify(
+        database
+          .prepare(
+            `EXPLAIN QUERY PLAN SELECT name FROM hq_claude_file
+            WHERE native_id = ? AND workspace_state = 'matching' ORDER BY updated_at DESC LIMIT 1`,
+          )
+          .all(randomUUID()),
+      );
+      expect(plan).toContain('hq_idx_cf__native_id_updated_at_desc');
+      expect(plan).not.toContain('SCAN hq_claude_file');
+      expect(plan).not.toContain('TEMP B-TREE');
+    } finally {
+      database.close();
+    }
+  });
+});

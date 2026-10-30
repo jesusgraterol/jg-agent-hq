@@ -140,8 +140,10 @@ CREATE TABLE hq_claude_file (
   supported INTEGER NOT NULL, workspace_state TEXT NOT NULL,
   CONSTRAINT hq_pk_cf__workspace_root_native_id PRIMARY KEY (workspace_root, native_id)
 ) STRICT;
-CREATE INDEX hq_idx_cf__workspace_root_created_at_native_id_desc
-ON hq_claude_file(workspace_root, created_at DESC, native_id DESC);
+-- the thread list's last-activity order, and an observed session's lookup by native ID alone
+CREATE INDEX hq_idx_cf__workspace_root_updated_at_native_id_desc
+ON hq_claude_file(workspace_root, updated_at DESC, native_id DESC);
+CREATE INDEX hq_idx_cf__native_id_updated_at_desc ON hq_claude_file(native_id, updated_at DESC);
 CREATE TABLE hq_claude_entry (
   workspace_root TEXT NOT NULL, native_id TEXT NOT NULL, uuid TEXT NOT NULL,
   parent_uuid TEXT, turn_id TEXT NOT NULL, byte_offset INTEGER NOT NULL, byte_length INTEGER NOT NULL,
