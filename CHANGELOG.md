@@ -1,5 +1,21 @@
 # Changelog
 
+## 9.0.0
+
+- Breaking: remove plans, collaboration, agent tools and the agent bridge. HQ no longer registers, locks or snapshots plans, runs collaboration tasks, streams or requests, starts agents from other agents, or gives the sessions it starts tools of its own. The `plan`, `thread-plan`, `collaboration` and `agent-tool` requests, the browser `plan` command and `BrowserThreadDetailSchema.plan`, the plan, collaboration and agent-tool contracts with `PlanActionScopeSchema` and `ActionPlanContextSchema`, `computePlanRevision`, `IPlanContract`, `IProviderAgentTools`, `IAgentToolDefinition`, `IAgentMcpLease`, a provider's `agentTools` and its `agentTools` capability, and the `agent-input` provenance source are gone.
+- Breaking: the CLI drops `agent-bridge`, `plan-status`, `plan-milestones`, `--coordination-root` and `--directory`, and `createAgentHq` drops `coordinationRoot`. Snapshots take the HQ lock in the state root and hold no plan files: their header loses `sourceCoordinationRoot`, an inspection loses `planCount`, `diagnosticPlanCount`, `changedPlanCount` and `pendingWriteCount`, and a restore result loses `recoveryRoot`.
+- Breaking: remove `JG_AGENT_HQ_COLLABORATION_FORBIDDEN`, `JG_AGENT_HQ_COLLABORATION_CONFLICT`, `JG_AGENT_HQ_PLAN_INVALID` and `JG_AGENT_HQ_PLAN_FAILED`, and the `jg-plans` and `@modelcontextprotocol/server` dependencies.
+- Start Claude sessions without `--mcp-config` or a bridge process, and register no dynamic tools with Codex, whose `dynamicToolCall` history items still show. Actions admit and claim queued work directly, without a plan lock.
+- Add `action-wait`, which returns a receipt once it has its native thread ID or settles, woken by HQ's own changes rather than polling, or as it stands with `isTimedOut` when its timeout of at most 30 seconds passes. Receipts gain `nativeThreadId`, which action collections leave out.
+- `session-states` pages gain `latestSequence`, the highest transition sequence ever issued, and `isReset`, which is true when the cursor is past it or its own transition was pruned.
+- Breaking: a provider's skill inventory must carry `invocationPrefix`, and skill pages return it: `/` for Claude and `$` for Codex.
+- Add the `locks` read and `jg-agent-hq locks`, which list at most 256 of the machine's jg-locks locks with their holders. HQ only reads them and never takes, waits for or recovers one. jg-agent-hq now depends on `jg-locks`.
+- Open no `claude` process for Claude history reads after the runtime's first successful check of the CLI. Keep a Claude usage result for 60 seconds, so frequent usage reads ask Claude at most once a minute; an auth notification, a rate-limit event or a closed connection ends it early.
+- Write nothing to SQLite when reading unchanged Claude transcripts. A transcript whose identity, size and modification time match an index that reached its end is skipped without a transaction, a directory scan tracks the transcripts it saw in memory, and indexing prepares its per-record statements once. Native discovery pages are no longer copied into SQLite.
+- Leave the Claude history index out of snapshots. The store worker deletes its rows from a full copy and writes the snapshot database from it with `VACUUM INTO`, which keeps every table's rowids. A restored runtime rebuilds the index from the transcripts on its first Claude history read, as a fresh one does.
+- Add `journalSizeLimitBytes`, 16 MiB, to `connectionSettings`. HQ's connection applies it as `journal_size_limit`, so the WAL file shrinks back after a checkpoint; apply it to host connections that write.
+- Breaking: change the storage schema in place. A database or snapshot written by 8.x is refused with `JG_AGENT_HQ_STORAGE_INVALID` naming the version that wrote it; start from a fresh state root.
+
 ## 8.0.2
 
 - Clear a finished command, tool call or file change from the live window once history holds it with the same outcome. Codex shortens long command output when it saves it, so the saved text never matched the live text and the item stayed `awaiting-flush` until the window evicted it. An item without an outcome, such as a message, still needs exactly matching content.
