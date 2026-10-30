@@ -6,7 +6,7 @@ import PreviewFrame from '../preview-frame/preview-frame.astro';
 
 // the state root's database and key, which snapshots capture and restores stage together
 const TABLES = [
-  { prefix: 'hq_*', text: 'Receipts, streams and reports' },
+  { prefix: 'hq_*', text: 'Receipts, approvals and session state' },
   { prefix: 'app_*', text: 'Your app’s own tables' },
 ] as const;
 const RECOVERY = [
