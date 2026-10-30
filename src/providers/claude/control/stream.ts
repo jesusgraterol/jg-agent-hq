@@ -4,10 +4,9 @@ import { z } from 'zod';
 import { RecordSchema, toClaudeItem } from '../history/index.js';
 import { MAX_RESULT_BYTES, type ITurnUsage } from '../../../contracts/index.js';
 import { toTurnResult } from '../../results/index.js';
-import { DispatchResponseSchema } from '../../../contracts/collaboration/index.js';
 
 import type { IClaudeControlEvents, IClaudeSession } from './types.js';
-import { createClaudePrompt, readOwnToolInput } from './permissions.js';
+import { createClaudePrompt } from './permissions.js';
 
 const FrameSchema = z.object({ type: z.string(), session_id: z.string().optional() });
 const MessageSchema = z.object({
@@ -240,20 +239,6 @@ export const receiveClaudeMessage = (
       input.requestId.endsWith(':compact') ? undefined : session.settings.outputSchema,
       usage,
     );
-    if (input.isOrdinaryEnvelope && captured.isComplete && captured.failure === null) {
-      const envelope = DispatchResponseSchema.safeParse(captured.structuredOutput);
-      if (envelope.success && envelope.data.requestId === null) {
-        captured.format = 'text';
-        captured.text = envelope.data.report;
-        captured.structuredOutput = null;
-      } else {
-        captured.state = 'failed';
-        captured.failure = 'invalid-structured-output';
-        captured.isComplete = false;
-        captured.text = null;
-        captured.structuredOutput = null;
-      }
-    }
     if (input.isOutputOversized) {
       captured.state = 'failed';
       captured.failure = 'result-too-large';
@@ -272,23 +257,6 @@ export const receiveClaudeMessage = (
   } else if (frame.type === 'control_request') {
     const request = RequestSchema.parse(raw);
     if (!input || !session.connection) unavailable();
-    // HQ's own agent tools run without asking: the bridge already scopes them to this session
-    const ownInput = session.agentBridge
-      ? readOwnToolInput(request.request, session.agentBridge.serverName)
-      : null;
-    if (ownInput) {
-      void session.connection
-        .write({
-          type: 'control_response',
-          response: {
-            subtype: 'success',
-            request_id: request.request_id,
-            response: { behavior: 'allow', updatedInput: ownInput },
-          },
-        })
-        .catch(() => events?.unavailable(session.id));
-      return;
-    }
     const parsed = createClaudePrompt(
       request.request,
       session.id,

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -47,7 +47,6 @@ test(
         expect.stringMatching(/v1|upgrade/),
       );
       expect(paths).toContain('dist/contracts/index.js');
-      expect(paths).toContain('dist/agent-tools/mcp/mcp.js');
       expect(paths).toContain('LICENSE');
       expect(paths).toContain('docs/recovery.md');
       expect(
@@ -94,12 +93,7 @@ test(
         expect(
           hashValue(await readFile(join(scratch, 'node_modules/jg-agent-hq/dist', asset))),
         ).toBe(hashValue(await readFile(join(ROOT, 'src', asset))));
-      const sourceExamples = [
-        'control-session.ts',
-        'review-handoff.ts',
-        'revise-plan.ts',
-        'shared-storage.ts',
-      ];
+      const sourceExamples = ['control-session.ts', 'shared-storage.ts'];
       await mkdir(join(scratch, 'examples'));
       for (const example of sourceExamples)
         await copyFile(join(ROOT, 'examples', example), join(scratch, 'examples', example));
@@ -143,7 +137,7 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
       import { HqResponseSchema, BrowserActionSchema, BrowserCommandSchema, UsageCreditsSchema, UsageResetCreditsSchema, UsageWindowScopeSchema } from 'jg-agent-hq/contracts';
       for (const name of ['BrowserRepositorySchema','BrowserRepositoryPageSchema','BrowserPlanSummarySchema','BrowserPlanPageSchema','BrowserPlanDetailSchema','BrowserSessionSchema','BrowserSystemSchema','PublicationStatusSchema','PlanComparisonSchema','PlanCorrespondenceSchema','PlanProposalSchema','PlanReconciliationEntrySchema'])
         if (name in contracts) throw new Error('packed contract remains: ' + name);
-      if (BrowserCommandSchema.options.map((command) => command.shape.kind.value).join() !== 'native,plan') throw new Error('packed browser commands changed');
+      if (BrowserCommandSchema.options.map((command) => command.shape.kind.value).join() !== 'native') throw new Error('packed browser commands changed');
       const credit = UsageCreditsSchema.parse({bucket:'codex',hasCredits:true,isUnlimited:false,balance:'0.29000000000000001'});
       if(credit.balance!=='0.29000000000000001') throw new Error('packed credit precision failed');
       UsageResetCreditsSchema.parse({availableCount:0});
@@ -161,13 +155,13 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
         const response = HqResponseSchema.parse(await requestAgentHq(runtime.stateRoot, { kind: 'threads', provider: 'codex', workspaceRoot: process.cwd(), limit: 1 }));
         if (response.kind !== 'threads' || response.result.data.length !== 1) throw new Error('packed runtime failed');
         const status = await runtime.request({kind:'status'});
-        const input = BrowserActionSchema.parse({id:crypto.randomUUID(),runtimeEpoch:status.result.runtimeEpoch,command:{kind:'plan',command:{kind:'status',target:{directory:'/packed-plan'}}}});
+        const input = BrowserActionSchema.parse({id:crypto.randomUUID(),runtimeEpoch:status.result.runtimeEpoch,command:{kind:'native',action:{id:crypto.randomUUID(),runtimeEpoch:status.result.runtimeEpoch,command:{kind:'thread-create',provider:'codex',workspaceRoot:process.cwd(),name:'packed-request'}}}});
         let effects = 0;
         await runtime.performBrowserAction(input,'packed-operator',async()=>{effects++;});
         await runtime.performBrowserAction(input,'packed-operator',async()=>{effects++;});
         if(effects!==1 || (await runtime.readBrowserAction(input.id,'packed-operator')).state!=='acknowledged') throw new Error('packed receipt failed');
         const recovered = await shareStorage({hq: runtime,label:'Packed host preference.',snapshotDirectory:join(process.cwd(),'snapshot'),recoveryDirectory:join(process.cwd(),'recovery')});
-        if(recovered.label!=='Packed host preference.' || recovered.snapshot.pendingWriteCount!==0) throw new Error('packed shared storage failed');
+        if(recovered.label!=='Packed host preference.' || recovered.restored.stateRoot!==join(process.cwd(),'recovery','state')) throw new Error('packed shared storage failed');
         const session = await controlSession({stateRoot: runtime.stateRoot, workspaceRoot: process.cwd(), provider: 'codex', name: 'packed-example', text: 'Discuss the task without changing files.', actionIds: {create:crypto.randomUUID(), message:crypto.randomUUID()}});
         if(session.receipt.delivery!=='acknowledged' || session.thread.provider!=='codex' || session.usage.source!=='native') throw new Error('packed source example failed');
       } finally { await runtime.close(); }
@@ -196,28 +190,6 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
         'serve|status|stop|capabilities|threads|thread|turns|items|item-detail|item-image|sessions|session-evidence|usage',
       );
       expect(help).not.toContain('upgrade');
-      const installedManifest = JSON.parse(
-        await readFile(join(scratch, 'node_modules/jg-agent-hq/package.json'), 'utf8'),
-      ) as { dependencies: Record<string, string> };
-      expect(installedManifest.dependencies['@modelcontextprotocol/server']).toBe('2.3.1');
-      const bridge = spawnSync(
-        process.execPath,
-        [join(scratch, 'node_modules/jg-agent-hq/dist/cli/cli.js'), 'agent-bridge'],
-        {
-          cwd: scratch,
-          env: { ...env, JG_AGENT_HQ_BRIDGE_FILE: join(scratch, 'missing-credential.json') },
-          encoding: 'utf8',
-          timeout: 10_000,
-          maxBuffer: 65_536,
-        },
-      );
-      expect(bridge.error).toBeUndefined();
-      expect(bridge.status).toBe(1);
-      expect(bridge.stdout).toBe('');
-      expect(JSON.parse(bridge.stderr)).toMatchObject({
-        success: false,
-        error: { kind: 'access-denied' },
-      });
       const contractRoot = join(ROOT, 'dist/contracts');
       const pending = [join(contractRoot, 'index.js')];
       const visited = new Set<string>();

@@ -4,15 +4,14 @@ export const HOME_CONTENT = {
   eyebrow: 'TypeScript SDK for Claude Code + Codex',
   title: 'Run coding agents from your app.',
   headline: ['Run coding agents', 'from your app.'],
-  description:
-    'Drive Claude Code and Codex, answer their prompts and let them hand work to each other through one local API.',
+  description: 'Drive Claude Code and Codex and answer their prompts through one local API.',
   map: {
     caption: 'How it fits · everything runs on your machine',
     app: { title: 'Your app', detail: 'Dashboard, editor or automation' },
     hq: {
       title: 'jg-agent-hq',
       detail: 'Local controller',
-      parts: ['Sessions', 'Prompts', 'Streams', 'Plans'],
+      parts: ['Sessions', 'Prompts'],
     },
     agents: ['Claude Code', 'Codex'],
     agentDetail: 'Native sign-in, tools and skills',
@@ -24,7 +23,7 @@ export const HOME_CONTENT = {
       },
       {
         down: { label: 'Native control', items: [] },
-        up: { label: 'Agent tools', items: ['hq_message_publish', 'hq_agent_spawn'] },
+        up: { label: 'Native events', items: [] },
       },
     ],
   },
@@ -50,26 +49,6 @@ export const HOME_CONTENT = {
       text: 'Follow live output, browse past sessions and read each account’s real quota, credits and earned resets.',
       commands: ['live-items', 'sessions', 'session-evidence', 'usage', 'models'],
       link: null,
-    },
-    {
-      id: 'collaboration',
-      title: 'Let agents work together',
-      text: 'Codex builds, Claude Code reviews with jg-review-session under an HQ grant, and HQ carries the report back.',
-      commands: [
-        'task-create',
-        'hq_message_publish',
-        'hq_invocation_read',
-        'hq_report_read',
-        'hq_agent_spawn',
-      ],
-      link: { href: '/examples/#review-handoff', label: 'Review walkthrough' },
-    },
-    {
-      id: 'plans',
-      title: 'Change the plan, keep the work',
-      text: 'Plans pass jg-plans checks before each approval, and verified milestones carry over when you revise them.',
-      commands: ['approve', 'authorize', 'begin-revision', 'finalize'],
-      link: { href: '/examples/#revise-plan', label: 'Revision walkthrough' },
     },
     {
       id: 'storage',
@@ -122,58 +101,6 @@ export const HOME_CONTENT = {
       },
     ],
   },
-  collaborationExample: {
-    caption: 'Illustrative · build a CSV export, then review it',
-    setup: 'Your app has allowed Codex to build and Claude Code to review this task.',
-    label: 'CSV export review conversation',
-    messages: [
-      {
-        speaker: 'You',
-        provider: null,
-        recipient: 'Codex',
-        recipientProvider: 'codex',
-        kind: 'task',
-        text: 'Add CSV export to reports. Ask Claude to review it before you finish.',
-        command: null,
-        skill: null,
-        note: 'You give the task once. The agents handle the handoff.',
-      },
-      {
-        speaker: 'Codex',
-        provider: 'codex',
-        recipient: 'Claude Code',
-        recipientProvider: 'claude',
-        kind: 'request',
-        text: 'The exporter is ready. Check quoted fields and empty exports in src/reports/csv.ts.',
-        command: 'hq_message_publish',
-        skill: null,
-        note: 'HQ delivers the request. Codex waits for the review.',
-      },
-      {
-        speaker: 'Claude Code',
-        provider: 'claude',
-        recipient: 'Codex',
-        recipientProvider: 'codex',
-        kind: 'report',
-        text: 'Quoted fields work. An empty export loses its column headers.',
-        command: null,
-        // the native review skill runs under an exact grant HQ issues for this request
-        skill: 'jg-review-session',
-        note: 'HQ grants the review skill, saves the full report and resumes Codex.',
-      },
-      {
-        speaker: 'Codex',
-        provider: 'codex',
-        recipient: 'You',
-        recipientProvider: null,
-        kind: 'result',
-        text: 'Empty exports now keep their headers. I added a regression test, and it passes.',
-        command: 'hq_report_read',
-        skill: null,
-        note: 'Codex reads the report, makes the fix and finishes your original task.',
-      },
-    ],
-  },
   startTitle: 'Running in three commands.',
   requirements: ['Node.js 24.15 or later', 'Linux or macOS', 'Claude Code or Codex, signed in'],
   setup: [
@@ -203,19 +130,6 @@ export const homeMarkdown = (): string =>
       [
         `### ${item.title}`,
         item.text,
-        ...(item.id === 'collaboration'
-          ? [
-              HOME_CONTENT.collaborationExample.caption,
-              HOME_CONTENT.collaborationExample.setup,
-              ...HOME_CONTENT.collaborationExample.messages.map((message) =>
-                [
-                  `**${message.speaker} to ${message.recipient} (${message.kind})**`,
-                  message.text,
-                  `${message.skill ? `\`${message.skill}\` · ` : ''}${message.command ? `\`${message.command}\` · ` : ''}${message.note}`,
-                ].join('\n\n'),
-              ),
-            ]
-          : []),
         item.commands.map((command) => `\`${command}\``).join(' · '),
         ...(item.link ? [`[${item.link.label}](${SITE_CONFIG.url}${item.link.href})`] : []),
       ].join('\n\n'),

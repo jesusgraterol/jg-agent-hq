@@ -8,7 +8,6 @@ import { ExtensionControlCommandSchema } from '../extensions/index.js';
 import { MessageInputSchema, NativeSkillInputSchema } from '../skills/index.js';
 
 import { NativeIdSchema, NativeLineageSchema } from '../identities/index.js';
-import { PlanRevisionSchema } from '../plans/index.js';
 import { BoundInputFileSchema, MAX_INPUT_FILES } from '../inputs/index.js';
 import { TurnResultSchema, OutputSchemaSchema } from '../results/index.js';
 
@@ -127,37 +126,13 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
 ]);
 export type IActionCommand = z.infer<typeof ActionCommandSchema>;
 
-// plan scope cannot answer native permission requests or carry filesystem configuration
-export const PlanActionScopeSchema = z.discriminatedUnion('kind', [
-  z.strictObject({
-    kind: z.literal('execution'),
-    authorizationId: z.uuid(),
-    milestoneId: z.uuid().nullable(),
-    mode: z.enum(['supervised', 'auto']),
-    revision: PlanRevisionSchema,
-  }),
-  z.strictObject({ kind: z.literal('planning'), revisionId: z.uuid(), invocationId: z.uuid() }),
-]);
-export type IPlanActionScope = z.infer<typeof PlanActionScopeSchema>;
-export const ActionPlanContextSchema = z.strictObject({
-  directory: z.string().min(1).max(4096),
-  scope: PlanActionScopeSchema.nullable(),
-  observedRevision: PlanRevisionSchema,
-});
-export type IActionPlanContext = z.infer<typeof ActionPlanContextSchema>;
-
 // identity survives lost client responses; a repeated UUID must carry the same validated request
 export const ActionEnvelopeSchema = z
   .strictObject({
     id: z.uuid(),
     runtimeEpoch: z.uuid(),
     command: ActionCommandSchema,
-    plan: PlanActionScopeSchema.optional(),
-    expectedPlan: ActionPlanContextSchema.nullable().optional(),
   })
-  .refine(
-    (action) => !('expectedPlan' in action) || ['message', 'queue'].includes(action.command.kind),
-  )
   .refine((action) => new TextEncoder().encode(JSON.stringify(action)).length <= 32_768);
 export type IActionEnvelope = z.infer<typeof ActionEnvelopeSchema>;
 
@@ -169,6 +144,8 @@ export const ActionReceiptSchema = z.object({
   provider: ProviderIdSchema.nullable(),
   controlState: z.enum(['accepted', 'applied', 'held']).nullable(),
   threadId: ThreadIdSchema.nullable(),
+  // the native session of the action's thread, once HQ recorded it
+  nativeThreadId: NativeIdSchema.nullable(),
   nativeTurnId: NativeIdSchema.nullable(),
   nativeRequestId: z.string().nullable(),
   delivery: z.enum(['queued', 'submitted', 'acknowledged', 'uncertain', 'failed', 'canceled']),
@@ -177,7 +154,6 @@ export const ActionReceiptSchema = z.object({
     .enum(['state-conflict', 'access-denied', 'agent-unavailable', 'operation-failed'])
     .nullable(),
   relatedActionId: z.uuid().nullable(),
-  planContext: ActionPlanContextSchema.nullable(),
   queuedInput: PreparedInputSchema.nullable(),
   result: TurnResultSchema.nullable(),
   createdAt: z.number().int(),
@@ -185,12 +161,23 @@ export const ActionReceiptSchema = z.object({
 });
 export type IActionReceipt = z.infer<typeof ActionReceiptSchema>;
 
-// collections omit queued input and final result bodies; selected receipts retain them
+// collections omit queued input, final result bodies and the native thread; selected receipts retain them
 export const ActionSummarySchema = ActionReceiptSchema.omit({
+  nativeThreadId: true,
   queuedInput: true,
   result: true,
 });
 export type IActionSummary = z.infer<typeof ActionSummarySchema>;
+
+/*
+ * A receipt once it reached what an action wait waited for, or as it stood when the wait's time
+ * ran out, with `isTimedOut` set. The receipt is null for an unknown action.
+ */
+export const ActionWaitSchema = z.object({
+  receipt: ActionReceiptSchema.nullable(),
+  isTimedOut: z.boolean(),
+});
+export type IActionWait = z.infer<typeof ActionWaitSchema>;
 
 // control is separate from the native thread's discovery title and historical visibility
 export const ManagedThreadSchema = z.object({

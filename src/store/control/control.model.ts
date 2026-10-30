@@ -4,17 +4,6 @@ import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import {
-  agentSpawnContext,
-  recordAgentSpawn,
-  reserveAgentChild,
-  readAgentSpawn,
-  prepareDispatch,
-  reserveDispatch,
-} from '../collaboration/index.js';
-import { DispatchContextSchema } from '../../collaboration/dispatch/index.js';
-import { collaborationConflict, collaborationForbidden } from '../../collaboration/grants/index.js';
-
-import {
   LifecycleEventSchema,
   PreparedInputSchema,
   NativeApprovalSummarySchema,
@@ -28,11 +17,11 @@ import {
 import type { IEvidenceOriginsRequest } from '../../sessions/evidence/index.js';
 import { getErrorKind } from '../../errors/index.js';
 import { suffixThreadName } from '../../sessions/names/index.js';
-import type { PlansModel } from '../plans/index.js';
 
 import {
   ACTION_COLUMNS,
   ACTION_METADATA_COLUMNS,
+  ACTION_RECEIPT_COLUMNS,
   CONTROLLED_THREAD_CAPACITY,
   EVENT_COLUMNS,
   THREAD_COLUMNS,
@@ -40,8 +29,10 @@ import {
 } from './constants.js';
 import { toActionReceipt, toActionSummary, toManagedThread } from './transformers.js';
 import {
+  ActionReceiptRowSchema,
   ActionRowSchema,
   ThreadRowSchema,
+  type IActionReceiptRow,
   type IActionRow,
   type IThreadRow,
   type IAdmission,
@@ -65,18 +56,11 @@ const ActionMetadataSchema = ActionRowSchema.omit({ queued_input: true, result: 
 export class ControlModel {
   private readonly __database: DatabaseSync;
   private readonly __epoch: string;
-  private readonly __plans: PlansModel;
   private readonly __digestKey: KeyObject;
 
   /** Quarantines unsettled controls from another runtime before accepting new actions. */
-  public constructor(
-    database: DatabaseSync,
-    runtimeEpoch: string,
-    digestKey: Uint8Array,
-    plans: PlansModel,
-  ) {
+  public constructor(database: DatabaseSync, runtimeEpoch: string, digestKey: Uint8Array) {
     this.__database = database;
-    this.__plans = plans;
     this.__epoch = runtimeEpoch;
     this.__digestKey = createSecretKey(digestKey);
     const now = Date.now();
@@ -113,7 +97,7 @@ export class ControlModel {
   /** Resolves exact native input identities and content hashes; native roles grant no identity. */
   public getEvidenceOrigins(command: IEvidenceOriginsRequest): (IHistoryProvenance | null)[] {
     const query = this.__database
-      .prepare(`SELECT a.id, a.collaboration_context IS NOT NULL AS agent_input, EXISTS(SELECT 1 FROM hq_browser_action b WHERE json_extract(b.receipt, '$.nativeActionId') = a.id AND b.native_thread_id = a.thread_id AND b.native_input_sha256 = a.input_sha256) AS authenticated
+      .prepare(`SELECT a.id, EXISTS(SELECT 1 FROM hq_browser_action b WHERE json_extract(b.receipt, '$.nativeActionId') = a.id AND b.native_thread_id = a.thread_id AND b.native_input_sha256 = a.input_sha256) AS authenticated
       FROM hq_action a JOIN hq_thread t ON t.id = a.thread_id
       WHERE t.provider = ? AND t.native_id = ? AND a.native_turn_id = ? AND a.input_sha256 = ?
       AND a.delivery = 'acknowledged' AND (a.native_request_id = ? OR a.native_turn_id = ?)
@@ -130,20 +114,11 @@ export class ControlModel {
       );
       if (rows.length !== 1) return null;
       const row = z
-        .object({
-          id: z.uuid(),
-          authenticated: z.number().int().min(0).max(1),
-          agent_input: z.number().int().min(0).max(1),
-        })
+        .object({ id: z.uuid(), authenticated: z.number().int().min(0).max(1) })
         .parse(rows[0]);
       return {
-        origin: row.agent_input === 1 ? 'agent' : row.authenticated === 1 ? 'operator' : 'unknown',
-        source:
-          row.agent_input === 1
-            ? 'agent-input'
-            : row.authenticated === 1
-              ? 'authenticated-host-action'
-              : 'host-action',
+        origin: row.authenticated === 1 ? 'operator' : 'unknown',
+        source: row.authenticated === 1 ? 'authenticated-host-action' : 'host-action',
         actionId: row.id,
         nativeInputId: item.nativeInputId,
         nativeInputSha256: item.sha256,
@@ -244,18 +219,6 @@ export class ControlModel {
       data: rows.slice(0, limit).map((row) => toManagedThread(ThreadRowSchema.parse(row))),
       isTruncated: rows.length > limit,
     };
-  }
-
-  /** Whether a managed thread came from adopting a native session rather than from HQ creating it. */
-  public isAdoptedThread(threadId: string): boolean {
-    return (
-      this.__database
-        .prepare(
-          `SELECT 1 FROM hq_thread INNER JOIN hq_action ON hq_action.id = hq_thread.registration_action_id
-        WHERE hq_thread.id = ? AND hq_action.kind = 'thread-adopt'`,
-        )
-        .get(threadId) !== undefined
-    );
   }
 
   /** Reads a managed thread by its native ID when no turn has started it. */
@@ -362,53 +325,16 @@ export class ControlModel {
    * Admits a command exactly once before any native write, with all ownership checks atomic.
    * @returns The durable receipt and the one action permitted to dispatch.
    * @throws
-   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
-   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */
   public admit(input: IAdmission): IAdmissionResult {
     return this.__transaction(() => {
       const { action, prepared } = input;
-      const spawnContext = prepared.agentSpawn
-        ? agentSpawnContext(this.__database, prepared.agentSpawn, this.__epoch)
-        : null;
-      if (prepared.agentSpawn && action.command.kind !== 'thread-create')
-        return collaborationForbidden();
       const digest = createHmac('sha256', this.__digestKey)
         .update(JSON.stringify(action))
         .digest('hex');
       const existing = this.__action(action.id);
       if (existing) {
-        if (prepared.collaboration) {
-          const selected = this.__database
-            .prepare('SELECT collaboration_context FROM hq_action WHERE id = ?')
-            .get(action.id);
-          if (selected?.collaboration_context === null || selected === undefined)
-            return collaborationConflict();
-          const context = DispatchContextSchema.parse(
-            JSON.parse(z.string().parse(selected.collaboration_context)),
-          );
-          if (
-            context.taskId !== prepared.collaboration.taskId ||
-            context.requestId !== prepared.collaboration.requestId ||
-            context.pendingActionId !== action.id
-          )
-            return collaborationConflict();
-        }
-        if (
-          prepared.agentSpawn &&
-          !readAgentSpawn(
-            this.__database,
-            {
-              binding: prepared.agentSpawn.binding,
-              taskId: prepared.agentSpawn.taskId,
-              actionId: action.id,
-              commandDigest: prepared.agentSpawn.commandDigest,
-            },
-            this.__epoch,
-          )
-        )
-          return collaborationConflict();
         if (existing.digest !== digest) this.__conflict();
         return {
           receipt: toActionReceipt(existing),
@@ -418,29 +344,6 @@ export class ControlModel {
         };
       }
       if (action.runtimeEpoch !== this.__epoch) this.__conflict();
-      const collaborationContext = prepared.collaboration
-        ? action.command.kind === 'message'
-          ? prepareDispatch(
-              this.__database,
-              prepared.collaboration,
-              action.id,
-              action.command.threadId,
-              this.__epoch,
-            )
-          : collaborationForbidden()
-        : null;
-      if (collaborationContext) {
-        // native formatting adds the selected skill; the immutable command still binds the exact packet
-        const selectedSkill = collaborationContext.specification.skill;
-        if (
-          action.command.kind !== 'message' ||
-          action.command.input.kind !== 'text' ||
-          action.command.input.text !== collaborationContext.packet ||
-          (prepared.input?.skill?.name ?? null) !== (selectedSkill?.name ?? null) ||
-          (selectedSkill === null && prepared.input?.text !== collaborationContext.packet)
-        )
-          return collaborationConflict();
-      }
       const now = Date.now();
       const command = action.command;
       const expectedTurn = 'expectedTurnId' in command ? command.expectedTurnId : null;
@@ -480,9 +383,6 @@ export class ControlModel {
         this.__database
           .prepare('UPDATE hq_action SET input_sha256 = ? WHERE id = ?')
           .run(createHash('sha256').update(inputText).digest('hex'), action.id);
-      if (prepared.agentSpawn && spawnContext)
-        recordAgentSpawn(this.__database, action.id, prepared.agentSpawn, spawnContext);
-      if (collaborationContext) reserveDispatch(this.__database, collaborationContext, action.id);
       this.__database.exec('SAVEPOINT admission');
       let dispatchActionId: string | null = action.id;
       try {
@@ -585,14 +485,6 @@ export class ControlModel {
               name,
               provider,
               action.id,
-            );
-          if (spawnContext)
-            reserveAgentChild(
-              this.__database,
-              spawnContext,
-              action,
-              threadId,
-              prepared.workspaceRoot,
             );
         } else {
           let threadId: string;
@@ -781,7 +673,6 @@ export class ControlModel {
                 break;
               case 'message':
                 this.__requireIdle(thread);
-                if (!collaborationContext && this.__hasActiveDispatch(thread.id)) this.__conflict();
                 this.__beginTurn(action.id, threadId);
                 break;
               case 'queue':
@@ -795,7 +686,6 @@ export class ControlModel {
                 break;
               case 'queue-send':
                 this.__requireIdle(thread);
-                if (this.__hasActiveDispatch(thread.id)) this.__conflict();
                 this.__beginTurn(queued!.id, threadId);
                 this.__database
                   .prepare("UPDATE hq_action SET delivery = 'acknowledged' WHERE id = ?")
@@ -842,23 +732,6 @@ export class ControlModel {
               }
             }
           }
-        }
-        if (prepared.planContext) {
-          const selected = this.__action(action.id)!.thread_id;
-          if (!selected) this.__conflict();
-          if (
-            command.kind !== 'thread-fork' &&
-            !(
-              collaborationContext &&
-              !collaborationContext.specification.effects.some((effect) =>
-                ['planning-write', 'workspace-write', 'commit', 'push'].includes(effect),
-              )
-            )
-          )
-            this.__plans.bindThread(selected, prepared.planContext);
-          this.__database
-            .prepare('UPDATE hq_action SET plan_context = ? WHERE id = ?')
-            .run(JSON.stringify(prepared.planContext), action.id);
         }
         this.__database.exec('RELEASE admission');
       } catch (error) {
@@ -1000,7 +873,6 @@ export class ControlModel {
             "UPDATE hq_action SET delivery = 'acknowledged', native_turn_id = ?, completion = ?, failure = NULL, queued_input = NULL, updated_at = ? WHERE id = ?",
           )
           .run(nativeTurnId, completion, now, action.id);
-        if (outcome.kind === 'turn-accepted') this.__deliverDispatch(action.id, now);
         if (ownsThread) {
           if (outcome.kind === 'archived' || outcome.kind === 'unarchived') {
             this.__database
@@ -1072,16 +944,6 @@ export class ControlModel {
     });
   }
 
-  /** Reads one selected undelivered queue entry without claiming or dispatching it. */
-  public peekQueued(threadId: string): IActionReceipt | null {
-    const row = this.__database
-      .prepare(
-        `SELECT ${ACTION_COLUMNS} FROM hq_action WHERE thread_id = ? AND delivery = 'queued' ORDER BY created_at ASC, id ASC LIMIT 1`,
-      )
-      .get(threadId);
-    return row ? toActionReceipt(ActionRowSchema.parse(row)) : null;
-  }
-
   /**
    * Claims one ready queue entry once; an explicit selection may release a paused entry.
    * @returns The single dispatch payload, or null when the queue cannot advance safely.
@@ -1091,7 +953,6 @@ export class ControlModel {
       const thread = this.__thread(threadId);
       if (
         !thread ||
-        this.__hasActiveDispatch(threadId) ||
         thread.ownership !== 'managed' ||
         thread.runtime_epoch !== this.__epoch ||
         thread.active_turn_id ||
@@ -1414,8 +1275,7 @@ export class ControlModel {
           current.ownership === 'managed' &&
           current.state === 'completed' &&
           current.active_turn_id === null &&
-          current.pending_action_id === null &&
-          !this.__hasActiveDispatch(current.id),
+          current.pending_action_id === null,
       };
     });
   }
@@ -1476,11 +1336,11 @@ export class ControlModel {
       );
   }
 
-  private __action(id: string): IActionRow | null {
+  private __action(id: string): IActionReceiptRow | null {
     const row = this.__database
-      .prepare(`SELECT ${ACTION_COLUMNS} FROM hq_action WHERE id = ?`)
+      .prepare(`SELECT ${ACTION_RECEIPT_COLUMNS} FROM hq_action WHERE id = ?`)
       .get(id);
-    return row ? ActionRowSchema.parse(row) : null;
+    return row ? ActionReceiptRowSchema.parse(row) : null;
   }
 
   private __nativeThread(
@@ -1534,52 +1394,6 @@ export class ControlModel {
         "SELECT id FROM hq_action WHERE provider = ? AND runtime_epoch = ? AND id != ? AND kind IN ('account-login','account-logout','mcp-reload') AND delivery IN ('submitted','uncertain','acknowledged') AND completion IS NULL LIMIT 1",
       )
       .get(provider, this.__epoch, exceptId);
-  }
-
-  private __hasActiveDispatch(threadId: string): boolean {
-    return (
-      this.__database
-        .prepare(
-          'SELECT 1 FROM hq_request WHERE assignee_agent_id = ? AND current_action_id IS NOT NULL LIMIT 1',
-        )
-        .get(threadId) !== undefined
-    );
-  }
-
-  private __deliverDispatch(actionId: string, now: number): void {
-    const saved = this.__database
-      .prepare('SELECT collaboration_context FROM hq_action WHERE id = ?')
-      .get(actionId);
-    if (!saved || saved.collaboration_context === null) return;
-    const context = DispatchContextSchema.parse(
-      JSON.parse(z.string().parse(saved.collaboration_context)),
-    );
-    for (const child of context.continuation?.children ?? []) {
-      if (child.report !== null)
-        this.__database
-          .prepare(
-            'UPDATE hq_delivery SET native_action_id = ?, delivered_at = ? WHERE task_id = ? AND recipient_agent_id = ? AND message_id = (SELECT reply_message_id FROM hq_report WHERE id = ?) AND delivered_at IS NULL',
-          )
-          .run(actionId, now, context.taskId, context.agentId, child.report.id);
-      if (child.isClarification && child.actionId !== null)
-        this.__database
-          .prepare(
-            'UPDATE hq_request SET clarification_consumed_action_id = ? WHERE id = ? AND parent_request_id = ? AND last_action_id = ?',
-          )
-          .run(child.actionId, child.requestId, context.requestId, child.actionId);
-    }
-    this.__database
-      .prepare(
-        'UPDATE hq_delivery SET native_action_id = ?, delivered_at = ? WHERE task_id = ? AND recipient_agent_id = ? AND message_id IN (?, ?) AND delivered_at IS NULL',
-      )
-      .run(
-        actionId,
-        now,
-        context.taskId,
-        context.agentId,
-        context.requestId,
-        context.inputMessageId,
-      );
   }
 
   private __requireIdle(thread: IThreadRow): void {

@@ -1,11 +1,13 @@
 // @vitest-environment node
-import { readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { HqResponseSchema } from 'jg-agent-hq/contracts';
 import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
+  claudeRecord,
   countHeldDelays,
   releaseHeldDelays,
   startHoldingDelays,
@@ -19,6 +21,38 @@ vi.mock('jg-utilities', async (original) => {
   return { ...actual, delay: holdDelays(actual.delay) };
 });
 startHoldingDelays(300);
+
+// the session-less read processes the fixture started, in order
+const readPids = async (root: string): Promise<number[]> =>
+  (await readFile(join(root, 'claude-read-pids.jsonl'), 'utf8'))
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => z.object({ pid: z.number().int() }).parse(JSON.parse(line)).pid);
+
+const isRunning = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// runs a step on a frozen clock that only the step moves, restoring the real one before teardown
+const withFrozenClock = async (run: () => Promise<void>): Promise<void> => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    await run();
+  } finally {
+    vi.useRealTimers();
+  }
+};
+
+// a usage result answers reads for 60 seconds, so a test moves the clock past it to ask Claude
+const expireUsage = (): void => {
+  vi.setSystemTime(Date.now() + 60_000);
+};
 
 test('native usage preserves independent account windows and never sends a user prompt or scans behavior', async () => {
   await withClaudeRuntime(async ({ root, request }) => {
@@ -59,11 +93,8 @@ test('native usage preserves independent account windows and never sends a user 
           })
           .parse(JSON.parse(line)),
       );
-    expect(calls.map((call) => call.request.subtype)).toStrictEqual([
-      'initialize',
-      'get_usage',
-      'get_usage',
-    ]);
+    // the second read was answered by the first one's kept result
+    expect(calls.map((call) => call.request.subtype)).toStrictEqual(['initialize', 'get_usage']);
     expect(calls.slice(1).every((call) => call.request.skip_behaviors === true)).toBe(true);
   });
 });
@@ -140,44 +171,84 @@ test('independent Claude weekly scopes and unknown groups retain native identity
     ]);
     expect(new Set(observed.result.windows.map((window) => window.id)).size).toBe(3);
     await control({ failure: true });
-    expect(await request({ kind: 'usage', provider: 'claude' })).toStrictEqual({
-      kind: 'usage',
-      result: { ...observed.result, state: 'stale' },
+    await withFrozenClock(async () => {
+      expireUsage();
+      expect(await request({ kind: 'usage', provider: 'claude' })).toStrictEqual({
+        kind: 'usage',
+        result: { ...observed.result, state: 'stale' },
+      });
     });
   });
 });
 
 test('failed observations stay stale; account changes discard every prior-account window', async () => {
-  await withClaudeRuntime(async ({ request, control }) => {
-    const first = await request({ kind: 'usage', provider: 'claude' });
-    expect(first.kind === 'usage' && first.result.state).toBe('available');
-    await control({ failure: true });
-    const stale = await request({ kind: 'usage', provider: 'claude' });
-    expect(stale.kind === 'usage' && stale.result.state).toBe('stale');
-    expect(
-      stale.kind === 'usage' && stale.result.windows.map((window) => window.usedPercent),
-    ).toStrictEqual([25, 60]);
-    await control({ authChange: true });
-    const changed = await request({ kind: 'usage', provider: 'claude' });
-    expect(changed.kind === 'usage' && changed.result.state).toBe('unavailable');
-    expect(changed.kind === 'usage' && changed.result.windows).toStrictEqual([]);
-    await control({
-      rows: [
-        {
-          kind: 'session',
-          group: 'session',
-          percent: 7,
-          resets_at: null,
-          scope: null,
-          is_active: true,
-        },
-      ],
-    });
-    const fresh = await request({ kind: 'usage', provider: 'claude' });
-    expect(
-      fresh.kind === 'usage' && fresh.result.windows.map((window) => window.usedPercent),
-    ).toStrictEqual([7]);
-  });
+  await withClaudeRuntime(({ request, control }) =>
+    withFrozenClock(async () => {
+      const first = await request({ kind: 'usage', provider: 'claude' });
+      expect(first.kind === 'usage' && first.result.state).toBe('available');
+      await control({ failure: true });
+      expireUsage();
+      const stale = await request({ kind: 'usage', provider: 'claude' });
+      expect(stale.kind === 'usage' && stale.result.state).toBe('stale');
+      expect(
+        stale.kind === 'usage' && stale.result.windows.map((window) => window.usedPercent),
+      ).toStrictEqual([25, 60]);
+      await control({ authChange: true });
+      expireUsage();
+      const changed = await request({ kind: 'usage', provider: 'claude' });
+      expect(changed.kind === 'usage' && changed.result.state).toBe('unavailable');
+      expect(changed.kind === 'usage' && changed.result.windows).toStrictEqual([]);
+      await control({
+        rows: [
+          {
+            kind: 'session',
+            group: 'session',
+            percent: 7,
+            resets_at: null,
+            scope: null,
+            is_active: true,
+          },
+        ],
+      });
+      // the account change during the last read kept its result from answering this one
+      const fresh = await request({ kind: 'usage', provider: 'claude' });
+      expect(
+        fresh.kind === 'usage' && fresh.result.windows.map((window) => window.usedPercent),
+      ).toStrictEqual([7]);
+    }),
+  );
+});
+
+test('a usage result answers reads for 60 seconds, after which the next read asks Claude again', async () => {
+  await withClaudeRuntime(({ root, request, control }) =>
+    withFrozenClock(async () => {
+      const usageRequests = async () =>
+        (await readFile(join(root, 'claude-calls.jsonl'), 'utf8')).split('get_usage').length - 1;
+      const first = await request({ kind: 'usage', provider: 'claude' });
+      expect(first.kind === 'usage' && first.result.state).toBe('available');
+      await control({
+        rows: [
+          {
+            kind: 'session',
+            group: 'session',
+            percent: 7,
+            resets_at: null,
+            scope: null,
+            is_active: true,
+          },
+        ],
+      });
+      vi.setSystemTime(Date.now() + 59_999);
+      expect(await request({ kind: 'usage', provider: 'claude' })).toStrictEqual(first);
+      expect(await usageRequests()).toBe(1);
+      vi.setSystemTime(Date.now() + 1);
+      const refreshed = await request({ kind: 'usage', provider: 'claude' });
+      expect(
+        refreshed.kind === 'usage' && refreshed.result.windows.map((window) => window.usedPercent),
+      ).toStrictEqual([7]);
+      expect(await usageRequests()).toBe(2);
+    }),
+  );
 });
 
 test.each([
@@ -277,20 +348,6 @@ test('shutdown rejects a held native usage request and confirms the owned proces
 
 test('the session-less read process closes after 5 minutes unused and opens again on the next read', async () => {
   await withClaudeRuntime(async ({ root, request }) => {
-    const readPids = async () =>
-      (await readFile(join(root, 'claude-read-pids.jsonl'), 'utf8'))
-        .trim()
-        .split('\n')
-        .filter(Boolean)
-        .map((line) => z.object({ pid: z.number().int() }).parse(JSON.parse(line)).pid);
-    const isRunning = (pid: number): boolean => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    };
     const claudeStatus = async () => {
       const status = await request({ kind: 'status' });
       if (status.kind !== 'status') throw new Error('Missing status');
@@ -298,8 +355,8 @@ test('the session-less read process closes after 5 minutes unused and opens agai
     };
     await request({ kind: 'usage', provider: 'claude' });
     await request({ kind: 'models', provider: 'claude' });
-    const [pid] = await readPids();
-    expect(await readPids()).toHaveLength(1);
+    const [pid] = await readPids(root);
+    expect(await readPids(root)).toHaveLength(1);
     // the second read restarted the idle period, so one wait remains
     await expect.poll(() => countHeldDelays(300)).toBe(1);
     expect(releaseHeldDelays(300)).toBe(1);
@@ -310,10 +367,43 @@ test('the session-less read process closes after 5 minutes unused and opens agai
       state: 'idle',
       version: '2.1.304',
     });
+    // closing the process also ended the kept usage result
     expect(await request({ kind: 'usage', provider: 'claude' })).toMatchObject({
       kind: 'usage',
       result: { state: 'available' },
     });
-    expect(await readPids()).toHaveLength(2);
+    expect(await readPids(root)).toHaveLength(2);
+  });
+});
+
+test('history reads keep the first successful check instead of starting a claude process again', async () => {
+  await withClaudeRuntime(async ({ root, workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    await writeFile(
+      transcript(nativeId),
+      `${JSON.stringify(claudeRecord(workspaceRoot, nativeId))}\n`,
+    );
+    expect(await request({ kind: 'threads', provider: 'claude', workspaceRoot })).toMatchObject({
+      kind: 'threads',
+      result: { data: [{ nativeId }] },
+    });
+    const [pid] = await readPids(root);
+    expect(await readPids(root)).toHaveLength(1);
+    // the read process that checked the CLI closes after its idle period
+    await expect.poll(() => countHeldDelays(300)).toBe(1);
+    expect(releaseHeldDelays(300)).toBe(1);
+    await expect.poll(() => isRunning(pid!)).toBe(false);
+    for (const command of [
+      { kind: 'threads', provider: 'claude', workspaceRoot },
+      { kind: 'thread', provider: 'claude', workspaceRoot, nativeId },
+      { kind: 'turns', provider: 'claude', workspaceRoot, nativeId },
+      { kind: 'items', provider: 'claude', workspaceRoot, nativeId },
+      { kind: 'session-evidence', provider: 'claude', workspaceRoot, nativeId },
+    ] as const)
+      expect(await request(command)).toMatchObject({ kind: command.kind });
+    expect(await readPids(root)).toHaveLength(1);
+    // a read that uses the native connection still opens it
+    await request({ kind: 'models', provider: 'claude' });
+    expect(await readPids(root)).toHaveLength(2);
   });
 });

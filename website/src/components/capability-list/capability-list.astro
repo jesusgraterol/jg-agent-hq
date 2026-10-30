@@ -5,11 +5,9 @@ import TextLink from 'jg-personal-astro-ui/text-link';
 import { ArrowRight } from '@lucide/astro';
 
 import { HOME_CONTENT } from '../../content/index.ts';
-import PlanPreview from '../plan-preview/plan-preview.astro';
 import PromptPreview from '../prompt-preview/prompt-preview.astro';
 import SessionPreview from '../session-preview/session-preview.astro';
 import StoragePreview from '../storage-preview/storage-preview.astro';
-import StreamPreview from '../stream-preview/stream-preview.astro';
 import UsagePreview from '../usage-preview/usage-preview.astro';
 
 // the preview that shows each capability, by its id
@@ -17,8 +15,6 @@ const PREVIEWS = {
   sessions: SessionPreview,
   prompts: PromptPreview,
   observe: UsagePreview,
-  collaboration: StreamPreview,
-  plans: PlanPreview,
   storage: StoragePreview,
 } as const satisfies Record<(typeof HOME_CONTENT.capabilities)[number]['id'], unknown>;
 ---

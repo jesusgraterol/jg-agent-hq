@@ -1,15 +1,13 @@
 import { join } from 'node:path';
 import { hashValue } from 'jg-crypto';
 import { Exception, extractMessage, isException } from 'jg-exception';
+import { listLocks } from 'jg-locks';
 import { z } from 'zod';
 
 import { HqRequestSchema, type IHqRequestInput, type IHqResponse } from '../contracts/index.js';
 import { createActions, readControl } from '../actions/index.js';
 import { createAccounts } from '../accounts/index.js';
 import { createExtensions } from '../extensions/index.js';
-import { createCollaboration } from '../collaboration/index.js';
-import { createDispatch } from '../collaboration/dispatch/index.js';
-import { createAgentTools } from '../agent-tools/index.js';
 import { CONTROL_SOCKET, createIpcServer } from '../ipc/index.js';
 import {
   createCodexProviderFactory,
@@ -28,7 +26,6 @@ import { createSkills } from '../skills/index.js';
 import { createStore } from '../store/index.js';
 import { createStorage } from '../storage/index.js';
 import { registerSnapshotContext } from '../snapshots/index.js';
-import { createPlans, type IPlanStopJob } from '../plans/index.js';
 
 import {
   claimRuntimeOwner,
@@ -76,9 +73,6 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const claudeAdditionalDirectories = parsed.data.claudeAdditionalDirectories?.length
     ? await resolveAllowedRoots(parsed.data.claudeAdditionalDirectories)
     : [];
-  const coordinationRoot = parsed.data.coordinationRoot
-    ? (await resolveAllowedRoots([parsed.data.coordinationRoot]))[0]!
-    : undefined;
   const stateRoot = await prepareStateRoot(parsed.data.stateRoot);
   const ownership = await claimRuntimeOwner(stateRoot);
   let store: Awaited<ReturnType<typeof createStore>> | undefined;
@@ -118,12 +112,6 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const providers = registry;
   const projection = store;
   const storage = createStorage(projection);
-  const plans = createPlans(
-    coordinationRoot ?? stateRoot,
-    allowedRoots,
-    projection,
-    ownership.owner.nonce,
-  );
   const skills = createSkills(providers, projection, allowedRoots);
   // terminal and background Claude sessions are observed while the runtime runs
   const claudeAgents = observeClaudeAgents(
@@ -139,7 +127,6 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     ownership.owner.nonce,
     actionKey,
     skills,
-    plans,
     storage.background,
     () => {
       skills.invalidate();
@@ -157,60 +144,14 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   // close() still reports errors; the lifetime promise may be awaited later by its owner
   void closed.catch(() => undefined);
   let closing: Promise<void> | undefined;
-  const revisionJobs = new Map<string, Promise<void>>();
-  plans.setStopHandler((job: IPlanStopJob) => {
-    if (closing) return;
-    if (revisionJobs.has(job.phaseActionId)) return;
-    if (revisionJobs.size >= 32)
-      throw new Exception('The HQ action conflicts with its recorded state', {
-        code: 'JG_AGENT_HQ_ACTION_CONFLICT',
-        data: {
-          kind: 'state-conflict',
-        },
-      });
-    const task = storage.background(async () => {
-      let isQuiescent = false;
-      try {
-        await actions.quiescePlan(job.controls);
-        isQuiescent = true;
-        if (job.kind === 'observation') await plans.finishObservation(job, true);
-        else if (job.kind === 'revision')
-          await plans.checkpoint({ directory: job.directory }, job.revisionId, job.phaseActionId);
-      } catch (cause) {
-        try {
-          if (job.kind === 'observation') await plans.finishObservation(job, false);
-          else if (job.kind === 'revision')
-            await plans.blockRevision(
-              { directory: job.directory },
-              job.revisionId,
-              job.phaseActionId,
-              isQuiescent ? 'checkpoint-unavailable' : 'native-quiescence-unavailable',
-            );
-          else
-            process.stderr.write(
-              `Unable to confirm native cleanup for invalid plan ${job.phaseActionId}.\n`,
-            );
-        } catch {
-          process.stderr.write(`Unable to persist blocked revision ${job.phaseActionId}.\n`);
-        }
-      } finally {
-        plans.stopFinished(job.phaseActionId);
-        revisionJobs.delete(job.phaseActionId);
-      }
-    });
-    revisionJobs.set(job.phaseActionId, task);
-  });
   const close = (): Promise<void> =>
     (closing ??= (async () => {
       try {
+        // receipt waits end first, so none holds up closing for its remaining time
+        actions.waits.close();
         await browser.close();
         await claudeAgents.close();
-        const toolCleanup = await Promise.allSettled([agentTools.close()]);
-        await dispatch.close();
-        await collaboration.close();
-        await Promise.allSettled([...revisionJobs.values()]);
         const results = await Promise.allSettled([ipc?.close(), actions.close()]);
-        results.push(...toolCleanup);
         const storeCleanup = await Promise.allSettled([projection.close()]);
         results.push(...storeCleanup);
         const failure = results.find((result) => result.status === 'rejected');
@@ -244,8 +185,6 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       });
     const command = result.data;
     switch (command.kind) {
-      case 'agent-tool':
-        return { kind: 'agent-tool', result: await agentTools.handleBridge(command) };
       case 'status':
         return {
           kind: 'status',
@@ -313,10 +252,6 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           ).readConfiguration({ ...command, workspaceRoot }, thread?.nativeId ?? undefined),
         };
       }
-      case 'collaboration':
-        return { kind: 'collaboration', result: await collaboration.handle(command) };
-      case 'plan':
-        return { kind: 'plan', result: await plans.handle(command.command) };
       case 'skills':
         return { kind: command.kind, result: await skills.list(command) };
       case 'skill-preview':
@@ -331,9 +266,9 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           kind: command.kind,
           result: { name: await projection.suggestThreadName(suggestThreadName(command.topic)) },
         };
-      case 'thread-plan':
       case 'managed-thread-name':
       case 'receipt':
+      case 'action-wait':
       case 'managed-threads':
       case 'managed-thread':
       case 'actions':
@@ -361,6 +296,11 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       case 'observation-pace':
         claudeAgents.setPace(command.pace);
         return { kind: 'observation-pace', result: { pace: command.pace } };
+      case 'locks': {
+        // a read of the machine's locks folder; HQ never takes a lock there
+        const { locks, isTruncated } = await listLocks();
+        return { kind: 'locks', result: { data: locks, isTruncated } };
+      }
       default: {
         const response = await readNativeHistory(
           command,
@@ -387,29 +327,6 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   };
   const request = (input: IHqRequestInput): Promise<IHqResponse> =>
     storage.run(() => handleRequest(input));
-  const collaboration = createCollaboration(projection, allowedRoots, storage.background);
-  const agentTools = createAgentTools({
-    stateRoot,
-    runtimeEpoch: ownership.owner.nonce,
-    allowedRoots,
-    store: projection,
-    collaboration,
-    actions,
-    run: storage.run,
-    read: (command) =>
-      readNativeHistory(command, providers, projection, allowedRoots, claudeAgents),
-  });
-  providers.setAgentTools(agentTools.forProvider);
-  const dispatch = createDispatch(
-    projection,
-    actions,
-    collaboration,
-    storage.background,
-    ownership.owner.nonce,
-  );
-  collaboration.setWakeHandler(dispatch.wake, dispatch.failure);
-  actions.setChangeHandler(dispatch.wake);
-  dispatch.wake();
   try {
     ipc = await createIpcServer(join(stateRoot, CONTROL_SOCKET), ownership.owner.nonce, request);
   } catch (error) {
@@ -440,7 +357,6 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     runtime,
     stateRoot,
     actionKeyHash: hashValue(actionKey),
-    coordinationRoot: coordinationRoot ?? stateRoot,
     allowedRoots,
     store: projection,
     admit: storage.run,

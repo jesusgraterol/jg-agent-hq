@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { chmod, lstat, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { chmod, lstat, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
@@ -8,16 +9,13 @@ import { DatabaseSync } from 'node:sqlite';
 import { createAgentHq, createHqSnapshot, inspectHqSnapshot, restoreHqSnapshot } from 'jg-agent-hq';
 import { hashValue } from 'jg-crypto';
 import { expectToRejectCode } from 'jg-exception/testing';
-import { withPlanDocumentLocks } from 'jg-plans';
-import type { IDispatchResponse, IRequestSpecification } from 'jg-agent-hq/contracts';
 import { afterEach, expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
+  claudeRecord,
   withClaudeRuntime,
-  withCollaboration,
   writeFixtureControl,
-  type ICollaborationFixture,
 } from '../../scripts/test-support/index.js';
 
 const faults = vi.hoisted(() => ({ target: '' }));
@@ -53,42 +51,11 @@ const readManifest = async (directory: string) =>
     .split('\n')
     .map((line) => z.record(z.string(), z.unknown()).parse(JSON.parse(line)));
 
-const registerPlan = async (runtime: Parameters<typeof createHqSnapshot>[0], directory: string) => {
-  await mkdir(directory);
-  await writeFile(
-    join(directory, 'plan.md'),
-    '---\nid: snapshot-plan\ncreated_at: 2026-10-23T00:00:00.000Z\nupdated_at: 2026-10-23T00:00:00.000Z\nrevision: 1\nstatus: pending\n---\n# Snapshot plan\n\nRetain checked evidence.\n',
-  );
-  await writeFile(
-    join(directory, 'milestones.md'),
-    '# Milestones\n\n## Milestone 1: Retain evidence\n**Status:** pending\n**Milestone ID:** 10000000-0000-4000-8000-000000000001\n\nVerify exact snapshot companions.\n',
-  );
-  const status = await runtime.request({
-    kind: 'plan',
-    command: { kind: 'status', target: { directory } },
-  });
-  if (status.kind !== 'plan' || status.result.kind !== 'status') throw new Error('Missing plan');
-  await runtime.request({
-    kind: 'plan',
-    command: {
-      kind: 'approve',
-      target: { directory },
-      action: {
-        id: randomUUID(),
-        operatorId: 'snapshot-owner',
-        source: { kind: 'user-action', reference: 'snapshot-test' },
-      },
-      expected: status.result.result.revision,
-      scope: 'plan',
-      presentationHash: status.result.result.inspection.plan!,
-    },
-  });
-};
-
-test('WAL-aware capture includes host tables, key and locked plan companions; offline restore requires new roots and starts without providers', async () => {
+test('WAL-aware capture includes host tables and key but no plan files; offline restore requires new roots and starts without providers', async () => {
   await withClaudeRuntime(async ({ runtime, root, workspaceRoot, stateRoot }) => {
-    const directory = join(workspaceRoot, 'selected-plan');
-    await registerPlan(runtime, directory);
+    // plan files in a workspace are never captured
+    await mkdir(join(workspaceRoot, 'selected-plan'));
+    await writeFile(join(workspaceRoot, 'selected-plan', 'plan.md'), '# Selected plan\n');
     const host = new DatabaseSync(runtime.storage.databasePath);
     try {
       host.exec(
@@ -98,12 +65,20 @@ test('WAL-aware capture includes host tables, key and locked plan companions; of
       expect((await lstat(runtime.storage.databasePath + '-wal')).size).toBeGreaterThan(0);
       const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
       expect(snapshot).toMatchObject({
-        planCount: 1,
-        diagnosticPlanCount: 0,
-        pendingWriteCount: 0,
         header: { sourceStateRoot: stateRoot, sourceAllowedRoots: [workspaceRoot] },
       });
       expect(await inspectHqSnapshot(snapshot.directory)).toStrictEqual(snapshot);
+      expect((await readdir(snapshot.directory)).sort()).toStrictEqual([
+        'action.key',
+        'complete.json',
+        'hq.sqlite',
+        'manifest.jsonl',
+      ]);
+      expect((await readManifest(snapshot.directory)).map((entry) => entry.kind)).toStrictEqual([
+        'header',
+        'database',
+        'action-key',
+      ]);
       expect(await readFile(join(snapshot.directory, 'action.key'))).toStrictEqual(
         await readFile(join(stateRoot, 'action.key')),
       );
@@ -115,16 +90,16 @@ test('WAL-aware capture includes host tables, key and locked plan companions; of
         snapshotDirectory: snapshot.directory,
         destination: join(root, 'recovery'),
       });
-      const recoveredPlan = join(restored.recoveryRoot, hashValue(directory));
-      for (const filename of ['plan.md', 'milestones.md', 'coordination.json'])
-        expect(await readFile(join(recoveredPlan, filename))).toStrictEqual(
-          await readFile(join(directory, filename)),
-        );
+      expect((await readdir(join(root, 'recovery'))).sort()).toStrictEqual([
+        'recovered.json',
+        'recovery.jsonl',
+        'state',
+      ]);
       expect((await lstat(restored.stateRoot)).mode & 0o777).toBe(0o700);
       expect((await lstat(join(restored.stateRoot, 'action.key'))).mode & 0o777).toBe(0o600);
       const reopened = await createAgentHq({
         stateRoot: restored.stateRoot,
-        allowedRoots: [restored.recoveryRoot],
+        allowedRoots: [workspaceRoot],
       });
       try {
         const status = await reopened.request({ kind: 'status' });
@@ -150,6 +125,92 @@ test('WAL-aware capture includes host tables, key and locked plan companions; of
     } finally {
       host.close();
     }
+  });
+});
+
+test('a snapshot leaves out the Claude history index and keeps host rowids; a restored runtime rebuilds the index from the transcripts', async () => {
+  await withClaudeRuntime(async ({ runtime, root, workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const question = claudeRecord(workspaceRoot, nativeId, { text: 'Kept in the transcript' });
+    await writeFile(transcript(nativeId), `${JSON.stringify(question)}\n`);
+    expect(await request({ kind: 'threads', provider: 'claude', workspaceRoot })).toMatchObject({
+      kind: 'threads',
+      result: { data: [{ nativeId }] },
+    });
+    // a host table without an integer key, whose rowids a plain VACUUM would renumber
+    const host = new DatabaseSync(runtime.storage.databasePath);
+    try {
+      host.exec('CREATE TABLE app_event (body TEXT NOT NULL) STRICT');
+      for (const body of ['first', 'second', 'third'])
+        host.prepare('INSERT INTO app_event (body) VALUES (?)').run(body);
+      host.prepare('DELETE FROM app_event WHERE body = ?').run('second');
+    } finally {
+      host.close();
+    }
+    const readState = (databasePath: string) => {
+      const database = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        return {
+          ...database
+            .prepare(
+              'SELECT (SELECT count(*) FROM hq_claude_file) AS files, (SELECT count(*) FROM hq_claude_entry) AS entries',
+            )
+            .get(),
+          events: database
+            .prepare('SELECT rowid, body FROM app_event ORDER BY rowid')
+            .all()
+            .map((row) => ({ ...row })),
+        };
+      } finally {
+        database.close();
+      }
+    };
+    const events = [
+      { rowid: 1, body: 'first' },
+      { rowid: 3, body: 'third' },
+    ];
+    expect(readState(runtime.storage.databasePath)).toStrictEqual({ files: 1, entries: 1, events });
+    const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
+    expect(readState(join(snapshot.directory, 'hq.sqlite'))).toStrictEqual({
+      files: 0,
+      entries: 0,
+      events,
+    });
+    expect((await readdir(snapshot.directory)).sort()).toStrictEqual([
+      'action.key',
+      'complete.json',
+      'hq.sqlite',
+      'manifest.jsonl',
+    ]);
+    const restored = await restoreHqSnapshot({
+      snapshotDirectory: snapshot.directory,
+      destination: join(root, 'recovery'),
+    });
+    const reopened = await createAgentHq({
+      stateRoot: restored.stateRoot,
+      allowedRoots: [workspaceRoot],
+    });
+    try {
+      expect(
+        await reopened.request({ kind: 'threads', provider: 'claude', workspaceRoot }),
+      ).toMatchObject({ kind: 'threads', result: { data: [{ nativeId }] } });
+      const items = await reopened.request({
+        kind: 'items',
+        provider: 'claude',
+        workspaceRoot,
+        nativeId,
+      });
+      expect(items.kind === 'items' && items.result.data.map((item) => item.text)).toStrictEqual([
+        'Kept in the transcript',
+      ]);
+    } finally {
+      await reopened.close();
+    }
+    expect(readState(join(restored.stateRoot, 'hq.sqlite'))).toStrictEqual({
+      files: 1,
+      entries: 1,
+      events,
+    });
   });
 });
 
@@ -210,7 +271,9 @@ test('startup rejects a different valid-length action key before changing the da
     }
     const reopened = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
     try {
-      expect((await createHqSnapshot(reopened, join(root, 'snapshot'))).pendingWriteCount).toBe(0);
+      expect(
+        (await createHqSnapshot(reopened, join(root, 'snapshot'))).header.sourceStateRoot,
+      ).toBe(stateRoot);
     } finally {
       await reopened.close();
     }
@@ -306,87 +369,40 @@ test('host maintenance excludes capture, while capture proceeds through a native
   });
 });
 
-test('document contention returns busy and releases admission without repairing source artifacts', async () => {
-  await withClaudeRuntime(async ({ runtime, root, workspaceRoot }) => {
-    const directory = join(workspaceRoot, 'selected-plan');
-    await registerPlan(runtime, directory);
-    const before = await readFile(join(directory, 'coordination.json'));
-    await withPlanDocumentLocks(directory, ['plan', 'milestones'], async () => {
-      await expectToRejectCode(
-        createHqSnapshot(runtime, join(root, 'snapshot')),
-        'JG_AGENT_HQ_ACTION_CONFLICT',
-      );
+test('capture takes the HQ lock in the state root and leaves a dead holder for explicit recovery', async () => {
+  await withClaudeRuntime(async ({ runtime, root, stateRoot }) => {
+    const child = spawn(process.execPath, ['-e', '']);
+    await once(child, 'close');
+    if (!child.pid) throw new Error('test process did not start');
+    const lock = join(stateRoot, '.runtime', 'hq.lock');
+    const owner = JSON.stringify({
+      pid: child.pid,
+      nonce: randomUUID(),
+      command: 'holder',
+      createdAt: new Date().toISOString(),
     });
-    expect(await readFile(join(directory, 'coordination.json'))).toStrictEqual(before);
-    expect(await runtime.request({ kind: 'status' })).toMatchObject({ kind: 'status' });
-    expect((await createHqSnapshot(runtime, join(root, 'snapshot'))).planCount).toBe(1);
-  });
-});
-
-test('prepared document writes, mismatched source files and exact journal bytes survive without replay', async () => {
-  await withClaudeRuntime(async ({ runtime, root, workspaceRoot }) => {
-    const directory = join(workspaceRoot, 'selected-plan');
-    await registerPlan(runtime, directory);
-    await writeFile(join(directory, 'plan.md'), '# Incomplete replacement\n');
-    const id = randomUUID();
-    const intent = JSON.stringify({
-      id,
-      digest: 'a'.repeat(64),
-      directory,
-      before: { plan: 'b'.repeat(64), milestones: null, coordination: null },
-      plan: '# Intended plan\n',
-      milestones: { operation: 'keep' },
-      coordination: '{"pending":"exact bytes"}',
-      state: 'prepared',
-    });
-    await runtime.withStorageMaintenance(async (storage) => {
-      const db = new DatabaseSync(storage.databasePath);
-      try {
-        db.prepare("INSERT INTO hq_plan_operation VALUES (?, ?, 'prepared', ?)").run(
-          id,
-          directory,
-          intent,
-        );
-      } finally {
-        db.close();
-      }
-    });
+    await mkdir(join(stateRoot, '.runtime'), { recursive: true, mode: 0o700 });
+    await writeFile(lock, owner, { mode: 0o600 });
     await expectToRejectCode(
-      runtime.withStorageMaintenance(async () => undefined),
-      'JG_AGENT_HQ_ACTION_CONFLICT',
+      createHqSnapshot(runtime, join(root, 'snapshot')),
+      'JG_AGENT_HQ_SNAPSHOT_FAILED',
+      'The HQ lock has an inactive owner',
     );
-    const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
-    expect(snapshot.pendingWriteCount).toBe(1);
-    const restored = await restoreHqSnapshot({
-      snapshotDirectory: snapshot.directory,
-      destination: join(root, 'recovery'),
-    });
-    const db = new DatabaseSync(join(restored.stateRoot, 'hq.sqlite'));
-    try {
-      expect(
-        db.prepare('SELECT state, intent FROM hq_plan_operation WHERE id = ?').get(id),
-      ).toMatchObject({ state: 'prepared', intent });
-    } finally {
-      db.close();
-    }
-    expect(
-      await readFile(join(restored.recoveryRoot, hashValue(directory), 'plan.md'), 'utf8'),
-    ).toBe('# Incomplete replacement\n');
-    expect(await readFile(join(directory, 'plan.md'), 'utf8')).toBe('# Incomplete replacement\n');
+    await expect(lstat(join(root, 'snapshot'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(lock, 'utf8')).toBe(owner);
+    await rm(lock);
+    expect((await createHqSnapshot(runtime, join(root, 'snapshot'))).header.sourceStateRoot).toBe(
+      stateRoot,
+    );
   });
 });
 
-test.each(['action.key', 'hq.sqlite', 'manifest.jsonl', 'complete.json', 'companion'])(
+test.each(['action.key', 'hq.sqlite', 'manifest.jsonl', 'complete.json'])(
   'missing or corrupt %s prevents restore without creating a target',
   async (name) => {
-    await withClaudeRuntime(async ({ runtime, root, workspaceRoot }) => {
-      const directory = join(workspaceRoot, 'selected-plan');
-      await registerPlan(runtime, directory);
+    await withClaudeRuntime(async ({ runtime, root }) => {
       const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
-      const filename =
-        name === 'companion'
-          ? join(snapshot.directory, 'plans', hashValue(directory), 'coordination.json')
-          : join(snapshot.directory, name);
+      const filename = join(snapshot.directory, name);
       if (name === 'hq.sqlite' || name === 'manifest.jsonl')
         await writeFile(filename, 'corrupt', { mode: 0o600 });
       else await rm(filename);
@@ -408,18 +424,15 @@ test.each(['action.key', 'hq.sqlite', 'manifest.jsonl', 'complete.json', 'compan
 
 test.each([
   'file-link',
-  'parent-link',
   'shared-key',
-  'path-traversal',
-  'omitted-plan',
+  'omitted-record',
+  'extra-record',
   'bad-schema',
   'wrong-key-pair',
 ])(
   'inspection rejects %s even when the attacker recomputes manifest completion',
   async (attack) => {
-    await withClaudeRuntime(async ({ runtime, root, workspaceRoot }) => {
-      const directory = join(workspaceRoot, 'selected-plan');
-      await registerPlan(runtime, directory);
+    await withClaudeRuntime(async ({ runtime, root }) => {
       const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
       const entries = await readManifest(snapshot.directory);
       if (attack === 'file-link') {
@@ -429,13 +442,9 @@ test.each([
           join(snapshot.directory, 'action.key'),
         );
       }
-      if (attack === 'parent-link') {
-        await rm(join(snapshot.directory, 'plans', hashValue(directory)), { recursive: true });
-        await symlink(directory, join(snapshot.directory, 'plans', hashValue(directory)));
-      }
       if (attack === 'shared-key') await chmod(join(snapshot.directory, 'action.key'), 0o644);
-      if (attack === 'path-traversal') entries[3].key = '../outside';
-      if (attack === 'omitted-plan') entries.pop();
+      if (attack === 'omitted-record') entries.pop();
+      if (attack === 'extra-record') entries.push(entries[2]!);
       if (attack === 'bad-schema') entries[0].schemaHash = '0'.repeat(64);
       if (attack === 'wrong-key-pair') {
         const key = Buffer.alloc(32);
@@ -478,13 +487,10 @@ test('occupied snapshot and restore targets, including a live state root, remain
   });
 });
 
-test.each(['/snapshot/manifest.jsonl', '/snapshot/plans/'])(
+test.each(['/snapshot/manifest.jsonl', '/snapshot/action.key'])(
   'full-disk failure at %s removes owned output and releases admission',
   async (target) => {
-    await withClaudeRuntime(async ({ runtime, root, workspaceRoot }) => {
-      const directory = join(workspaceRoot, 'selected-plan');
-      await registerPlan(runtime, directory);
-      const before = await readFile(join(directory, 'plan.md'));
+    await withClaudeRuntime(async ({ runtime, root, stateRoot }) => {
       faults.target = target;
       await expectToRejectCode(
         createHqSnapshot(runtime, join(root, 'snapshot')),
@@ -492,134 +498,12 @@ test.each(['/snapshot/manifest.jsonl', '/snapshot/plans/'])(
         'Injected full disk',
       );
       await expect(lstat(join(root, 'snapshot'))).rejects.toMatchObject({ code: 'ENOENT' });
-      expect(await readFile(join(directory, 'plan.md'))).toStrictEqual(before);
-      expect((await createHqSnapshot(runtime, join(root, 'snapshot'))).planCount).toBe(1);
+      expect((await createHqSnapshot(runtime, join(root, 'snapshot'))).header.sourceStateRoot).toBe(
+        stateRoot,
+      );
     });
   },
 );
-
-test('registered plans cross a seek-page boundary and missing source evidence stays diagnostic', async () => {
-  await withClaudeRuntime(async ({ runtime, root, workspaceRoot }) => {
-    // crash-recovery fixtures exercise the registration trigger without a model or document rewrite
-    await runtime.withStorageMaintenance(async (storage) => {
-      const db = new DatabaseSync(storage.databasePath);
-      try {
-        db.exec('BEGIN');
-        const insert = db.prepare('INSERT INTO hq_plan_projection VALUES (?, NULL)');
-        for (let index = 0; index < 130; index++)
-          insert.run(join(workspaceRoot, `missing-${String(index).padStart(4, '0')}`));
-        db.exec('COMMIT');
-      } finally {
-        db.close();
-      }
-    });
-    const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
-    expect(snapshot).toMatchObject({ planCount: 130, diagnosticPlanCount: 130 });
-    const records = (await readManifest(snapshot.directory)).filter(
-      (entry) => entry.kind === 'plan',
-    );
-    expect(new Set(records.map((entry) => entry.sourceDirectory)).size).toBe(130);
-    expect(
-      records.every((entry) =>
-        z.array(z.string()).parse(entry.diagnostics).includes('plan-missing'),
-      ),
-    ).toBe(true);
-    expect((await inspectHqSnapshot(snapshot.directory)).planCount).toBe(130);
-  });
-});
-
-test('repeated public task plan binding remains idempotent and registers one snapshot artifact set', async () => {
-  await withCollaboration(async (fixture) => {
-    const directory = join(fixture.native.workspaceRoot, 'selected-plan');
-    await registerPlan(fixture.native.runtime, directory);
-    const status = await fixture.native.runtime.request({
-      kind: 'plan',
-      command: { kind: 'status', target: { directory } },
-    });
-    if (status.kind !== 'plan' || status.result.kind !== 'status') throw new Error('Missing plan');
-    const plan = {
-      planId: 'snapshot-plan',
-      directory,
-      revision: status.result.result.revision,
-      milestoneIds: [],
-    };
-    for (const expectedRevision of [1, 2])
-      await fixture.call({
-        kind: 'task-plan-set',
-        id: randomUUID(),
-        taskId: fixture.taskId,
-        expectedRevision,
-        plan,
-      });
-    expect(
-      (await createHqSnapshot(fixture.native.runtime, join(fixture.native.root, 'snapshot')))
-        .planCount,
-    ).toBe(1);
-  });
-});
-
-test('reauthorizing a request registers its newly selected plan for capture', async () => {
-  await withCollaboration(async (fixture) => {
-    const requestId = randomUUID();
-    await publish(fixture, requestId, fixture.agentIds[0]!);
-    const directory = join(fixture.native.workspaceRoot, 'reauthorized-plan');
-    await mkdir(directory);
-    const source = '# Selected request plan\n';
-    await writeFile(join(directory, 'plan.md'), source);
-    await fixture.call({
-      kind: 'request-authorize',
-      id: randomUUID(),
-      taskId: fixture.taskId,
-      requestId,
-      expectedActionId: null,
-      grantId: null,
-      grantRevision: null,
-      plan: {
-        directory,
-        planId: 'request-plan',
-        revision: { planDigest: hashValue(source), breakdownDigest: null },
-        milestoneIds: [],
-      },
-    });
-    const snapshot = await createHqSnapshot(
-      fixture.native.runtime,
-      join(fixture.native.root, 'snapshot'),
-    );
-    expect(snapshot.planCount).toBe(1);
-    expect(
-      await readFile(join(snapshot.directory, 'plans', hashValue(directory), 'plan.md'), 'utf8'),
-    ).toBe(source);
-    expect((await inspectHqSnapshot(snapshot.directory)).planCount).toBe(1);
-  });
-});
-
-test('narrowed workspace roots retain registered references without reading unavailable companions', async () => {
-  await withClaudeRuntime(async ({ runtime, root, workspaceRoot, stateRoot }) => {
-    const directory = join(workspaceRoot, 'selected-plan');
-    await registerPlan(runtime, directory);
-    await runtime.close();
-    const selectedRoot = join(workspaceRoot, 'selected-root');
-    await mkdir(selectedRoot);
-    await writeFile(join(root, 'outside-scope.txt'), 'External source evidence.');
-    await rm(join(directory, 'plan.md'));
-    await symlink(join(root, 'outside-scope.txt'), join(directory, 'plan.md'));
-    const narrowed = await createAgentHq({ stateRoot, allowedRoots: [selectedRoot] });
-    try {
-      const snapshot = await createHqSnapshot(narrowed, join(root, 'snapshot'));
-      expect(snapshot).toMatchObject({ planCount: 1, diagnosticPlanCount: 1 });
-      expect((await readManifest(snapshot.directory))[3]).toMatchObject({
-        sourceDirectory: directory,
-        plan: null,
-        milestones: null,
-        coordination: null,
-        diagnostics: ['plan-unavailable'],
-      });
-      expect((await inspectHqSnapshot(snapshot.directory)).planCount).toBe(1);
-    } finally {
-      await narrowed.close();
-    }
-  });
-});
 
 test('a restore copy failure removes its private workspace, preserves source evidence and can be retried', async () => {
   await withClaudeRuntime(async ({ runtime, root }) => {
@@ -726,9 +610,27 @@ test(
   'submitted receipts, queued input and live approvals are fenced without replay',
   { timeout: 15000 },
   async () => {
-    await withCollaboration(async (fixture) => {
-      const status = await fixture.native.runtime.request({ kind: 'status' });
+    await withClaudeRuntime(async (fixture) => {
+      const status = await fixture.request({ kind: 'status' });
       if (status.kind !== 'status') throw new Error('Missing status');
+      const created = await fixture.request({
+        kind: 'action',
+        action: {
+          id: randomUUID(),
+          runtimeEpoch: status.result.runtimeEpoch,
+          command: {
+            kind: 'thread-create',
+            provider: 'codex',
+            workspaceRoot: fixture.workspaceRoot,
+            name: 'fenced-session',
+          },
+        },
+      });
+      if (created.kind !== 'action' || !created.result.threadId) throw new Error('Missing thread');
+      const threadId = created.result.threadId;
+      await expect
+        .poll(() => fixture.request({ kind: 'managed-thread', threadId }))
+        .toMatchObject({ kind: 'managed-thread', result: { state: 'idle' } });
       const actionId = randomUUID(),
         approvalId = randomUUID(),
         queueId = randomUUID();
@@ -739,7 +641,7 @@ test(
         settings: {},
       });
       // seed a stopped-controller crash checkpoint; capture proceeds while work is submitted
-      await fixture.native.runtime.withStorageMaintenance(async (storage) => {
+      await fixture.runtime.withStorageMaintenance(async (storage) => {
         const db = new DatabaseSync(storage.databasePath);
         try {
           const now = Date.now();
@@ -751,7 +653,7 @@ test(
             status.result.runtimeEpoch,
             status.result.runtimeEpoch,
             'message',
-            fixture.agentIds[0]!,
+            threadId,
             'submitted',
             now,
             now,
@@ -764,7 +666,7 @@ test(
             status.result.runtimeEpoch,
             status.result.runtimeEpoch,
             'queue',
-            fixture.agentIds[0]!,
+            threadId,
             queuedInput,
             now,
             now,
@@ -773,7 +675,7 @@ test(
             "INSERT INTO hq_native_approval (id,thread_id,native_turn_id,runtime_epoch,native_request_id,digest,kind,is_blocking,state,created_at,updated_at) VALUES (?,?,?,?,?,?,'command',1,'pending',?,?)",
           ).run(
             approvalId,
-            fixture.agentIds[0]!,
+            threadId,
             'stopped-turn',
             status.result.runtimeEpoch,
             'native-permission',
@@ -785,13 +687,10 @@ test(
           db.close();
         }
       });
-      const snapshot = await createHqSnapshot(
-        fixture.native.runtime,
-        join(fixture.native.root, 'snapshot'),
-      );
+      const snapshot = await createHqSnapshot(fixture.runtime, join(fixture.root, 'snapshot'));
       const restored = await restoreHqSnapshot({
         snapshotDirectory: snapshot.directory,
-        destination: join(fixture.native.root, 'recovery'),
+        destination: join(fixture.root, 'recovery'),
       });
       const db = new DatabaseSync(join(restored.stateRoot, 'hq.sqlite'));
       try {
@@ -817,7 +716,7 @@ test(
       }
       const reopened = await createAgentHq({
         stateRoot: restored.stateRoot,
-        allowedRoots: [fixture.native.workspaceRoot],
+        allowedRoots: [fixture.workspaceRoot],
       });
       try {
         const current = await reopened.request({ kind: 'status' });
@@ -827,269 +726,6 @@ test(
         expect(await reopened.request({ kind: 'receipt', actionId })).toMatchObject({
           kind: 'receipt',
           result: { delivery: 'uncertain' },
-        });
-      } finally {
-        await reopened.close();
-      }
-    });
-  },
-);
-
-const publish = async (
-  fixture: ICollaborationFixture,
-  requestId: string,
-  targetAgentId: string,
-  parentRequestId?: string,
-) => {
-  const request: IRequestSpecification = {
-    targetAgentId,
-    claimable: false,
-    skill: null,
-    grantId: null,
-    grantRevision: null,
-    arguments: 'Return the exact report.',
-    effects: ['read'],
-    scopes: [{ workspaceRoot: fixture.native.workspaceRoot, pathPrefixes: [''] }],
-    plan: null,
-    targetReferences: [],
-  };
-  return fixture.call(
-    {
-      kind: 'message-publish',
-      id: requestId,
-      taskId: fixture.taskId,
-      streamId: fixture.streamId,
-      messageKind: 'request',
-      summary: 'Snapshot request',
-      body: request.arguments,
-      references: [],
-      replyToMessageId: null,
-      ...(parentRequestId ? { parentRequestId } : {}),
-      request,
-    },
-    parentRequestId ? { kind: 'agent', agentId: fixture.agentIds[0]! } : fixture.host,
-  );
-};
-
-const finish = async (
-  fixture: ICollaborationFixture,
-  requestId: string,
-  outcome: IDispatchResponse['outcome'],
-  children: string[] = [],
-) => {
-  const result: IDispatchResponse = {
-    requestId,
-    outcome,
-    childRequestIds: children,
-    requiredAuthority: null,
-    report: `Exact ${outcome}: ${requestId}. 🙂`,
-  };
-  const thread = await fixture.native.request({
-    kind: 'managed-thread',
-    threadId: fixture.agentIds[0]!,
-  });
-  if (thread.kind !== 'managed-thread' || !thread.result?.nativeId || !thread.result.activeTurnId)
-    throw new Error('Missing native turn');
-  await writeFixtureControl(fixture.native.root, 'control.json', {
-    holdTurn: true,
-    emitOnce: true,
-    emit: [
-      {
-        method: 'item/completed',
-        params: {
-          threadId: thread.result.nativeId,
-          turnId: thread.result.activeTurnId,
-          item: { id: randomUUID(), type: 'agentMessage', text: JSON.stringify(result) },
-        },
-      },
-      {
-        method: 'turn/completed',
-        params: {
-          threadId: thread.result.nativeId,
-          turn: { id: thread.result.activeTurnId, status: 'completed' },
-        },
-      },
-    ],
-  });
-  await fixture.native.request({ kind: 'skills', threadId: fixture.agentIds[0]! });
-  await expect
-    .poll(() => fixture.call({ kind: 'request-read', taskId: fixture.taskId, requestId }))
-    .toMatchObject({
-      kind: 'request',
-      request: { state: outcome === 'waiting-children' ? 'waiting-children' : 'resolved' },
-    });
-  return result;
-};
-
-test.each(['pending-child', 'returned-child'] as const)(
-  '%s reports and parent waits survive restore without native histories; authority stays paused',
-  { timeout: 20000 },
-  async (phase) => {
-    await withCollaboration(async (fixture) => {
-      await writeFixtureControl(fixture.native.root, 'control.json', { holdTurn: true });
-      await writeFixtureControl(fixture.native.root, 'claude-control.json', { holdTurn: true });
-      const parentId = randomUUID(),
-        childId = randomUUID();
-      await publish(fixture, parentId, fixture.agentIds[0]!);
-      await fixture.call({
-        kind: 'request-dispatch',
-        id: randomUUID(),
-        taskId: fixture.taskId,
-        requestId: parentId,
-      });
-      await expect
-        .poll(() =>
-          fixture.call({ kind: 'request-read', taskId: fixture.taskId, requestId: parentId }),
-        )
-        .toMatchObject({ kind: 'request', request: { currentActionId: parentId } });
-      await publish(fixture, childId, fixture.agentIds[1]!, parentId);
-      const waiting = await finish(fixture, parentId, 'waiting-children', [childId]);
-      const grantId = randomUUID();
-      await fixture.call({
-        kind: 'grant-issue',
-        id: grantId,
-        taskId: fixture.taskId,
-        eligibleAgentIds: null,
-        skills: [{ name: 'jg-feedback', mode: null }],
-        effects: ['read'],
-        scopes: [{ workspaceRoot: fixture.native.workspaceRoot, pathPrefixes: [''] }],
-        plan: null,
-      });
-      await fixture.call({
-        kind: 'agent-state-set',
-        id: randomUUID(),
-        taskId: fixture.taskId,
-        agentId: fixture.agentIds[phase === 'pending-child' ? 1 : 0]!,
-        expectedRevision: 1,
-        state: 'paused',
-      });
-      const childReport = 'Recovered child finding. 🙂\n'.repeat(8192);
-      if (phase === 'returned-child')
-        await writeFixtureControl(fixture.native.root, 'claude-control.json', {
-          structuredOutput: {
-            requestId: childId,
-            outcome: 'completed',
-            childRequestIds: [],
-            requiredAuthority: null,
-            report: childReport,
-          },
-        });
-      await fixture.call({
-        kind: 'task-policy-set',
-        id: randomUUID(),
-        taskId: fixture.taskId,
-        expectedRevision: 1,
-        policy: { ...fixture.policy, automaticDispatch: true },
-      });
-      if (phase === 'returned-child')
-        await expect
-          .poll(() =>
-            fixture.call({ kind: 'request-read', taskId: fixture.taskId, requestId: childId }),
-          )
-          .toMatchObject({ kind: 'request', request: { state: 'resolved' } });
-      const before = await fixture.call({
-        kind: 'request-read',
-        taskId: fixture.taskId,
-        requestId: parentId,
-      });
-      if (before.kind !== 'request') throw new Error('Missing parent');
-      if (phase === 'returned-child') expect(before.request.continuationActionId).not.toBeNull();
-      const snapshot = await createHqSnapshot(
-        fixture.native.runtime,
-        join(fixture.native.root, 'snapshot'),
-      );
-      await fixture.native.runtime.close();
-      await rm(fixture.native.configRoot, { recursive: true });
-      const restored = await restoreHqSnapshot({
-        snapshotDirectory: snapshot.directory,
-        destination: join(fixture.native.root, 'recovery'),
-      });
-      const reopened = await createAgentHq({
-        stateRoot: restored.stateRoot,
-        allowedRoots: [fixture.native.workspaceRoot],
-      });
-      try {
-        const task = await fixture.call(
-          { kind: 'task-read', taskId: fixture.taskId },
-          fixture.host,
-          reopened,
-        );
-        expect(task).toMatchObject({
-          kind: 'task',
-          task: { state: 'paused', policy: { automaticDispatch: false } },
-        });
-        expect(
-          await fixture.call(
-            { kind: 'grant-read', taskId: fixture.taskId, grantId },
-            fixture.host,
-            reopened,
-          ),
-        ).toMatchObject({ kind: 'grant', grant: { revokedAt: expect.any(Number) } });
-        const recovered = await fixture.call(
-          { kind: 'request-read', taskId: fixture.taskId, requestId: parentId },
-          fixture.host,
-          reopened,
-        );
-        expect(recovered).toMatchObject({
-          kind: 'request',
-          request: {
-            state: 'waiting-children',
-            waitGeneration: 1,
-            childRequestIds: [childId],
-            dispatchCount: 1,
-            continuationActionId: before.request.continuationActionId,
-          },
-        });
-        const report = await fixture.call(
-          { kind: 'report-read', taskId: fixture.taskId, reportId: parentId },
-          fixture.host,
-          reopened,
-        );
-        expect(report).toMatchObject({
-          kind: 'report',
-          result: {
-            text: waiting.report,
-            report: { sha256: hashValue(waiting.report) },
-            isComplete: true,
-          },
-        });
-        if (phase === 'returned-child') {
-          let cursor: string | undefined;
-          let text = '';
-          do {
-            const chunk = await fixture.call(
-              {
-                kind: 'report-read',
-                taskId: fixture.taskId,
-                reportId: childId,
-                ...(cursor ? { cursor } : {}),
-              },
-              fixture.host,
-              reopened,
-            );
-            if (chunk.kind !== 'report') throw new Error('Missing child report');
-            expect(Buffer.byteLength(chunk.result.text)).toBeLessThanOrEqual(32_768);
-            expect(chunk.result.report.sha256).toBe(hashValue(childReport));
-            text += chunk.result.text;
-            cursor = chunk.result.nextCursor ?? undefined;
-          } while (cursor);
-          expect(text).toBe(childReport);
-        }
-        const status = await reopened.request({ kind: 'status' });
-        expect(status).toMatchObject({
-          kind: 'status',
-          result: {
-            providers: [
-              { provider: 'codex', state: 'idle' },
-              { provider: 'claude', state: 'idle' },
-            ],
-          },
-        });
-        expect(
-          await reopened.request({ kind: 'managed-thread', threadId: fixture.agentIds[0]! }),
-        ).toMatchObject({
-          kind: 'managed-thread',
-          result: { ownership: 'uncertain', state: 'unknown' },
         });
       } finally {
         await reopened.close();
@@ -1155,122 +791,48 @@ test.each(['header', 'database'])(
   },
 );
 
-test('a plan revised after its threads bound is reported changed, and restore strips only its execution scope', async () => {
-  await withClaudeRuntime(async ({ runtime, root, workspaceRoot }) => {
+// the header and records jg-agent-hq 8.0.2 wrote, with a field and records this schema lacks
+test("a snapshot with another schema's header fields and records is refused by name before its shape is checked", async () => {
+  await withClaudeRuntime(async ({ runtime, root, stateRoot, workspaceRoot }) => {
+    const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
+    const entries = await readManifest(snapshot.directory);
+    Object.assign(entries[0]!, {
+      schemaHash: 'bf4d6ad7f2c97adaeb762f7206557999e6ed081d54484d233fe931b31fdf62ab',
+      packageVersion: '8.0.2',
+      sourceCoordinationRoot: stateRoot,
+    });
     const directory = join(workspaceRoot, 'selected-plan');
-    await registerPlan(runtime, directory);
-    const status = await runtime.request({ kind: 'status' });
-    if (status.kind !== 'status') throw new Error('Missing status');
-    const created = await runtime.request({
-      kind: 'action',
-      action: {
-        id: randomUUID(),
-        runtimeEpoch: status.result.runtimeEpoch,
-        command: { kind: 'thread-create', provider: 'codex', workspaceRoot, name: 'bound-plan' },
-      },
-    });
-    if (created.kind !== 'action' || !created.result.threadId) throw new Error('Missing thread');
-    const threadId = created.result.threadId;
-    await expect
-      .poll(() => runtime.request({ kind: 'managed-thread', threadId }))
-      .toMatchObject({ kind: 'managed-thread', result: { state: 'idle' } });
-    const plan = await runtime.request({
+    entries.push({
       kind: 'plan',
-      command: { kind: 'status', target: { directory } },
+      key: hashValue(directory),
+      sourceDirectory: directory,
+      planId: null,
+      revision: null,
+      recordedRevisions: [],
+      plan: null,
+      milestones: null,
+      coordination: null,
+      diagnostics: ['plan-missing'],
     });
-    if (plan.kind !== 'plan' || plan.result.kind !== 'status') throw new Error('Missing plan');
-    const revision = plan.result.result.revision;
-    const authorizationId = randomUUID();
-    // a thread bound under the plan's current revision, as execution admission records it
-    await runtime.withStorageMaintenance(async (storage) => {
-      const db = new DatabaseSync(storage.databasePath);
-      try {
-        db.prepare(
-          'INSERT INTO hq_thread_plan (thread_id, directory, context, authorization_id, milestone_id) VALUES (?, ?, ?, ?, NULL)',
-        ).run(
-          threadId,
-          directory,
-          JSON.stringify({
-            directory,
-            scope: {
-              kind: 'execution',
-              authorizationId,
-              milestoneId: null,
-              mode: 'supervised',
-              revision,
-            },
-            observedRevision: revision,
-          }),
-          authorizationId,
-        );
-      } finally {
-        db.close();
-      }
-    });
-    const current = await createHqSnapshot(runtime, join(root, 'current'));
-    expect(current.changedPlanCount).toBe(0);
-    expect((await readManifest(current.directory))[3]).toMatchObject({
-      revision,
-      recordedRevisions: [revision],
-      diagnostics: [],
-    });
+    const text = entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n';
+    await writeFile(join(snapshot.directory, 'manifest.jsonl'), text);
     await writeFile(
-      join(directory, 'plan.md'),
-      (await readFile(join(directory, 'plan.md'), 'utf8')).replace(
-        'Retain checked evidence.',
-        'Retain checked evidence, revised after binding.',
-      ),
+      join(snapshot.directory, 'complete.json'),
+      JSON.stringify({ manifestSha256: hashValue(text), records: entries.length }),
     );
-    const changed = await createHqSnapshot(runtime, join(root, 'changed'));
-    expect(changed).toMatchObject({ planCount: 1, diagnosticPlanCount: 1, changedPlanCount: 1 });
-    const record = (await readManifest(changed.directory))[3]!;
-    expect(record).toMatchObject({ recordedRevisions: [revision], diagnostics: ['plan-changed'] });
-    expect(record.revision).not.toStrictEqual(revision);
-    expect(await inspectHqSnapshot(changed.directory)).toStrictEqual(changed);
-    // the restored binding, and whether the recovered runtime still reports the plan approved
-    const recover = async (snapshotDirectory: string, destination: string) => {
-      const restored = await restoreHqSnapshot({ snapshotDirectory, destination });
-      const db = new DatabaseSync(join(restored.stateRoot, 'hq.sqlite'), { readOnly: true });
-      let binding: { authorizationId: unknown; scope: unknown };
-      try {
-        const row = db
-          .prepare('SELECT authorization_id, context FROM hq_thread_plan WHERE thread_id = ?')
-          .get(threadId);
-        binding = {
-          authorizationId: row?.authorization_id,
-          scope: JSON.parse(String(row?.context)).scope,
-        };
-      } finally {
-        db.close();
-      }
-      const reopened = await createAgentHq({
-        stateRoot: restored.stateRoot,
-        allowedRoots: [restored.recoveryRoot],
-      });
-      try {
-        const recovered = await reopened.request({
-          kind: 'plan',
-          command: {
-            kind: 'status',
-            target: { directory: join(restored.recoveryRoot, hashValue(directory)) },
-          },
-        });
-        if (recovered.kind !== 'plan' || recovered.result.kind !== 'status')
-          throw new Error('Missing recovered plan');
-        return { ...binding, isPlanApproved: recovered.result.result.isPlanApproved };
-      } finally {
-        await reopened.close();
-      }
-    };
-    expect(await recover(changed.directory, join(root, 'changed-recovery'))).toStrictEqual({
-      authorizationId: null,
-      scope: null,
-      isPlanApproved: false,
-    });
-    expect(await recover(current.directory, join(root, 'current-recovery'))).toMatchObject({
-      authorizationId,
-      scope: { kind: 'execution', authorizationId },
-      isPlanApproved: true,
-    });
+    await expectToRejectCode(
+      inspectHqSnapshot(snapshot.directory),
+      'JG_AGENT_HQ_STORAGE_INVALID',
+      'The HQ storage is invalid: written by jg-agent-hq 8.0.2',
+    );
+    await expectToRejectCode(
+      restoreHqSnapshot({
+        snapshotDirectory: snapshot.directory,
+        destination: join(root, 'recovery'),
+      }),
+      'JG_AGENT_HQ_STORAGE_INVALID',
+      'written by jg-agent-hq 8.0.2',
+    );
+    await expect(lstat(join(root, 'recovery'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

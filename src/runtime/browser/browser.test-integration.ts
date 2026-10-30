@@ -39,6 +39,7 @@ const withRuntime = async (
   }
 };
 
+// a native effect for the host's dispatcher, which these tests never submit to HQ
 const requestFor = async (runtime: IAgentHq): Promise<IBrowserAction> => {
   const status = await runtime.request({ kind: 'status' });
   if (status.kind !== 'status') throw new Error('unexpected status');
@@ -46,8 +47,17 @@ const requestFor = async (runtime: IAgentHq): Promise<IBrowserAction> => {
     id: randomUUID(),
     runtimeEpoch: status.result.runtimeEpoch,
     command: {
-      kind: 'plan',
-      command: { kind: 'status', target: { directory: '/operator-choice' } },
+      kind: 'native',
+      action: {
+        id: randomUUID(),
+        runtimeEpoch: status.result.runtimeEpoch,
+        command: {
+          kind: 'thread-create',
+          provider: 'codex',
+          workspaceRoot: '/operator-choice',
+          name: 'operator-request',
+        },
+      },
     },
   };
 };
@@ -70,8 +80,16 @@ test('concurrent identical requests invoke the host once; payload and operator c
         {
           ...input,
           command: {
-            kind: 'plan',
-            command: { kind: 'status', target: { directory: '/another-plan' } },
+            kind: 'native',
+            action: {
+              ...input.command.action,
+              command: {
+                kind: 'thread-create',
+                provider: 'codex',
+                workspaceRoot: '/operator-choice',
+                name: 'another-request',
+              },
+            },
           },
         },
         'operator',
@@ -173,9 +191,6 @@ test('native effects reconcile the exact server-owned child action instead of ac
     expect(receipt.native?.kind).toBe('thread-create');
     expect(receipt.native?.threadId).not.toBeNull();
     expect(receipt.native?.completion).toBeNull();
-    expect(
-      await runtime.request({ kind: 'thread-plan', threadId: receipt.native!.threadId! }),
-    ).toStrictEqual({ kind: 'thread-plan', result: null });
   });
 });
 

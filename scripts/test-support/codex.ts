@@ -82,7 +82,6 @@ else {
   const respond = (id,result) => send(JSON.stringify({ id,result }));
   const notify = (method,params) => send(JSON.stringify({ method,params }));
   const managed = new Map();
-  const toolCalls = new Map();
   let threadSequence = 0;
   let turnSequence = 0;
   const interrupts = [];
@@ -99,11 +98,6 @@ else {
     requestControl = control;
     if (!request.method) {
       appendFileSync(join(directory,'replies.jsonl'),JSON.stringify(request)+'\n');
-      if(toolCalls.has(request.id)) {
-        const {threadId,turnId}=toolCalls.get(request.id);toolCalls.delete(request.id);
-        notify('item/completed',{threadId,turnId,item:{id:'tool-result-'+turnId,type:'agentMessage',text:JSON.stringify(control.structuredOutput??request.result??request.error)}});
-        complete(threadId);return;
-      }
       const threadId = control.promptThread || [...managed.keys()].at(-1);
       if (control.replyResolutionDelay) setTimeout(() => notify('serverRequest/resolved',{threadId,requestId:request.id}),control.replyResolutionDelay);
       else notify('serverRequest/resolved',{threadId,requestId:request.id});
@@ -136,7 +130,7 @@ else {
       if(control.releaseThreadId)complete(control.releaseThreadId);
       if(control.skillsFailure){respond(request.id,{data:'invalid'});return;}
       const skills = Array.from({length:control.skillNames?.length??control.skillCount??2},(_,index)=>{
-        const name=control.skillNames?.[index]??(index===0&&control.planSkill?control.planSkill:(control.skillRevision?'changed-':'')+(index===0?'explicit-skill':index===1?'implicit-skill':'skill-'+index));
+        const name=control.skillNames?.[index]??(control.skillRevision?'changed-':'')+(index===0?'explicit-skill':index===1?'implicit-skill':'skill-'+index);
         return {name,description:control.skillDescriptionSize?'d'.repeat(control.skillDescriptionSize):'Native installed skill '+index,path:join(directory,'skills',name,'SKILL.md'),scope:'user',enabled:!(control.disabledSkill&&index===0),dependencies:{tools:[{type:'mcp',value:'example',description:'Native declared prerequisite'}]}};
       });
       respond(request.id,{data:[{cwd:control.wrongSkillRoot??params.cwds[0],skills,errors:control.skillErrors?[{}]:[]}]});return;
@@ -205,14 +199,6 @@ else {
       return;
     }
     if (method === 'turn/start') {
-      const skill = params.input?.find(item => item.type === 'skill')?.name;
-      const documents = control.planningSources?.[skill];
-      if (documents) {
-        // Test-owned provider output only; the real HQ observes these files afterward.
-        for (const filename of ['plan.md', 'milestones.md'])
-          if (documents[filename] !== undefined)
-            writeFileSync(join(workspaceRoot, 'example-plan', filename), documents[filename]);
-      }
       if (control.rejectTurn) { send(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic input rejection'}}));return; }
       const thread = managed.get(params.threadId);
       thread.model=params.model??thread.model;thread.reasoningEffort=params.effort??thread.reasoningEffort;
@@ -226,17 +212,7 @@ else {
       if (control.loseOutput) { process.stdout.end();return; }
       const acknowledge = () => respond(request.id,{turn});
       if (control.lateTurnAck) setTimeout(acknowledge,31_000); else acknowledge();
-      if(control.toolCall) {
-        const callId='tool-call-'+turnSequence;
-        let callbackThreadId=thread.id;
-        if(control.toolChild) {
-          callbackThreadId='child-'+thread.id;
-          managed.set(callbackThreadId,{...thread,id:callbackThreadId,parentThreadId:control.toolParent??thread.id,cwd:control.toolRoot??thread.cwd});
-        }
-        toolCalls.set(callId,{threadId:thread.id,turnId:turn.id});
-        send(JSON.stringify({id:callId,method:'item/tool/call',params:{threadId:callbackThreadId,turnId:control.toolTurnId??turn.id,callId,namespace:null,...control.toolCall}}));
-      }
-      if (!control.holdTurn && !control.prompt && !control.toolCall) {
+      if (!control.holdTurn && !control.prompt) {
         const text=control.outputText??(control.outputSize?'x'.repeat(control.outputSize):control.structuredOutput!==undefined?JSON.stringify(control.structuredOutput):'Live response');
         for(const extra of control.turnItems??[])notify('item/completed',{threadId:thread.id,turnId:turn.id,item:extra});
         notify('item/completed',{threadId:thread.id,turnId:turn.id,item:{...item,text}});

@@ -34,8 +34,13 @@ export const SkillSchema = z.object({
 });
 export type ISkill = z.infer<typeof SkillSchema>;
 
+// the provider's invocation prefix, such as `/` or `$`, is null while its inventory is unavailable
 export const SkillPageSchema = z.object({
   state: z.enum(['available', 'partial', 'unavailable']),
+  invocationPrefix: z
+    .string()
+    .regex(/^[^\s\p{Cc}]{1,8}$/u)
+    .nullable(),
   observedAt: z.number().int().nullable(),
   data: z.array(SkillSchema).max(128),
   unavailableCount: z.number().int().nonnegative(),

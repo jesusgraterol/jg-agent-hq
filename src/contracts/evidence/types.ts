@@ -5,7 +5,7 @@ import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '../constants.js';
 import { CursorSchema, NativeIdSchema } from '../identities/index.js';
 import { ProviderIdSchema } from '../providers/index.js';
 
-// session discovery is shared by trusted hosts and scoped agent tools
+// session discovery for trusted hosts
 export const SessionDiscoveryRequestSchema = z.strictObject({
   kind: z.literal('sessions'),
   provider: ProviderIdSchema,
@@ -22,13 +22,7 @@ export const SessionDiscoveryRequestSchema = z.strictObject({
  */
 export const HistoryProvenanceSchema = z.object({
   origin: z.enum(['operator', 'agent', 'tool', 'system', 'unknown']),
-  source: z.enum([
-    'native-kind',
-    'host-action',
-    'authenticated-host-action',
-    'agent-input',
-    'unknown',
-  ]),
+  source: z.enum(['native-kind', 'host-action', 'authenticated-host-action', 'unknown']),
   nativeInputId: NativeIdSchema.nullable(),
   nativeInputSha256: z
     .string()

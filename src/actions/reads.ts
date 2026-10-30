@@ -12,8 +12,8 @@ type IControlRead = Extract<
   IHqRequest,
   {
     kind:
-      | 'thread-plan'
       | 'receipt'
+      | 'action-wait'
       | 'managed-threads'
       | 'managed-thread'
       | 'managed-thread-name'
@@ -63,11 +63,12 @@ const nextPageCursor = (
 
 /**
  * Authorizes bounded control reads and binds seek positions to their exact query.
- * @returns The selected record or bounded page.
+ * @returns The selected record or bounded page, or a receipt once its wait ends.
  * @throws
  * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
  * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
  * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+ * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
  * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
  * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
@@ -97,10 +98,16 @@ export const readControl = async (
       result: { data: page.data, nextCursor: nextPageCursor(page, filters) },
     };
   }
-  if (command.kind === 'receipt') {
+  if (command.kind === 'receipt' || command.kind === 'action-wait') {
     const receipt = await store.getAction(command.actionId);
     if (receipt?.threadId) await authorize(await store.getThread(receipt.threadId));
-    return { kind: 'receipt', result: receipt };
+    if (command.kind === 'receipt') return { kind: 'receipt', result: receipt };
+    // an unknown action has nothing to wait for
+    if (!receipt) return { kind: 'action-wait', result: { receipt: null, isTimedOut: false } };
+    return {
+      kind: 'action-wait',
+      result: await actions.waits.wait(command.actionId, command.until, command.timeoutMs),
+    };
   }
   if (command.kind === 'managed-threads') {
     const { cursor, ...filters } = command;
@@ -133,8 +140,6 @@ export const readControl = async (
   }
   const thread = await store.getThread(command.threadId);
   await authorize(thread);
-  if (command.kind === 'thread-plan')
-    return { kind: 'thread-plan', result: thread ? await store.getThreadPlan(thread.id) : null };
   if (command.kind === 'managed-thread') return { kind: command.kind, result: thread };
   if (!thread)
     throw new Exception('The HQ action conflicts with its recorded state', {

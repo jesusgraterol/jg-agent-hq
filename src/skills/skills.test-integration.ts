@@ -163,12 +163,13 @@ const setup = async (fixture: IClaudeFixture, provider: 'codex' | 'claude') => {
 };
 
 test.each(['codex', 'claude'] as const)(
-  '%s catalog reads native metadata and previews explicit invocation without inference',
+  '%s catalog reads native metadata and its invocation prefix, and previews explicit invocation without inference',
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
       const api = await setup(fixture, provider);
       const page = await api.catalog();
       expect(page.state).toBe('available');
+      expect(page.invocationPrefix).toBe(provider === 'codex' ? '$' : '/');
       expect(page.data).toHaveLength(2);
       const skill = page.data.find((skill) => skill.name === 'explicit-skill')!;
       expect(skill.requiresExplicitInvocation).toBeNull();
@@ -341,6 +342,7 @@ test.each(['codex', 'claude'] as const)(
       await api.control({ skillsFailure: true });
       expect(await api.catalog()).toStrictEqual({
         state: 'unavailable',
+        invocationPrefix: null,
         observedAt: null,
         data: [],
         unavailableCount: 0,
@@ -563,6 +565,7 @@ test('Claude unsupported startup metadata is unavailable while execution control
     const api = await setup(fixture, 'claude');
     expect(await api.catalog()).toStrictEqual({
       state: 'unavailable',
+      invocationPrefix: null,
       observedAt: null,
       data: [],
       unavailableCount: 0,
@@ -680,6 +683,7 @@ test.each([
       if (provider === 'codex') await api.control(settings);
       expect(await api.catalog()).toStrictEqual({
         state: 'unavailable',
+        invocationPrefix: null,
         observedAt: null,
         data: [],
         unavailableCount: 0,

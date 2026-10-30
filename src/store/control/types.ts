@@ -1,11 +1,7 @@
 import { z } from 'zod';
 
-import { AgentSpawnAdmissionSchema } from '../../collaboration/identity/index.js';
-import { DispatchAdmissionSchema } from '../../collaboration/dispatch/index.js';
-
 import {
   ActionEnvelopeSchema,
-  ActionPlanContextSchema,
   PreparedInputSchema,
   TurnResultSchema,
   ActionReceiptSchema,
@@ -57,13 +53,17 @@ export const ActionRowSchema = z.object({
   related_action_id: z.uuid().nullable(),
   queued_input: z.string().nullable(),
   result: z.string().nullable(),
-  plan_context: z.string().nullable(),
   requested_name: ManagedThreadSchema.shape.name.nullable(),
   queue_ready: z.number().int().min(0).max(1),
   created_at: z.number().int(),
   updated_at: z.number().int(),
 });
 export type IActionRow = z.infer<typeof ActionRowSchema>;
+// an action row joined with its thread's native session, which its receipt carries
+export const ActionReceiptRowSchema = ActionRowSchema.extend({
+  native_thread_id: ActionReceiptSchema.shape.nativeThreadId,
+});
+export type IActionReceiptRow = z.infer<typeof ActionReceiptRowSchema>;
 
 const NativeIdSchema = ManagedThreadSchema.shape.nativeId.unwrap();
 const OutcomeFields = { actionId: z.uuid(), requestId: z.string().min(1).max(256) };
@@ -174,9 +174,6 @@ export const AdmissionSchema = z.strictObject({
     workspaceRoot: z.string().optional(),
     nativeId: NativeIdSchema.optional(),
     input: PreparedInputSchema.optional(),
-    planContext: ActionPlanContextSchema.optional(),
-    agentSpawn: AgentSpawnAdmissionSchema.optional(),
-    collaboration: DispatchAdmissionSchema.optional(),
   }),
 });
 export type IAdmission = z.infer<typeof AdmissionSchema>;

@@ -71,7 +71,7 @@ export const openDatabase = (
       }
     }
     database.exec(
-      `PRAGMA journal_mode = ${STORAGE_CONNECTION_SETTINGS.journalMode}; PRAGMA synchronous = ${STORAGE_CONNECTION_SETTINGS.synchronous};`,
+      `PRAGMA journal_mode = ${STORAGE_CONNECTION_SETTINGS.journalMode}; PRAGMA synchronous = ${STORAGE_CONNECTION_SETTINGS.synchronous}; PRAGMA journal_size_limit = ${STORAGE_CONNECTION_SETTINGS.journalSizeLimitBytes};`,
     );
     return { database, schemaHash };
   } catch (error) {

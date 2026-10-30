@@ -1,7 +1,7 @@
 {
   "name": "jg-agent-hq",
-  "version": "8.0.2",
-  "description": "Native coding-agent session control, agent streams and durable collaboration for Node.js apps.",
+  "version": "9.0.0",
+  "description": "Native Claude Code and Codex session control, history, usage and recoverable local storage for Node.js apps.",
   "type": "module",
   "license": "MIT",
   "packageManager": "pnpm@12.4.0",
@@ -47,11 +47,10 @@
     "check": "pnpm check:package && pnpm --dir website check"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "2.3.1",
     "jg-crypto": "0.3.0",
     "jg-exception": "^1.7.0",
     "jg-fs": "1.7.0",
-    "jg-plans": "0.3.0",
+    "jg-locks": "^1.0.0",
     "jg-utilities": "1.7.0",
     "zod": "^4.3.6"
   },

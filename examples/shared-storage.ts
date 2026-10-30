@@ -9,7 +9,7 @@ import { createHqSnapshot, restoreHqSnapshot, type IAgentHq } from 'jg-agent-hq'
  * its SQL connections.
  * The application transaction commits before capture and is not rolled back if capture fails.
  * Capture returns verified metadata; restore independently validates the staged copy.
- * @returns The inspected snapshot, recovery locations and exact restored preference.
+ * @returns The inspected snapshot, its restored state root and the exact restored preference.
  * @throws
  * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
@@ -29,7 +29,9 @@ export const shareStorage = async (input: {
       enableForeignKeyConstraints: storage.connectionSettings.foreignKeys,
     });
     try {
-      database.exec('PRAGMA synchronous = FULL; BEGIN IMMEDIATE');
+      database.exec(
+        `PRAGMA synchronous = FULL; PRAGMA journal_size_limit = ${storage.connectionSettings.journalSizeLimitBytes}; BEGIN IMMEDIATE`,
+      );
       try {
         database.exec(
           'CREATE TABLE IF NOT EXISTS app_preference (id INTEGER PRIMARY KEY CHECK (id = 1), label TEXT NOT NULL) STRICT',

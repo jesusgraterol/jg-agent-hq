@@ -4,17 +4,14 @@ import {
   ActionEnvelopeSchema,
   ActionReceiptSchema,
   ActionSummarySchema,
-  ActionPlanContextSchema,
   ManagedThreadSchema,
   NativeApprovalSchema,
 } from '../actions/index.js';
 import { LiveItemsSchema } from '../types.js';
-import { PlanCommandSchema } from '../plans/index.js';
 
 // the browser surface is closed; hosts resolve every supplied identity against their registry
 export const BrowserCommandSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('native'), action: ActionEnvelopeSchema }),
-  z.strictObject({ kind: z.literal('plan'), command: PlanCommandSchema }),
 ]);
 export const BrowserActionSchema = z
   .strictObject({
@@ -38,10 +35,9 @@ export const BrowserReceiptSchema = z.object({
 });
 export type IBrowserReceipt = z.infer<typeof BrowserReceiptSchema>;
 
-// one managed thread with its plan context, pending approvals, live items and recent actions
+// one managed thread with its pending approvals, live items and recent actions
 export const BrowserThreadDetailSchema = z.object({
   thread: ManagedThreadSchema,
-  plan: ActionPlanContextSchema.nullable(),
   approvals: z.array(NativeApprovalSchema).max(128),
   live: LiveItemsSchema,
   actions: z.object({

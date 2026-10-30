@@ -120,8 +120,6 @@ export type ICodexEvents = {
 
 // native read models and explicit control operations; execution settings remain with Codex
 export type ICodexProvider = {
-  /** Reports declared or observed experimental dynamic tools for a controlled session. */
-  hasAgentTools(nativeId: string): boolean;
   /** @returns Safe native account metadata without refreshing tokens. */
   readAccount(): Promise<IAccountObservation>;
   /** @returns Live presentation for the exact native challenge. */

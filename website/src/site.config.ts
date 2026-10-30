@@ -39,7 +39,7 @@ export const PAGE_RECORDS = [
     markdown: '/index.md',
     title: 'jg-agent-hq | Run coding agents from your app',
     description:
-      'A TypeScript SDK and local controller for Claude Code and Codex. Drive sessions, answer prompts, let agents review each other and keep plans on track.',
+      'A TypeScript SDK and local controller for Claude Code and Codex. Drive native sessions, answer their prompts and follow their output.',
   },
   {
     id: 'getting-started',
@@ -47,7 +47,7 @@ export const PAGE_RECORDS = [
     markdown: '/docs/index.md',
     title: 'Getting started | jg-agent-hq',
     description:
-      'Install the local controller and understand native sessions, skill previews, account observations and revision-bound plan authority.',
+      'Install the local controller and understand native sessions, skill previews and account observations.',
   },
   {
     id: 'api',
@@ -63,6 +63,6 @@ export const PAGE_RECORDS = [
     markdown: '/examples/index.md',
     title: 'Worked examples | jg-agent-hq',
     description:
-      'Three complete TypeScript examples: run a native session, get another agent’s review and revise a plan without losing verified work.',
+      'A complete TypeScript example that runs a native session and reads its delivery, output, prompts and usage.',
   },
 ] as const;

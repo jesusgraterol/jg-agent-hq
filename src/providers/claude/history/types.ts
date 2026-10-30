@@ -15,6 +15,7 @@ export const FileRowSchema = z.object({
   workspace_root: z.string(),
   identity: z.string(),
   file_size: z.number(),
+  modified_at: z.number().nullable(),
   byte_offset: z.number(),
   revision: z.string(),
   leaf_id: z.string().nullable(),

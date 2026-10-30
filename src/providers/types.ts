@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { SkillSchema, ThreadSummarySchema } from '../contracts/index.js';
+import { SkillPageSchema, SkillSchema, ThreadSummarySchema } from '../contracts/index.js';
 import type {
   IActionCommand,
   IManagedThread,
@@ -75,7 +75,6 @@ export type IAgentProviderEvents = {
 
 // factories receive trusted configuration and runtime lifetime ownership
 export type IAgentProviderContext = {
-  agentTools?: import('../agent-tools/index.js').IProviderAgentTools;
   allowedRoots: string[];
   runtimeEpoch: string;
   signal: AbortSignal;
@@ -238,8 +237,6 @@ export type IAgentProvider = {
    * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
    * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
    * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
-   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
-   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
    * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
    */
   startTurn(
@@ -334,8 +331,9 @@ export type INativePrompt = {
   reject(): Promise<void>;
 };
 
-// normalized native inventory, bounded before client paging
+// normalized native inventory, bounded before client paging, with the prefix that invokes a skill
 export const ProviderSkillsSchema = z.object({
+  invocationPrefix: SkillPageSchema.shape.invocationPrefix.unwrap(),
   skills: z.array(SkillSchema.omit({ id: true })).max(4096),
   unavailableCount: z.number().int().nonnegative(),
   observedAt: z.number().int().safe(),

@@ -173,7 +173,9 @@ test('Claude creates and names an idle native session, deduplicates input and re
     expect(starts[0]!.args).toContain('--permission-prompt-tool=stdio');
     expect(
       starts[0]!.args.some((arg) =>
-        /bare|dangerously|permission-mode|settings|system-prompt|no-session-persistence/.test(arg),
+        /bare|dangerously|permission-mode|settings|system-prompt|no-session-persistence|mcp-config/.test(
+          arg,
+        ),
       ),
     ).toBe(false);
     expect((await api.calls()).filter((call) => call.type === 'user')).toHaveLength(0);
@@ -527,37 +529,11 @@ test('Claude permissions preserve native input and cannot grant a session-wide a
   });
 });
 
-test('Claude runs the agent tools HQ serves without asking for approval', async () => {
+test('Claude asks before running an MCP tool', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture),
       { thread } = await api.create();
-    await fixture.control({ prompt: 'permission', toolName: 'mcp__{bridge}__read_session' });
-    const input = await api.message(thread.id);
-    await api.until(
-      () => api.receipt(input.id),
-      (entry) => entry.completion === 'completed',
-    );
-    const all = await fixture.request({ kind: 'approvals', threadId: thread.id });
-    expect(all).toMatchObject({ kind: 'approvals', result: { data: [] } });
-    expect(
-      (await api.calls()).find((call) => call.type === 'control_response')!.response,
-    ).toStrictEqual({
-      subtype: 'success',
-      request_id: 'native-request',
-      response: { behavior: 'allow', updatedInput: { repository: 'example' } },
-    });
-  });
-});
-
-test.each([
-  ['a tool of another MCP server', 'mcp__fixture-server__inspect'],
-  ['a name that only contains the prefix', 'mcp__other_mcp__{bridge}__read_session'],
-  ['a tool of a server named after the bridge', 'mcp__{bridge}__other__read'],
-])('Claude asks before running %s', async (_case, toolName) => {
-  await withClaudeRuntime(async (fixture) => {
-    const api = await actions(fixture),
-      { thread } = await api.create();
-    await fixture.control({ prompt: 'permission', toolName });
+    await fixture.control({ prompt: 'permission', toolName: 'mcp__fixture-server__inspect' });
     await api.message(thread.id);
     const [prompt] = await api.until(
       () => api.approvals(thread.id),
@@ -1238,7 +1214,7 @@ test.each([
   });
 });
 
-test('a parked Claude session reopens for a message and a rename with its settings and agent bridge', async () => {
+test('a parked Claude session reopens for a message and a rename with its settings', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture);
     const create = api.envelope({
@@ -1274,22 +1250,14 @@ test('a parked Claude session reopens for a message and a rename with its settin
     await api.submit(rename);
     await api.settled(rename.id);
     expect((await api.thread(thread.id)).name).toBe('renamed-session');
-    // every start passes the same flags and bridge, apart from the bridge's credential file
+    // every start passes the same flags
     const flags = (args: string[]) =>
       args
         .filter((_arg, index) => !['--session-id', '--resume'].includes(args[index - 1] ?? ''))
-        .filter((arg) => arg !== '--session-id' && arg !== '--resume')
-        .map((arg, index, all) =>
-          all[index - 1] === '--mcp-config'
-            ? Object.keys(
-                z.object({ mcpServers: z.record(z.string(), z.unknown()) }).parse(JSON.parse(arg))
-                  .mcpServers,
-              )
-            : arg,
-        );
+        .filter((arg) => arg !== '--session-id' && arg !== '--resume');
     const starts = await readStarts(fixture);
     expect(starts).toHaveLength(3);
-    expect(starts[0]!.args).toContain('--mcp-config');
+    expect(starts[0]!.args).not.toContain('--mcp-config');
     expect(starts[0]!.args[starts[0]!.args.indexOf('--permission-mode') + 1]).toBe('plan');
     for (const start of starts.slice(1)) {
       expect(start.args[start.args.indexOf('--resume') + 1]).toBe(thread.nativeId);

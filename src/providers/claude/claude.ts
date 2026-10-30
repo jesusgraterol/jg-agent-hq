@@ -22,6 +22,8 @@ import { toClaudeAccount } from './accounts/index.js';
 
 // the session-less read process closes after this long without a read, and reopens on the next one
 const METADATA_IDLE_SECONDS = 300;
+// a usage result read this recently answers the next read without asking Claude again
+const USAGE_KEPT_MS = 60_000;
 
 /**
  * Lazily connects read-only Claude capabilities; Codex needs no Claude installation.
@@ -38,7 +40,17 @@ export const createClaudeProvider = (store: IStore) => {
   // a closing idle read process, whose failure surfaces at shutdown
   let retiring: Promise<void> | undefined;
   let version: string | null = null;
+  // the first read process that started and initialized confirms the CLI for transcript reads
+  let isVerified = false;
   let refresh: Promise<IUsageSnapshot> | undefined;
+  // when the kept usage result was read, and a count of the changes that outdate it
+  let usageReadAt: number | null = null;
+  let usageChanges = 0;
+  /** Ends the kept usage result early, after an account, limit or connection change. */
+  const expireUsage = (): void => {
+    usageChanges += 1;
+    usageReadAt = null;
+  };
   const unavailable = (): IUsageSnapshot => ({
     provider: 'claude',
     state: 'unavailable',
@@ -50,14 +62,25 @@ export const createClaudeProvider = (store: IStore) => {
     resetCredits: null,
   });
   let latest = unavailable();
+  /** Marks the latest usage stale once it is a minute old or one of its windows has reset. */
+  const currentUsage = (): IUsageSnapshot => {
+    if (
+      (latest.observedAt !== null && Date.now() - latest.observedAt > 60_000) ||
+      latest.windows.some((window) => window.resetsAt !== null && window.resetsAt <= Date.now())
+    )
+      latest = { ...latest, state: 'stale' };
+    return latest;
+  };
   const connect = async () => {
     connection = await createClaudeRpc((reason) => {
+      expireUsage();
       if (reason === 'account') {
         generation += 1;
         latest = unavailable();
       } else latest = { ...latest, state: latest.observedAt === null ? 'unavailable' : 'stale' };
     });
     version = connection.version;
+    isVerified = true;
     return connection;
   };
   const open = () => {
@@ -107,6 +130,17 @@ export const createClaudeProvider = (store: IStore) => {
       }
     }
   };
+  /**
+   * Confirms once that the Claude CLI starts and initializes; later calls keep that result
+   * instead of opening the read process again.
+   * @returns Confirmation that the CLI was verified.
+   * @throws
+   * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+   * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+   */
+  const verify = async (): Promise<void> => {
+    if (!isVerified) await withMetadata(async () => undefined);
+  };
   /** Runs one bounded metadata read and confirms native shutdown before releasing its slot. */
   const withReadConnection = async <T>(
     workspaceRoot: string | undefined,
@@ -153,6 +187,7 @@ export const createClaudeProvider = (store: IStore) => {
       idleClose?.abort();
       idleClose = undefined;
       generation += 1;
+      expireUsage();
       latest = unavailable();
       if (opening) {
         const native = await opening;
@@ -162,14 +197,15 @@ export const createClaudeProvider = (store: IStore) => {
       opening = undefined;
     },
     /**
-     * Verifies native initialization without requesting usage or starting inference.
-     * @returns Confirmation that the read connection is ready.
+     * Verifies native initialization without requesting usage or starting inference, keeping the
+     * runtime's first successful check.
+     * @returns Confirmation that the CLI was verified.
      * @throws
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
      * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
      */
     async ensureReady(): Promise<void> {
-      await withMetadata(async () => undefined);
+      await verify();
     },
     /**
      * Reads current native model choices without a user prompt.
@@ -240,7 +276,7 @@ export const createClaudeProvider = (store: IStore) => {
      */
     async readHistory(command: IHistoryRequest): Promise<IHqResponse> {
       const deadline = Date.now() + 30_000;
-      await withMetadata(async () => undefined);
+      await verify();
       while (!isClosing && Date.now() < deadline) {
         const result = await store.readClaudeHistory(command);
         if (result.kind !== 'indexing') return result;
@@ -254,11 +290,16 @@ export const createClaudeProvider = (store: IStore) => {
       });
     },
     /**
-     * Reads account windows, retaining a failed observation as stale rather than zero.
+     * Reads account windows, retaining a failed observation as stale rather than zero. A result
+     * read less than 60 seconds ago answers without asking Claude again, unless an account, limit
+     * or connection change ended it.
      * @returns Actual native windows or an explicit freshness/unavailable state.
      */
     readUsage(): Promise<IUsageSnapshot> {
       if (refresh) return refresh;
+      if (usageReadAt !== null && Date.now() - usageReadAt < USAGE_KEPT_MS)
+        return Promise.resolve(currentUsage());
+      const changes = usageChanges;
       return (refresh = (async () => {
         try {
           await withMetadata(async (native) => {
@@ -276,13 +317,10 @@ export const createClaudeProvider = (store: IStore) => {
           latest = { ...latest, state: latest.observedAt === null ? 'unavailable' : 'stale' };
         } finally {
           refresh = undefined;
+          // a change during the read outdates its result, so the next read asks Claude again
+          if (changes === usageChanges) usageReadAt = Date.now();
         }
-        if (
-          (latest.observedAt !== null && Date.now() - latest.observedAt > 60_000) ||
-          latest.windows.some((window) => window.resetsAt !== null && window.resetsAt <= Date.now())
-        )
-          latest = { ...latest, state: 'stale' };
-        return latest;
+        return currentUsage();
       })());
     },
     /**

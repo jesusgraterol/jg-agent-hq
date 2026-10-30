@@ -90,7 +90,6 @@ const createFixtureProvider = () => {
       accountLogin: unsupported,
       accountLoginCancel: unsupported,
       accountLogout: unsupported,
-      agentTools: unsupported,
     },
     inputSchema: z.record(z.string(), z.json()).parse(z.toJSONSchema(MessageInputSchema)),
     configurationSchema: null,
@@ -233,6 +232,7 @@ const createFixtureProvider = () => {
           windows: [],
         }),
         readSkills: async () => ({
+          invocationPrefix: '!',
           skills: [
             {
               name: 'review-design',
@@ -524,6 +524,7 @@ test('a third provider uses public creation, skill input, native completion, clo
         });
       const catalog = await runtime.request({ kind: 'skills', threadId });
       if (catalog.kind !== 'skills') throw new Error('Missing skills');
+      expect(catalog.result.invocationPrefix).toBe('!');
       const skillId = catalog.result.data[0]!.id;
       expect(
         await runtime.request({
@@ -938,10 +939,6 @@ test('a late fork result keeps the exact child and source without replay or inhe
       expect(await runtime.request({ kind: 'managed-thread', threadId: childId })).toMatchObject({
         kind: 'managed-thread',
         result: { state: 'idle', nativeLineage: { forkedFromId: parent.result.nativeId } },
-      });
-      expect(await runtime.request({ kind: 'thread-plan', threadId: childId })).toStrictEqual({
-        kind: 'thread-plan',
-        result: null,
       });
       expect(provider.names).toBe(2);
     },

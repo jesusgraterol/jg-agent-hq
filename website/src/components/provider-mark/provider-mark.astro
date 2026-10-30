@@ -1,11 +1,9 @@
 ---
 interface Props {
   provider: 'claude' | 'codex';
-  size?: 'default' | 'compact';
 }
 
-const { provider, size = 'default' } = Astro.props;
-const dimension = size === 'compact' ? 12 : 20;
+const { provider } = Astro.props;
 ---
 
 {/* decorative provider marks retain their brand colors beside the visible provider name */}
@@ -13,28 +11,28 @@ const dimension = size === 'compact' ? 12 : 20;
   provider === 'claude' ? (
     <img
       src="/coding-agents/claude-code.svg"
-      width={dimension}
-      height={dimension}
+      width="20"
+      height="20"
       alt=""
-      class:list={['object-contain', size === 'compact' ? 'size-3' : 'size-5']}
+      class="size-5 object-contain"
       decoding="async"
     />
   ) : (
     <>
       <img
         src="/coding-agents/codex.svg"
-        width={dimension}
-        height={dimension}
+        width="20"
+        height="20"
         alt=""
-        class:list={['object-contain dark:hidden', size === 'compact' ? 'size-3' : 'size-5']}
+        class="size-5 object-contain dark:hidden"
         decoding="async"
       />
       <img
         src="/coding-agents/codex-dark.svg"
-        width={dimension}
-        height={dimension}
+        width="20"
+        height="20"
         alt=""
-        class:list={['hidden object-contain dark:block', size === 'compact' ? 'size-3' : 'size-5']}
+        class="hidden size-5 object-contain dark:block"
         decoding="async"
       />
     </>

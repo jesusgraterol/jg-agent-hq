@@ -2,13 +2,12 @@ import {
   PreparedInputSchema,
   TurnResultSchema,
   NativeLineageSchema,
-  ActionPlanContextSchema,
   type IActionReceipt,
   type IActionSummary,
   type IManagedThread,
 } from '../../contracts/index.js';
 
-import type { IActionRow, IThreadRow } from './types.js';
+import type { IActionReceiptRow, IActionRow, IThreadRow } from './types.js';
 
 /** Converts a persisted control record without leaking internal admission state. */
 export const toManagedThread = (thread: IThreadRow): IManagedThread => ({
@@ -48,17 +47,17 @@ export const toActionSummary = (
   completion: action.completion,
   failure: action.failure,
   relatedActionId: action.related_action_id,
-  planContext:
-    action.plan_context === null
-      ? null
-      : ActionPlanContextSchema.parse(JSON.parse(action.plan_context)),
   createdAt: action.created_at,
   updatedAt: action.updated_at,
 });
 
-/** Includes recoverable queued input and complete native output only for a selected receipt. */
-export const toActionReceipt = (action: IActionRow): IActionReceipt => ({
+/**
+ * Includes the thread's native session, recoverable queued input and complete native output only
+ * for a selected receipt.
+ */
+export const toActionReceipt = (action: IActionReceiptRow): IActionReceipt => ({
   ...toActionSummary(action),
+  nativeThreadId: action.native_thread_id,
   queuedInput:
     action.queued_input === null
       ? null

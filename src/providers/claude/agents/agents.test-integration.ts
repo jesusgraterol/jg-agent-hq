@@ -478,8 +478,21 @@ test(
         (await readFile(join(fixture.root, 'claude-pids.jsonl'), 'utf8')).trim().split('\n').length;
       const before = await processes();
       await report(fixture, { agents: [listing(nativeId)] });
-      const runsBefore = await runs(fixture);
-      await expect.poll(() => runs(fixture), { timeout: 12_000 }).toBeGreaterThan(runsBefore);
+      // a poll's run is logged before HQ reads its output, so this waits for HQ to show the terminal
+      await expect
+        .poll(
+          async () => {
+            const session = await fixture.runtime.request({
+              kind: 'thread',
+              provider: 'claude',
+              workspaceRoot: fixture.workspaceRoot,
+              nativeId,
+            });
+            return session.kind === 'thread' ? session.result.terminal : null;
+          },
+          { timeout: 12_000 },
+        )
+        .toStrictEqual({ kind: 'interactive' });
       await expect(
         submit({ kind: 'message', threadId, input: { kind: 'text', text: 'From the app' } }),
       ).rejects.toMatchObject({ code: 'JG_AGENT_HQ_ACTION_CONFLICT' });

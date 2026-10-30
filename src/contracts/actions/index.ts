@@ -5,6 +5,7 @@ export {
   ActionEnvelopeSchema,
   ActionReceiptSchema,
   ActionSummarySchema,
+  ActionWaitSchema,
   ManagedThreadSchema,
   NativeApprovalSchema,
   NativeApprovalSummarySchema,
@@ -18,6 +19,7 @@ export type {
   IActionEnvelope,
   IActionReceipt,
   IActionSummary,
+  IActionWait,
   IManagedThread,
   INativeApproval,
   INativeApprovalSummary,
@@ -25,7 +27,3 @@ export type {
   INativeElicitation,
   ILifecycleEvent,
 } from './types.js';
-
-// guided plan scope
-export { PlanActionScopeSchema, ActionPlanContextSchema } from './types.js';
-export type { IPlanActionScope, IActionPlanContext } from './types.js';

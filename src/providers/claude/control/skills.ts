@@ -47,6 +47,7 @@ export const toClaudeSkills = (response: unknown): Omit<IProviderSkills, 'observ
     if (!existing || command.builtin) commands.set(command.name, command);
   }
   return {
+    invocationPrefix: '/',
     unavailableCount: 0,
     skills: [...commands.values()].map((command) => ({
       name: command.name,

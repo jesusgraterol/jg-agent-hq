@@ -15,8 +15,6 @@ export const DOCUMENT_RECORDS = [
 // Complete example sources are separate from canonical rendered documentation.
 export const EXAMPLE_SOURCE_RECORDS = [
   { id: 'control-session', source: 'examples/control-session.ts' },
-  { id: 'review-handoff', source: 'examples/review-handoff.ts' },
-  { id: 'revise-plan', source: 'examples/revise-plan.ts' },
 ] as const;
 
 export type IExampleId = (typeof EXAMPLE_SOURCE_RECORDS)[number]['id'];
@@ -32,15 +30,7 @@ export interface IExampleDefinition {
   // each step names the commands it sends and what the host sees afterwards
   steps: readonly { title: string; commands: readonly string[]; outcome: string }[];
   setup: string;
-  call: string | null;
-  hostFields: readonly { name: string; text: string }[];
-  visual: {
-    caption: string;
-    groups: readonly {
-      label: string;
-      items: readonly { title: string; detail: string; state: 'done' | 'pending' | null }[];
-    }[];
-  } | null;
+  call: string;
   result: string;
   resultLabel: string;
   resultNote: string;
