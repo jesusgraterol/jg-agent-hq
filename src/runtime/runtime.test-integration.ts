@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { connect } from 'node:net';
 import {
   lstat,
@@ -7,14 +7,15 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   stat,
   symlink,
   writeFile,
 } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { hostname, tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as wait } from 'node:timers/promises';
 import { promisify } from 'node:util';
@@ -1655,3 +1656,80 @@ test(
     }
   },
 );
+
+test('locks lists the machine locks with their holders, alive or gone, without taking or creating any', async () => {
+  await withRuntime(async ({ root, stateRoot, workspaceRoot, runtime }) => {
+    // the runtime and the holder read this folder, never the machine's own locks folder
+    const locksRoot = join(root, 'locks');
+    vi.stubEnv('JG_LOCKS_ROOT', locksRoot);
+    const read = async () => {
+      const response = await runtime.request({ kind: 'locks' });
+      if (response.kind !== 'locks') throw new Error('wrong response');
+      return response.result;
+    };
+    expect(await read()).toStrictEqual({ data: [], isTruncated: false });
+    await expect(lstat(locksRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+    const name = 'jesusgraterol.jg-agent-hq.locks-read';
+    // jg-locks run holds the lock while its command runs, in the holder's own process group
+    const holder = spawn(
+      process.execPath,
+      [
+        new URL('../../node_modules/jg-locks/dist/cli/cli.js', import.meta.url).pathname,
+        'run',
+        name,
+        '--',
+        process.execPath,
+        '-e',
+        "process.stdout.write(process.pid+'\\n');setInterval(()=>{},1<<30)",
+      ],
+      { cwd: workspaceRoot, detached: true, stdio: ['ignore', 'pipe', 'inherit'] },
+    );
+    const holderExited = new Promise<void>((resolve) => holder.once('exit', () => resolve()));
+    try {
+      const commandPid = await new Promise<number>((resolve, reject) => {
+        holder.stdout!.once('data', (chunk: Buffer) => resolve(Number(chunk.toString().trim())));
+        holder.once('exit', (code) => reject(new Error(`The lock holder exited with ${code}`)));
+      });
+      const held = await read();
+      expect(held).toMatchObject({
+        data: [
+          {
+            name,
+            state: 'held',
+            owner: {
+              pid: holder.pid,
+              hostname: hostname(),
+              program: basename(process.execPath),
+              cwd: await realpath(workspaceRoot),
+              metadata: {},
+            },
+            isOwnerAlive: true,
+          },
+        ],
+        isTruncated: false,
+      });
+      const cli = new URL('../../dist/cli/cli.js', import.meta.url).pathname;
+      expect(
+        JSON.parse(
+          (await execute(process.execPath, [cli, 'locks', '--state-root', stateRoot])).stdout,
+        ),
+      ).toStrictEqual({ schemaVersion: 1, kind: 'locks', result: held });
+      await expect(
+        execute(process.execPath, [cli, 'locks', '--state-root', stateRoot, '--provider', 'codex']),
+      ).rejects.toThrow();
+      // a holder killed before it released leaves the lock to its dead owner
+      process.kill(-holder.pid!, 'SIGKILL');
+      await holderExited;
+      await expect.poll(() => isAlive(commandPid)).toBe(false);
+      expect(await read()).toStrictEqual({
+        data: [{ ...held.data[0], state: 'owner-gone', isOwnerAlive: false }],
+        isTruncated: false,
+      });
+    } finally {
+      if (holder.exitCode === null && holder.signalCode === null) {
+        process.kill(-holder.pid!, 'SIGKILL');
+        await holderExited;
+      }
+    }
+  });
+});

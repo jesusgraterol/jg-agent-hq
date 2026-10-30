@@ -101,6 +101,7 @@ export const createSkills = (
       return {
         provider,
         formatSkill,
+        invocationPrefix: inventory.invocationPrefix,
         skills,
         unavailableCount: inventory.unavailableCount,
         observedAt: inventory.observedAt,
@@ -168,6 +169,7 @@ export const createSkills = (
       if (!result)
         return {
           state: 'unavailable',
+          invocationPrefix: null,
           observedAt: null,
           data: [],
           unavailableCount: 0,
@@ -194,6 +196,7 @@ export const createSkills = (
       const last = data.at(-1);
       return {
         state: result.unavailableCount ? 'partial' : 'available',
+        invocationPrefix: result.invocationPrefix,
         observedAt: result.observedAt,
         data,
         unavailableCount: result.unavailableCount,

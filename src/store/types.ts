@@ -257,14 +257,20 @@ export type IStore = {
     nativeIds: string[],
   ): Promise<{ nativeId: string; state: ISessionState }[]>;
   /** Reads session transitions after a sequence, in order.
-   * @returns A bounded page and whether more transitions follow.
+   * @returns A bounded page, whether more transitions follow, the highest sequence ever issued and
+   * whether the sequence can't be continued exactly.
    * @throws
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   listSessionTransitions(
     afterSequence: number,
     limit: number,
-  ): Promise<{ data: ISessionTransition[]; hasMore: boolean }>;
+  ): Promise<{
+    data: ISessionTransition[];
+    hasMore: boolean;
+    latestSequence: number;
+    isReset: boolean;
+  }>;
   /** Reads running and waiting sessions, managed and observed, newest state change first.
    * @returns At most `limit` records and whether more sessions are active.
    * @throws

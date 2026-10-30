@@ -104,11 +104,11 @@ The [qualification matrix](api/README.md#qualification) records native journeys,
 - `src/sessions/`: authorized discovery with live session states, the active-session list, bounded evidence and provenance, cursor-bound history reads and short label suggestions.
 - `src/skills/`: bounded native catalogs, invocation previews and explicit input preparation.
 - `src/accounts/` and `src/extensions/`: safe account observations and authorized, bounded native MCP inventories.
-- `src/actions/`: durable action dispatch, native input routing and bounded live presentation.
+- `src/actions/`: durable action dispatch, native input routing, bounded live presentation and receipt waits its own changes wake.
 - `src/store/`: SQLite discovery metadata, observed sessions and state transitions, and the action/control ledger in one worker.
 - `src/storage/`: trusted host metadata, exclusive maintenance and the current schema stamp.
 - `src/snapshots/`: capture while agents work, manifest validation and offline recovery that releases native ownership.
-- `src/contracts/`: browser-safe command and response contracts.
+- `src/contracts/`: browser-safe command and response contracts, including the jg-locks lock list.
 - `scripts/package/`: build-output cleanup and packed-consumer checks.
 - `scripts/release/`: registry version/integrity checks and trusted publication of the tested archive.
 - `scripts/test-support/`: disposable external CLI fixtures.

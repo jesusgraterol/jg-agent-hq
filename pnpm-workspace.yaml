@@ -6,6 +6,8 @@ minimumReleaseAgeExclude:
   - jg-fs@1.7.0
   - jg-personal-astro-ui@0.5.0
   - jg-exception@1.7.1
+  # Owned machine-wide locks package the locks read lists; published 2026-10-30.
+  - jg-locks@1.0.0
 
 allowBuilds:
   esbuild: true

@@ -48,8 +48,14 @@ export const SessionTransitionSchema = z.object({
 });
 export type ISessionTransition = z.infer<typeof SessionTransitionSchema>;
 
-// transitions after a sequence cursor; continue with the last returned sequence
+/*
+ * Transitions after a sequence cursor; continue with the last returned sequence. `latestSequence`
+ * is the highest sequence ever issued, or 0, and `isReset` is true when the cursor can't continue
+ * exactly: it is past `latestSequence`, or its own transition was pruned.
+ */
 export const SessionTransitionPageSchema = z.object({
   data: z.array(SessionTransitionSchema).max(128),
   hasMore: z.boolean(),
+  latestSequence: z.number().int().nonnegative(),
+  isReset: z.boolean(),
 });

@@ -4,8 +4,8 @@ import { z } from 'zod';
 import {
   SessionStateSchema,
   SessionTransitionSchema,
+  SessionTransitionPageSchema,
   type ISessionState,
-  type ISessionTransition,
 } from '../../contracts/index.js';
 
 import { ActiveSessionRecordSchema, type IActiveSessionRecord } from './types.js';
@@ -189,11 +189,27 @@ export class SessionsModel {
     };
   }
 
-  /** Reads transitions after a sequence, in order, with one row of lookahead for continuation. */
+  /**
+   * Reads transitions after a sequence, in order, with one row of lookahead for continuation.
+   * AUTOINCREMENT keeps the highest sequence ever issued in sqlite_sequence, even once pruning
+   * deleted that transition, and only pruning deletes one, so a missing sequence at or below it
+   * was pruned.
+   * @returns The page, the highest sequence ever issued, and whether the cursor can't continue.
+   */
   public transitions(
     afterSequence: number,
     limit: number,
-  ): { data: ISessionTransition[]; hasMore: boolean } {
+  ): z.infer<typeof SessionTransitionPageSchema> {
+    const latest = this.__database
+      .prepare("SELECT seq FROM sqlite_sequence WHERE name = 'hq_session_transition'")
+      .get();
+    const latestSequence = latest ? z.number().int().nonnegative().parse(latest.seq) : 0;
+    const isReset =
+      afterSequence > latestSequence ||
+      (afterSequence > 0 &&
+        !this.__database
+          .prepare('SELECT 1 FROM hq_session_transition WHERE sequence = ?')
+          .get(afterSequence));
     const rows = this.__database
       .prepare(
         'SELECT sequence, provider, native_id, thread_id, ownership, previous_state, state, reason, recorded_at FROM hq_session_transition WHERE sequence > ? ORDER BY sequence LIMIT ?',
@@ -216,6 +232,8 @@ export class SessionsModel {
         }),
       ),
       hasMore,
+      latestSequence,
+      isReset,
     };
   }
 }

@@ -509,6 +509,7 @@ export const createCodexProvider = async (
       const roots = await readSkillRoots(extraSkillRoots);
       const nativeNames = new Set(entry.skills.map((skill) => skill.name));
       return {
+        invocationPrefix: '$',
         unavailableCount: entry.errors.length + roots.unavailableCount,
         observedAt: Date.now(),
         skills: [

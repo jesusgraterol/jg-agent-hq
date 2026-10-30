@@ -50,10 +50,12 @@ import {
   ActionEnvelopeSchema,
   ActionReceiptSchema,
   ActionSummarySchema,
+  ActionWaitSchema,
   ManagedThreadSchema,
   NativeApprovalSchema,
   LifecycleEventSchema,
 } from './actions/index.js';
+import { LocksSchema } from './locks/index.js';
 
 // pagination is validated before adapters receive a native continuation
 const PageFields = {
@@ -140,6 +142,13 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({ kind: z.literal('action'), action: ActionEnvelopeSchema }),
   z.strictObject({ kind: z.literal('receipt'), actionId: z.uuid() }),
+  // waits until the receipt has a native thread ID, or a final delivery state, or the time runs out
+  z.strictObject({
+    kind: z.literal('action-wait'),
+    actionId: z.uuid(),
+    until: z.enum(['native', 'settled']),
+    timeoutMs: z.number().int().min(1).max(30_000),
+  }),
   z.strictObject({
     kind: z.literal('managed-threads'),
     workspaceRoot: TargetFields.workspaceRoot,
@@ -187,6 +196,8 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     workspaceRoot: TargetFields.workspaceRoot,
   }),
   z.strictObject({ kind: z.literal('observation-pace'), pace: ObservationPaceSchema }),
+  // the machine's jg-locks locks; HQ only reads them
+  z.strictObject({ kind: z.literal('locks') }),
 ]);
 export type IHqRequest = z.infer<typeof HqRequestSchema>;
 export type IHqRequestInput = z.input<typeof HqRequestSchema>;
@@ -455,6 +466,7 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('skill-preview'), result: SkillPreviewSchema }),
   z.object({ kind: z.literal('action'), result: ActionReceiptSchema }),
   z.object({ kind: z.literal('receipt'), result: ActionReceiptSchema.nullable() }),
+  z.object({ kind: z.literal('action-wait'), result: ActionWaitSchema }),
   z.object({
     kind: z.literal('managed-threads'),
     result: z.object({
@@ -497,6 +509,7 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
     kind: z.literal('observation-pace'),
     result: z.object({ pace: ObservationPaceSchema }),
   }),
+  z.object({ kind: z.literal('locks'), result: LocksSchema }),
 ]);
 export type IHqResponse = z.infer<typeof HqResponseSchema>;
 

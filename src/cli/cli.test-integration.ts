@@ -255,7 +255,12 @@ test('session-states reads transitions after a sequence through the installed co
     ).toStrictEqual({
       schemaVersion: 1,
       kind: 'session-states',
-      result: { data: [], hasMore: false },
+      result: {
+        data: [],
+        hasMore: false,
+        latestSequence: first.result.data[0].sequence,
+        isReset: false,
+      },
     });
     await expect(
       run(process.execPath, [

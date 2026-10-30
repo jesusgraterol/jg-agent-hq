@@ -108,6 +108,7 @@ export {
   ActionEnvelopeSchema,
   ActionReceiptSchema,
   ActionSummarySchema,
+  ActionWaitSchema,
   ManagedThreadSchema,
   NativeApprovalSchema,
   NativeApprovalSummarySchema,
@@ -121,6 +122,7 @@ export type {
   IActionEnvelope,
   IActionReceipt,
   IActionSummary,
+  IActionWait,
   IManagedThread,
   INativeApproval,
   INativeApprovalSummary,
@@ -241,3 +243,7 @@ export type {
   ISessionTransition,
   IObservationPace,
 } from './sessions/index.js';
+
+// machine-wide jg-locks locks
+export { LockStateSchema, LocksSchema } from './locks/index.js';
+export type { ILockState, ILocks } from './locks/index.js';

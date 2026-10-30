@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { hashValue } from 'jg-crypto';
 import { Exception, extractMessage, isException } from 'jg-exception';
+import { listLocks } from 'jg-locks';
 import { z } from 'zod';
 
 import { HqRequestSchema, type IHqRequestInput, type IHqResponse } from '../contracts/index.js';
@@ -146,6 +147,8 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const close = (): Promise<void> =>
     (closing ??= (async () => {
       try {
+        // receipt waits end first, so none holds up closing for its remaining time
+        actions.waits.close();
         await browser.close();
         await claudeAgents.close();
         const results = await Promise.allSettled([ipc?.close(), actions.close()]);
@@ -265,6 +268,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
         };
       case 'managed-thread-name':
       case 'receipt':
+      case 'action-wait':
       case 'managed-threads':
       case 'managed-thread':
       case 'actions':
@@ -292,6 +296,11 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       case 'observation-pace':
         claudeAgents.setPace(command.pace);
         return { kind: 'observation-pace', result: { pace: command.pace } };
+      case 'locks': {
+        // a read of the machine's locks folder; HQ never takes a lock there
+        const { locks, isTruncated } = await listLocks();
+        return { kind: 'locks', result: { data: locks, isTruncated } };
+      }
       default: {
         const response = await readNativeHistory(
           command,

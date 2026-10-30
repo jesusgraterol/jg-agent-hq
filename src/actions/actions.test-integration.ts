@@ -12,6 +12,7 @@ import type {
   IActionCommand,
   IActionEnvelope,
   IActionReceipt,
+  IActionWait,
   IManagedThread,
 } from 'jg-agent-hq/contracts';
 import { expect, test, vi } from 'vitest';
@@ -60,6 +61,15 @@ const setup = async () => {
       if (response.kind !== 'managed-thread' || !response.result) throw new Error('missing thread');
       return response.result;
     };
+    const actionWait = async (
+      actionId: string,
+      until: 'native' | 'settled',
+      timeoutMs = 5000,
+    ): Promise<IActionWait> => {
+      const response = await request({ kind: 'action-wait', actionId, until, timeoutMs });
+      if (response.kind !== 'action-wait') throw new Error('wrong response');
+      return response.result;
+    };
     const until = async <T>(
       read: () => Promise<T>,
       ready: (result: T) => boolean,
@@ -93,6 +103,7 @@ const setup = async () => {
       submit,
       receipt,
       thread,
+      actionWait,
       until,
       create,
       control: (settings: Record<string, unknown>) =>
@@ -1697,6 +1708,129 @@ test('control seek pages preserve tied ordering, reject changed filters and omit
       delivery: 'canceled',
       queuedInput: null,
     });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('action-wait returns a created session native thread ID once HQ records it, and an unknown action at once', async () => {
+  const fixture = await setup();
+  try {
+    const create = fixture.envelope({
+      kind: 'thread-create',
+      provider: 'codex',
+      workspaceRoot: fixture.workspaceRoot,
+      name: 'wait-native',
+    });
+    const admitted = await fixture.submit(create);
+    expect(admitted.nativeThreadId).toBeNull();
+    const native = await fixture.actionWait(create.id, 'native');
+    expect(native.isTimedOut).toBe(false);
+    const thread = await fixture.thread(admitted.threadId!);
+    expect(thread.nativeId).not.toBeNull();
+    expect(native.receipt).toMatchObject({ id: create.id, nativeThreadId: thread.nativeId });
+    expect(await fixture.actionWait(create.id, 'settled')).toMatchObject({
+      isTimedOut: false,
+      receipt: { delivery: 'acknowledged', nativeThreadId: thread.nativeId },
+    });
+    expect((await fixture.receipt(create.id)).nativeThreadId).toBe(thread.nativeId);
+    // action collections leave the native thread to their selected receipts
+    const actions = await fixture.request({ kind: 'actions', threadId: thread.id });
+    if (actions.kind !== 'actions') throw new Error('wrong response');
+    expect(actions.result.data[0]).not.toHaveProperty('nativeThreadId');
+    expect(await fixture.actionWait(randomUUID(), 'settled')).toStrictEqual({
+      receipt: null,
+      isTimedOut: false,
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('action-wait returns a settled delivery once HQ records it, or the receipt with isTimedOut when its time runs out', async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('wait-settled');
+    await fixture.control({ holdTurn: true });
+    const message = fixture.envelope({
+      kind: 'message',
+      threadId: thread.id,
+      input: { kind: 'text', text: 'Keep this turn active' },
+    });
+    await fixture.submit(message);
+    expect(await fixture.actionWait(message.id, 'settled')).toMatchObject({
+      isTimedOut: false,
+      receipt: { delivery: 'acknowledged', nativeThreadId: thread.nativeId },
+    });
+    const active = await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.state === 'running',
+    );
+    const queued = await fixture.submit(
+      fixture.envelope({
+        kind: 'queue',
+        threadId: thread.id,
+        expectedTurnId: active.activeTurnId!,
+        input: { kind: 'text', text: 'The next task' },
+      }),
+    );
+    // a queued entry already has its thread's native session, but stays unsettled while it waits
+    expect(await fixture.actionWait(queued.id, 'native')).toMatchObject({
+      isTimedOut: false,
+      receipt: { delivery: 'queued', nativeThreadId: thread.nativeId },
+    });
+    expect(await fixture.actionWait(queued.id, 'settled', 50)).toMatchObject({
+      isTimedOut: true,
+      receipt: { id: queued.id, delivery: 'queued' },
+    });
+    const settling = fixture.actionWait(queued.id, 'settled');
+    await fixture.submit(fixture.envelope({ kind: 'queue-cancel', queuedActionId: queued.id }));
+    expect(await settling).toMatchObject({
+      isTimedOut: false,
+      receipt: { id: queued.id, delivery: 'canceled' },
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('action-wait ends early when the runtime closes while it waits', async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('wait-close');
+    await fixture.control({ holdTurn: true });
+    await fixture.submit(
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Keep this turn active' },
+      }),
+    );
+    const active = await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.state === 'running',
+    );
+    const queued = await fixture.submit(
+      fixture.envelope({
+        kind: 'queue',
+        threadId: thread.id,
+        expectedTurnId: active.activeTurnId!,
+        input: { kind: 'text', text: 'The next task' },
+      }),
+    );
+    // the wait's 30 seconds exceed this test's own timeout, so only closing can end it in time
+    const ended = expectToRejectCode(
+      fixture.runtime.request({
+        kind: 'action-wait',
+        actionId: queued.id,
+        until: 'settled',
+        timeoutMs: 30_000,
+      }),
+      'JG_AGENT_HQ_RUNTIME_NOT_RUNNING',
+      'The HQ runtime is not running',
+    );
+    await fixture.runtime.close();
+    await ended;
   } finally {
     await fixture.close();
   }

@@ -232,6 +232,7 @@ const createFixtureProvider = () => {
           windows: [],
         }),
         readSkills: async () => ({
+          invocationPrefix: '!',
           skills: [
             {
               name: 'review-design',
@@ -523,6 +524,7 @@ test('a third provider uses public creation, skill input, native completion, clo
         });
       const catalog = await runtime.request({ kind: 'skills', threadId });
       if (catalog.kind !== 'skills') throw new Error('Missing skills');
+      expect(catalog.result.invocationPrefix).toBe('!');
       const skillId = catalog.result.data[0]!.id;
       expect(
         await runtime.request({

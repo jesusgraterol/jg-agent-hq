@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { SkillSchema, ThreadSummarySchema } from '../contracts/index.js';
+import { SkillPageSchema, SkillSchema, ThreadSummarySchema } from '../contracts/index.js';
 import type {
   IActionCommand,
   IManagedThread,
@@ -331,8 +331,9 @@ export type INativePrompt = {
   reject(): Promise<void>;
 };
 
-// normalized native inventory, bounded before client paging
+// normalized native inventory, bounded before client paging, with the prefix that invokes a skill
 export const ProviderSkillsSchema = z.object({
+  invocationPrefix: SkillPageSchema.shape.invocationPrefix.unwrap(),
   skills: z.array(SkillSchema.omit({ id: true })).max(4096),
   unavailableCount: z.number().int().nonnegative(),
   observedAt: z.number().int().safe(),

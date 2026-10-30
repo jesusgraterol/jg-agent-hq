@@ -7,7 +7,7 @@ import {
   type IManagedThread,
 } from '../../contracts/index.js';
 
-import type { IActionRow, IThreadRow } from './types.js';
+import type { IActionReceiptRow, IActionRow, IThreadRow } from './types.js';
 
 /** Converts a persisted control record without leaking internal admission state. */
 export const toManagedThread = (thread: IThreadRow): IManagedThread => ({
@@ -51,9 +51,13 @@ export const toActionSummary = (
   updatedAt: action.updated_at,
 });
 
-/** Includes recoverable queued input and complete native output only for a selected receipt. */
-export const toActionReceipt = (action: IActionRow): IActionReceipt => ({
+/**
+ * Includes the thread's native session, recoverable queued input and complete native output only
+ * for a selected receipt.
+ */
+export const toActionReceipt = (action: IActionReceiptRow): IActionReceipt => ({
   ...toActionSummary(action),
+  nativeThreadId: action.native_thread_id,
   queuedInput:
     action.queued_input === null
       ? null

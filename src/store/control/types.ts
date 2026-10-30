@@ -59,6 +59,11 @@ export const ActionRowSchema = z.object({
   updated_at: z.number().int(),
 });
 export type IActionRow = z.infer<typeof ActionRowSchema>;
+// an action row joined with its thread's native session, which its receipt carries
+export const ActionReceiptRowSchema = ActionRowSchema.extend({
+  native_thread_id: ActionReceiptSchema.shape.nativeThreadId,
+});
+export type IActionReceiptRow = z.infer<typeof ActionReceiptRowSchema>;
 
 const NativeIdSchema = ManagedThreadSchema.shape.nativeId.unwrap();
 const OutcomeFields = { actionId: z.uuid(), requestId: z.string().min(1).max(256) };

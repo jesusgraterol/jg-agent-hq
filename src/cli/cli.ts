@@ -44,7 +44,7 @@ const main = async (): Promise<void> => {
   const [kind] = positionals;
   if (values.help || !kind || kind === 'help') {
     process.stdout.write(
-      'jg-agent-hq serve|status|stop|capabilities|threads|thread|turns|items|item-detail|item-image|sessions|session-evidence|usage|account|models|configuration|mcp-servers|mcp-tools|mcp-resources|managed-thread-name|suggest-thread-name|skills|skill-preview|session-states|active-sessions|unstarted-threads|observation-pace|request --state-root <path> [--provider <provider-id>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--server-name <name>] [--skill-id <id>] [--arguments <text>] [--after-sequence <sequence>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nsession-evidence accepts --native-item-id and repeated --evidence-kind.\nitems reads newest first and accepts --text-limit <1..65536>, and --native-item-id with --turn-id for one item.\nitem-detail reads the detail of one item and takes --native-item-id and --turn-id.\nitem-image reads one image of an item and also takes --index <0..63>.\nobservation-pace takes --pace <live|background>.\nrequest reads one validated HQ command as JSON from stdin.\n',
+      'jg-agent-hq serve|status|stop|capabilities|threads|thread|turns|items|item-detail|item-image|sessions|session-evidence|usage|account|models|configuration|mcp-servers|mcp-tools|mcp-resources|managed-thread-name|suggest-thread-name|skills|skill-preview|session-states|active-sessions|unstarted-threads|observation-pace|locks|request --state-root <path> [--provider <provider-id>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--server-name <name>] [--skill-id <id>] [--arguments <text>] [--after-sequence <sequence>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nsession-evidence accepts --native-item-id and repeated --evidence-kind.\nitems reads newest first and accepts --text-limit <1..65536>, and --native-item-id with --turn-id for one item.\nitem-detail reads the detail of one item and takes --native-item-id and --turn-id.\nitem-image reads one image of an item and also takes --index <0..63>.\nobservation-pace takes --pace <live|background>.\nlocks lists the jg-locks locks on this machine with their holders; HQ never takes them.\nrequest reads one validated HQ command as JSON from stdin, such as action-wait.\n',
     );
     return;
   }
@@ -187,7 +187,7 @@ const main = async (): Promise<void> => {
     );
     return;
   }
-  if (kind === 'active-sessions' || kind === 'observation-pace') {
+  if (kind === 'active-sessions' || kind === 'observation-pace' || kind === 'locks') {
     const allowed = new Set(kind === 'observation-pace' ? ['state-root', 'pace'] : ['state-root']);
     if (Object.keys(values).some((key) => !allowed.has(key)))
       throw new Exception('The HQ request is invalid', {
@@ -195,7 +195,7 @@ const main = async (): Promise<void> => {
         data: { kind: 'invalid-request' },
       });
     const parsed = HqRequestSchema.safeParse(
-      kind === 'active-sessions' ? { kind } : { kind, pace: values.pace },
+      kind === 'observation-pace' ? { kind, pace: values.pace } : { kind },
     );
     if (!parsed.success)
       throw new Exception('The HQ request is invalid', {

@@ -22,6 +22,13 @@ import type { IStore } from '../store/index.js';
 import type { INativeOutcome, INativeObservation, IAdmission } from '../store/control/index.js';
 
 import { LiveItems } from './live/index.js';
+import { ActionWaits } from './waits/index.js';
+
+// item observations never change a receipt, and are too frequent to wake waits for
+const ITEM_OBSERVATIONS: ReadonlySet<INativeObservation['kind']> = new Set([
+  'item-started',
+  'item-completed',
+]);
 
 const NativeRejectionSchema = z.union([
   z.object({ nativeCode: z.number() }),
@@ -51,6 +58,7 @@ export const createActions = (
     live.open(key(provider, nativeId));
   };
   const live = new LiveItems();
+  const waits = new ActionWaits((actionId) => store.getAction(actionId));
   const tasks = new Set<Promise<void>>();
   const admissions = new Set<Promise<IActionReceipt>>();
   let lane = Promise.resolve();
@@ -77,6 +85,22 @@ export const createActions = (
     });
   };
 
+  /**
+   * Records native evidence, then wakes the receipt waits it can affect: a lost connection's on
+   * every receipt, and other evidence's on its thread's receipts.
+   * @returns The refreshed thread and whether its queue may advance.
+   * @throws
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  const recordObservation = async (observation: INativeObservation) => {
+    const result = await store.observe(observation);
+    if (observation.kind === 'native-unavailable') waits.notifyAll();
+    else if (result.thread && !ITEM_OBSERVATIONS.has(observation.kind))
+      waits.notifyThread(result.thread.id);
+    return result;
+  };
+
   /** Quarantines controls after a lifecycle gap and stops the native transport. */
   const failEvents = (cause?: unknown): void => {
     if (unavailable) return;
@@ -87,7 +111,7 @@ export const createActions = (
     lane = runBackground(async () => {
       await previous.catch(() => undefined);
       for (const { provider } of registry.statuses())
-        await store.observe({ kind: 'native-unavailable', provider });
+        await recordObservation({ kind: 'native-unavailable', provider });
     });
     void lane.catch((error: unknown) => {
       eventFailure = error;
@@ -105,7 +129,7 @@ export const createActions = (
     const previous = lane;
     lane = runBackground(async () => {
       await previous.catch(() => undefined);
-      await store.observe({ kind: 'native-unavailable', provider });
+      await recordObservation({ kind: 'native-unavailable', provider });
     });
     void lane.catch(failEvents);
     registry.quarantine(provider, cause);
@@ -137,7 +161,7 @@ export const createActions = (
       try {
         await operation();
       } catch {
-        await store.observe({
+        await recordObservation({
           kind: 'native-unavailable',
           provider,
           ...(nativeId ? { nativeThreadId: nativeId } : {}),
@@ -245,6 +269,7 @@ export const createActions = (
 
   const apply = async (outcome: INativeOutcome): Promise<IActionReceipt | null> => {
     const receipt = await store.applyOutcome(outcome);
+    waits.notifyAction(outcome.actionId);
     if (!receipt?.threadId) return receipt;
     const thread = await store.getThread(receipt.threadId);
     if (thread?.nativeId && (outcome.kind === 'closed' || outcome.kind === 'archived')) {
@@ -496,7 +521,7 @@ export const createActions = (
   };
 
   const observe = async (observation: INativeObservation): Promise<void> => {
-    const result = await store.observe(observation);
+    const result = await recordObservation(observation);
     if (observation.kind === 'turn-completed') {
       for (const [id, prompt] of prompts)
         if (
@@ -638,7 +663,7 @@ export const createActions = (
     unavailable(provider, nativeId) {
       if (closing || blockedProviders.has(provider)) return;
       enqueue(provider, async () => {
-        await store.observe({
+        await recordObservation({
           kind: 'native-unavailable',
           provider,
           ...(nativeId ? { nativeThreadId: nativeId } : {}),
@@ -898,6 +923,8 @@ export const createActions = (
       prepared.input = input;
     }
     const admitted = await store.admit({ action, prepared });
+    // sending or canceling a queued entry changes that entry's own receipt
+    if (admitted.isNew && 'queuedActionId' in command) waits.notifyAction(command.queuedActionId);
     if (admitted.isNew && admitted.dispatchActionId && admitted.thread) {
       const receipt =
         admitted.dispatchActionId === admitted.receipt.id
@@ -969,6 +996,7 @@ export const createActions = (
       return (await registry.get(receipt.provider)).readLogin(receipt.nativeRequestId);
     },
     live,
+    waits,
     /**
      * Returns after durable admission; the native operation outlives this client request.
      * @returns The durable admission receipt after validation.

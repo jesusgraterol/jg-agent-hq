@@ -144,6 +144,8 @@ export const ActionReceiptSchema = z.object({
   provider: ProviderIdSchema.nullable(),
   controlState: z.enum(['accepted', 'applied', 'held']).nullable(),
   threadId: ThreadIdSchema.nullable(),
+  // the native session of the action's thread, once HQ recorded it
+  nativeThreadId: NativeIdSchema.nullable(),
   nativeTurnId: NativeIdSchema.nullable(),
   nativeRequestId: z.string().nullable(),
   delivery: z.enum(['queued', 'submitted', 'acknowledged', 'uncertain', 'failed', 'canceled']),
@@ -159,12 +161,23 @@ export const ActionReceiptSchema = z.object({
 });
 export type IActionReceipt = z.infer<typeof ActionReceiptSchema>;
 
-// collections omit queued input and final result bodies; selected receipts retain them
+// collections omit queued input, final result bodies and the native thread; selected receipts retain them
 export const ActionSummarySchema = ActionReceiptSchema.omit({
+  nativeThreadId: true,
   queuedInput: true,
   result: true,
 });
 export type IActionSummary = z.infer<typeof ActionSummarySchema>;
+
+/*
+ * A receipt once it reached what an action wait waited for, or as it stood when the wait's time
+ * ran out, with `isTimedOut` set. The receipt is null for an unknown action.
+ */
+export const ActionWaitSchema = z.object({
+  receipt: ActionReceiptSchema.nullable(),
+  isTimedOut: z.boolean(),
+});
+export type IActionWait = z.infer<typeof ActionWaitSchema>;
 
 // control is separate from the native thread's discovery title and historical visibility
 export const ManagedThreadSchema = z.object({

@@ -87,6 +87,7 @@ export type IAgentHq = {
    * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
    * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   * - LOCK_ROOT_INVALID: The locks folder must be an absolute path.
    */
   request(command: IHqRequestInput): Promise<IHqResponse>;
   /**

@@ -16,5 +16,7 @@ export const THREAD_COLUMNS =
 export const ACTION_METADATA_COLUMNS =
   'id, digest, requested_runtime_epoch, runtime_epoch, kind, provider, control_state, thread_id, expected_turn_id, native_turn_id, native_request_id, delivery, completion, failure, related_action_id, requested_name, queue_ready, created_at, updated_at';
 export const ACTION_COLUMNS = `${ACTION_METADATA_COLUMNS}, queued_input, result`;
+// a receipt's columns, with its thread's native session read by the thread's primary key
+export const ACTION_RECEIPT_COLUMNS = `${ACTION_COLUMNS}, (SELECT native_id FROM hq_thread WHERE hq_thread.id = hq_action.thread_id) AS native_thread_id`;
 export const EVENT_COLUMNS =
   'sequence, runtime_epoch, thread_id, action_id, native_turn_id, native_item_id, kind, created_at';

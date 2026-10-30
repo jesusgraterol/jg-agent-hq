@@ -21,6 +21,7 @@ import { suffixThreadName } from '../../sessions/names/index.js';
 import {
   ACTION_COLUMNS,
   ACTION_METADATA_COLUMNS,
+  ACTION_RECEIPT_COLUMNS,
   CONTROLLED_THREAD_CAPACITY,
   EVENT_COLUMNS,
   THREAD_COLUMNS,
@@ -28,8 +29,10 @@ import {
 } from './constants.js';
 import { toActionReceipt, toActionSummary, toManagedThread } from './transformers.js';
 import {
+  ActionReceiptRowSchema,
   ActionRowSchema,
   ThreadRowSchema,
+  type IActionReceiptRow,
   type IActionRow,
   type IThreadRow,
   type IAdmission,
@@ -1333,11 +1336,11 @@ export class ControlModel {
       );
   }
 
-  private __action(id: string): IActionRow | null {
+  private __action(id: string): IActionReceiptRow | null {
     const row = this.__database
-      .prepare(`SELECT ${ACTION_COLUMNS} FROM hq_action WHERE id = ?`)
+      .prepare(`SELECT ${ACTION_RECEIPT_COLUMNS} FROM hq_action WHERE id = ?`)
       .get(id);
-    return row ? ActionRowSchema.parse(row) : null;
+    return row ? ActionReceiptRowSchema.parse(row) : null;
   }
 
   private __nativeThread(
