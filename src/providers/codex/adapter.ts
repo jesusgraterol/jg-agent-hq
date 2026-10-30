@@ -40,7 +40,7 @@ import { createCodexEvents, toProviderThread } from './events.js';
 export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentProviderFactory => ({
   id: 'codex',
   async create(context) {
-    const native = await createCodexProvider(extraSkillRoots, context.agentTools);
+    const native = await createCodexProvider(extraSkillRoots);
     // whether each session is observed, read once: Codex saves it and it's inside an allowed workspace
     const allowedSessions = new Map<string, boolean>();
     let observations = Promise.resolve();
@@ -231,7 +231,7 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
       get isAvailable() {
         return native.isAvailable;
       },
-      async readCapabilities(nativeId): Promise<IProviderCapabilitySet> {
+      async readCapabilities(): Promise<IProviderCapabilitySet> {
         if (!native.isAvailable)
           throw new Exception('The Codex integration failed', {
             code: 'JG_AGENT_HQ_CODEX_FAILED',
@@ -304,18 +304,6 @@ export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentPro
             accountLogin: SUPPORTED_PROVIDER_OPERATION,
             accountLoginCancel: SUPPORTED_PROVIDER_OPERATION,
             accountLogout: SUPPORTED_PROVIDER_OPERATION,
-            agentTools:
-              context.agentTools && (!nativeId || native.hasAgentTools(nativeId))
-                ? SUPPORTED_PROVIDER_OPERATION
-                : {
-                    state: 'unknown',
-                    changeMode: null,
-                    reason: {
-                      code: 'native-tools-unobserved',
-                      message:
-                        'Experimental native tool registration has not been observed for this session.',
-                    },
-                  },
             mcpServers: SUPPORTED_PROVIDER_OPERATION,
             mcpTools: SUPPORTED_PROVIDER_OPERATION,
             mcpResources: SUPPORTED_PROVIDER_OPERATION,

@@ -166,9 +166,6 @@ importers:
 
   .:
     dependencies:
-      '@modelcontextprotocol/server':
-        specifier: 2.3.1
-        version: 2.3.1
       jg-crypto:
         specifier: 0.3.0
         version: 0.3.0
@@ -178,9 +175,6 @@ importers:
       jg-fs:
         specifier: 1.7.0
         version: 1.7.0
-      jg-plans:
-        specifier: 0.3.0
-        version: 0.3.0
       jg-utilities:
         specifier: 1.7.0
         version: 1.7.0
@@ -775,14 +769,6 @@ packages:
     resolution: {integrity: sha512-3NLpxklfMVWYDaSZ84TXqjw8eAB4iCe5l2oA1RN75zULwtLYgDKCi//fHvw65DOgy8lPeO5X2piT+S7rn3dITw==}
     peerDependencies:
       astro: ^4 || ^5 || ^6 || ^7
-
-  '@modelcontextprotocol/core@2.3.1':
-    resolution: {integrity: sha512-laVmIhPGpWi7rG9q+0UigblRN0Hws/Yjlb6qLFtVqryXVLkc4h+yN8z731POD2LnAGQlFe7/tXhUm7Bi0YB91g==}
-    engines: {node: '>=20'}
-
-  '@modelcontextprotocol/server@2.3.1':
-    resolution: {integrity: sha512-e59MfWuSssj6DoQ96JCTqdW1AXT5/XtnTl0WWd6MU1Ka434fFUGGosCLJbGNySDhHGvxQWoRWK137FXYFkYNWw==}
-    engines: {node: '>=20'}
 
   '@napi-rs/wasm-runtime@1.2.4':
     resolution: {integrity: sha512-AJxoUD2/15ESHbvpcyjU274nsAPLuOtPHCk0vKJM5pj//Fg/B1FXNWjPnXTT9PymCYYiHo4zPj0ZomXBKhoy7g==}
@@ -1710,11 +1696,6 @@ packages:
       astro: ^7.4.0
       tailwindcss: ^4.3.0
 
-  jg-plans@0.3.0:
-    resolution: {integrity: sha512-eoDzPSvuXrKwujDe9CEJj+imVe7qgAp1irlMgs3chd8gL+Qh8WZEkpqc/HxYQUQ6IVsWtsEipHuOOJ/qBGhoQA==}
-    engines: {node: '>=24.15.0'}
-    hasBin: true
-
   jg-playwright@0.1.0:
     resolution: {integrity: sha512-z45It3kyIc1TShbnQprALft/4dQeKo9lHHphLhagR7IZcEADDaB0RVxj0KAjgVG1EyXl/NhtotaV4mSsWAr4rA==}
     engines: {node: '>=22.17.0'}
@@ -1724,10 +1705,6 @@ packages:
     peerDependenciesMeta:
       '@axe-core/playwright':
         optional: true
-
-  jg-process@1.6.1:
-    resolution: {integrity: sha512-F75AiEaJLTRcPNvH/LEC1neSA6wa316W6O++lJYWsObdghBl3p18q5ueDxFZ8C8HnY/kLTdgHpdaC18SF3/gQg==}
-    engines: {node: '>=22.17.0'}
 
   jg-site@0.1.0:
     resolution: {integrity: sha512-wHL9HvqU+mzECiqKwVB0iiln5C/mP3EdIW43KfFFFf/Kk4zWSIEfXg6W0Iq6VjRFMfRFAOaFr4unSbf2/X/Nig==}
@@ -3294,15 +3271,6 @@ snapshots:
     dependencies:
       astro: 7.4.0(@types/node@24.12.0)(jiti@2.7.0)(yaml@2.9.1)
 
-  '@modelcontextprotocol/core@2.3.1':
-    dependencies:
-      zod: 4.3.6
-
-  '@modelcontextprotocol/server@2.3.1':
-    dependencies:
-      '@modelcontextprotocol/core': 2.3.1
-      zod: 4.3.6
-
   '@napi-rs/wasm-runtime@1.2.4(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)':
     dependencies:
       '@emnapi/core': 1.11.3
@@ -4262,27 +4230,12 @@ snapshots:
       shiki: 4.5.0
       tailwindcss: 4.3.3
 
-  jg-plans@0.3.0:
-    dependencies:
-      jg-crypto: 0.3.0
-      jg-exception: 1.7.0
-      jg-fs: 1.7.0
-      jg-process: 1.6.1
-      jg-utilities: 1.7.0
-      yaml: 2.9.1
-      zod: 4.6.7
-
   jg-playwright@0.1.0(@axe-core/playwright@4.13.0(playwright-core@1.62.1))(@playwright/test@1.62.1):
     dependencies:
       '@playwright/test': 1.62.1
       jg-exception: 1.7.0
     optionalDependencies:
       '@axe-core/playwright': 4.13.0(playwright-core@1.62.1)
-
-  jg-process@1.6.1:
-    dependencies:
-      jg-exception: 1.7.0
-      jg-utilities: 1.7.0
 
   jg-site@0.1.0: {}
 

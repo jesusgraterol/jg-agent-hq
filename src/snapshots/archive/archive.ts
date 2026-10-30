@@ -1,16 +1,11 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { lstat, mkdir, mkdtemp, open, realpath, rm, type FileHandle } from 'node:fs/promises';
+import { lstat, mkdtemp, open, realpath, rm, type FileHandle } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Exception, extractMessage, hasErrorCode, isException } from 'jg-exception';
 
-import {
-  SNAPSHOT_COMPANIONS,
-  SNAPSHOT_COMPLETE,
-  SNAPSHOT_COPY_BYTES,
-  SNAPSHOT_MANIFEST,
-} from '../constants.js';
+import { SNAPSHOT_COMPLETE, SNAPSHOT_COPY_BYTES, SNAPSHOT_MANIFEST } from '../constants.js';
 import {
   invalidSnapshot,
   openSnapshotFile,
@@ -95,9 +90,6 @@ const readEntries = async function* (directory: string): AsyncGenerator<Buffer> 
   for await (const { record } of readSnapshotRecords(directory)) {
     if (record.kind === 'database') yield* entry('hq.sqlite', record.file.bytes);
     else if (record.kind === 'action-key') yield* entry('action.key', ARCHIVE_KEY_BYTES);
-    else if (record.kind === 'plan')
-      for (const [field, filename, maximumBytes] of SNAPSHOT_COMPANIONS)
-        if (record[field]) yield* entry(`plans/${record.key}/${filename}`, maximumBytes);
   }
 };
 
@@ -276,29 +268,14 @@ const writeEntries = async (plaintextPath: string, directory: string): Promise<v
     for await (const { record } of readSnapshotRecords(directory)) {
       if (record.kind === 'database') listed.set('hq.sqlite', record.file.bytes);
       else if (record.kind === 'action-key') listed.set('action.key', record.file.bytes);
-      else if (record.kind === 'plan')
-        for (const [field, filename] of SNAPSHOT_COMPANIONS) {
-          const file = record[field];
-          if (file) listed.set(`plans/${record.key}/${filename}`, file.bytes);
-        }
     }
-    const plans = join(directory, 'plans');
-    await mkdir(plans, { mode: 0o700 });
-    const created = new Set<string>();
     while (position < size) {
       const entry = await readHeader();
       if (listed.get(entry.path) !== entry.bytes) invalidSnapshot();
       listed.delete(entry.path);
-      const parts = entry.path.split('/');
-      if (parts.length === 3 && !created.has(parts[1]!)) {
-        await mkdir(join(plans, parts[1]!), { mode: 0o700 });
-        created.add(parts[1]!);
-      }
       await copy(entry.path, entry.bytes);
     }
     if (listed.size) invalidSnapshot();
-    for (const key of created) await syncSnapshotDirectory(join(plans, key));
-    await syncSnapshotDirectory(plans);
     await syncSnapshotDirectory(directory);
   } finally {
     await input.close();

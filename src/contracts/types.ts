@@ -1,9 +1,5 @@
 import { z } from 'zod';
 
-import { AgentToolRequestSchema, AgentToolResultSchema } from './agent-tools/index.js';
-
-import { CollaborationRequestSchema, CollaborationResponseSchema } from './collaboration/index.js';
-
 import {
   EvidenceRequestSchema,
   SessionDiscoveryRequestSchema,
@@ -50,9 +46,7 @@ import {
   SessionStateSchema,
   SessionTransitionPageSchema,
 } from './sessions/index.js';
-import { PlanCommandSchema, PlanResultSchema } from './plans/index.js';
 import {
-  ActionPlanContextSchema,
   ActionEnvelopeSchema,
   ActionReceiptSchema,
   ActionSummarySchema,
@@ -74,8 +68,6 @@ const TargetFields = {
 
 // only implemented operations can be admitted; native RPC is never exposed
 export const HqRequestSchema = z.discriminatedUnion('kind', [
-  AgentToolRequestSchema,
-  CollaborationRequestSchema,
   EvidenceRequestSchema,
   SessionDiscoveryRequestSchema,
   AccountRequestSchema,
@@ -88,7 +80,6 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     provider: ProviderIdSchema,
     threadId: z.uuid().optional(),
   }),
-  z.strictObject({ kind: z.literal('plan'), command: PlanCommandSchema }),
   z.strictObject({ kind: z.literal('stop') }),
   z.strictObject({
     kind: z.literal('threads'),
@@ -155,7 +146,6 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     ...PageFields,
   }),
   z.strictObject({ kind: z.literal('managed-thread'), threadId: z.uuid() }),
-  z.strictObject({ kind: z.literal('thread-plan'), threadId: z.uuid() }),
   z.strictObject({
     kind: z.literal('managed-thread-name'),
     name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/i),
@@ -408,7 +398,6 @@ export const RuntimeStatusSchema = z.object({
 export type IRuntimeStatus = z.infer<typeof RuntimeStatusSchema>;
 const PageResultFields = { nextCursor: CursorSchema.nullable(), source: z.literal('native') };
 export const HqResponseSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('agent-tool'), result: AgentToolResultSchema }),
   z.object({ kind: z.literal('session-evidence'), result: EvidencePageSchema }),
   z.object({
     kind: z.literal('sessions'),
@@ -432,11 +421,8 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('mcp-resources'), result: McpResourcePageSchema }),
   z.object({ kind: z.literal('configuration'), result: SessionConfigurationSchema }),
   z.object({ kind: z.literal('models'), result: ProviderModelPageSchema }),
-  z.object({ kind: z.literal('thread-plan'), result: ActionPlanContextSchema.nullable() }),
   z.object({ kind: z.literal('status'), result: RuntimeStatusSchema }),
   z.object({ kind: z.literal('capabilities'), result: ProviderCapabilitiesSchema }),
-  z.object({ kind: z.literal('plan'), result: PlanResultSchema }),
-  z.object({ kind: z.literal('collaboration'), result: CollaborationResponseSchema }),
   z.object({
     kind: z.literal('stop'),
     result: z.object({ accepted: z.literal(true), runtimeEpoch: z.uuid() }),

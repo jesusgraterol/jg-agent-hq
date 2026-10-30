@@ -146,61 +146,6 @@ export type {
   IMessageInput,
 } from './skills/index.js';
 
-// plan revisions and explicit authority
-export {
-  PlanDigestSchema,
-  PlanRevisionSchema,
-  PlanMetadataSchema,
-  PlanTargetSchema,
-  PlanOperatorActionSchema,
-  PlanCommandSchema,
-  PlanApprovalSchema,
-  PlanExecutionSchema,
-  PlanFinalizationSchema,
-  PlanCoordinationSchema,
-  PlanMilestoneSchema,
-  PlanStatusSchema,
-  PlanResultSchema,
-} from './plans/index.js';
-export type {
-  IPlanRevision,
-  IPlanMetadata,
-  IPlanTarget,
-  IPlanOperatorAction,
-  IPlanCommand,
-  IPlanCommandInput,
-  IPlanCoordination,
-  IPlanMilestone,
-  IPlanStatus,
-  IPlanResult,
-} from './plans/index.js';
-
-// revision checkpoints and retained verification
-export {
-  PlanCheckSchema,
-  PlanCheckoutSchema,
-  PlanWorktreeProofSchema,
-  PlanCompletionSchema,
-  PlanSnapshotMilestoneSchema,
-  PlanRevisionWorkflowSchema,
-  PlanCoordinationSummarySchema,
-} from './plans/index.js';
-export type {
-  IPlanCheckout,
-  IPlanWorktreeProof,
-  IPlanCompletion,
-  IPlanSnapshotMilestone,
-  IPlanRevisionWorkflow,
-} from './plans/index.js';
-
-// saved revision baseline
-export { PlanCheckpointSchema } from './plans/index.js';
-export type { IPlanCheckpoint } from './plans/index.js';
-
-// guided plan scope
-export { PlanActionScopeSchema, ActionPlanContextSchema } from './actions/index.js';
-export type { IPlanActionScope, IActionPlanContext } from './actions/index.js';
-
 // authenticated host actions
 export {
   BrowserCommandSchema,
@@ -273,6 +218,7 @@ export {
   EvidencePageSchema,
   EvidenceItemSchema,
   HistoryProvenanceSchema,
+  SessionDiscoveryRequestSchema,
 } from './evidence/index.js';
 export type {
   IEvidenceRequest,
@@ -280,101 +226,6 @@ export type {
   IEvidenceItem,
   IHistoryProvenance,
 } from './evidence/index.js';
-
-// durable task collaboration
-export {
-  COLLABORATION_LIMITS,
-  CollaborationActorSchema,
-  MessageAuthorSchema,
-  DispatchFailureSchema,
-  DispatchBlockedSchema,
-  InvocationSchema,
-  DispatchCollectionSchema,
-  ContinuationSchema,
-  MAX_REPORT_BYTES,
-  DispatchResponseSchema,
-  DISPATCH_OUTPUT_SCHEMA,
-  ReportSummarySchema,
-  ReportReadSchema,
-  CollaborationEffectSchema,
-  AgentPermissionsSchema,
-  TaskPolicySchema,
-  CollaborationPlanSchema,
-  PathScopeSchema,
-  ArtifactReferenceSchema,
-  SkillSelectionSchema,
-  SkillGrantSchema,
-  RequestSpecificationSchema,
-  CollaborationLifecycleSchema,
-  CollaborationTaskSchema,
-  TaskAgentSchema,
-  StreamSchema,
-  SubscriptionSchema,
-  MessageSummarySchema,
-  MessageReadSchema,
-  CollaborationRequestRecordSchema,
-  DeliverySchema,
-  CollaborationCommandSchema,
-  CollaborationRequestSchema,
-  TaskSummarySchema,
-  TaskAgentSummarySchema,
-  SkillGrantSummarySchema,
-  RequestSummarySchema,
-  CollaborationStatusSchema,
-  CollaborationResultSchema,
-  CollaborationOperationSchema,
-  CollaborationResponseSchema,
-} from './collaboration/index.js';
-export type {
-  ICollaborationActor,
-  IMessageAuthor,
-  IDispatchFailure,
-  IDispatchBlocked,
-  IInvocation,
-  IDispatchCollection,
-  IContinuation,
-  IDispatchResponse,
-  IReportSummary,
-  IReportRead,
-  IAgentPermissions,
-  ITaskPolicy,
-  ICollaborationPlan,
-  IPathScope,
-  IArtifactReference,
-  ISkillGrant,
-  IRequestSpecification,
-  ICollaborationTask,
-  ITaskAgent,
-  IStream,
-  ISubscription,
-  IMessageSummary,
-  IMessageRead,
-  ICollaborationRequestRecord,
-  IDelivery,
-  ICollaborationCommand,
-  ICollaborationRequest,
-  IRequestSummary,
-  ICollaborationStatus,
-  ICollaborationResult,
-  ICollaborationOperation,
-  ICollaborationResponse,
-} from './collaboration/index.js';
-// native agent tools
-export {
-  AgentIdentityArgumentsSchema,
-  AgentSpawnArgumentsSchema,
-  AgentToolCallSchema,
-  AgentToolRequestSchema,
-  AgentToolResultSchema,
-} from './agent-tools/index.js';
-export type {
-  IAgentSpawnArguments,
-  IAgentToolCall,
-  IAgentToolName,
-  IAgentToolRequest,
-  IAgentToolResult,
-} from './agent-tools/index.js';
-export { SessionDiscoveryRequestSchema } from './evidence/index.js';
 
 // session states and transitions
 export {

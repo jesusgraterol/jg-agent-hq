@@ -25,7 +25,3 @@ export type {
   INativeElicitation,
   ILifecycleEvent,
 } from './types.js';
-
-// guided plan scope
-export { PlanActionScopeSchema, ActionPlanContextSchema } from './types.js';
-export type { IPlanActionScope, IActionPlanContext } from './types.js';

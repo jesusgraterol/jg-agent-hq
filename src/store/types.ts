@@ -1,32 +1,5 @@
 import { z } from 'zod';
 import {
-  DispatchScanSchema,
-  type IDispatchScan,
-  type IDispatchPage,
-  type IDispatchJob,
-} from '../collaboration/dispatch/index.js';
-
-import {
-  AgentIdentityQuerySchema,
-  type IAgentIdentityQuery,
-  type IAgentIdentity,
-  NativeToolBindingSchema,
-  type INativeToolBinding,
-  AgentSpawnReadSchema,
-  type IAgentSpawnRead,
-  type IAgentSpawnRecord,
-} from '../collaboration/identity/index.js';
-
-import {
-  CollaborationRequestSchema,
-  DispatchBlockedSchema,
-  type IDispatchBlocked,
-  type IDispatchCollection,
-  type ICollaborationRequest,
-  type ICollaborationResponse,
-} from '../contracts/collaboration/index.js';
-
-import {
   BrowserActionSchema,
   BrowserReceiptSchema,
   type IBrowserAction,
@@ -36,14 +9,12 @@ import {
   ManagedThreadSchema,
   ErrorKindSchema,
   type IThreadSummary,
-  type IPlanMilestone,
   type IActionReceipt,
   type IManagedThread,
   type IActionSummary,
   type INativeApprovalSummary,
   type ILifecycleEvent,
   HqRequestSchema,
-  type IActionPlanContext,
   type IHistoryProvenance,
   SessionStateSchema,
   type ISessionState,
@@ -56,14 +27,6 @@ import {
 } from '../sessions/evidence/index.js';
 import type { IClaudeHistoryRead } from '../providers/claude/history/index.js';
 import { StorageDescriptorSchema, type IStorageDescriptor } from '../storage/index.js';
-
-import {
-  PlanWriteIntentSchema,
-  PlanProjectionSchema,
-  PlanProjectionPageSchema,
-  type IPlanWriteIntent,
-  type IPlanProjection,
-} from '../plans/index.js';
 
 import {
   AdmissionSchema,
@@ -88,28 +51,6 @@ import type { IActiveSessionRecord } from './sessions/index.js';
 
 // worker messages are closed, bounded operations rather than arbitrary SQL
 export const StoreCommandSchema = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('agent-identity'), query: AgentIdentityQuerySchema }),
-  z.strictObject({ kind: z.literal('agent-spawn-read'), query: AgentSpawnReadSchema }),
-  z.strictObject({
-    kind: z.literal('collaboration'),
-    request: CollaborationRequestSchema,
-    binding: NativeToolBindingSchema.optional(),
-  }),
-  z.strictObject({ kind: z.literal('collaboration-fanout') }),
-  z.strictObject({ kind: z.literal('dispatch-page'), query: DispatchScanSchema }),
-  z.strictObject({ kind: z.literal('dispatch-job'), taskId: z.uuid(), requestId: z.uuid() }),
-  z.strictObject({
-    kind: z.literal('dispatch-block'),
-    requestId: z.uuid(),
-    selectedActionId: z.uuid(),
-    reason: DispatchBlockedSchema.nullable(),
-  }),
-  z.strictObject({
-    kind: z.literal('dispatch-collect'),
-    taskId: z.uuid(),
-    requestId: z.uuid(),
-    actionId: z.uuid(),
-  }),
   z.strictObject({ kind: z.literal('evidence-origins'), request: EvidenceOriginsRequestSchema }),
   z.strictObject({ kind: z.literal('storage-maintenance') }),
   z.strictObject({ kind: z.literal('snapshot-backup'), destination: z.string() }),
@@ -136,7 +77,6 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     nextCursor: z.string().max(16_384).nullable(),
     observedAt: z.number().int(),
   }),
-  z.strictObject({ kind: z.literal('plan-register'), directory: z.string() }),
   z.strictObject({
     kind: z.literal('sessions-observe'),
     provider: z.string(),
@@ -157,15 +97,6 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     limit: z.number().int().min(1).max(128),
   }),
   z.strictObject({ kind: z.literal('sessions-active'), limit: z.number().int().min(1).max(128) }),
-  z.strictObject({ kind: z.literal('thread-plan-read'), threadId: z.uuid() }),
-  z.strictObject({ kind: z.literal('plan-threads'), directory: z.string() }),
-  z.strictObject({ kind: z.literal('queue-peek'), threadId: z.uuid() }),
-  z.strictObject({ kind: z.literal('plan-operation'), id: z.uuid() }),
-  z.strictObject({ kind: z.literal('plan-pending'), directory: z.string() }),
-  z.strictObject({ kind: z.literal('plan-prepare'), intent: PlanWriteIntentSchema }),
-  z.strictObject({ kind: z.literal('plan-complete'), id: z.uuid() }),
-  z.strictObject({ kind: z.literal('plan-project'), projection: PlanProjectionSchema }),
-  z.strictObject({ kind: z.literal('plan-milestones'), page: PlanProjectionPageSchema }),
   z.strictObject({ kind: z.literal('close') }),
   z.strictObject({ kind: z.literal('action-read'), id: z.uuid() }),
   z.strictObject({ kind: z.literal('thread-read'), id: z.uuid() }),
@@ -186,7 +117,6 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     workspaceRoot: z.string().min(1),
     page: ControlPageSchema,
   }),
-  z.strictObject({ kind: z.literal('thread-adopted'), threadId: z.uuid() }),
   z.strictObject({
     kind: z.literal('thread-unstarted'),
     provider: ManagedThreadSchema.shape.provider,
@@ -249,84 +179,6 @@ export const StoreWorkerSchema = z.strictObject({
 
 // the worker owns persistence; callers cannot submit arbitrary statements
 export type IStore = {
-  /**
-   * Reads one bounded durable dispatch scan.
-   * @returns Indexed request identities within one high-water boundary.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  dispatchPage(query: IDispatchScan): Promise<IDispatchPage>;
-  /**
-   * Reads a selected intent and current admission evidence.
-   * @returns The selected request, immutable binding and fresh policy/ownership observations.
-   * @throws
-   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  dispatchJob(taskId: string, requestId: string): Promise<IDispatchJob>;
-  /**
-   * Stores a blocked reason only for the selected pending or current action binding.
-   * @returns Completion after committing the observation.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  blockDispatch(
-    requestId: string,
-    selectedActionId: string,
-    reason: IDispatchBlocked | null,
-  ): Promise<void>;
-  /**
-   * Atomically collects saved native output and return delivery.
-   * @returns The immutable collection receipt, or null while evidence is unsettled.
-   * @throws
-   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
-   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  collectDispatch(
-    taskId: string,
-    requestId: string,
-    actionId: string,
-  ): Promise<IDispatchCollection | null>;
-  /**
-   * Resolves the controlled native session and its authorized task discovery page.
-   * @returns Current server-derived identity.
-   * @throws
-   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
-   * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
-   * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  agentIdentity(query: IAgentIdentityQuery): Promise<IAgentIdentity>;
-  /**
-   * Reads one native spawn relationship after current session/task validation.
-   * @returns The retained relationship or null.
-   * @throws
-   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
-   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  getAgentSpawn(query: IAgentSpawnRead): Promise<IAgentSpawnRecord | null>;
-  /**
-   * Applies one checked metadata operation in the worker-owned transaction.
-   * @returns A bounded result or original metadata receipt.
-   * @throws
-   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
-   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
-   * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
-   * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  collaboration(
-    request: ICollaborationRequest,
-    binding?: INativeToolBinding,
-  ): Promise<ICollaborationResponse>;
-  /** Advances one bounded subscriber batch.
-   * @returns Whether durable pending intent was processed.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  recoverCollaborationFanout(): Promise<boolean>;
   /** Correlates native input identities and hashes with durable host submissions.
    * @returns Exact historical provenance or null for each selected item.
    * @throws
@@ -336,18 +188,12 @@ export type IStore = {
   readonly isAvailable: boolean;
   storage: IStorageDescriptor;
   /**
-   * Drains earlier worker commands and checks for unresolved native or document work.
+   * Drains earlier worker commands and checks for unresolved native work.
    * @returns Whether a host maintenance callback can start.
    * @throws
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   prepareStorageMaintenance(): Promise<boolean>;
-  /**
-   * Reads one seek page of registered plan directories while maintenance holds admission.
-   * @returns At most 128 ordered directories.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
   /**
    * Copies the worker's database through SQLite's WAL-aware backup API.
    * Local backup completion has no metadata-command deadline; maintenance stays held until it settles.
@@ -385,12 +231,6 @@ export type IStore = {
     operatorId: string,
     state: 'acknowledged' | 'uncertain',
   ): Promise<IBrowserReceipt | null>;
-  /** Records a resolved plan directory so snapshots capture its files.
-   * @returns A promise resolved after the idempotent insert commits.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  registerPlan(directory: string): Promise<void>;
   /** Records observed states of sessions HQ doesn't manage; complete observations close omissions.
    * @returns A promise resolved after the transaction commits.
    * @throws
@@ -433,68 +273,6 @@ export type IStore = {
   listActiveSessions(
     limit: number,
   ): Promise<{ data: IActiveSessionRecord[]; isTruncated: boolean }>;
-  /** Reads a thread's exact current plan binding.
-   * @returns Its guided context, or null.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  getThreadPlan(threadId: string): Promise<IActionPlanContext | null>;
-  /** Resolves the current bounded cohort for revision shutdown.
-   * @returns Managed or uncertain thread IDs.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-   */
-  getPlanThreads(directory: string): Promise<string[]>;
-  /** Reads the earliest retained queue entry without dispatch.
-   * @returns The selected receipt, or null.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  peekQueued(threadId: string): Promise<IActionReceipt | null>;
-  /** Reads a selected replay identity or unfinished write intent.
-   * @returns The recorded intent, or null.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  getPlanOperation(id: string): Promise<IPlanWriteIntent | null>;
-  /** Checks for unresolved selected-plan writes.
-   * @returns The unfinished action identity, or null.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  getPendingPlanOperationId(directory: string): Promise<string | null>;
-  /** Admits a write identity before filesystem mutation.
-   * @returns The existing identical or newly admitted intent.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-   */
-  preparePlanOperation(intent: IPlanWriteIntent): Promise<IPlanWriteIntent>;
-  /** Completes a released durable write, reconciling a failed acknowledgement from the ledger.
-   * Prepared payload remains available when completion did not commit; an unknown outcome stays closed.
-   * @returns A promise resolved after persistence.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-   */
-  completePlanOperation(id: string): Promise<void>;
-  /** Refreshes one bounded selected-plan projection.
-   * @returns A promise resolved after the projection transaction.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  projectPlan(projection: IPlanProjection): Promise<void>;
-  /** Reads an ordinal seek page, after filesystem revision validation.
-   * @returns A bounded projection page.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  listPlanMilestones(page: {
-    directory: string;
-    limit: number;
-    after: number;
-  }): Promise<{ data: IPlanMilestone[]; hasMore: boolean }>;
   /**
    * Runs the Claude-owned identity-checked incremental reader in the filesystem worker.
    * @returns One history page or a private indexing marker, without persisting conversation bodies.
@@ -590,13 +368,6 @@ export type IStore = {
    */
   getUnstartedThread(provider: string, nativeId: string): Promise<IManagedThread | null>;
   /**
-   * Whether a managed thread came from adopting a native session rather than from HQ creating it.
-   * @returns True for an adopted thread.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  isAdoptedThread(threadId: string): Promise<boolean>;
-  /**
    * Reads one thread-scoped seek page without queued message bodies.
    * @returns One descending metadata page and whether another seek page exists.
    * @throws
@@ -637,8 +408,6 @@ export type IStore = {
    * Atomically records the digest and fences native dispatch.
    * @returns The durable receipt, current thread and the one permitted dispatch identity.
    * @throws
-   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
-   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */

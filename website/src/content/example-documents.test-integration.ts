@@ -8,53 +8,39 @@ import { examplesMarkdown, createExamples, readDocument } from './index.ts';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
-test('all walkthroughs publish their complete tested helpers and honest result boundaries', async () => {
+test('the walkthrough publishes its complete tested helper and honest result boundary', async () => {
   const sources = {
     'control-session': await readDocument(ROOT, 'examples/control-session.ts'),
-    'review-handoff': await readDocument(ROOT, 'examples/review-handoff.ts'),
-    'revise-plan': await readDocument(ROOT, 'examples/revise-plan.ts'),
   };
   const examples = createExamples(sources);
   const markdown = examplesMarkdown(sources);
-  expect(examples.map((example) => example.id)).toStrictEqual([
-    'control-session',
-    'review-handoff',
-    'revise-plan',
-  ]);
+  expect(examples.map((example) => example.id)).toStrictEqual(['control-session']);
   for (const example of examples) {
     expect(example.source).toBe(sources[example.id]);
     expect(markdown).toContain(`\`\`\`ts\n${example.source}\`\`\``);
-    if (example.call) expect(markdown).toContain(example.call);
+    expect(markdown).toContain(example.call);
   }
   expect(markdown).toContain(
     'Acknowledged means delivered. Turn completion and tool permissions are reported separately.',
   );
-  expect(markdown).toContain('The assessment may still be running when the helper returns');
-  expect(markdown).toContain('Findings never approve implementation.');
-  expect(markdown).toContain('It stops at authorization and starts no implementation.');
-  expect(markdown).toContain('Editing a status in the file never counts as verified.');
-  expect(markdown).toContain('### Read the report\n\n`request-read` · `report-read`');
+  expect(markdown).toContain('### Read\n\n`live-items` · `approvals` · `usage`');
   expect(markdown).not.toContain('Read this page as Markdown');
-  expect(() => createExamples({ ...sources, 'review-handoff': undefined })).toThrow(
+  expect(() => createExamples({ 'control-session': undefined })).toThrow(
     'The HQ website source is invalid',
   );
-  expect(() => createExamples({ ...sources, 'revise-plan': '' })).toThrow(
+  expect(() => createExamples({ 'control-session': '' })).toThrow(
     'The HQ website source is invalid',
   );
 });
 
-test('example loading allows exactly the three authoritative sources and rejects adjacent implementation files', async () => {
-  for (const source of [
-    'examples/control-session.ts',
-    'examples/review-handoff.ts',
-    'examples/revise-plan.ts',
-  ])
-    expect(await readDocument(ROOT, source)).toBe(
-      await readFile(new URL(`../../../${source}`, import.meta.url), 'utf8'),
-    );
+test('example loading allows exactly the authoritative source and rejects adjacent implementation files', async () => {
+  expect(await readDocument(ROOT, 'examples/control-session.ts')).toBe(
+    await readFile(new URL('../../../examples/control-session.ts', import.meta.url), 'utf8'),
+  );
   for (const source of [
     'src/index.ts',
     'examples/examples.test-integration.ts',
+    'examples/shared-storage.ts',
     'examples/../README.md',
     '/examples/control-session.ts',
     'examples/control-session.ts?raw',

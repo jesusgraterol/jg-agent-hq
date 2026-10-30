@@ -2,7 +2,6 @@ import {
   PreparedInputSchema,
   TurnResultSchema,
   NativeLineageSchema,
-  ActionPlanContextSchema,
   type IActionReceipt,
   type IActionSummary,
   type IManagedThread,
@@ -48,10 +47,6 @@ export const toActionSummary = (
   completion: action.completion,
   failure: action.failure,
   relatedActionId: action.related_action_id,
-  planContext:
-    action.plan_context === null
-      ? null
-      : ActionPlanContextSchema.parse(JSON.parse(action.plan_context)),
   createdAt: action.created_at,
   updatedAt: action.updated_at,
 });

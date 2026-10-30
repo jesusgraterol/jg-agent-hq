@@ -91,10 +91,9 @@ const runSnapshotWorker = async (input: {
 };
 
 /**
- * Captures a running HQ, host tables, private key and registered plan companions while agents
- * keep working. HQ-mediated plan writes wait for the coordination metadata lock; the host must
- * keep its own connections from writing host tables until the capture resolves.
- * The destination must be absent under an existing canonical parent.
+ * Captures a running HQ, host tables and private key while agents keep working, under the state
+ * root's HQ lock. The host must keep its own connections from writing host tables until the
+ * capture resolves. The destination must be absent under an existing canonical parent.
  * @returns A fully verified local snapshot; remote durability remains the host's responsibility.
  * @throws
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
@@ -121,11 +120,10 @@ export const createHqSnapshot = async (
       let release: (() => Promise<void>) | undefined;
       let failure: unknown;
       try {
-        release = await acquireHqLock(context.coordinationRoot, 'snapshot');
+        release = await acquireHqLock(context.stateRoot, 'snapshot');
         const result = await captureSnapshot(
           {
             stateRoot: context.stateRoot,
-            coordinationRoot: context.coordinationRoot,
             allowedRoots: context.allowedRoots,
             actionKeyHash: context.actionKeyHash,
             schemaHash: context.store.storage.schemaHash,
@@ -165,10 +163,7 @@ export const createHqSnapshot = async (
       hasErrorCode(cause, 'JG_AGENT_HQ_STORAGE_INVALID')
     )
       throw cause;
-    if (
-      hasErrorCode(cause, 'JG_PLANS_LOCK_BUSY') ||
-      hasErrorCode(cause, 'JG_AGENT_HQ_LOCK_TIMEOUT')
-    )
+    if (hasErrorCode(cause, 'JG_AGENT_HQ_LOCK_TIMEOUT'))
       throw new Exception('The HQ action conflicts with its recorded state', {
         code: 'JG_AGENT_HQ_ACTION_CONFLICT',
         data: { kind: 'state-conflict' },
@@ -183,8 +178,8 @@ export const createHqSnapshot = async (
 };
 
 /**
- * Validates private files, manifest hashes, supported schema, SQLite integrity and exact report payloads.
- * @returns Bounded metadata; recovery.jsonl retains the streamed plan mapping after restore.
+ * Validates private files, manifest hashes, supported schema and SQLite integrity.
+ * @returns The snapshot's directory, manifest hash and header.
  * @throws
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
  * - JG_AGENT_HQ_SNAPSHOT_INVALID: The HQ snapshot is invalid
@@ -200,7 +195,7 @@ export const inspectHqSnapshot = async (directory: string): Promise<IHqSnapshotI
  * Restores offline into a new, private recovery workspace without replacing a repository or state root.
  * All runtime/host connections to any proposed destination must be stopped. Stored roots are evidence;
  * createAgentHq requires the host's explicit allowedRoots and a fresh native ownership decision.
- * @returns The new state root and separate plan recovery directory, with source snapshot metadata.
+ * @returns The new state root, with source snapshot metadata.
  * @throws
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
  * - JG_AGENT_HQ_SNAPSHOT_INVALID: The HQ snapshot is invalid
@@ -211,9 +206,5 @@ export const restoreHqSnapshot = async (options: IHqRestoreOptions): Promise<IHq
   if (!parsed.success) invalidSnapshot();
   const { snapshotDirectory: directory, destination } = parsed.data;
   const inspection = await runSnapshotWorker({ kind: 'restore', directory, destination });
-  return {
-    ...inspection,
-    stateRoot: join(destination, 'state'),
-    recoveryRoot: join(destination, 'plans'),
-  };
+  return { ...inspection, stateRoot: join(destination, 'state') };
 };

@@ -170,7 +170,7 @@ export const canonicalDocuments = (): Loader => ({
 });
 
 /**
- * Loads only the three complete source examples during content sync, before Astro relocates server chunks.
+ * Loads only the complete source example during content sync, before Astro relocates server chunks.
  * @returns The native content loader, without rendering TypeScript as Markdown.
  * @throws
  * - JG_AGENT_HQ_WEBSITE_SOURCE_INVALID: The HQ website source is invalid

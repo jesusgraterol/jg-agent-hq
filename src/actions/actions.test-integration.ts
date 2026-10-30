@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -244,10 +244,6 @@ test.each(['codex', 'claude'])(
       expect(await submit(forkId, command)).toMatchObject({
         kind: 'action',
         result: { threadId: child.result.id, delivery: 'acknowledged' },
-      });
-      expect(await request({ kind: 'thread-plan', threadId: child.result.id })).toStrictEqual({
-        kind: 'thread-plan',
-        result: null,
       });
       expect(await request({ kind: 'managed-thread', threadId: parent.result.id })).toMatchObject({
         kind: 'managed-thread',
@@ -561,11 +557,9 @@ test('atomic admission deduplicates UUIDs, suffixes names and rejects competing 
     const calls = await fixture.calls();
     expect(calls.filter((call) => call.method === 'thread/start')).toHaveLength(2);
     expect(calls.filter((call) => call.method === 'turn/start')).toHaveLength(1);
+    // a Codex session starts with its workspace alone, never with tools HQ serves
     expect(calls.find((call) => call.method === 'thread/start')!.params).toStrictEqual({
       cwd: fixture.workspaceRoot,
-      dynamicTools: expect.arrayContaining([
-        expect.objectContaining({ type: 'function', name: 'hq_identity' }),
-      ]),
     });
   } finally {
     await fixture.close();

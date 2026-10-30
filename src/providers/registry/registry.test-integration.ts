@@ -90,7 +90,6 @@ const createFixtureProvider = () => {
       accountLogin: unsupported,
       accountLoginCancel: unsupported,
       accountLogout: unsupported,
-      agentTools: unsupported,
     },
     inputSchema: z.record(z.string(), z.json()).parse(z.toJSONSchema(MessageInputSchema)),
     configurationSchema: null,
@@ -938,10 +937,6 @@ test('a late fork result keeps the exact child and source without replay or inhe
       expect(await runtime.request({ kind: 'managed-thread', threadId: childId })).toMatchObject({
         kind: 'managed-thread',
         result: { state: 'idle', nativeLineage: { forkedFromId: parent.result.nativeId } },
-      });
-      expect(await runtime.request({ kind: 'thread-plan', threadId: childId })).toStrictEqual({
-        kind: 'thread-plan',
-        result: null,
       });
       expect(provider.names).toBe(2);
     },

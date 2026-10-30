@@ -12,7 +12,6 @@ type IControlRead = Extract<
   IHqRequest,
   {
     kind:
-      | 'thread-plan'
       | 'receipt'
       | 'managed-threads'
       | 'managed-thread'
@@ -133,8 +132,6 @@ export const readControl = async (
   }
   const thread = await store.getThread(command.threadId);
   await authorize(thread);
-  if (command.kind === 'thread-plan')
-    return { kind: 'thread-plan', result: thread ? await store.getThreadPlan(thread.id) : null };
   if (command.kind === 'managed-thread') return { kind: command.kind, result: thread };
   if (!thread)
     throw new Exception('The HQ action conflicts with its recorded state', {

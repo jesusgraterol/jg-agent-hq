@@ -47,11 +47,9 @@
     "check": "pnpm check:package && pnpm --dir website check"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "2.3.1",
     "jg-crypto": "0.3.0",
     "jg-exception": "^1.7.0",
     "jg-fs": "1.7.0",
-    "jg-plans": "0.3.0",
     "jg-utilities": "1.7.0",
     "zod": "^4.3.6"
   },

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-// reserve 128 KiB in the 8 MiB frame for action, plan and transport metadata
+// reserve 128 KiB in the 8 MiB frame for action and transport metadata
 export const MAX_RESULT_BYTES = 8_388_608 - 131_072;
 
 /** Rejects pathological schema depth and size before recursive library validation. */

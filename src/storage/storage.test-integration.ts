@@ -22,12 +22,22 @@ const createGate = () => {
   return { promise, resolve };
 };
 
+// a native effect for the host's dispatcher, which these tests never submit to HQ
 const createHostAction = (runtimeEpoch: string): IBrowserAction => ({
   id: randomUUID(),
   runtimeEpoch,
   command: {
-    kind: 'plan',
-    command: { kind: 'status', target: { directory: '/selected-plan' } },
+    kind: 'native',
+    action: {
+      id: randomUUID(),
+      runtimeEpoch,
+      command: {
+        kind: 'thread-create',
+        provider: 'codex',
+        workspaceRoot: '/selected-workspace',
+        name: 'host-request',
+      },
+    },
   },
 });
 

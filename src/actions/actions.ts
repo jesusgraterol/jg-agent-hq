@@ -1,7 +1,6 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { Exception, extractMessage, isException } from 'jg-exception';
 import { z } from 'zod';
-import { setTimeout as wait } from 'node:timers/promises';
 
 import type {
   IActionEnvelope,
@@ -10,7 +9,6 @@ import type {
   INativeApproval,
   INativeApprovalSummary,
   IPreparedInput,
-  IPlanRevisionWorkflow,
   ILoginObservation,
   ISessionTerminal,
 } from '../contracts/index.js';
@@ -21,15 +19,9 @@ import { capabilityUnavailable, type createProviderRegistry } from '../providers
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 import type { createSkills } from '../skills/index.js';
 import type { IStore } from '../store/index.js';
-import type { createPlans } from '../plans/index.js';
 import type { INativeOutcome, INativeObservation, IAdmission } from '../store/control/index.js';
-import type { IAgentSpawnAdmission } from '../collaboration/identity/index.js';
-import type { IDispatchAdmission } from '../collaboration/dispatch/index.js';
 
 import { LiveItems } from './live/index.js';
-
-// trusted server admission selectors are separate from caller-supplied native commands
-type IAdmissionScopes = { agentSpawn?: IAgentSpawnAdmission; collaboration?: IDispatchAdmission };
 
 const NativeRejectionSchema = z.union([
   z.object({ nativeCode: z.number() }),
@@ -46,7 +38,6 @@ export const createActions = (
   epoch: string,
   actionKey: Uint8Array,
   skills: ReturnType<typeof createSkills>,
-  plans: ReturnType<typeof createPlans>,
   runBackground: (operation: () => Promise<void>) => Promise<void>,
   invalidateNativeCatalogs: () => void,
   claudeTerminalOf: (nativeId: string) => ISessionTerminal | null,
@@ -61,7 +52,6 @@ export const createActions = (
   };
   const live = new LiveItems();
   const tasks = new Set<Promise<void>>();
-  const taskOwners = new Map<Promise<void>, string>();
   const admissions = new Set<Promise<IActionReceipt>>();
   let lane = Promise.resolve();
   const eventCounts = new Map<IManagedThread['provider'], number>();
@@ -71,7 +61,6 @@ export const createActions = (
   let closing = false;
   let unavailable = false;
   let eventFailure: unknown;
-  let onChange = (): void => {};
 
   const conflict: () => never = () => {
     throw new Exception('The HQ action conflicts with its recorded state', {
@@ -99,7 +88,6 @@ export const createActions = (
       await previous.catch(() => undefined);
       for (const { provider } of registry.statuses())
         await store.observe({ kind: 'native-unavailable', provider });
-      onChange();
     });
     void lane.catch((error: unknown) => {
       eventFailure = error;
@@ -118,14 +106,13 @@ export const createActions = (
     lane = runBackground(async () => {
       await previous.catch(() => undefined);
       await store.observe({ kind: 'native-unavailable', provider });
-      onChange();
     });
     void lane.catch(failEvents);
     registry.quarantine(provider, cause);
   };
 
   /** Keeps native work owned by the runtime when a requesting client disconnects. */
-  const runOwned = (operation: () => Promise<void>, threadId?: string): void => {
+  const runOwned = (operation: () => Promise<void>): void => {
     const task = (async () => {
       try {
         await runBackground(operation);
@@ -134,11 +121,9 @@ export const createActions = (
       }
     })();
     tasks.add(task);
-    if (threadId) taskOwners.set(task, threadId);
     void task
       .finally(() => {
         tasks.delete(task);
-        taskOwners.delete(task);
       })
       .catch(failEvents);
   };
@@ -242,7 +227,7 @@ export const createActions = (
   const advanceQueue = (threadId: string, provider: IManagedThread['provider']): void => {
     if (closing || unavailable || blockedProviders.has(provider)) return;
     runOwned(async () => {
-      const next = await plans.claimQueued(threadId);
+      const next = await store.claimQueued(threadId);
       if (next)
         await dispatch(
           next.receipt,
@@ -255,12 +240,11 @@ export const createActions = (
           },
           next.input,
         );
-    }, threadId);
+    });
   };
 
   const apply = async (outcome: INativeOutcome): Promise<IActionReceipt | null> => {
     const receipt = await store.applyOutcome(outcome);
-    onChange();
     if (!receipt?.threadId) return receipt;
     const thread = await store.getThread(receipt.threadId);
     if (thread?.nativeId && (outcome.kind === 'closed' || outcome.kind === 'archived')) {
@@ -307,7 +291,6 @@ export const createActions = (
     originalThread: IManagedThread,
     command: IActionEnvelope['command'],
     input?: IPreparedInput,
-    collaboration?: IDispatchAdmission,
   ): Promise<void> => {
     let receipt = initial;
     let thread = originalThread;
@@ -345,16 +328,6 @@ export const createActions = (
           ? await store.getThread(thread.forkedFromThreadId)
           : null;
       if (requestId.endsWith(':fork') && !source?.nativeId) conflict();
-      if (collaboration) {
-        await plans.validateDispatch(collaboration.taskId, collaboration.requestId, receipt.id);
-        const job = await store.dispatchJob(collaboration.taskId, collaboration.requestId);
-        if (
-          job.request.currentActionId !== receipt.id ||
-          job.request.state !== 'claimed' ||
-          job.blockedReason !== null
-        )
-          conflict();
-      }
       hasDispatched = true;
       if (requestId.endsWith(':control')) {
         if (
@@ -524,7 +497,6 @@ export const createActions = (
 
   const observe = async (observation: INativeObservation): Promise<void> => {
     const result = await store.observe(observation);
-    onChange();
     if (observation.kind === 'turn-completed') {
       for (const [id, prompt] of prompts)
         if (
@@ -580,10 +552,7 @@ export const createActions = (
       observingProviders.add(provider);
       // a session this runtime controls reports its transitions through its own thread state
       if (controlled.has(key(provider, nativeId))) return;
-      enqueue(provider, async () => {
-        await store.observeSessions(provider, [{ nativeId, state }], false);
-        onChange();
-      });
+      enqueue(provider, () => store.observeSessions(provider, [{ nativeId, state }], false));
     },
     delta(provider, nativeId, turnId, itemId, text) {
       if (controlled.has(key(provider, nativeId)))
@@ -614,7 +583,6 @@ export const createActions = (
           native: prompt,
           threadId: recorded.thread.id,
         });
-        onChange();
       });
     },
     outcome(provider, outcome, nativeThread) {
@@ -678,7 +646,6 @@ export const createActions = (
         // only sessions observed through the lost connection lose their known state
         if (!nativeId && observingProviders.has(provider))
           await store.markSessionsUnknown(provider);
-        onChange();
         for (const [id, prompt] of prompts)
           if (
             prompt.native.provider === provider &&
@@ -694,8 +661,6 @@ export const createActions = (
    * Validates the current target and separates new dispatch from idempotent receipt reads.
    * @returns The durable admission receipt; native work runs independently.
    * @throws
-   * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
-   * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    * - JG_AGENT_HQ_SKILL_UNAVAILABLE: The HQ skill is unavailable
    * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
@@ -706,24 +671,8 @@ export const createActions = (
    * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
    * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   * - JG_AGENT_HQ_LOCK_INVALID_ARGUMENTS: The HQ lock acquisition arguments are invalid
-   * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
-   * - JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID: The HQ runtime directory must be a real directory
-   * - JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS: The HQ runtime directory must be private and owned by the current user
-   * - JG_AGENT_HQ_LOCK_FILE_INVALID: The HQ lock must be a regular file
-   * - JG_AGENT_HQ_LOCK_FILE_PERMISSIONS: The HQ lock must be private and owned by the current user
-   * - JG_AGENT_HQ_LOCK_OWNER_OVERSIZED: The HQ lock owner exceeds the supported size
-   * - JG_AGENT_HQ_LOCK_OWNER_UNREADABLE: The HQ lock owner could not be read. Inspect .runtime/hq.lock
-   * - JG_AGENT_HQ_LOCK_OWNER_INCOMPLETE: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
-   * - JG_AGENT_HQ_LOCK_OWNER_INACTIVE: The HQ lock has an inactive owner
-   * - JG_AGENT_HQ_LOCK_OWNER_UNVERIFIABLE: The HQ lock owner could not be verified
-   * - JG_AGENT_HQ_LOCK_TIMEOUT: Timed out waiting for the HQ lock
-   * - JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED: HQ lock ownership changed before release
    */
-  const admitAndDispatch = async (
-    action: IActionEnvelope,
-    scopes: IAdmissionScopes = {},
-  ): Promise<IActionReceipt> => {
+  const admitAndDispatch = async (action: IActionEnvelope): Promise<IActionReceipt> => {
     // The worker verifies the complete digest before returning any existing receipt.
     const existing = await store.getAction(action.id);
     if (existing) {
@@ -731,13 +680,13 @@ export const createActions = (
         const thread = await store.getThread(existing.threadId);
         if (thread) await validateRoot(thread);
       }
-      return (await store.admit({ action, prepared: scopes })).receipt;
+      return (await store.admit({ action, prepared: {} })).receipt;
     }
     if (closing || unavailable || tasks.size >= 64) agentUnavailable();
     const command = action.command;
     let provider: IManagedThread['provider'] | undefined =
       'provider' in command ? command.provider : undefined;
-    const prepared: IAdmission['prepared'] = { ...scopes };
+    const prepared: IAdmission['prepared'] = {};
     let input: IPreparedInput | undefined;
     if ('threadId' in command) {
       const target = await store.getThread(command.threadId);
@@ -753,7 +702,7 @@ export const createActions = (
         provider = target.provider;
       }
     }
-    if (!provider) return (await plans.admitNative(action, prepared)).receipt;
+    if (!provider) return (await store.admit({ action, prepared })).receipt;
     const control = await registry.get(provider);
     if (!control.isAvailable) agentUnavailable();
     if (
@@ -769,7 +718,7 @@ export const createActions = (
             ? 'accountLoginCancel'
             : 'accountLogout';
       if (capabilities.operations[operation].state !== 'supported') capabilityUnavailable();
-      const admitted = await plans.admitNative(action, prepared);
+      const admitted = await store.admit({ action, prepared });
       if (admitted.isNew && admitted.dispatchActionId) {
         runOwned(async () => {
           let hasDispatched = false;
@@ -940,35 +889,15 @@ export const createActions = (
       // a terminal that resumed a Claude session HQ runs has it now, so HQ sends nothing
       if (thread.provider === 'claude' && claudeTerminalOf(thread.nativeId)) conflict();
       const files = await readInputFiles(command.input.files ?? [], thread.workspaceRoot, roots);
-      let selection: Parameters<typeof skills.prepare>[1] = command.input;
-      if (scopes.collaboration) {
-        // HQ's agent tools never join a Codex session it adopted, since the terminal's session holds it
-        if (thread.provider === 'codex' && (await store.isAdoptedThread(thread.id)))
-          capabilityUnavailable();
-        const job = await store.dispatchJob(
-          scopes.collaboration.taskId,
-          scopes.collaboration.requestId,
-        );
-        if (
-          command.kind !== 'message' ||
-          command.input.kind !== 'text' ||
-          command.input.text !== job.packet ||
-          command.threadId !== job.thread?.id ||
-          action.id !== job.request.pendingActionId
-        )
-          conflict();
-        const skill = job.request.specification.skill;
-        if (skill) selection = { kind: 'skill-name', name: skill.name, arguments: job.packet! };
-      }
       input = {
-        ...(await skills.prepare(command.threadId, selection)),
+        ...(await skills.prepare(command.threadId, command.input)),
         files: files.map(({ content: _content, ...reference }) => reference),
         settings: command.settings ?? {},
       };
       await control.validateInput(thread.nativeId, input);
       prepared.input = input;
     }
-    const admitted = await plans.admitNative(action, prepared);
+    const admitted = await store.admit({ action, prepared });
     if (admitted.isNew && admitted.dispatchActionId && admitted.thread) {
       const receipt =
         admitted.dispatchActionId === admitted.receipt.id
@@ -986,110 +915,12 @@ export const createActions = (
         };
         input = receipt.queuedInput;
       }
-      runOwned(
-        () => dispatch(receipt, admitted.thread!, dispatchedCommand, input, scopes.collaboration),
-        admitted.thread.id,
-      );
+      runOwned(() => dispatch(receipt, admitted.thread!, dispatchedCommand, input));
     }
     return admitted.receipt;
   };
 
-  /** Waits for actual native lifecycle evidence, never an interrupt acknowledgement. */
-  const waitForThread = async (
-    id: string,
-    predicate: (thread: IManagedThread) => boolean,
-  ): Promise<IManagedThread> => {
-    const deadline = Date.now() + 30_000;
-    while (true) {
-      const thread = await store.getThread(id);
-      if (!thread) conflict();
-      if (predicate(thread!)) return thread!;
-      if (
-        thread!.ownership === 'uncertain' ||
-        thread!.state === 'unknown' ||
-        Date.now() >= deadline
-      )
-        conflict();
-      await wait(250);
-    }
-  };
-  /** Stops only one phase-bound controller and confirms its native background cleanup. */
-  const quiesceThread = async (
-    control: IPlanRevisionWorkflow['controls'][number],
-  ): Promise<void> => {
-    await Promise.allSettled([...admissions]);
-    await Promise.allSettled(
-      [...tasks].filter((task) => taskOwners.get(task) === control.threadId),
-    );
-    await lane;
-    let thread = await store.getThread(control.threadId);
-    if (!thread) conflict();
-    await validateRoot(thread!);
-    if (
-      thread!.ownership === 'managed' &&
-      thread!.state === 'inactive' &&
-      thread!.runtimeEpoch === null
-    )
-      return;
-    if (
-      thread!.ownership !== 'managed' ||
-      thread!.runtimeEpoch !== epoch ||
-      !thread!.nativeId ||
-      !controlled.has(key(thread!.provider, thread!.nativeId!))
-    )
-      conflict();
-    if (thread!.activeTurnId) {
-      const prior = await store.getAction(control.interruptActionId);
-      const expectedTurnId = prior?.nativeTurnId ?? thread!.activeTurnId!;
-      const receipt = await admitAndDispatch({
-        id: control.interruptActionId,
-        runtimeEpoch: epoch,
-        command: { kind: 'interrupt', threadId: control.threadId, expectedTurnId },
-      });
-      if (receipt.delivery === 'failed') conflict();
-      thread = await waitForThread(
-        control.threadId,
-        (current) =>
-          current.activeTurnId === null &&
-          !['starting', 'running', 'waiting-input', 'waiting-approval', 'stopping'].includes(
-            current.state,
-          ),
-      );
-    }
-    const receipt = await admitAndDispatch({
-      id: control.closeActionId,
-      runtimeEpoch: epoch,
-      command: { kind: 'thread-close', threadId: control.threadId },
-    });
-    if (receipt.delivery === 'failed') conflict();
-    await waitForThread(
-      control.threadId,
-      (current) =>
-        current.state === 'inactive' &&
-        current.runtimeEpoch === null &&
-        current.ownership === 'managed',
-    );
-  };
-
   return {
-    /** Registers a runtime-owned event-driven recovery wakeup, without awaiting it on the event lane. */
-    setChangeHandler(handler: () => void): void {
-      onChange = handler;
-    },
-    /** Lets ordinary native queues advance after outcome collection releases the dispatch guard. */
-    advanceQueued(thread: IManagedThread): void {
-      advanceQueue(thread.id, thread.provider);
-    },
-    /**
-     * Persists already received native lifecycle evidence before a tool rechecks its session binding.
-     * @returns Completion of the current bounded event lane, without polling native execution.
-     * @throws
-     * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
-     */
-    async flushEvents(provider: IManagedThread['provider']): Promise<void> {
-      await lane.catch(() => undefined);
-      if (unavailable || closing || blockedProviders.has(provider)) agentUnavailable();
-    },
     /**
      * Reads live native authentication presentation without replaying an interrupted action.
      * @returns The exact challenge or its known terminal status; restart loses sensitive presentation.
@@ -1142,8 +973,6 @@ export const createActions = (
      * Returns after durable admission; the native operation outlives this client request.
      * @returns The durable admission receipt after validation.
      * @throws
-     * - JG_AGENT_HQ_COLLABORATION_FORBIDDEN: The HQ collaboration operation is not authorized
-     * - JG_AGENT_HQ_COLLABORATION_CONFLICT: The HQ collaboration operation conflicts with its recorded state
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      * - JG_AGENT_HQ_SKILL_UNAVAILABLE: The HQ skill is unavailable
      * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
@@ -1154,22 +983,9 @@ export const createActions = (
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
      * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
      * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-     * - JG_AGENT_HQ_LOCK_INVALID_ARGUMENTS: The HQ lock acquisition arguments are invalid
-     * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
-     * - JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID: The HQ runtime directory must be a real directory
-     * - JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS: The HQ runtime directory must be private and owned by the current user
-     * - JG_AGENT_HQ_LOCK_FILE_INVALID: The HQ lock must be a regular file
-     * - JG_AGENT_HQ_LOCK_FILE_PERMISSIONS: The HQ lock must be private and owned by the current user
-     * - JG_AGENT_HQ_LOCK_OWNER_OVERSIZED: The HQ lock owner exceeds the supported size
-     * - JG_AGENT_HQ_LOCK_OWNER_UNREADABLE: The HQ lock owner could not be read. Inspect .runtime/hq.lock
-     * - JG_AGENT_HQ_LOCK_OWNER_INCOMPLETE: The HQ lock owner is incomplete. Inspect .runtime/hq.lock and remove it only after its owner stopped
-     * - JG_AGENT_HQ_LOCK_OWNER_INACTIVE: The HQ lock has an inactive owner
-     * - JG_AGENT_HQ_LOCK_OWNER_UNVERIFIABLE: The HQ lock owner could not be verified
-     * - JG_AGENT_HQ_LOCK_TIMEOUT: Timed out waiting for the HQ lock
-     * - JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED: HQ lock ownership changed before release
      */
-    async submit(action: IActionEnvelope, scopes?: IAdmissionScopes): Promise<IActionReceipt> {
-      const admission = admitAndDispatch(action, scopes);
+    async submit(action: IActionEnvelope): Promise<IActionReceipt> {
+      const admission = admitAndDispatch(action);
       admissions.add(admission);
       try {
         return await admission;
@@ -1189,29 +1005,6 @@ export const createActions = (
         ...approval,
         presentation: current ? structuredClone(prompt.native.presentation) : null,
       };
-    },
-    /**
-     * Quiesces the selected managed cohort without stopping unrelated controllers.
-     * @returns A promise resolved only after interruption, background cleanup and release evidence.
-     * @throws
-     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-     * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
-     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-     * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
-     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
-     * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
-     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
-     */
-    async quiescePlan(controls: IPlanRevisionWorkflow['controls']): Promise<void> {
-      const failures: unknown[] = [];
-      for (let index = 0; index < controls.length; index += 4) {
-        const results = await Promise.allSettled(
-          controls.slice(index, index + 4).map(quiesceThread),
-        );
-        for (const result of results)
-          if (result.status === 'rejected') failures.push(result.reason);
-      }
-      if (failures.length) throw failures[0];
     },
     /**
      * Stops admission, interrupts active work, cleans native terminals and confirms shutdown.

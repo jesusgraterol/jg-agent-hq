@@ -8,9 +8,7 @@ import { STORAGE_CONNECTION_SETTINGS } from '../storage/index.js';
 import { ClaudeHistoryModel } from '../providers/claude/history/index.js';
 
 import { BrowserModel } from './browser/index.js';
-import { CollaborationModel } from './collaboration/index.js';
 import { ControlModel } from './control/index.js';
-import { PlansModel } from './plans/index.js';
 import { SessionsModel } from './sessions/index.js';
 import { StoreRequestSchema, StoreWorkerSchema } from './types.js';
 import { openDatabase } from './schema.js';
@@ -33,10 +31,8 @@ const startWorker = async (): Promise<void> => {
       connectionSettings: STORAGE_CONNECTION_SETTINGS,
     };
     const browser = new BrowserModel(database, options.runtimeEpoch, options.actionKey);
-    const collaboration = new CollaborationModel(database, options.runtimeEpoch);
-    const plans = new PlansModel(database);
     const sessions = new SessionsModel(database);
-    const controls = new ControlModel(database, options.runtimeEpoch, options.actionKey, plans);
+    const controls = new ControlModel(database, options.runtimeEpoch, options.actionKey);
     const claudeHistory = new ClaudeHistoryModel(database);
     const remember = database.prepare(`INSERT INTO hq_native_history_index
   (provider, native_id, workspace_root, name, created_at, updated_at, native_state, observed_at, runtime_epoch, continuation_cursor)
@@ -73,38 +69,6 @@ const startWorker = async (): Promise<void> => {
             }
             break;
           }
-          case 'dispatch-page':
-            result = collaboration.dispatchPage(command.query);
-            break;
-          case 'dispatch-job':
-            result = collaboration.dispatchJob(command.taskId, command.requestId);
-            break;
-          case 'dispatch-block':
-            collaboration.blockDispatch(
-              command.requestId,
-              command.selectedActionId,
-              command.reason,
-            );
-            break;
-          case 'dispatch-collect':
-            result = collaboration.collectDispatch(
-              command.taskId,
-              command.requestId,
-              command.actionId,
-            );
-            break;
-          case 'agent-identity':
-            result = collaboration.identity(command.query);
-            break;
-          case 'agent-spawn-read':
-            result = collaboration.spawn(command.query);
-            break;
-          case 'collaboration':
-            result = collaboration.handle(command.request, command.binding);
-            break;
-          case 'collaboration-fanout':
-            result = collaboration.recoverFanout();
-            break;
           case 'evidence-origins':
             result = controls.getEvidenceOrigins(command.request);
             break;
@@ -119,10 +83,7 @@ const startWorker = async (): Promise<void> => {
                 "SELECT 1 FROM hq_action WHERE runtime_epoch = ? AND delivery = 'submitted' LIMIT 1",
               )
               .get(options.runtimeEpoch);
-            const pendingPlan = database
-              .prepare("SELECT 1 FROM hq_plan_operation WHERE state = 'prepared' LIMIT 1")
-              .get();
-            result = !activeThread && !activeAction && !pendingPlan;
+            result = !activeThread && !activeAction;
             break;
           }
           case 'browser-read':
@@ -133,9 +94,6 @@ const startWorker = async (): Promise<void> => {
             break;
           case 'browser-settle':
             result = browser.settle(command.id, command.operatorId, command.state);
-            break;
-          case 'plan-register':
-            plans.register(command.directory);
             break;
           case 'sessions-observe':
             sessions.observe(command.provider, command.sessions, command.isComplete);
@@ -151,33 +109,6 @@ const startWorker = async (): Promise<void> => {
             break;
           case 'sessions-active':
             result = sessions.active(command.limit);
-            break;
-          case 'thread-plan-read':
-            result = plans.getThreadPlan(command.threadId);
-            break;
-          case 'plan-threads':
-            result = plans.getPlanThreads(command.directory);
-            break;
-          case 'queue-peek':
-            result = controls.peekQueued(command.threadId);
-            break;
-          case 'plan-operation':
-            result = plans.getIntent(command.id);
-            break;
-          case 'plan-pending':
-            result = plans.getPendingId(command.directory);
-            break;
-          case 'plan-prepare':
-            result = plans.prepare(command.intent);
-            break;
-          case 'plan-complete':
-            plans.complete(command.id);
-            break;
-          case 'plan-project':
-            plans.project(command.projection);
-            break;
-          case 'plan-milestones':
-            result = plans.list(command.page.directory, command.page.limit, command.page.after);
             break;
           case 'claude-history':
             result = claudeHistory.read(command.request);
@@ -202,9 +133,6 @@ const startWorker = async (): Promise<void> => {
             break;
           case 'threads':
             result = controls.listThreads(command.workspaceRoot, command.page);
-            break;
-          case 'thread-adopted':
-            result = controls.isAdoptedThread(command.threadId);
             break;
           case 'thread-unstarted':
             result = controls.getUnstartedThread(command.provider, command.nativeId);

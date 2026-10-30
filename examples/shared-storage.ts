@@ -9,7 +9,7 @@ import { createHqSnapshot, restoreHqSnapshot, type IAgentHq } from 'jg-agent-hq'
  * its SQL connections.
  * The application transaction commits before capture and is not rolled back if capture fails.
  * Capture returns verified metadata; restore independently validates the staged copy.
- * @returns The inspected snapshot, recovery locations and exact restored preference.
+ * @returns The inspected snapshot, its restored state root and the exact restored preference.
  * @throws
  * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed

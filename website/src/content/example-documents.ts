@@ -4,7 +4,7 @@ import { EXAMPLE_DEFINITIONS, EXAMPLES_PAGE_LEDE } from './examples.ts';
 import { EXAMPLE_SOURCE_RECORDS, type IExampleSources, type IWorkedExample } from './types.ts';
 
 /**
- * Combines all three complete build-loaded helpers with their walkthroughs.
+ * Combines the complete build-loaded helper with its walkthrough.
  * @throws
  * - JG_AGENT_HQ_WEBSITE_SOURCE_INVALID: The HQ website source is invalid
  */
@@ -39,24 +39,11 @@ export const examplesMarkdown = (sources: IExampleSources): string =>
       example.prerequisites.map((text) => `- ${text}`).join('\n'),
       `\`\`\`sh\n${example.install}\n\`\`\``,
       example.setup,
-      ...(example.call
-        ? ['### Call the helper', `\`\`\`ts\n${example.call}\n\`\`\``]
-        : [
-            '### Your host supplies',
-            ...example.hostFields.map((field) => `- \`${field.name}\`: ${field.text}`),
-          ]),
+      '### Call the helper',
+      `\`\`\`ts\n${example.call}\n\`\`\``,
       '### What you get back',
       `${example.resultLabel}: ${example.result}`,
       example.resultNote,
-      ...(example.visual
-        ? [
-            example.visual.caption,
-            ...example.visual.groups.map(
-              (group) =>
-                `- ${group.label}: ${group.items.map((item) => `${item.title} — ${item.detail}`).join('; ')}`,
-            ),
-          ]
-        : []),
       ...example.returns.map((field) => `- \`${field.name}\`: ${field.text}`),
       '### Complete helper',
       `Source: ${example.sourcePath}. This is the same helper exercised by the public-client integration tests.`,

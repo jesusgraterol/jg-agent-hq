@@ -16,9 +16,6 @@ const canonical = (
 const names = [
   ...HOME_CONTENT.map.links.flatMap(({ down, up }) => [...down.items, ...up.items]),
   ...HOME_CONTENT.capabilities.flatMap(({ commands }) => commands),
-  ...HOME_CONTENT.collaborationExample.messages.flatMap(({ command, skill }) =>
-    [command, skill].filter((name): name is NonNullable<typeof name> => name !== null),
-  ),
   ...HOME_CONTENT.more.items.map(({ name }) => name),
 ];
 

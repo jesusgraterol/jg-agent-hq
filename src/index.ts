@@ -35,11 +35,6 @@ export type {
   IProviderMcpResources,
 } from './providers/index.js';
 export type {
-  IProviderAgentTools,
-  IAgentToolDefinition,
-  IAgentMcpLease,
-} from './agent-tools/index.js';
-export type {
   IProviderId,
   IProviderCapability,
   IProviderCapabilitySet,
@@ -76,10 +71,6 @@ export type {
   IHqRestoreOptions,
   IHqRestoreResult,
 } from './snapshots/index.js';
-
-// pure execution revision contracts
-export { computePlanRevision } from './plans/index.js';
-export type { IPlanContract } from './plans/index.js';
 
 // native media transport and results
 export type { IProviderInputFile } from './providers/index.js';

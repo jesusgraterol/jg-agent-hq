@@ -1,7 +1,8 @@
 // @vitest-environment node
-import { createCipheriv, randomBytes, randomUUID } from 'node:crypto';
+import { createCipheriv, randomBytes } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { createHqSnapshot, packHqSnapshot, restoreHqSnapshot, unpackHqSnapshot } from 'jg-agent-hq';
 import { expectToRejectCode } from 'jg-exception/testing';
 import { afterEach, expect, test, vi } from 'vitest';
@@ -66,7 +67,7 @@ const encodeArchive = (entries: { path: string; content: Buffer }[], key = KEY):
   return Buffer.concat([Buffer.from('JGHQSNA1'), iv, ciphertext, cipher.getAuthTag()]);
 };
 
-// a snapshot with a registered plan, its files in archive order and a packed archive
+// a snapshot with a host row, its files in archive order and a packed archive
 const withArchive = async (
   run: (fixture: {
     root: string;
@@ -75,51 +76,23 @@ const withArchive = async (
     archive: string;
   }) => Promise<void>,
 ): Promise<void> => {
-  await withClaudeRuntime(async ({ runtime, root, workspaceRoot }) => {
-    const directory = join(workspaceRoot, 'archived-plan');
-    await mkdir(directory);
-    await writeFile(
-      join(directory, 'plan.md'),
-      '---\nid: archived-plan\ncreated_at: 2026-10-25T00:00:00.000Z\nupdated_at: 2026-10-25T00:00:00.000Z\nrevision: 1\nstatus: pending\n---\n# Archived plan\n\nKeep the archive private.\n',
-    );
-    await writeFile(
-      join(directory, 'milestones.md'),
-      '# Milestones\n\n## Milestone 1: Archive\n**Status:** pending\n**Milestone ID:** 10000000-0000-4000-8000-000000000001\n\nPack the snapshot.\n',
-    );
-    // an approval writes the plan operation that registers the plan for capture
-    const status = await runtime.request({
-      kind: 'plan',
-      command: { kind: 'status', target: { directory } },
-    });
-    if (status.kind !== 'plan' || status.result.kind !== 'status') throw new Error('Missing plan');
-    await runtime.request({
-      kind: 'plan',
-      command: {
-        kind: 'approve',
-        target: { directory },
-        action: {
-          id: randomUUID(),
-          operatorId: 'archive-owner',
-          source: { kind: 'user-action', reference: 'archive-test' },
-        },
-        expected: status.result.result.revision,
-        scope: 'plan',
-        presentationHash: status.result.result.inspection.plan,
-      },
+  await withClaudeRuntime(async ({ runtime, root }) => {
+    await runtime.withStorageMaintenance(async (storage) => {
+      const host = new DatabaseSync(storage.databasePath);
+      try {
+        host.exec(
+          "CREATE TABLE app_note (body TEXT NOT NULL) STRICT; INSERT INTO app_note VALUES ('Keep the archive private.')",
+        );
+      } finally {
+        host.close();
+      }
     });
     const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
-    expect(snapshot.planCount).toBe(1);
-    const planKey = (await readdir(join(snapshot.directory, 'plans')))[0]!;
     const entries = await Promise.all(
-      [
-        'manifest.jsonl',
-        'complete.json',
-        'hq.sqlite',
-        'action.key',
-        `plans/${planKey}/plan.md`,
-        `plans/${planKey}/milestones.md`,
-        `plans/${planKey}/coordination.json`,
-      ].map(async (path) => ({ path, content: await readFile(join(snapshot.directory, path)) })),
+      ['manifest.jsonl', 'complete.json', 'hq.sqlite', 'action.key'].map(async (path) => ({
+        path,
+        content: await readFile(join(snapshot.directory, path)),
+      })),
     );
     const archive = join(root, 'snapshot.hqa');
     await run({ root, snapshot, entries, archive });
@@ -142,7 +115,14 @@ test('a packed snapshot unpacks byte for byte and restores, and the archive hide
       snapshotDirectory: unpacked.directory,
       destination: join(root, 'recovery'),
     });
-    expect(restored.planCount).toBe(1);
+    const recovered = new DatabaseSync(join(restored.stateRoot, 'hq.sqlite'), { readOnly: true });
+    try {
+      expect(recovered.prepare('SELECT body FROM app_note').get()?.body).toBe(
+        'Keep the archive private.',
+      );
+    } finally {
+      recovered.close();
+    }
     expect((await readdir(root)).filter((name) => name.startsWith('.hq-unpack-'))).toStrictEqual(
       [],
     );

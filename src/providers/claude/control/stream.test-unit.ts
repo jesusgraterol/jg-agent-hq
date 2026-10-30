@@ -23,7 +23,6 @@ const createSession = (): IClaudeSession => ({
     hasInterruptionMarker: false,
     finalText: null,
     isOutputOversized: false,
-    isOrdinaryEnvelope: false,
     resolve: () => undefined,
     reject: () => undefined,
     timer: setTimeout(() => undefined, 0),
@@ -216,10 +215,7 @@ test('a live item is timed when its frame arrives, a preview and its record alik
   ]);
 });
 
-test.each([
-  ['with an agent bridge, allows its own tool without a prompt', true, 1, 0],
-  ['without an agent bridge, prompts for the same tool', false, 0, 1],
-])('a tool request %s', async (_case, hasBridge, allowCount, promptCount) => {
+test('an MCP tool request prompts for approval and writes nothing', async () => {
   const written: unknown[] = [];
   const prompts: unknown[] = [];
   // the native connection is large; these frames only write to it
@@ -228,19 +224,7 @@ test.each([
       written.push(message);
     },
   } as unknown as NonNullable<IClaudeSession['connection']>;
-  const session: IClaudeSession = {
-    ...createSession(),
-    connection,
-    ...(hasBridge
-      ? {
-          agentBridge: {
-            serverName: 'jg_agent_hq_0000',
-            configuration: { command: 'node', args: [], env: {} },
-            release: async () => undefined,
-          },
-        }
-      : {}),
-  };
+  const session: IClaudeSession = { ...createSession(), connection };
   const { events } = createEvents();
   receiveClaudeMessage(
     session,
@@ -250,7 +234,7 @@ test.each([
       request_id: 'native-request',
       request: {
         subtype: 'can_use_tool',
-        tool_name: 'mcp__jg_agent_hq_0000__read_session',
+        tool_name: 'mcp__fixture-server__inspect',
         tool_use_id: 'tool-request',
         input: { repository: 'example' },
       },
@@ -258,15 +242,6 @@ test.each([
     { ...events, prompt: (prompt) => prompts.push(prompt) },
   );
   await Promise.resolve();
-  expect(written).toHaveLength(allowCount);
-  if (allowCount)
-    expect(written[0]).toStrictEqual({
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: 'native-request',
-        response: { behavior: 'allow', updatedInput: { repository: 'example' } },
-      },
-    });
-  expect(prompts).toHaveLength(promptCount);
+  expect(written).toHaveLength(0);
+  expect(prompts).toHaveLength(1);
 });

@@ -2,16 +2,9 @@ import { Worker } from 'node:worker_threads';
 import { Exception, extractMessage } from 'jg-exception';
 import { z } from 'zod';
 
-import { AgentIdentitySchema, AgentSpawnRecordSchema } from '../collaboration/identity/index.js';
-
-import { CollaborationResponseSchema } from '../contracts/collaboration/index.js';
-import { DispatchCollectionSchema } from '../contracts/collaboration/index.js';
-import { DispatchPageSchema, DispatchJobSchema } from '../collaboration/dispatch/index.js';
-
 import {
   BrowserReceiptSchema,
   ActionReceiptSchema,
-  ActionPlanContextSchema,
   ManagedThreadSchema,
   type IThreadSummary,
   HistoryProvenanceSchema,
@@ -20,8 +13,6 @@ import {
 } from '../contracts/index.js';
 import { ClaudeHistoryReadSchema } from '../providers/claude/history/index.js';
 import type { IStorageDescriptor } from '../storage/index.js';
-
-import { PlanWriteIntentSchema, PlanProjectionResultSchema } from '../plans/index.js';
 
 import {
   AdmissionResultSchema,
@@ -232,23 +223,6 @@ export const createStore = async (
   };
   return {
     storage: storage!,
-    dispatchPage: (query) => request({ kind: 'dispatch-page', query }, DispatchPageSchema),
-    dispatchJob: (taskId, requestId) =>
-      request({ kind: 'dispatch-job', taskId, requestId }, DispatchJobSchema),
-    blockDispatch: async (requestId, selectedActionId, reason) => {
-      await request({ kind: 'dispatch-block', requestId, selectedActionId, reason }, z.null());
-    },
-    collectDispatch: (taskId, requestId, actionId) =>
-      request(
-        { kind: 'dispatch-collect', taskId, requestId, actionId },
-        DispatchCollectionSchema.nullable(),
-      ),
-    agentIdentity: (query) => request({ kind: 'agent-identity', query }, AgentIdentitySchema),
-    getAgentSpawn: (query) =>
-      request({ kind: 'agent-spawn-read', query }, AgentSpawnRecordSchema.nullable()),
-    collaboration: (command, binding) =>
-      request({ kind: 'collaboration', request: command, binding }, CollaborationResponseSchema),
-    recoverCollaborationFanout: () => request({ kind: 'collaboration-fanout' }, z.boolean()),
     prepareStorageMaintenance: () => request({ kind: 'storage-maintenance' }, z.boolean()),
     snapshotBackup: async (destination) => {
       await request({ kind: 'snapshot-backup', destination }, z.null());
@@ -272,9 +246,6 @@ export const createStore = async (
         { kind: 'evidence-origins', request: command },
         z.array(HistoryProvenanceSchema.nullable()).max(128),
       ),
-    registerPlan: async (directory) => {
-      await request({ kind: 'plan-register', directory }, z.null());
-    },
     observeSessions: async (provider, sessions, isComplete) => {
       await request({ kind: 'sessions-observe', provider, sessions, isComplete }, z.null());
     },
@@ -290,43 +261,6 @@ export const createStore = async (
       request({ kind: 'session-transitions', afterSequence, limit }, SessionTransitionPageSchema),
     listActiveSessions: (limit) =>
       request({ kind: 'sessions-active', limit }, ActiveSessionRecordsSchema),
-    getThreadPlan: (threadId) =>
-      request({ kind: 'thread-plan-read', threadId }, ActionPlanContextSchema.nullable()),
-    getPlanThreads: (directory) =>
-      request({ kind: 'plan-threads', directory }, z.array(z.uuid()).max(32)),
-    peekQueued: (threadId) =>
-      request({ kind: 'queue-peek', threadId }, ActionReceiptSchema.nullable()),
-    getPlanOperation: (id) =>
-      request({ kind: 'plan-operation', id }, PlanWriteIntentSchema.nullable()),
-    getPendingPlanOperationId: (directory) =>
-      request({ kind: 'plan-pending', directory }, z.uuid().nullable()),
-    preparePlanOperation: (intent) =>
-      request({ kind: 'plan-prepare', intent }, PlanWriteIntentSchema),
-    completePlanOperation: async (id) => {
-      try {
-        await request({ kind: 'plan-complete', id }, z.null());
-      } catch (cause) {
-        let recorded;
-        try {
-          recorded = await request(
-            { kind: 'plan-operation', id },
-            PlanWriteIntentSchema.nullable(),
-          );
-        } catch (observation) {
-          throw new Exception('The HQ store failed: plan completion could not be confirmed', {
-            code: 'JG_AGENT_HQ_STORE_FAILED',
-            data: { kind: 'operation-failed' },
-            cause: new AggregateError([cause, observation], 'Plan ledger completion is uncertain'),
-          });
-        }
-        if (recorded?.state !== 'completed') throw cause;
-      }
-    },
-    projectPlan: async (projection) => {
-      await request({ kind: 'plan-project', projection }, z.null());
-    },
-    listPlanMilestones: (page) =>
-      request({ kind: 'plan-milestones', page }, PlanProjectionResultSchema),
     /** Persists only discovery metadata, not transcript bodies. */
     remember: async (threads: IThreadSummary[], nextCursor: string | null) => {
       await request({ kind: 'remember', threads, nextCursor, observedAt: Date.now() }, z.null());
@@ -346,7 +280,6 @@ export const createStore = async (
       ),
     listThreads: (workspaceRoot, page) =>
       request({ kind: 'threads', workspaceRoot, page }, ManagedThreadPageSchema),
-    isAdoptedThread: (threadId) => request({ kind: 'thread-adopted', threadId }, z.boolean()),
     getUnstartedThread: (provider, nativeId) =>
       request({ kind: 'thread-unstarted', provider, nativeId }, ManagedThreadSchema.nullable()),
     listUnstartedThreads: (provider, workspaceRoot, limit) =>

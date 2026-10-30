@@ -366,84 +366,6 @@ test('item-detail and item-image read one item through the installed command', a
   });
 });
 
-test('installed plan commands and stdin finalization work without a private plan registry', async () => {
-  await withClaudeRuntime(async ({ stateRoot, workspaceRoot }) => {
-    const directory = join(workspaceRoot, 'ordinary-plan');
-    // jg-breakdown assigns the milestone ID that finalization requires
-    const milestoneId = randomUUID();
-    await mkdir(directory);
-    await writeFile(join(directory, 'plan.md'), '# Plan\nBuild one feature.\n');
-    await writeFile(
-      join(directory, 'milestones.md'),
-      `# Milestones\n\n## Milestone 1: Feature\n**Status:** pending\n**Milestone ID:** ${milestoneId}\n\n**Objective:** Build the feature.\n**Dependencies:** None.\n**Scope:** Feature.\n**Implementation:** Implement it.\n**Verification:** Real checks.\n**Acceptance:** Correct.\n**Review checkpoint:** Review it.\n`,
-    );
-    const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
-    const run = promisify(execFile);
-    const before = JSON.parse(
-      (
-        await run(process.execPath, [
-          cli,
-          'plan-status',
-          '--state-root',
-          stateRoot,
-          '--directory',
-          directory,
-        ])
-      ).stdout,
-    );
-    expect(before.result.result.state).toBe('plan-approval-required');
-    const finalized = await runClient(stateRoot, [
-      Buffer.from(
-        JSON.stringify({
-          kind: 'plan',
-          command: {
-            kind: 'finalize',
-            target: { directory },
-            action: {
-              id: randomUUID(),
-              operatorId: 'local-owner',
-              source: { kind: 'user-message', reference: 'cli:explicit-finalize' },
-            },
-            expected: before.result.result.revision,
-          },
-        }),
-      ),
-    ]);
-    expect(finalized.code).toBe(0);
-    expect(JSON.parse(finalized.stdout).result.content).toContain(
-      `**Milestone ID:** ${milestoneId}`,
-    );
-    const page = JSON.parse(
-      (
-        await run(process.execPath, [
-          cli,
-          'plan-milestones',
-          '--state-root',
-          stateRoot,
-          '--directory',
-          directory,
-          '--limit',
-          '1',
-        ])
-      ).stdout,
-    );
-    expect(page.result.result.data).toHaveLength(1);
-    expect(page.result.result.nextCursor).toBeNull();
-    await expect(
-      run(process.execPath, [
-        cli,
-        'plan-milestones',
-        '--state-root',
-        stateRoot,
-        '--directory',
-        directory,
-        '--limit',
-        '129',
-      ]),
-    ).rejects.toMatchObject({ stderr: expect.stringContaining('Request is invalid.') });
-  });
-});
-
 const runOffline = (args: string[]) =>
   new Promise<{ code: number | null; stdout: string; stderr: string }>((resolveResult, reject) => {
     const child = execFile(
@@ -486,6 +408,12 @@ test.each([
     'the 4.0.2 schema',
     "UPDATE hq_schema SET schema_hash = '062346e252b338d94d126c3f55f50851e003691b1be51de46b6e43b5b09615ae', package_version = '4.0.2'",
     'The HQ storage is invalid: written by jg-agent-hq 4.0.2',
+  ],
+  [
+    // the hash of the schema jg-agent-hq 8.0.2 wrote
+    'the 8.0.2 schema',
+    "UPDATE hq_schema SET schema_hash = 'bf4d6ad7f2c97adaeb762f7206557999e6ed081d54484d233fe931b31fdf62ab', package_version = '8.0.2'",
+    'The HQ storage is invalid: written by jg-agent-hq 8.0.2',
   ],
   [
     'a newer schema',

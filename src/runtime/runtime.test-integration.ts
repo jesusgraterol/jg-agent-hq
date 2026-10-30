@@ -555,7 +555,7 @@ test('a Codex item detail reads a command, tools, file diffs and the images an i
         id: 'd-0',
         type: 'dynamicToolCall',
         namespace: null,
-        tool: 'hq_identity',
+        tool: 'lookup_ticket',
         status: 'inProgress',
         arguments: {},
         contentItems: null,
@@ -631,7 +631,7 @@ test('a Codex item detail reads a command, tools, file diffs and the images an i
       ...none,
       tool: {
         server: null,
-        name: 'hq_identity',
+        name: 'lookup_ticket',
         input: '{}',
         result: null,
         isResultStartCut: false,

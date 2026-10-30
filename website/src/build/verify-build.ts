@@ -206,14 +206,6 @@ export const verifyBuild = async (directory: string): Promise<IBuildVerification
                   fileURLToPath(new URL('../../../', import.meta.url)),
                   'examples/control-session.ts',
                 ),
-                'review-handoff': await readDocument(
-                  fileURLToPath(new URL('../../../', import.meta.url)),
-                  'examples/review-handoff.ts',
-                ),
-                'revise-plan': await readDocument(
-                  fileURLToPath(new URL('../../../', import.meta.url)),
-                  'examples/revise-plan.ts',
-                ),
               })
             : homeMarkdown();
         if (

@@ -4,7 +4,6 @@ packages:
 minimumReleaseAgeExclude:
   # Exact owned releases; qualified archive checksums verified before adoption.
   - jg-fs@1.7.0
-  - jg-plans@0.3.0
   - jg-personal-astro-ui@0.5.0
   - jg-exception@1.7.1
 
