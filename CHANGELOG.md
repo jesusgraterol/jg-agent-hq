@@ -1,5 +1,11 @@
 # Changelog
 
+## 10.0.0
+
+- List Claude threads from an index in last-activity order, replacing the unused index in creation order, so a page no longer sorts every transcript of the workspace, and a continuation seeks into that index instead of scanning the pages before it. Active-session reads find an observed Claude session's transcript through an index on its native ID instead of scanning every indexed transcript.
+- Document `JG_AGENT_HQ_TRANSPORT_FAILED` on `request`, which a Claude history read rejects with when it can't start Claude's CLI.
+- Breaking: change the storage schema in place. A database or snapshot written by 9.x is refused with `JG_AGENT_HQ_STORAGE_INVALID` naming the version that wrote it; start from a fresh state root.
+
 ## 9.0.0
 
 - Breaking: remove plans, collaboration, agent tools and the agent bridge. HQ no longer registers, locks or snapshots plans, runs collaboration tasks, streams or requests, starts agents from other agents, or gives the sessions it starts tools of its own. The `plan`, `thread-plan`, `collaboration` and `agent-tool` requests, the browser `plan` command and `BrowserThreadDetailSchema.plan`, the plan, collaboration and agent-tool contracts with `PlanActionScopeSchema` and `ActionPlanContextSchema`, `computePlanRevision`, `IPlanContract`, `IProviderAgentTools`, `IAgentToolDefinition`, `IAgentMcpLease`, a provider's `agentTools` and its `agentTools` capability, and the `agent-input` provenance source are gone.
