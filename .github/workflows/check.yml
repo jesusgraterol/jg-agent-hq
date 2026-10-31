@@ -52,14 +52,7 @@ jobs:
       - name: Check package and production website
         env:
           JG_HQ_RELEASE_DIRECTORY: ${{ runner.temp }}/hq-release
-        # root command aliases join the next normal package release
-        run: |
-          pnpm build
-          pnpm test:unit --tagsFilter='!full'
-          pnpm test:integration --tagsFilter='!full'
-          pnpm typecheck
-          pnpm format:check
-          pnpm --dir website check
+        run: pnpm check
 
       - name: Upload the consumer-tested release
         if: matrix.node == '24.15.0' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'

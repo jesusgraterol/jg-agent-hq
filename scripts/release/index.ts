@@ -23,9 +23,8 @@ if (!archiveStat.isFile() || archiveStat.size > 16777216)
   throw new Exception('The HQ package release check failed', {
     code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED',
   });
-const integrity = `sha512-${createHash('sha512')
-  .update(await readFile(archive))
-  .digest('base64')}`;
+const archiveBytes = await readFile(archive);
+const integrity = `sha512-${createHash('sha512').update(archiveBytes).digest('base64')}`;
 if (
   (await stat(`${archive}.sha512`)).size > 128 ||
   (await readFile(`${archive}.sha512`, 'utf8')).trim() !== integrity
@@ -34,7 +33,7 @@ if (
     'The HQ package release check failed: the downloaded archive checksum does not match the tested archive',
     { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
   );
-if (await needsPublication(manifest.version, integrity)) {
+if (await needsPublication(manifest.version, integrity, fetch, archiveBytes)) {
   // submit exactly once; an interrupted or failed acknowledgement stops the job for inspection
   const result = await promisify(execFile)(
     'npm',
@@ -45,5 +44,7 @@ if (await needsPublication(manifest.version, integrity)) {
   process.stderr.write(result.stderr);
   await waitForPublication(manifest.version, integrity);
 } else {
-  process.stdout.write(`jg-agent-hq@${manifest.version} already contains this verified archive.\n`);
+  process.stdout.write(
+    `jg-agent-hq@${manifest.version} is already published; verified protected contents match.\n`,
+  );
 }

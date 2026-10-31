@@ -28,7 +28,7 @@ pnpm test:integration --tagsFilter='!full'
 
 No suite environment variable leaks into a later invocation. Omit the filter for complete granular/focused coverage. Empty required selections fail. Entirely full-only files must be excluded before imports when one is introduced; the current assessed files all contain essential coverage.
 
-Full is reserved for explicit local requests, with complete focused coverage still required for affected behavior. No full CI input, schedule, or recurring manual routine is added. The published root manifest still composes complete categories, and its shortcut changes wait for the next normal release. CI temporarily composes one package build, the native essential unit/integration selections above, existing type/format gates, and the website essential check. It retains the consumer-tested release producer and both Node versions. This composition is removed when the root aliases land.
+Root `test`, `check:package`, and `check` select essential coverage. `test:full`, `check:package:full`, and `check:full` retain complete coverage at the same package or package/website boundary. Granular and focused commands remain complete by default. CI uses `pnpm check`, retaining one package build, the consumer-tested release producer, both Node versions, and the website essential check. Full is reserved for explicit local requests, with complete focused coverage still required for affected behavior. No full CI input, schedule, or recurring manual routine is added.
 
 ## Website boundary
 
@@ -67,7 +67,9 @@ Vitest 5.0.3 counts two repeats after the initial run. A worker or shared fixtur
 
 For performance comparisons, retain current per-file timings, case counts, worker count, and retry settings. Package builds always clean and rebuild their output; test results are not reused as a substitute for execution. Compare the same package source and report preparation separately. Local timings establish the tested host only, not a promised Actions duration.
 
-Determine release impact from the actual packed payload, including npm's always-packed `package.json` and `README.md`. Test, configuration, and repository-only documentation changes that leave that payload unchanged require no package version. Verify that a consumer-tested archive remains identical to the published version with the nonpublishing release comparison. Never use publication as a verification command. Tests must not enter production output or the tarball.
+Determine release impact from the actual packed payload, including npm's always-packed `package.json` and `README.md`. Reusing a published version permits changes only to `test`, `test:full`, `check`, `check:full`, `check:package`, and `check:package:full` scripts and README text inside one `[testing-commands:start]: #` / `[testing-commands:end]: #` block, including its optional blank separator. All other manifest fields, scripts, README text, shipped paths, file permissions, and contents must match. Malformed markers fail closed. This skips publication and does not change the installed package.
+
+The candidate archive must still match its raw SHA-512 receipt. A differing published archive is downloaded from the fixed registry URL with no redirects, under the existing shared 20-second deadline and a 16 MiB compressed limit, and checked against the registry's own SHA-512 before comparison. Non-extracting inspection accepts npm's regular-file USTAR payload, caps expansion at 64 MiB, individual files at 16 MiB, and entries at 4096, and rejects links, extension records, unsafe/duplicate paths, corrupt checksums, truncation, and trailing data. Newly submitted releases still require the complete tested archive's exact integrity when checking publication visibility. These release-integrity cases stay essential. Never use publication as a verification command. Tests must not enter production output or the tarball.
 
 ## Measured integration cost
 

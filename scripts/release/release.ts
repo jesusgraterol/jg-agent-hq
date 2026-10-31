@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
 import { Exception, extractMessage } from 'jg-exception';
 
+import { samePublishedArchive } from './development-metadata/index.ts';
 import { RegistryReleaseSchema, ReleaseVersionSchema, type IRegistryFetch } from './types.ts';
 
 // how long npm may take to serve a release it accepted, which took over three minutes in 2026-10
@@ -80,7 +82,66 @@ const readRelease = async (version: string, fetcher: IRegistryFetch, signal: Abo
 };
 
 /**
- * Skips an identical published artifact and admits only a newer stable release.
+ * Reads the fixed registry archive with the existing 16 MiB consumer limit and shared deadline.
+ * The registry's SHA-512 is checked before any payload comparison.
+ * @returns The verified published archive bytes.
+ * @throws
+ * - JG_AGENT_HQ_RELEASE_CHECK_FAILED: The HQ package release check failed
+ */
+const readPublishedArchive = async (
+  version: string,
+  integrity: string,
+  fetcher: IRegistryFetch,
+  signal: AbortSignal,
+): Promise<Buffer> => {
+  try {
+    const response = await fetcher(
+      `https://registry.npmjs.org/jg-agent-hq/-/jg-agent-hq-${version}.tgz`,
+      { signal, redirect: 'error' },
+    );
+    if (response.status !== 200 || !response.body) {
+      await response.body?.cancel();
+      throw new Exception(
+        `The HQ package release check failed: registry archive returned HTTP ${response.status}`,
+        { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
+      );
+    }
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > 16 * 1024 * 1024)
+          throw new Exception(
+            'The HQ package release check failed: registry archive exceeds 16 MiB',
+            { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
+          );
+        chunks.push(value);
+      }
+    } finally {
+      await reader.cancel();
+    }
+    const bytes = Buffer.concat(chunks);
+    if (`sha512-${createHash('sha512').update(bytes).digest('base64')}` !== integrity)
+      throw new Exception(
+        'The HQ package release check failed: registry archive integrity differs from its metadata',
+        { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
+      );
+    return bytes;
+  } catch (cause) {
+    if (cause instanceof Exception) throw cause;
+    throw new Exception(`The HQ package release check failed: ${extractMessage(cause)}`, {
+      code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED',
+      cause,
+    });
+  }
+};
+
+/**
+ * Skips matching protected contents of a published artifact and admits only a newer stable release.
  * Registry failures never authorize publication. No response is cached between runs.
  * @returns Whether the verified archive still needs publication.
  * @throws
@@ -90,6 +151,7 @@ export const needsPublication = async (
   version: string,
   integrity: string,
   fetcher: IRegistryFetch = fetch,
+  candidateArchive?: Uint8Array,
 ): Promise<boolean> => {
   if (!ReleaseVersionSchema.safeParse(version).success)
     throw new Exception(
@@ -99,12 +161,22 @@ export const needsPublication = async (
   const signal = AbortSignal.timeout(20000);
   const exact = await readRelease(version, fetcher, signal);
   if (exact) {
-    if (exact.dist.integrity !== integrity)
-      throw new Exception(
-        'The HQ package release check failed: published contents differ; increment the package version',
-        { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
-      );
-    return false;
+    if (exact.dist.integrity === integrity) return false;
+    if (candidateArchive) {
+      if (`sha512-${createHash('sha512').update(candidateArchive).digest('base64')}` !== integrity)
+        throw new Exception(
+          'The HQ package release check failed: candidate archive integrity does not match',
+          {
+            code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED',
+          },
+        );
+      const published = await readPublishedArchive(version, exact.dist.integrity, fetcher, signal);
+      if (samePublishedArchive(published, candidateArchive)) return false;
+    }
+    throw new Exception(
+      'The HQ package release check failed: published contents differ; increment the package version',
+      { code: 'JG_AGENT_HQ_RELEASE_CHECK_FAILED' },
+    );
   }
   const latest = await readRelease('latest', fetcher, signal);
   if (!latest)
