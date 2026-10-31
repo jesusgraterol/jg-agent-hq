@@ -1,5 +1,9 @@
 # Changelog
 
+## 10.1.0
+
+- Add `codexDaemonLauncher` to `createAgentHq`: a command and its arguments that run `codex app-server daemon start`, such as `systemd-run --user --scope`. On Linux, Codex's shared daemon stays in the cgroup of whatever started it, so a host running as a systemd service that started it took it down, with the work of every terminal session on it, whenever the service stopped. Without the option, the start runs directly as before.
+
 ## 10.0.0
 
 - List Claude threads from an index in last-activity order, replacing the unused index in creation order, so a page no longer sorts every transcript of the workspace, and a continuation seeks into that index instead of scanning the pages before it. Active-session reads find an observed Claude session's transcript through an index on its native ID instead of scanning every indexed transcript.
