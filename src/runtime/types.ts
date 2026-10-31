@@ -26,6 +26,8 @@ export const AgentHqOptionsSchema = z.strictObject({
   stateRoot: z.string().min(1).refine(isAbsolute),
   allowedRoots: z.array(z.string().min(1).refine(isAbsolute)).min(1).max(128),
   codexExtraSkillRoots: z.array(z.string().min(1).refine(isAbsolute)).max(128).optional(),
+  // a command and its arguments run before `codex app-server daemon start`, such as a new scope
+  codexDaemonLauncher: z.array(z.string().min(1)).min(1).max(16).optional(),
   claudeAdditionalDirectories: z.array(z.string().min(1).refine(isAbsolute)).max(128).optional(),
 });
 export type IAgentHqOptions = z.infer<typeof AgentHqOptionsSchema>;

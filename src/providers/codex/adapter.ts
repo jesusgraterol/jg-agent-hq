@@ -35,12 +35,17 @@ import { createCodexEvents, toProviderThread } from './events.js';
 
 /**
  * Describes current Codex controls and lazily owns a connection to the shared app-server daemon.
+ * @param extraSkillRoots The capability roots of each thread HQ starts.
+ * @param daemonLauncher The command and arguments run before `codex app-server daemon start`.
  * @returns A built-in factory that preserves native settings, authentication and permission policy.
  */
-export const createCodexProviderFactory = (extraSkillRoots: string[]): IAgentProviderFactory => ({
+export const createCodexProviderFactory = (
+  extraSkillRoots: string[],
+  daemonLauncher: string[],
+): IAgentProviderFactory => ({
   id: 'codex',
   async create(context) {
-    const native = await createCodexProvider(extraSkillRoots);
+    const native = await createCodexProvider(extraSkillRoots, daemonLauncher);
     // whether each session is observed, read once: Codex saves it and it's inside an allowed workspace
     const allowedSessions = new Map<string, boolean>();
     let observations = Promise.resolve();

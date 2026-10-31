@@ -52,6 +52,7 @@ const withRuntime = async (
     control: (settings: Record<string, unknown>) => Promise<void>;
     request: (command: IHqRequestInput) => ReturnType<typeof requestAgentHq>;
   }) => Promise<void>,
+  options: { codexDaemonLauncher?: string[] } = {},
 ): Promise<void> => {
   const root = await mkdtemp(join(tmpdir(), 'jg-hq-runtime-'));
   const workspaceRoot = join(root, 'workspace');
@@ -63,7 +64,7 @@ const withRuntime = async (
     vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
     vi.stubEnv('JG_HQ_FIXTURE_DIRECTORY', root);
     vi.stubEnv('JG_HQ_FIXTURE_WORKSPACE', workspaceRoot);
-    runtime = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
+    runtime = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot], ...options });
     await run({
       root,
       stateRoot,
@@ -1319,6 +1320,57 @@ test('Codex connects through the shared daemon proxy, and a failed daemon start 
     expect(commands).toContainEqual(['app-server', 'daemon', 'start']);
     expect(commands).not.toContainEqual(['app-server', 'proxy']);
   });
+});
+
+test("a host's daemon launcher runs the shared daemon's start, and the proxy still runs directly", async () => {
+  const readLines = async (path: string): Promise<unknown[]> =>
+    (await readFile(path, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+  const launcherRoot = await mkdtemp(join(tmpdir(), 'jg-hq-launcher-'));
+  try {
+    // stands in for a launcher such as systemd-run: it records its arguments, then runs the rest
+    const launcher = join(launcherRoot, 'launcher');
+    await writeFile(
+      launcher,
+      String.raw`#!/usr/bin/env node
+import { spawnSync } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
+import { join } from 'node:path';
+const [option, command, ...args] = process.argv.slice(2);
+appendFileSync(join(process.env.JG_HQ_FIXTURE_DIRECTORY,'launcher.jsonl'),JSON.stringify([option,command,...args])+'\n');
+process.exitCode = spawnSync(command,args,{ stdio: 'inherit' }).status ?? 1;
+`,
+      { mode: 0o755 },
+    );
+    for (const codexDaemonLauncher of [[], ['']])
+      await expectToRejectCode(
+        createAgentHq({
+          stateRoot: join(launcherRoot, 'state'),
+          allowedRoots: [launcherRoot],
+          codexDaemonLauncher,
+        }),
+        'JG_AGENT_HQ_REQUEST_INVALID',
+      );
+    await withRuntime(
+      async ({ root, workspaceRoot, request }) => {
+        const reply = await request({ kind: 'threads', provider: 'codex', workspaceRoot });
+        if (reply.kind !== 'threads') throw new Error('wrong response');
+        expect(reply.result.data[0]).toMatchObject({ nativeId: 'thread-1023' });
+        expect(await readLines(join(root, 'launcher.jsonl'))).toStrictEqual([
+          ['--fixture-scope', 'codex', 'app-server', 'daemon', 'start'],
+        ]);
+        expect(await readLines(join(root, 'commands.jsonl'))).toStrictEqual([
+          ['app-server', 'daemon', 'start'],
+          ['app-server', 'proxy'],
+        ]);
+      },
+      { codexDaemonLauncher: [launcher, '--fixture-scope'] },
+    );
+  } finally {
+    await rm(launcherRoot, { recursive: true, force: true });
+  }
 });
 
 test(

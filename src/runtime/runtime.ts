@@ -85,7 +85,13 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     store = await createStore(databasePath, ownership.owner.nonce, actionKey);
     registry = createProviderRegistry(
       [
-        { factory: createCodexProviderFactory(codexExtraSkillRoots), isBuiltIn: true },
+        {
+          factory: createCodexProviderFactory(
+            codexExtraSkillRoots,
+            parsed.data.codexDaemonLauncher ?? [],
+          ),
+          isBuiltIn: true,
+        },
         {
           factory: createClaudeProviderFactory(store, claudeAdditionalDirectories),
           isBuiltIn: true,

@@ -61,6 +61,7 @@ import {
  */
 export const createCodexProvider = async (
   extraSkillRoots: string[] = [],
+  daemonLauncher: string[] = [],
 ): Promise<ICodexProvider> => {
   let latest: IUsageSnapshot = {
     provider: 'codex',
@@ -144,7 +145,7 @@ export const createCodexProvider = async (
       return latest;
     })());
   };
-  rpc = await createCodexRpc({
+  rpc = await createCodexRpc(daemonLauncher, {
     request: (id, method, params) => {
       if (events) events.request(id, method, params);
       else void rpc?.reject(id).catch(() => undefined);

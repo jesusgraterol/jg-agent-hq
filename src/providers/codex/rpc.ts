@@ -23,18 +23,28 @@ const EnvelopeSchema = z.object({
  * daemon when no terminal session has, with bounded pending requests. The daemon's control socket
  * speaks WebSocket, which the proxy forwards as raw bytes. When the daemon restarts, the lost
  * connection's requests fail and the next request reconnects; nothing is sent again.
+ * @param daemonLauncher The command and arguments run before `codex app-server daemon start`, so a
+ * host can start the shared daemon outside its own service; empty runs the start directly.
+ * @param handlers The callbacks for native messages and connection changes.
  * @returns An initialized transport with exact action IDs and late-response callbacks.
  * @throws
  * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
  * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
  */
-export const createCodexRpc = async (handlers: {
-  notify(method: string, params: unknown): void;
-  request(id: string | number, method: string, params: unknown): void;
-  lateResponse(id: string, result: unknown, error: unknown): void;
-  unavailable(): void;
-  opened(): void;
-}) => {
+export const createCodexRpc = async (
+  daemonLauncher: string[],
+  handlers: {
+    notify(method: string, params: unknown): void;
+    request(id: string | number, method: string, params: unknown): void;
+    lateResponse(id: string, result: unknown, error: unknown): void;
+    unavailable(): void;
+    opened(): void;
+  },
+) => {
+  const [launcherCommand, ...launcherArguments] = daemonLauncher;
+  const daemonStart: [string, string[]] = launcherCommand
+    ? [launcherCommand, [...launcherArguments, 'codex', 'app-server', 'daemon', 'start']]
+    : ['codex', ['app-server', 'daemon', 'start']];
   const manifest = z
     .object({ version: z.string() })
     .parse(JSON.parse(await readFile(new URL('../../../package.json', import.meta.url), 'utf8')));
@@ -165,7 +175,7 @@ export const createCodexRpc = async (handlers: {
    */
   const open = async (): Promise<{ transport: IProviderProcess; userAgent: string | null }> => {
     try {
-      await run('codex', ['app-server', 'daemon', 'start'], { timeout: 30_000, maxBuffer: 65_536 });
+      await run(...daemonStart, { timeout: 30_000, maxBuffer: 65_536 });
     } catch (cause) {
       throw new Exception(`The Codex integration failed: ${extractMessage(cause)}`, {
         code: 'JG_AGENT_HQ_CODEX_FAILED',
