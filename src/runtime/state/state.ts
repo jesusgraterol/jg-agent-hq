@@ -7,10 +7,12 @@ import { Exception, extractMessage, hasErrorCode, isException } from 'jg-excepti
 
 import {
   ensurePrivateRuntimeDirectory,
+  getOwnerLiveness,
   HqLockOwnerSchema,
   isPrivateOwner,
   type IHqLockOwner,
 } from '../../locks/index.js';
+import type { IPreviousRuntimeCheck } from '../types.js';
 
 import { ACTION_KEY_FILE, DATABASE_FILE, RUNTIME_OWNER_FILE } from './constants.js';
 
@@ -222,8 +224,24 @@ export const readRuntimeOwner = async (
 };
 
 /**
- * Claims lifetime ownership exclusively, without treating process death as permission to reclaim.
- * @returns The owner and its exact-owner cleanup operation.
+ * Fails a claim whose state root another runtime owns, or may still own.
+ * @throws
+ * - JG_AGENT_HQ_RUNTIME_ALREADY_OWNED: The HQ runtime is already owned
+ */
+const alreadyOwned: (cause?: unknown) => never = (cause) => {
+  throw new Exception('The HQ runtime is already owned', {
+    code: 'JG_AGENT_HQ_RUNTIME_ALREADY_OWNED',
+    data: { kind: 'state-conflict' },
+    ...(cause === undefined ? {} : { cause }),
+  });
+};
+
+/**
+ * Removes the owner record of a runtime that stopped without releasing it, only when its process
+ * no longer exists and the host's check proves no process of that runtime remains, and only while
+ * the record still holds the bytes that were checked. The host guarantees that at most one caller
+ * reclaims a given state root at a time.
+ * @returns A promise resolved once the record is removed.
  * @throws
  * - JG_AGENT_HQ_RUNTIME_ALREADY_OWNED: The HQ runtime is already owned
  * - JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE: The HQ state directory is unsafe
@@ -231,7 +249,48 @@ export const readRuntimeOwner = async (
  * - JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE: The HQ runtime owner is unverifiable
  * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
  */
-export const claimRuntimeOwner = async (stateRoot: string) => {
+const reclaimRuntimeOwner = async (
+  stateRoot: string,
+  isPreviousRuntimeStopped: IPreviousRuntimeCheck | undefined,
+): Promise<void> => {
+  const stored = await readRuntimeOwner(stateRoot);
+  // a process that exists, or that this user can't signal, may still own the state root
+  if (!isPreviousRuntimeStopped || getOwnerLiveness(stored.owner.pid) !== 'dead') alreadyOwned();
+  let isStopped: boolean;
+  try {
+    isStopped = await isPreviousRuntimeStopped({
+      pid: stored.owner.pid,
+      createdAt: stored.owner.createdAt,
+    });
+  } catch (cause) {
+    return alreadyOwned(cause);
+  }
+  if (isStopped !== true) alreadyOwned();
+  const current = await readRuntimeOwner(stateRoot);
+  if (current.content !== stored.content) alreadyOwned();
+  try {
+    await rm(join(stateRoot, RUNTIME_OWNER_FILE));
+  } catch (cause) {
+    alreadyOwned(cause);
+  }
+};
+
+/**
+ * Claims lifetime ownership exclusively. An existing record is replaced only when its process no
+ * longer exists and the host's `isPreviousRuntimeStopped` check resolves true; otherwise the claim
+ * fails, as it always does without a check.
+ * @returns The owner, whether it replaced a stopped runtime's record, and its exact-owner cleanup.
+ * @throws
+ * - JG_AGENT_HQ_RUNTIME_ALREADY_OWNED: The HQ runtime is already owned
+ * - JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE: The HQ state directory is unsafe
+ * - JG_AGENT_HQ_STATE_FILE_UNSAFE: The HQ state file is unsafe
+ * - JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE: The HQ runtime owner is unverifiable
+ * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
+ */
+export const claimRuntimeOwner = async (
+  stateRoot: string,
+  isPreviousRuntimeStopped?: IPreviousRuntimeCheck,
+) => {
   const owner: IHqLockOwner = {
     pid: process.pid,
     nonce: randomUUID(),
@@ -241,15 +300,19 @@ export const claimRuntimeOwner = async (stateRoot: string) => {
   const content = `${JSON.stringify(owner)}\n`;
   const path = join(stateRoot, RUNTIME_OWNER_FILE);
   let handle;
+  let isReclaimed = false;
   try {
     handle = await open(path, 'wx', 0o600);
   } catch (error) {
     if (!hasErrorCode(error, 'EEXIST')) throw error;
-    await readRuntimeOwner(stateRoot);
-    throw new Exception('The HQ runtime is already owned', {
-      code: 'JG_AGENT_HQ_RUNTIME_ALREADY_OWNED',
-      data: { kind: 'state-conflict' },
-    });
+    await reclaimRuntimeOwner(stateRoot, isPreviousRuntimeStopped);
+    isReclaimed = true;
+    try {
+      handle = await open(path, 'wx', 0o600);
+    } catch (retry) {
+      if (!hasErrorCode(retry, 'EEXIST')) throw retry;
+      return alreadyOwned();
+    }
   }
   try {
     await handle.writeFile(content);
@@ -259,6 +322,8 @@ export const claimRuntimeOwner = async (stateRoot: string) => {
   }
   return {
     owner,
+    // the previous runtime stopped without releasing the state root, which may hold its leftovers
+    isReclaimed,
     async release(): Promise<void> {
       const current = await readRuntimeOwner(stateRoot);
       if (current.content !== content)

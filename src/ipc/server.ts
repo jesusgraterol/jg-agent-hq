@@ -1,7 +1,7 @@
 import { createServer, type Socket } from 'node:net';
-import { chmod } from 'node:fs/promises';
+import { chmod, lstat, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { Exception, extractMessage } from 'jg-exception';
+import { Exception, extractMessage, hasErrorCode } from 'jg-exception';
 
 import {
   HqResponseSchema,
@@ -20,6 +20,19 @@ import {
   MAX_REQUEST_BYTES,
 } from './constants.js';
 import { createLineDecoder } from './framing.js';
+
+/**
+ * Removes the socket a runtime that stopped without closing its server left at the control path,
+ * so the next server can listen there. Anything else at that path, such as a symbolic link, stays.
+ * @returns A promise resolved once no leftover socket remains.
+ */
+export const removeLeftoverSocket = async (path: string): Promise<void> => {
+  try {
+    if ((await lstat(path)).isSocket()) await rm(path);
+  } catch (error) {
+    if (!hasErrorCode(error, 'ENOENT')) throw error;
+  }
+};
 
 /**
  * Serves closed HQ commands over an owner-only Unix socket. Disconnects do not own host lifetime.

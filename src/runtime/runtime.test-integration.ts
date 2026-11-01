@@ -1807,3 +1807,120 @@ test('locks lists the machine locks with their holders, alive or gone, without t
     }
   });
 });
+
+// a process that held the state root and was killed: its PID is free and its socket stays behind
+const killRuntimeHolder = async (stateRoot: string): Promise<number> => {
+  const holder = spawn(
+    process.execPath,
+    [
+      '-e',
+      "require('node:net').createServer().listen(process.argv[1], () => console.log('listening'))",
+      join(stateRoot, 'hq.sock'),
+    ],
+    { stdio: ['ignore', 'pipe', 'ignore'] },
+  );
+  await new Promise<void>((resolve) => holder.stdout.once('data', () => resolve()));
+  const exited = new Promise((resolve) => holder.once('exit', resolve));
+  holder.kill('SIGKILL');
+  await exited;
+  await writeFile(
+    join(stateRoot, 'hq-owner.json'),
+    `${JSON.stringify({ pid: holder.pid, nonce: randomUUID(), command: 'serve', createdAt: new Date().toISOString() })}\n`,
+    { mode: 0o600 },
+  );
+  return holder.pid!;
+};
+
+test('a runtime that stopped without releasing its state root is replaced once the host proves it stopped, clearing its leftover socket', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'jg-hq-reclaim-'));
+  const stateRoot = join(root, 'state');
+  let runtime: IAgentHq | undefined;
+  try {
+    await mkdir(stateRoot, { mode: 0o700 });
+    const pid = await killRuntimeHolder(stateRoot);
+    expect((await lstat(join(stateRoot, 'hq.sock'))).isSocket()).toBe(true);
+    const check = vi.fn(async () => true);
+    runtime = await createAgentHq({
+      stateRoot,
+      allowedRoots: [root],
+      isPreviousRuntimeStopped: check,
+    });
+    expect(check).toHaveBeenCalledWith({ pid, createdAt: expect.any(String) });
+    expect(await requestAgentHq(stateRoot, { kind: 'status' })).toMatchObject({
+      kind: 'status',
+      result: { store: 'ready' },
+    });
+  } finally {
+    await runtime?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a symbolic link at the control socket path is never removed, even when the previous runtime is proven stopped', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'jg-hq-reclaim-link-'));
+  const stateRoot = join(root, 'state');
+  try {
+    await mkdir(stateRoot, { mode: 0o700 });
+    await killRuntimeHolder(stateRoot);
+    await rm(join(stateRoot, 'hq.sock'));
+    const target = join(root, 'elsewhere');
+    await writeFile(target, 'untouched');
+    await symlink(target, join(stateRoot, 'hq.sock'));
+    await expectToRejectCode(
+      createAgentHq({
+        stateRoot,
+        allowedRoots: [root],
+        isPreviousRuntimeStopped: async () => true,
+      }),
+      'JG_AGENT_HQ_TRANSPORT_FAILED',
+    );
+    expect((await lstat(join(stateRoot, 'hq.sock'))).isSymbolicLink()).toBe(true);
+    expect(await readFile(target, 'utf8')).toBe('untouched');
+    // the failed start released the record it took over
+    await expect(lstat(join(stateRoot, 'hq-owner.json'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a starter without a check fails while a reclaimer waits in its check, and the reclaimer then owns the runtime', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'jg-hq-reclaim-race-'));
+  const stateRoot = join(root, 'state');
+  let runtime: IAgentHq | undefined;
+  try {
+    await mkdir(stateRoot, { mode: 0o700 });
+    await killRuntimeHolder(stateRoot);
+    let proceed = (): void => undefined;
+    let checking = (): void => undefined;
+    const isChecking = new Promise<void>((resolve) => {
+      checking = resolve;
+    });
+    const reclaimer = createAgentHq({
+      stateRoot,
+      allowedRoots: [root],
+      isPreviousRuntimeStopped: () => {
+        checking();
+        return new Promise((resolve) => {
+          proceed = () => resolve(true);
+        });
+      },
+    });
+    await isChecking;
+    await expectToRejectCode(
+      createAgentHq({ stateRoot, allowedRoots: [root] }),
+      'JG_AGENT_HQ_RUNTIME_ALREADY_OWNED',
+      'The HQ runtime is already owned',
+    );
+    proceed();
+    runtime = await reclaimer;
+    expect(await requestAgentHq(stateRoot, { kind: 'status' })).toMatchObject({
+      kind: 'status',
+      result: { store: 'ready' },
+    });
+  } finally {
+    await runtime?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

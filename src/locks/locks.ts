@@ -406,6 +406,29 @@ export const releaseHqLock = async (root: string, nonce: string): Promise<IHqLoc
 };
 
 /**
+ * Removes the HQ lock of a holder that no longer exists, once a runtime that stopped without
+ * releasing its state root proved none of its processes remain. A lock whose holder exists, can't
+ * be signaled or can't be read stays in place, and so does one that changed after it was read.
+ * @param root The trusted state root.
+ * @returns A promise that resolves to whether the lock was removed.
+ */
+export const removeStaleHqLock = async (root: string): Promise<boolean> => {
+  const path = join(root, RUNTIME_DIRECTORY, HQ_LOCK_FILE);
+  let stored: IStoredLock;
+  try {
+    stored = await readStoredLock(path);
+  } catch {
+    // an unreadable lock keeps its manual inspection
+    return false;
+  }
+  if (stored.kind !== 'owner' || getOwnerLiveness(stored.owner.pid) !== 'dead') return false;
+  const current = await readStoredLock(path);
+  if (current.kind !== 'owner' || current.content !== stored.content) return false;
+  await rm(path);
+  return true;
+};
+
+/**
  * Reports the HQ lock for status output without acquiring or changing it.
  * @param root The trusted state root.
  * @param now The current time.

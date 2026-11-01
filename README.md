@@ -37,7 +37,7 @@ Testing maintenance can reuse an existing version when only these six aggregate 
 
 ## Lock ownership
 
-Callers supply a trusted state root. Locks live in its private `.runtime/hq.lock`. A holder records its process ID, nonce, safe operation label and creation time. Live holders are awaited. Dead, incomplete or unverifiable owners require inspection and are never automatically reclaimed, because child processes may remain alive.
+Callers supply a trusted state root. Locks live in its private `.runtime/hq.lock`. A holder records its process ID, nonce, safe operation label and creation time. Live holders are awaited. Dead, incomplete or unverifiable owners require inspection and are never automatically reclaimed, because child processes may remain alive. The one exception is a runtime that stopped without releasing the state root: when the host's `isPreviousRuntimeStopped` check proves no process of that runtime remains, the next runtime replaces its owner record and removes a lock whose holder no longer exists and the socket it left behind. The host guarantees that at most one caller reclaims a given state root at a time.
 
 Short metadata operations use `withHqLock`. Long-lived runtime ownership must use a separate owner record; never hold a metadata lock for an agent turn's lifetime. The lock coordinates cooperating processes and does not isolate hostile code running as the same OS user.
 

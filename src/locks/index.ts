@@ -12,6 +12,7 @@ export {
   acquireHqLock,
   withHqLock,
   releaseHqLock,
+  removeStaleHqLock,
   readHqLockState,
 } from './locks.js';
 

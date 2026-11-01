@@ -8,7 +8,8 @@ import { HqRequestSchema, type IHqRequestInput, type IHqResponse } from '../cont
 import { createActions, readControl } from '../actions/index.js';
 import { createAccounts } from '../accounts/index.js';
 import { createExtensions } from '../extensions/index.js';
-import { CONTROL_SOCKET, createIpcServer } from '../ipc/index.js';
+import { CONTROL_SOCKET, createIpcServer, removeLeftoverSocket } from '../ipc/index.js';
+import { removeStaleHqLock } from '../locks/index.js';
 import {
   createCodexProviderFactory,
   createClaudeProviderFactory,
@@ -74,12 +75,17 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     ? await resolveAllowedRoots(parsed.data.claudeAdditionalDirectories)
     : [];
   const stateRoot = await prepareStateRoot(parsed.data.stateRoot);
-  const ownership = await claimRuntimeOwner(stateRoot);
+  const ownership = await claimRuntimeOwner(stateRoot, parsed.data.isPreviousRuntimeStopped);
   let store: Awaited<ReturnType<typeof createStore>> | undefined;
   let registry: ReturnType<typeof createProviderRegistry> | undefined;
   let ipc: Awaited<ReturnType<typeof createIpcServer>> | undefined;
   let actionKey: Uint8Array;
   try {
+    // a runtime that stopped without releasing the state root left its lock and socket behind
+    if (ownership.isReclaimed) {
+      await removeStaleHqLock(stateRoot);
+      await removeLeftoverSocket(join(stateRoot, CONTROL_SOCKET));
+    }
     const databasePath = await prepareDatabase(stateRoot);
     actionKey = await prepareActionKey(stateRoot, databasePath);
     // Codex sessions run in its shared daemon, so they keep running while the runtime restarts
