@@ -43,6 +43,7 @@ export const createStore = async (
   databasePath: string,
   runtimeEpoch: string,
   actionKey: Uint8Array,
+  keepingProviders: string[],
 ): Promise<IStore> => {
   const worker = new Worker(new URL('./store.worker.js', import.meta.url), {
     // the worker loads a file, even when its caller used Node's string-input mode
@@ -54,7 +55,7 @@ export const createStore = async (
     ),
     // indexing a large transcript otherwise grows the young generation to V8's default maximum
     resourceLimits: { maxYoungGenerationSizeMb: 16 },
-    workerData: { databasePath, runtimeEpoch, actionKey },
+    workerData: { databasePath, runtimeEpoch, actionKey, keepingProviders },
   });
   let hasExited = false;
   const exited = new Promise<void>((resolve) =>
@@ -297,6 +298,11 @@ export const createStore = async (
       request({ kind: 'approval', input }, ApprovalIdentitySchema.nullable()),
     releaseControls: async () => {
       await request({ kind: 'release' }, z.null());
+    },
+    listReattachable: () => request({ kind: 'reattachable' }, z.array(ManagedThreadSchema)),
+    reattach: (input) => request({ kind: 'reattach', input }, ObservationResultSchema.nullable()),
+    quarantineThread: async (threadId) => {
+      await request({ kind: 'quarantine', threadId }, z.null());
     },
     close: (): Promise<void> =>
       (closing ??= (async () => {

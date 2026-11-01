@@ -135,7 +135,7 @@ const setup = async () => {
 };
 
 test.each(['codex', 'claude'])(
-  'native lineage for %s survives runtime restart without opening another native connection',
+  'native lineage for %s survives runtime restart from the HQ record, not the native session',
   async (provider) => {
     await withClaudeRuntime(async ({ runtime, stateRoot, workspaceRoot, root }) => {
       const status = await runtime.request({ kind: 'status' });
@@ -164,20 +164,51 @@ test.each(['codex', 'claude'])(
         forkedFromId: null,
       });
       await runtime.close();
+      // the Codex session HQ created has no turns in the daemon that keeps it
+      await writeFixtureControl(root, 'control.json', {
+        threadTurns: { [thread.result.nativeId!]: [] },
+      });
       const callsBefore = await readFile(join(root, 'calls.jsonl'), 'utf8');
       const reopened = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
       try {
-        expect(
-          await reopened.request({ kind: 'managed-thread', threadId: thread.result.id }),
-        ).toMatchObject({
-          kind: 'managed-thread',
-          result: {
-            id: thread.result.id,
-            nativeId: thread.result.nativeId,
-            nativeLineage: thread.result.nativeLineage,
-          },
-        });
-        expect(await readFile(join(root, 'calls.jsonl'), 'utf8')).toBe(callsBefore);
+        const reopenedStatus = await reopened.request({ kind: 'status' });
+        if (reopenedStatus.kind !== 'status') throw new Error('Missing runtime');
+        const saved = thread.result;
+        // a Codex session outlives the runtime, which rejoins it; a Claude session stays closed
+        await expect
+          .poll(() => reopened.request({ kind: 'managed-thread', threadId: saved.id }))
+          .toMatchObject({
+            kind: 'managed-thread',
+            result: {
+              id: saved.id,
+              nativeId: saved.nativeId,
+              nativeLineage: saved.nativeLineage,
+              ...(provider === 'codex'
+                ? { runtimeEpoch: reopenedStatus.result.runtimeEpoch, state: 'idle' }
+                : { runtimeEpoch: null, state: 'inactive' }),
+            },
+          });
+        const calls = await readFile(join(root, 'calls.jsonl'), 'utf8');
+        if (provider === 'claude') expect(calls).toBe(callsBefore);
+        else
+          expect(
+            calls
+              .slice(callsBefore.length)
+              .trim()
+              .split('\n')
+              .map((line) => z.object({ method: z.string() }).parse(JSON.parse(line)).method)
+              // every connection also lists the sessions the daemon has loaded, for any client
+              .filter(
+                (method) =>
+                  method !== 'thread/loaded/list' &&
+                  (method.startsWith('thread/') || method.startsWith('turn/')),
+              ),
+          ).toStrictEqual([
+            'thread/read',
+            'thread/turns/list',
+            'thread/resume',
+            'thread/turns/list',
+          ]);
       } finally {
         await reopened.close();
       }
@@ -1924,7 +1955,7 @@ test('large live windows bound serialized output, expose gaps and truncate text 
   }
 });
 
-test('shutdown waits for admission and cannot start inference after native cleanup', async () => {
+test('shutdown waits for admission and leaves a Codex session bound, unless its message failed', async () => {
   const fixture = await setup();
   try {
     const { thread } = await fixture.create('shutdown-race');
@@ -1938,15 +1969,24 @@ test('shutdown waits for admission and cannot start inference after native clean
     const outcome = await Promise.allSettled([pending, stopped]);
     expect(outcome[1]!.status).toBe('fulfilled');
     const calls = (await fixture.calls()).map((call) => call.method);
-    const firstCleanup = calls.indexOf('thread/backgroundTerminals/clean');
-    const turn = calls.indexOf('turn/start');
-    expect(turn === -1 || turn < firstCleanup).toBe(true);
+    expect(calls).not.toContain('turn/interrupt');
+    expect(calls).not.toContain('thread/backgroundTerminals/clean');
     const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
     try {
       const saved = database
-        .prepare('SELECT state, runtime_epoch FROM hq_thread WHERE id = ?')
+        .prepare('SELECT state, runtime_epoch, pending_action_id FROM hq_thread WHERE id = ?')
         .get(thread.id);
-      expect(saved).toMatchObject({ state: 'inactive', runtime_epoch: null });
+      const message = database
+        .prepare('SELECT delivery FROM hq_action WHERE id = ?')
+        .get(action.id);
+      // a message shutdown refused to send leaves its action pending, which releases the session
+      if (message?.delivery === 'failed')
+        expect(saved).toMatchObject({ state: 'inactive', runtime_epoch: null });
+      else
+        expect(saved).toMatchObject({
+          runtime_epoch: action.runtimeEpoch,
+          pending_action_id: null,
+        });
     } finally {
       database.close();
     }
@@ -1955,33 +1995,316 @@ test('shutdown waits for admission and cannot start inference after native clean
   }
 });
 
-test('shutdown interrupts every active session before waiting for their individual acknowledgements', async () => {
+test('shutdown interrupts every active Claude session at once and leaves Codex turns running', async () => {
+  await withClaudeRuntime(async ({ runtime, root, stateRoot, workspaceRoot, request, control }) => {
+    const status = await runtime.request({ kind: 'status' });
+    if (status.kind !== 'status') throw new Error('Missing runtime');
+    const runtimeEpoch = status.result.runtimeEpoch;
+    const settle = async (command: IActionCommand): Promise<IActionReceipt> => {
+      const id = randomUUID();
+      await request({ kind: 'action', action: { id, runtimeEpoch, command } });
+      return expect
+        .poll(async () => {
+          const response = await request({ kind: 'receipt', actionId: id });
+          return response.kind === 'receipt' ? response.result : null;
+        })
+        .toMatchObject({ delivery: 'acknowledged' })
+        .then(async () => {
+          const response = await request({ kind: 'receipt', actionId: id });
+          if (response.kind !== 'receipt' || !response.result) throw new Error('Missing receipt');
+          return response.result;
+        });
+    };
+    await control({ holdTurn: true });
+    await writeFixtureControl(root, 'control.json', { holdTurn: true });
+    const threadIds: Record<string, string> = {};
+    for (const [name, provider] of [
+      ['stop-one', 'claude'],
+      ['stop-two', 'claude'],
+      ['stop-three', 'claude'],
+      ['stop-four', 'claude'],
+      ['keep-codex', 'codex'],
+    ] as const) {
+      const created = await settle({ kind: 'thread-create', provider, workspaceRoot, name });
+      threadIds[name] = created.threadId!;
+      await settle({
+        kind: 'message',
+        threadId: created.threadId!,
+        input: { kind: 'text', text: 'Keep this turn active' },
+      });
+      await expect
+        .poll(() => request({ kind: 'managed-thread', threadId: created.threadId! }))
+        .toMatchObject({ result: { state: 'running' } });
+    }
+    // The Claude fixture withholds each acknowledgement until all four sessions receive interruption.
+    await control({ holdTurn: true, interruptBarrier: 4 });
+    await runtime.close();
+    const claudeCalls = (await readFile(join(root, 'claude-calls.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) =>
+        z.object({ request: z.object({ subtype: z.string() }).optional() }).parse(JSON.parse(line)),
+      );
+    expect(claudeCalls.filter((call) => call.request?.subtype === 'interrupt')).toHaveLength(4);
+    const codexCalls = (await readFile(join(root, 'calls.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => z.object({ method: z.string() }).parse(JSON.parse(line)).method);
+    expect(codexCalls).not.toContain('turn/interrupt');
+    expect(codexCalls).not.toContain('thread/backgroundTerminals/clean');
+    const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'), { readOnly: true });
+    try {
+      const saved = (name: string) =>
+        database
+          .prepare(
+            'SELECT ownership, state, runtime_epoch, active_turn_id FROM hq_thread WHERE id = ?',
+          )
+          .get(threadIds[name]!);
+      for (const name of ['stop-one', 'stop-two', 'stop-three', 'stop-four'])
+        expect(saved(name)).toMatchObject({ state: 'inactive', runtime_epoch: null });
+      expect(saved('keep-codex')).toMatchObject({
+        ownership: 'managed',
+        state: 'running',
+        runtime_epoch: runtimeEpoch,
+        active_turn_id: expect.any(String),
+      });
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test('the next runtime rejoins the Codex sessions a shutdown left running and catches up on finished turns', async () => {
   const fixture = await setup();
+  let reopened: IAgentHq | undefined;
   try {
     await fixture.control({ holdTurn: true });
-    for (const name of ['stop-one', 'stop-two', 'stop-three', 'stop-four']) {
-      const { thread } = await fixture.create(name);
-      await fixture.submit(
-        fixture.envelope({
-          kind: 'message',
-          threadId: thread.id,
-          input: { kind: 'text', text: 'Keep this turn active' },
-        }),
-      );
+    const running = (await fixture.create('keep-running')).thread;
+    const finishing = (await fixture.create('keep-finishing')).thread;
+    const idle = (await fixture.create('keep-idle')).thread;
+    const messages = new Map<string, string>();
+    for (const thread of [running, finishing]) {
+      const action = fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Keep working' },
+      });
+      await fixture.submit(action);
+      messages.set(thread.id, action.id);
       await fixture.until(
         () => fixture.thread(thread.id),
         (entry) => entry.state === 'running',
       );
     }
-    // The external fixture withholds each acknowledgement until all four sessions receive interruption.
-    await fixture.control({ holdTurn: true, interruptBarrier: 4 });
+    const runningTurn = (await fixture.thread(running.id)).activeTurnId!;
+    const finishingTurn = (await fixture.thread(finishing.id)).activeTurnId!;
     await fixture.runtime.close();
-    const calls = (await fixture.calls()).map((call) => call.method);
-    expect(calls.filter((method) => method === 'turn/interrupt')).toHaveLength(4);
-    expect(calls.lastIndexOf('turn/interrupt')).toBeLessThan(
-      calls.indexOf('thread/backgroundTerminals/clean'),
+    // while HQ was stopped, the daemon kept one turn running and finished the other
+    const daemon = {
+      threadStatuses: {
+        [running.nativeId!]: { type: 'active', activeFlags: [] },
+        [finishing.nativeId!]: { type: 'idle' },
+        [idle.nativeId!]: { type: 'idle' },
+      },
+      threadTurns: {
+        [running.nativeId!]: [{ id: runningTurn, status: 'inProgress' }],
+        [finishing.nativeId!]: [{ id: finishingTurn, status: 'completed' }],
+        [idle.nativeId!]: [],
+      },
+    };
+    await fixture.control(daemon);
+    const callCount = (await fixture.calls()).length;
+    reopened = await createAgentHq({
+      stateRoot: fixture.stateRoot,
+      allowedRoots: [fixture.workspaceRoot],
+    });
+    const status = await reopened.request({ kind: 'status' });
+    if (status.kind !== 'status') throw new Error('Missing runtime');
+    const runtimeEpoch = status.result.runtimeEpoch;
+    await fixture.until(
+      () => fixture.thread(running.id),
+      (entry) =>
+        entry.runtimeEpoch === runtimeEpoch &&
+        entry.ownership === 'managed' &&
+        entry.state === 'running' &&
+        entry.activeTurnId === runningTurn,
+    );
+    await fixture.until(
+      () => fixture.thread(finishing.id),
+      (entry) =>
+        entry.runtimeEpoch === runtimeEpoch &&
+        entry.state === 'completed' &&
+        entry.activeTurnId === null,
+    );
+    await fixture.until(
+      () => fixture.thread(idle.id),
+      (entry) => entry.runtimeEpoch === runtimeEpoch && entry.state === 'idle',
+    );
+    expect(await fixture.receipt(messages.get(finishing.id)!)).toMatchObject({
+      completion: 'completed',
+    });
+    expect(await fixture.receipt(messages.get(running.id)!)).toMatchObject({ completion: null });
+    // rejoining changes no session's settings
+    const resumes = (await fixture.calls())
+      .slice(callCount)
+      .filter((call) => call.method === 'thread/resume')
+      .map((call) => call.params);
+    const byThread = (left: Record<string, unknown>, right: Record<string, unknown>) =>
+      String(left.threadId).localeCompare(String(right.threadId));
+    expect(resumes.sort(byThread)).toStrictEqual(
+      [running, finishing, idle]
+        .map((thread) => ({ threadId: thread.nativeId!, excludeTurns: true }))
+        .sort(byThread),
+    );
+    // the turn still running completes through the rejoined session
+    await fixture.control({
+      ...daemon,
+      emitOnce: true,
+      emit: [
+        {
+          method: 'turn/completed',
+          params: { threadId: running.nativeId, turn: { id: runningTurn, status: 'completed' } },
+        },
+      ],
+    });
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    await fixture.until(
+      () => fixture.receipt(messages.get(running.id)!),
+      (entry) => entry.completion === 'completed',
+    );
+    expect(await fixture.thread(running.id)).toMatchObject({
+      state: 'completed',
+      activeTurnId: null,
+    });
+  } finally {
+    await reopened?.close();
+    await fixture.close();
+  }
+});
+
+test('the next runtime answers the request a kept Codex turn still waits on', async () => {
+  const fixture = await setup();
+  let reopened: IAgentHq | undefined;
+  try {
+    const { thread } = await fixture.create('kept-approval');
+    const prompt = {
+      method: 'item/commandExecution/requestApproval',
+      params: { startedAtMs: Date.now(), command: 'echo kept-request', cwd: fixture.workspaceRoot },
+    };
+    await fixture.control({ prompt });
+    await fixture.submit(
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Check native permission' },
+      }),
+    );
+    const waiting = await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.state === 'waiting-approval',
+    );
+    const turnId = waiting.activeTurnId!;
+    await fixture.runtime.close();
+    // shutdown neither declines the request nor stops its turn
+    await expect(readFile(join(fixture.root, 'replies.jsonl'), 'utf8')).rejects.toThrow('ENOENT');
+    expect((await fixture.calls()).map((call) => call.method)).not.toContain('turn/interrupt');
+    await fixture.control({
+      threadStatuses: {
+        [thread.nativeId!]: { type: 'active', activeFlags: ['waitingOnApproval'] },
+      },
+      threadTurns: { [thread.nativeId!]: [{ id: turnId, status: 'inProgress' }] },
+      resumePrompt: prompt,
+      completeOnReply: true,
+    });
+    reopened = await createAgentHq({
+      stateRoot: fixture.stateRoot,
+      allowedRoots: [fixture.workspaceRoot],
+    });
+    const status = await reopened.request({ kind: 'status' });
+    if (status.kind !== 'status') throw new Error('Missing runtime');
+    const runtimeEpoch = status.result.runtimeEpoch;
+    await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.runtimeEpoch === runtimeEpoch && entry.state === 'waiting-approval',
+    );
+    const pending = await fixture.request({
+      kind: 'approvals',
+      threadId: thread.id,
+      state: 'pending',
+    });
+    if (pending.kind !== 'approvals') throw new Error('Wrong response');
+    const approval = pending.result.data.find((entry) => entry.runtimeEpoch === runtimeEpoch)!;
+    expect(approval).toMatchObject({ nativeTurnId: turnId, state: 'pending' });
+    expect(approval.presentation?.detail).toContain('kept-request');
+    const reply: IActionEnvelope = {
+      id: randomUUID(),
+      runtimeEpoch,
+      command: {
+        kind: 'native-reply',
+        threadId: thread.id,
+        expectedTurnId: turnId,
+        approvalId: approval.id,
+        response: { kind: 'decision', decision: 'decline' },
+      },
+    };
+    await fixture.request({ kind: 'action', action: reply });
+    await fixture.until(
+      () => fixture.receipt(reply.id),
+      (entry) => entry.delivery === 'acknowledged',
+    );
+    await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.state === 'completed' && entry.activeTurnId === null,
+    );
+    expect(await readFile(join(fixture.root, 'replies.jsonl'), 'utf8')).toContain(
+      'native-approval-resumed',
     );
   } finally {
+    await reopened?.close();
+    await fixture.close();
+  }
+});
+
+test('a kept Codex session another client moved past its recorded turn is marked uncertain', async () => {
+  const fixture = await setup();
+  let reopened: IAgentHq | undefined;
+  try {
+    const { thread } = await fixture.create('moved-on');
+    const message = fixture.envelope({
+      kind: 'message',
+      threadId: thread.id,
+      input: { kind: 'text', text: 'Finish one turn' },
+    });
+    await fixture.submit(message);
+    const finished = await fixture.until(
+      () => fixture.receipt(message.id),
+      (entry) => entry.completion === 'completed',
+    );
+    await fixture.runtime.close();
+    // a terminal ran another turn on the session while HQ was stopped
+    await fixture.control({
+      threadStatuses: { [thread.nativeId!]: { type: 'idle' } },
+      threadTurns: {
+        [thread.nativeId!]: [
+          { id: finished.nativeTurnId, status: 'completed' },
+          { id: 'terminal-turn', status: 'completed' },
+        ],
+      },
+    });
+    const callCount = (await fixture.calls()).length;
+    reopened = await createAgentHq({
+      stateRoot: fixture.stateRoot,
+      allowedRoots: [fixture.workspaceRoot],
+    });
+    await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.ownership === 'uncertain' && entry.state === 'unknown',
+    );
+    expect((await fixture.calls()).slice(callCount).map((call) => call.method)).not.toContain(
+      'thread/resume',
+    );
+  } finally {
+    await reopened?.close();
     await fixture.close();
   }
 });

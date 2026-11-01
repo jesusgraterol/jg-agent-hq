@@ -152,6 +152,8 @@ export type ICodexProvider = {
     search?: string,
   ): Promise<INativePage<IThreadSummary>>;
   readThread(nativeId: string): Promise<IThreadSummary>;
+  /** @returns A session's native metadata and status, without joining it. */
+  readNativeThread(nativeId: string): Promise<INativeThread>;
   /** @returns A session's summary, with its workspace, and whether Codex doesn't save it. */
   readObservedThread(nativeId: string): Promise<{ thread: IThreadSummary; isEphemeral: boolean }>;
   /** @returns One page of the IDs of the threads the daemon has loaded, for any client. */

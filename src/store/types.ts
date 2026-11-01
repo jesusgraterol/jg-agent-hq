@@ -5,6 +5,7 @@ import {
   type IBrowserAction,
   type IBrowserReceipt,
   MAX_PAGE_SIZE,
+  MAX_PROVIDERS,
   ManagedThreadSchema,
   ErrorKindSchema,
   type IActionReceipt,
@@ -34,6 +35,7 @@ import {
   ApprovalPageRequestSchema,
   EventPageSchema,
   ApprovalRecordSchema,
+  ReattachmentSchema,
   type IAdmission,
   type INativeOutcome,
   type INativeObservation,
@@ -44,6 +46,7 @@ import {
   type IAdmissionResult,
   type IDispatch,
   type IObservationResult,
+  type IReattachment,
 } from './control/index.js';
 import type { IActiveSessionRecord } from './sessions/index.js';
 
@@ -142,6 +145,9 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('claim-queue'), threadId: z.uuid() }),
   z.strictObject({ kind: z.literal('approval'), input: ApprovalRecordSchema }),
   z.strictObject({ kind: z.literal('release') }),
+  z.strictObject({ kind: z.literal('reattachable') }),
+  z.strictObject({ kind: z.literal('reattach'), input: ReattachmentSchema }),
+  z.strictObject({ kind: z.literal('quarantine'), threadId: z.uuid() }),
 ]);
 export type IStoreCommand = z.infer<typeof StoreCommandSchema>;
 export const StoreRequestSchema = z.strictObject({
@@ -167,6 +173,8 @@ export const StoreWorkerSchema = z.strictObject({
   databasePath: z.string().min(1),
   runtimeEpoch: z.uuid(),
   actionKey: z.instanceof(Uint8Array).refine((key) => key.length === 32),
+  // the providers whose sessions outlive the runtime, which it rejoins
+  keepingProviders: z.array(ManagedThreadSchema.shape.provider).max(MAX_PROVIDERS),
 });
 
 // the worker owns persistence; callers cannot submit arbitrary statements
@@ -442,6 +450,28 @@ export type IStore = {
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   releaseControls(): Promise<void>;
+  /**
+   * Lists the sessions another runtime left running, which this runtime rejoins.
+   * @returns At most one runtime's worth of controlled sessions, oldest first.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  listReattachable(): Promise<IManagedThread[]>;
+  /**
+   * Binds a session another runtime left running to this runtime before it rejoins the session.
+   * @returns The thread and whether its queue may advance, or null when it is no longer one to rejoin.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   */
+  reattach(input: IReattachment): Promise<IObservationResult | null>;
+  /**
+   * Marks a session's ownership uncertain when this runtime can't rejoin it.
+   * @returns A promise resolved after the change is committed.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  quarantineThread(threadId: string): Promise<void>;
   /**
    * Closes SQLite and waits for the worker to exit.
    * @returns A promise resolved after SQLite closes and the worker exits.

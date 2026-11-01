@@ -82,16 +82,19 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   try {
     const databasePath = await prepareDatabase(stateRoot);
     actionKey = await prepareActionKey(stateRoot, databasePath);
-    store = await createStore(databasePath, ownership.owner.nonce, actionKey);
+    // Codex sessions run in its shared daemon, so they keep running while the runtime restarts
+    const codex = {
+      factory: createCodexProviderFactory(
+        codexExtraSkillRoots,
+        parsed.data.codexDaemonLauncher ?? [],
+      ),
+      isBuiltIn: true,
+      keepsSessions: true,
+    };
+    store = await createStore(databasePath, ownership.owner.nonce, actionKey, [codex.factory.id]);
     registry = createProviderRegistry(
       [
-        {
-          factory: createCodexProviderFactory(
-            codexExtraSkillRoots,
-            parsed.data.codexDaemonLauncher ?? [],
-          ),
-          isBuiltIn: true,
-        },
+        codex,
         {
           factory: createClaudeProviderFactory(store, claudeAdditionalDirectories),
           isBuiltIn: true,

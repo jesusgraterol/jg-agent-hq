@@ -69,8 +69,14 @@ export const startClaudeControl = () => {
    }
    if(subtype==='interrupt'){
     if(hasPrompt)out({type:'control_cancel_request',request_id:'native-request'});
-    response();
-    setTimeout(()=>complete(!settings.completeOnInterrupt),settings.interruptDelay??1);return;
+    const acknowledge=()=>{response();setTimeout(()=>complete(!settings.completeOnInterrupt),settings.interruptDelay??1);};
+    // interruptBarrier withholds every session's acknowledgement until that many sessions received one
+    if(settings.interruptBarrier){
+     appendFileSync(join(root,'claude-interrupts.jsonl'),id+'\n');
+     const waitForBarrier=()=>readFileSync(join(root,'claude-interrupts.jsonl'),'utf8').trim().split('\n').length>=settings.interruptBarrier?acknowledge():setTimeout(waitForBarrier,8);
+     waitForBarrier();
+    }else acknowledge();
+    return;
    }
   }else if(message.type==='user'){
    if(input)throw new Error('Native input duplicated');

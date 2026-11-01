@@ -15,7 +15,12 @@ const page = async (runtime: IAgentHq, afterSequence: number, limit: number) => 
   if (response.kind !== 'session-states') throw new Error('Missing session states');
   return response.result;
 };
-const createThread = async (fixture: IClaudeFixture, runtime: IAgentHq, name: string) => {
+const createThread = async (
+  fixture: IClaudeFixture,
+  runtime: IAgentHq,
+  name: string,
+  provider: 'codex' | 'claude' = 'codex',
+) => {
   const status = await runtime.request({ kind: 'status' });
   if (status.kind !== 'status') throw new Error('Missing runtime status');
   const created = await runtime.request({
@@ -25,7 +30,7 @@ const createThread = async (fixture: IClaudeFixture, runtime: IAgentHq, name: st
       runtimeEpoch: status.result.runtimeEpoch,
       command: {
         kind: 'thread-create',
-        provider: 'codex',
+        provider,
         workspaceRoot: fixture.workspaceRoot,
         name,
       },
@@ -44,10 +49,11 @@ const createThread = async (fixture: IClaudeFixture, runtime: IAgentHq, name: st
 
 test('transitions are read in order from a cursor and survive a runtime restart', async () => {
   await withClaudeRuntime(async (fixture) => {
+    // Claude sessions stop with the runtime, so its shutdown records a transition for each
     const threads = [
-      await createThread(fixture, fixture.runtime, 'first-session'),
-      await createThread(fixture, fixture.runtime, 'second-session'),
-      await createThread(fixture, fixture.runtime, 'third-session'),
+      await createThread(fixture, fixture.runtime, 'first-session', 'claude'),
+      await createThread(fixture, fixture.runtime, 'second-session', 'claude'),
+      await createThread(fixture, fixture.runtime, 'third-session', 'claude'),
     ];
     const read: ISessionTransition[] = [];
     let afterSequence = 0;

@@ -8,8 +8,16 @@ import type {
   IProviderThread,
 } from '../index.js';
 
-// only runtime-owned registrations can preserve built-in exception contracts
-export type IProviderRegistration = { factory: IAgentProviderFactory; isBuiltIn: boolean };
+/*
+ * Only runtime-owned registrations can preserve built-in exception contracts. A provider that keeps
+ * sessions runs them in a native process that outlives the runtime, which leaves their turns
+ * running at shutdown and rejoins them at startup.
+ */
+export type IProviderRegistration = {
+  factory: IAgentProviderFactory;
+  isBuiltIn: boolean;
+  keepsSessions?: boolean;
+};
 
 // runtime callers receive concrete operations with cancellation owned by the registry
 export type IBoundAgentProvider = {

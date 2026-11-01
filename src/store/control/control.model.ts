@@ -24,6 +24,7 @@ import {
   ACTION_RECEIPT_COLUMNS,
   CONTROLLED_THREAD_CAPACITY,
   EVENT_COLUMNS,
+  KEPT_SESSION_CONDITION,
   THREAD_COLUMNS,
   UNSTARTED_CONDITION,
 } from './constants.js';
@@ -45,6 +46,7 @@ import {
   type IObservationResult,
   type IDispatch,
   type IApprovalRecord,
+  type IReattachment,
 } from './types.js';
 
 const FailureSchema = z.object({
@@ -57,19 +59,30 @@ export class ControlModel {
   private readonly __database: DatabaseSync;
   private readonly __epoch: string;
   private readonly __digestKey: KeyObject;
+  // a JSON array of the providers whose sessions outlive the runtime, which it rejoins
+  private readonly __keepingProviders: string;
 
-  /** Quarantines unsettled controls from another runtime before accepting new actions. */
-  public constructor(database: DatabaseSync, runtimeEpoch: string, digestKey: Uint8Array) {
+  /**
+   * Quarantines unsettled controls from another runtime before accepting new actions, except the
+   * sessions a provider in keepingProviders still runs, which the runtime rejoins.
+   */
+  public constructor(
+    database: DatabaseSync,
+    runtimeEpoch: string,
+    digestKey: Uint8Array,
+    keepingProviders: string[],
+  ) {
     this.__database = database;
     this.__epoch = runtimeEpoch;
     this.__digestKey = createSecretKey(digestKey);
+    this.__keepingProviders = JSON.stringify(keepingProviders);
     const now = Date.now();
     this.__transaction(() => {
       database
         .prepare(
-          "UPDATE hq_thread SET ownership = 'uncertain', state = 'unknown', updated_at = ? WHERE runtime_epoch IS NOT NULL AND runtime_epoch != ? AND ownership = 'managed'",
+          `UPDATE hq_thread SET ownership = 'uncertain', state = 'unknown', updated_at = ? WHERE runtime_epoch IS NOT NULL AND runtime_epoch != ? AND ownership = 'managed' AND NOT (${KEPT_SESSION_CONDITION})`,
         )
-        .run(now, runtimeEpoch);
+        .run(now, runtimeEpoch, this.__keepingProviders);
       database
         .prepare(
           "UPDATE hq_action SET delivery = 'uncertain', updated_at = ? WHERE runtime_epoch != ? AND delivery = 'submitted'",
@@ -1280,15 +1293,18 @@ export class ControlModel {
     });
   }
 
-  /** Marks controls inactive only after its caller has proven native shutdown. */
+  /**
+   * Marks controls inactive only after its caller has proven native shutdown. A session a native
+   * process keeps running stays bound to this runtime, for the next one to rejoin.
+   */
   public releaseControls(): void {
     this.__transaction(() => {
       const now = Date.now();
       this.__database
         .prepare(
-          "UPDATE hq_thread SET runtime_epoch = NULL, pending_action_id = NULL, active_turn_id = NULL, ownership = CASE WHEN native_id IS NULL THEN 'uncertain' ELSE 'managed' END, state = CASE WHEN native_id IS NULL THEN 'unknown' ELSE 'inactive' END, updated_at = ? WHERE runtime_epoch = ?",
+          `UPDATE hq_thread SET runtime_epoch = NULL, pending_action_id = NULL, active_turn_id = NULL, ownership = CASE WHEN native_id IS NULL THEN 'uncertain' ELSE 'managed' END, state = CASE WHEN native_id IS NULL THEN 'unknown' ELSE 'inactive' END, updated_at = ? WHERE runtime_epoch = ? AND NOT (${KEPT_SESSION_CONDITION})`,
         )
-        .run(now, this.__epoch);
+        .run(now, this.__epoch, this.__keepingProviders);
       this.__database
         .prepare(
           "UPDATE hq_action SET delivery = 'uncertain', updated_at = ? WHERE runtime_epoch = ? AND delivery = 'submitted'",
@@ -1305,6 +1321,108 @@ export class ControlModel {
         )
         .run(now, this.__epoch);
     });
+  }
+
+  /** Lists the sessions another runtime left running, which this runtime rejoins, oldest first. */
+  public listReattachable(): IManagedThread[] {
+    return this.__database
+      .prepare(
+        `SELECT ${THREAD_COLUMNS} FROM hq_thread WHERE runtime_epoch IS NOT NULL AND runtime_epoch != ? AND ${KEPT_SESSION_CONDITION} ORDER BY created_at ASC, id ASC LIMIT ?`,
+      )
+      .all(this.__epoch, this.__keepingProviders, CONTROLLED_THREAD_CAPACITY)
+      .map((row) => toManagedThread(ThreadRowSchema.parse(row)));
+  }
+
+  /**
+   * Binds a session another runtime left running to this runtime, as its native process reports
+   * it before the runtime rejoins it. A turn that finished meanwhile completes its action and lets
+   * the session's queued input advance, which this runtime then delivers. A session whose latest
+   * turn isn't the one HQ recorded, because another client started one, has its ownership marked
+   * uncertain instead.
+   * @returns The thread and whether its queue may advance, or null when it is no longer one to rejoin.
+   * @throws
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   */
+  public reattach(input: IReattachment): IObservationResult | null {
+    return this.__transaction(() => {
+      const row = this.__database
+        .prepare(
+          `SELECT ${THREAD_COLUMNS} FROM hq_thread WHERE id = ? AND runtime_epoch IS NOT NULL AND runtime_epoch != ? AND ${KEPT_SESSION_CONDITION}`,
+        )
+        .get(input.threadId, this.__epoch, this.__keepingProviders);
+      if (!row) return null;
+      const thread = ThreadRowSchema.parse(row);
+      const now = Date.now();
+      const latest = input.latestTurn;
+      const isRunning = latest?.state === 'running';
+      if (
+        (latest?.nativeTurnId ?? null) !== (thread.active_turn_id ?? thread.last_turn_id) ||
+        (isRunning && thread.active_turn_id === null)
+      ) {
+        this.__quarantine(thread.id, now);
+        return { thread: this.getThread(thread.id), canDispatchQueued: false };
+      }
+      this.__availableSlot();
+      // the turn HQ left running, when it has finished since
+      const finished =
+        thread.active_turn_id !== null && latest && latest.state !== 'running'
+          ? { nativeTurnId: latest.nativeTurnId, state: latest.state }
+          : null;
+      const state = isRunning
+        ? thread.state === 'stopping'
+          ? 'stopping'
+          : 'running'
+        : (finished?.state ?? thread.state);
+      this.__database
+        .prepare(
+          'UPDATE hq_thread SET runtime_epoch = ?, active_turn_id = ?, last_turn_id = ?, last_turn_state = ?, state = ?, updated_at = ? WHERE id = ?',
+        )
+        .run(
+          this.__epoch,
+          isRunning ? latest.nativeTurnId : null,
+          finished?.nativeTurnId ?? thread.last_turn_id,
+          finished?.state ?? thread.last_turn_state,
+          state,
+          now,
+          thread.id,
+        );
+      this.__database
+        .prepare(
+          "UPDATE hq_action SET runtime_epoch = ?, updated_at = ? WHERE thread_id = ? AND delivery = 'queued'",
+        )
+        .run(this.__epoch, now, thread.id);
+      const canDispatchQueued = finished?.state === 'completed' && thread.state !== 'stopping';
+      if (finished) {
+        this.__database
+          .prepare(
+            'UPDATE hq_action SET completion = ?, updated_at = ? WHERE thread_id = ? AND native_turn_id = ? AND completion IS NULL',
+          )
+          .run(finished.state, now, thread.id, finished.nativeTurnId);
+        if (canDispatchQueued)
+          this.__database
+            .prepare(
+              "UPDATE hq_action SET queue_ready = 1 WHERE thread_id = ? AND expected_turn_id = ? AND delivery = 'queued'",
+            )
+            .run(thread.id, finished.nativeTurnId);
+      }
+      this.__event('thread-updated', thread.id, null, latest?.nativeTurnId ?? null);
+      return { thread: this.getThread(thread.id), canDispatchQueued };
+    });
+  }
+
+  /** Marks a session's ownership uncertain when this runtime can't rejoin it. */
+  public quarantineThread(threadId: string): void {
+    this.__transaction(() => this.__quarantine(threadId, Date.now()));
+  }
+
+  /** Quarantines one session another runtime left bound to itself, once. */
+  private __quarantine(threadId: string, now: number): void {
+    const { changes } = this.__database
+      .prepare(
+        "UPDATE hq_thread SET ownership = 'uncertain', state = 'unknown', updated_at = ? WHERE id = ? AND runtime_epoch IS NOT NULL AND runtime_epoch != ? AND ownership = 'managed'",
+      )
+      .run(now, threadId, this.__epoch);
+    if (changes) this.__event('native-unavailable', threadId, null);
   }
 
   private __thread(id: string): IThreadRow | null {

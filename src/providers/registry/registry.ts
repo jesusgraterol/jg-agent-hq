@@ -35,6 +35,7 @@ import {
 } from '../extensions/index.js';
 import {
   ProviderInspectionSchema,
+  ProviderReattachmentSchema,
   ProviderThreadSchema,
   ProviderSkillsSchema,
   type IAgentProvider,
@@ -600,6 +601,26 @@ export const createProviderRegistry = (
               }
               return parsed.data;
             }),
+          ...(adapter.readReattachment && adapter.reattachThread
+            ? {
+                readReattachment: (nativeId: string, workspaceRoot: string) =>
+                  invokeControl(async (call) => {
+                    const result = ProviderReattachmentSchema.parse(
+                      await adapter.readReattachment!(nativeId, workspaceRoot, call),
+                    );
+                    if (result.thread.nativeId !== nativeId) rejectProviderResponse();
+                    return result;
+                  }),
+                reattachThread: (requestId: string, nativeId: string, workspaceRoot: string) =>
+                  invokeControl(async (call) => {
+                    const result = ProviderReattachmentSchema.parse(
+                      await adapter.reattachThread!(requestId, nativeId, workspaceRoot, call),
+                    );
+                    if (result.thread.nativeId !== nativeId) rejectProviderResponse();
+                    return result;
+                  }),
+              }
+            : {}),
           nameThread: (requestId, nativeId, name) =>
             invokeControl((call) => adapter.nameThread(requestId, nativeId, name, call)),
           validateInput: (nativeId, input) =>
@@ -637,6 +658,9 @@ export const createProviderRegistry = (
 
   return {
     get,
+    /** @returns Whether the provider's sessions outlive the runtime, which rejoins them. */
+    keepsSessions: (provider: IProviderId): boolean =>
+      entries.get(provider)?.registration.keepsSessions === true,
     /** Quarantines one provider after a source-specific lifecycle gap or invalid control response. */
     quarantine(provider: IProviderId, cause: unknown): void {
       const entry = entries.get(provider);

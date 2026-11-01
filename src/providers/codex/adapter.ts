@@ -25,6 +25,8 @@ import {
   PROVIDER_INPUT_SCHEMA,
   SUPPORTED_PROVIDER_OPERATION,
   type IAgentProviderFactory,
+  type IProviderReattachment,
+  type IProviderThread,
 } from '../index.js';
 
 import { capabilityUnavailable } from '../registry/index.js';
@@ -98,6 +100,20 @@ export const createCodexProviderFactory = (
           code: 'JG_AGENT_HQ_TARGET_FORBIDDEN',
           data: { kind: 'access-denied' },
         });
+    };
+    // a session's latest turn, which runs only while the daemon reports the session active
+    const readLatestTurn = async (
+      thread: IProviderThread,
+    ): Promise<IProviderReattachment['latestTurn']> => {
+      const [turn] = (await native.listTurns(thread.nativeId, 1)).data;
+      if (!turn) return null;
+      if (turn.state !== 'inProgress' && turn.state !== 'unknown')
+        return { nativeId: turn.nativeId, state: turn.state };
+      // a turn cut short when the daemon stopped stays in progress in its saved history
+      return {
+        nativeId: turn.nativeId,
+        state: thread.nativeState === 'active' ? 'running' : 'interrupted',
+      };
     };
     const readHistory = async (command: IHistoryRequest) => {
       const position = command.kind === 'session-evidence' ? evidencePosition(command) : undefined;
@@ -375,6 +391,19 @@ export const createCodexProviderFactory = (
           canAdopt: thread.nativeState === 'notLoaded',
           canResume: thread.nativeState === 'idle',
         };
+      },
+      async readReattachment(nativeId, workspaceRoot) {
+        const thread = toProviderThread(await native.readNativeThread(nativeId));
+        await verifyRoot(thread.workspaceRoot, workspaceRoot);
+        return { thread, latestTurn: await readLatestTurn(thread) };
+      },
+      async reattachThread(requestId, nativeId, workspaceRoot, call) {
+        // without settings, Codex joins a session it has loaded rather than refusing it
+        const thread = toProviderThread(
+          await native.resumeThread(requestId, nativeId, {}, call.signal),
+        );
+        await verifyRoot(thread.workspaceRoot, workspaceRoot);
+        return { thread, latestTurn: await readLatestTurn(thread) };
       },
       readUsage: () => native.readUsage(),
       readAccount: () => native.readAccount(),

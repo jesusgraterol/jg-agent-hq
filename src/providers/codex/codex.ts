@@ -423,6 +423,12 @@ export const createCodexProvider = async (
         await connection.request('thread/revert', { threadId: nativeId, beforeTurnId }, requestId),
       ).thread;
     },
+    async readNativeThread(nativeId) {
+      return parseNative(
+        z.object({ thread: NativeThreadSchema.refine((thread) => thread.id === nativeId) }),
+        await connection.request('thread/read', { threadId: nativeId, includeTurns: false }),
+      ).thread;
+    },
     async readThread(nativeId) {
       const result = parseNative(
         z.object({ thread: NativeThreadSchema.refine((thread) => thread.id === nativeId) }),

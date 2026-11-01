@@ -32,7 +32,12 @@ const startWorker = async (): Promise<void> => {
     };
     const browser = new BrowserModel(database, options.runtimeEpoch, options.actionKey);
     const sessions = new SessionsModel(database);
-    const controls = new ControlModel(database, options.runtimeEpoch, options.actionKey);
+    const controls = new ControlModel(
+      database,
+      options.runtimeEpoch,
+      options.actionKey,
+      options.keepingProviders,
+    );
     const claudeHistory = new ClaudeHistoryModel(database);
     port.on('message', async (message: unknown) => {
       const parsed = StoreRequestSchema.safeParse(message);
@@ -162,6 +167,15 @@ const startWorker = async (): Promise<void> => {
             break;
           case 'release':
             controls.releaseControls();
+            break;
+          case 'reattachable':
+            result = controls.listReattachable();
+            break;
+          case 'reattach':
+            result = controls.reattach(command.input);
+            break;
+          case 'quarantine':
+            controls.quarantineThread(command.threadId);
             break;
         }
         port.postMessage({ kind: 'result', id, result, error: null });

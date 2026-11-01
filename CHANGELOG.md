@@ -1,5 +1,10 @@
 # Changelog
 
+## 10.3.0
+
+- Keep Codex sessions running when the runtime stops. Shutdown no longer interrupts their turns, cleans their background terminals or declines a request still waiting on an answer, and leaves their records bound to the stopped runtime. At startup, the next runtime rejoins each one that had no action in flight: it reads the session's state and latest turn from Codex's daemon, records the turn still running or completes the one that finished meanwhile, delivers the queued input waiting on it, and joins with `thread/resume` without settings, which makes the daemon send a still-waiting request again. A session another client moved past HQ's last turn, or one HQ can't read or join, is marked uncertain instead. Claude sessions still stop with the runtime.
+- Add the optional `readReattachment` and `reattachThread` to `IAgentProvider`, and `IProviderReattachment`, which the built-in Codex adapter implements. Registered provider factories don't keep sessions across restarts, so the runtime never calls them on theirs.
+
 ## 10.2.0
 
 - `thread-adopt` accepts optional `settings`, as `thread-resume` does, and applies them to the resume it runs, so a host can adopt a session in a chosen permission mode. Codex refuses them for a thread another client still holds, as it does on resume.
