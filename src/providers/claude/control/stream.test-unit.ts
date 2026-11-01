@@ -1,3 +1,4 @@
+import { expectToThrowCode } from 'jg-exception/testing';
 import { afterEach, expect, test, vi } from 'vitest';
 
 import type { IHistoryItem } from '../../../contracts/index.js';
@@ -13,6 +14,7 @@ const createSession = (): IClaudeSession => ({
   isClosing: false,
   hasInput: true,
   isResumed: false,
+  backgroundTaskCount: 0,
   opening: Promise.resolve(),
   previews: new Map(),
   requests: new Map(),
@@ -274,4 +276,42 @@ test('an MCP tool request prompts for approval and writes nothing', async () => 
   await Promise.resolve();
   expect(written).toHaveLength(0);
   expect(prompts).toHaveLength(1);
+});
+
+test("a result without a user message while no turn of Claude's own runs makes the session unavailable", () => {
+  const { events } = createEvents();
+  expectToThrowCode(
+    () =>
+      receiveClaudeMessage(
+        { ...createSession(), input: undefined },
+        { type: 'result', session_id: 'session', subtype: 'success', is_error: false },
+        events,
+      ),
+    'JG_AGENT_HQ_CLAUDE_FAILED',
+    'The Claude integration failed',
+  );
+});
+
+test('input replayed while a turn Claude started still runs makes the session unavailable', () => {
+  const session: IClaudeSession = {
+    ...createSession(),
+    input: { ...createSession().input!, isAcknowledged: false },
+    nativeTurn: { id: 'native', interruptRequested: false, hasInterruptionMarker: false },
+  };
+  const { events } = createEvents();
+  expectToThrowCode(
+    () =>
+      receiveClaudeMessage(
+        session,
+        {
+          type: 'user',
+          session_id: 'session',
+          uuid: 'input',
+          message: { role: 'user', content: 'Waiting request' },
+        },
+        events,
+      ),
+    'JG_AGENT_HQ_CLAUDE_FAILED',
+    'The Claude integration failed',
+  );
 });

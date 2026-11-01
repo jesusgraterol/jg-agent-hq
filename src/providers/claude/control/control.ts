@@ -72,6 +72,9 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     session.idleStop?.abort();
     session.idleStop = undefined;
   };
+  // a session is busy while HQ input waits or runs, or while a turn Claude started runs
+  const isBusy = (session: IClaudeSession): boolean =>
+    session.input !== undefined || session.nativeTurn !== undefined;
   /** Parks the session once it stays idle for the whole period, restarting any earlier wait. */
   const scheduleIdleStop = (session: IClaudeSession): void => {
     cancelIdleStop(session);
@@ -85,7 +88,8 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
   };
   /**
    * Reads an idle session's native settings once, then closes its process. The session stays idle
-   * and records nothing; a call that arrives first keeps the process.
+   * and records nothing; a call that arrives first keeps the process, and a background command
+   * still running holds the session for another idle period, since closing would end it.
    */
   const park = async (session: IClaudeSession): Promise<void> => {
     const connection = session.connection;
@@ -93,11 +97,17 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       isClosing ||
       session.isClosing ||
       session.input ||
+      session.nativeTurn ||
       session.transition ||
       !connection?.isAvailable
     )
       return;
-    if (activeCalls.has(session.id) || session.requests.size || hasExtensionRequest(session.id)) {
+    if (
+      activeCalls.has(session.id) ||
+      session.requests.size ||
+      session.backgroundTaskCount ||
+      hasExtensionRequest(session.id)
+    ) {
       scheduleIdleStop(session);
       return;
     }
@@ -246,6 +256,9 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
   ): Promise<void> => {
     const nativeId = session.id;
     session.isResumed = isResume || forkSourceNativeId !== undefined;
+    // a new process has no turn of its own and no background commands yet
+    session.nativeTurn = undefined;
+    session.backgroundTaskCount = 0;
     const connection = await createClaudeRpc(
       (reason) => {
         if (reason !== 'unavailable' || session.isClosing || session.parked) return;
@@ -270,10 +283,11 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
         settings: session.settings,
         ...(forkSourceNativeId ? { forkSourceNativeId } : {}),
         receive: (raw) => {
-          const hadInput = session.input !== undefined;
+          const wasBusy = isBusy(session);
           receiveClaudeMessage(session, raw, events);
-          // the end of a turn starts the session's idle period
-          if (hadInput && !session.input) scheduleIdleStop(session);
+          // a turn Claude starts holds the idle period back, and the end of the last turn starts it
+          if (!wasBusy && isBusy(session)) cancelIdleStop(session);
+          else if (wasBusy && !isBusy(session)) scheduleIdleStop(session);
         },
         lateResponse(id, result, error) {
           if (extensionRequests.get(id)?.nativeId === nativeId) {
@@ -360,6 +374,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       isClosing: false,
       hasInput: isResume || forkSourceNativeId !== undefined,
       isResumed: false,
+      backgroundTaskCount: 0,
       opening: Promise.resolve(),
       previews: new Map(),
       requests: new Map(),
@@ -388,7 +403,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       if (get(nativeId, true).workspaceRoot !== workspaceRoot) conflict();
       if (command.kind === 'mcp-login' || command.kind === 'mcp-reload') capabilityUnavailable();
       return withSession(nativeId, true, async (session) => {
-        if (session.input || session.requests.size || extensionRequests.size >= 32) conflict();
+        if (isBusy(session) || session.requests.size || extensionRequests.size >= 32) conflict();
         extensionRequests.set(requestId, { nativeId, kind: command.kind });
         const body =
           command.kind === 'skills-reload'
@@ -602,7 +617,9 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     },
     validateInput,
     /**
-     * Writes idle input once and waits for its matching native echo or result.
+     * Writes input once and waits for its matching native echo or result. Input written while a
+     * turn Claude started runs is replayed only after that turn's result, so a long turn can
+     * outlast the wait, and the late replay reconciles it.
      * @returns The native user-message identity after acknowledgement.
      * @throws
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
@@ -709,7 +726,8 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       );
     },
     /**
-     * Requests interruption of the exact active input; completion arrives separately.
+     * Requests interruption of the exact active turn, HQ input's or one Claude started; completion
+     * arrives separately.
      * @returns Acknowledgement of the native interruption request.
      * @throws
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
@@ -718,8 +736,9 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     async interrupt(requestId: string, nativeId: string, turnId: string): Promise<void> {
       // a parked session is idle, so its interrupt is refused as any idle session's is
       await withSession(nativeId, false, async (session) => {
-        if (session.input?.id !== turnId) conflict();
-        session.input.interruptRequested = true;
+        const turn = session.nativeTurn ?? session.input;
+        if (turn?.id !== turnId) conflict();
+        turn.interruptRequested = true;
         await session.connection!.requestControl({ subtype: 'interrupt' }, requestId);
       });
     },

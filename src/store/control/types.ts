@@ -130,7 +130,12 @@ const NativeTurnFields = {
   nativeTurnId: NativeIdSchema,
 };
 export const NativeObservationSchema = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('turn-started'), ...NativeTurnFields }),
+  z.strictObject({
+    kind: z.literal('turn-started'),
+    ...NativeTurnFields,
+    // a turn the agent started without HQ input, which no waiting action may claim
+    isAgentInitiated: z.boolean().optional(),
+  }),
   z.strictObject({
     kind: z.literal('turn-completed'),
     ...NativeTurnFields,

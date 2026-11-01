@@ -1137,7 +1137,12 @@ export class ControlModel {
       let eventKind: ILifecycleEvent['kind'] = 'thread-updated';
       if (observation.kind === 'turn-started') {
         const pending = thread.pending_action_id ? this.__action(thread.pending_action_id) : null;
-        if (pending?.kind === 'thread-compact' && pending.native_turn_id === null) {
+        // a turn the agent started can't be a waiting compaction's, which gets its own turn
+        if (
+          !observation.isAgentInitiated &&
+          pending?.kind === 'thread-compact' &&
+          pending.native_turn_id === null
+        ) {
           this.__database
             .prepare('UPDATE hq_action SET native_turn_id = ?, updated_at = ? WHERE id = ?')
             .run(observation.nativeTurnId, now, pending.id);

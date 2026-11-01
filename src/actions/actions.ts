@@ -283,6 +283,15 @@ export const createActions = (
       advanceQueue(thread.id, thread.provider);
     return receipt;
   };
+  /**
+   * Applies a turn's acknowledgement after the lifecycle events reported before it, such as a
+   * turn the agent started and ended while the input waited, so the ledger sees them in order.
+   * @returns The updated receipt.
+   */
+  const applyAfterEvents = async (outcome: INativeOutcome): Promise<IActionReceipt | null> => {
+    await lane.catch(() => undefined);
+    return apply(outcome);
+  };
 
   const continuePhases = async (receipt: IActionReceipt, thread: IManagedThread): Promise<void> => {
     const requestId = receipt.nativeRequestId;
@@ -450,7 +459,7 @@ export const createActions = (
         if (!nativeId) conflict();
         live.reset(key(thread.provider, nativeId));
         const turn = await control.compactThread(requestId, nativeId);
-        await apply({
+        await applyAfterEvents({
           kind: 'compaction-accepted',
           actionId: receipt.id,
           requestId,
@@ -470,7 +479,7 @@ export const createActions = (
           input.settings,
           files,
         );
-        await apply({
+        await applyAfterEvents({
           kind: 'turn-accepted',
           actionId: receipt.id,
           requestId,

@@ -28,6 +28,34 @@ export const startClaudeControl = () => {
  let leaf=inherited.filter(row=>row.uuid).at(-1)?.uuid??null;
  let hasPrompt=false;
  let isClosing=false;
+ // a turn the CLI starts on its own, as Claude does after a background command finishes
+ let native=null,nativeTrigger=null,isTaskRunning=false,hasRaced=false;
+ const endNative=interrupted=>{
+  if(!native)return;
+  const ended=native;native=null;
+  if(interrupted){const uuid=randomUUID(),content=[{type:'text',text:'[Request interrupted by user]'}];record(uuid,'user',content,leaf);leaf=uuid;out({type:'user',uuid,message:{role:'user',content}});}
+  out({type:'result',subtype:interrupted?'error_during_execution':'success',is_error:interrupted,usage:{input_tokens:5,output_tokens:2}});
+  // Claude replays input written during its own turn only after that turn's result
+  for(const next of ended.onEnd)next();
+ };
+ const startNative=onEnd=>{
+  const settings=control();
+  native={onEnd:onEnd?[onEnd]:[],hasPrompt:false};
+  out({type:'system',subtype:'init'});
+  out({type:'stream_event',event:{type:'message_start',message:{id:'native-message'}}});
+  out({type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'text'}}});
+  out({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'Native follow-up'}}});
+  const uuid=randomUUID();record(uuid,'assistant',[{type:'text',text:'Native follow-up'}],leaf);leaf=uuid;
+  out({type:'assistant',uuid,message:{id:'native-message',role:'assistant',content:[{type:'text',text:'Native follow-up'}]}});
+  if(settings.nativePrompt){
+   native.hasPrompt=true;
+   const toolInput={command:'echo native'},tool=randomUUID();
+   record(tool,'assistant',[{type:'tool_use',id:'native-tool',name:'Bash',input:toolInput}],leaf);leaf=tool;
+   out({type:'assistant',uuid:tool,message:{id:'native-tool-message',role:'assistant',content:[{type:'tool_use',id:'native-tool',name:'Bash',input:toolInput}]}});
+   out({type:'control_request',request_id:'native-turn-request',request:{subtype:'can_use_tool',tool_name:'Bash',tool_use_id:'native-tool',input:toolInput}});
+  }else if(settings.nativeTurnMs)setTimeout(()=>endNative(false),settings.nativeTurnMs);
+  else if(!settings.nativeHold)endNative(false);
+ };
  const complete=(interrupted=false)=>{
   if(!input)return;
   // scripted frames are written to the transcript as the CLI would, with their result metadata
@@ -42,11 +70,21 @@ export const startClaudeControl = () => {
    out({type:'stream_event',event:{type:'message_delta',delta:{stop_reason:'end_turn',stop_sequence:null}}});
   }
   if(interrupted){const uuid=randomUUID(),content=[{type:'text',text:'[Request interrupted by user]'}];record(uuid,'user',content,leaf);leaf=uuid;out({type:'user',uuid,message:{role:'user',content}});}
+  // a turn that starts a background command reports it, as Claude does, before its result
+  if(!interrupted&&control().backgroundTask&&!isTaskRunning){isTaskRunning=true;out({type:'system',subtype:'background_tasks_changed',tasks:[{task_id:'task-1',run_id:'run-1',description:'sleep',task_type:'local_bash'}]});out({type:'system',subtype:'task_started',task_id:'task-1',run_id:'run-1',tool_use_id:'tool-task',description:'sleep',is_backgrounded:true,task_type:'local_bash'});}
   out({type:'result',subtype:interrupted?'error_during_execution':'success',is_error:interrupted,user_message_uuid:input.uuid,structured_output:control().structuredOutput,usage:control().usageMalformed?'unknown-usage':{input_tokens:7,output_tokens:3,cache_read_input_tokens:2},errors:interrupted?['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null']:undefined});
   input=null;hasPrompt=false;
  };
  const lines=createInterface({input:process.stdin});
- const interval=setInterval(()=>{if(input&&control().release&&!hasPrompt){if(control().releaseOnce)writeFileSync(join(root,'claude-control.json'),JSON.stringify({...control(),release:false,releaseOnce:false}));complete();}},25);
+ const interval=setInterval(()=>{
+  if(input&&!native&&control().release&&!hasPrompt){if(control().releaseOnce)writeFileSync(join(root,'claude-control.json'),JSON.stringify({...control(),release:false,releaseOnce:false}));complete();}
+  const settings=control();
+  if(isTaskRunning&&settings.finishBackgroundTask){isTaskRunning=false;out({type:'system',subtype:'task_updated',task_id:'task-1',run_id:'run-1',patch:{status:'completed',end_time:Date.now()}});out({type:'system',subtype:'task_notification',task_id:'task-1',run_id:'run-1',tool_use_id:'tool-task',status:'completed',output_file:'',summary:'done'});out({type:'system',subtype:'background_tasks_changed',tasks:[]});}
+  if(native&&!native.hasPrompt&&settings.nativeRelease)endNative(false);
+  // nativeAbandonPrompt ends the turn with its permission request still unanswered
+  if(native&&native.hasPrompt&&settings.nativeAbandonPrompt)endNative(false);
+  if(!native&&!input&&settings.nativeTurn&&settings.nativeTurn!==nativeTrigger){nativeTrigger=settings.nativeTurn;startNative();}
+ },25);
  lines.on('line',line=>{
   const message=JSON.parse(line),settings=control();
   appendFileSync(join(root,'claude-calls.jsonl'),JSON.stringify(message)+'\n');
@@ -68,6 +106,7 @@ export const startClaudeControl = () => {
     out({type:'system',subtype:'session_title_changed',title:message.request.title});if(settings.lateName)setTimeout(()=>response(),31000);else response();return;
    }
    if(subtype==='interrupt'){
+    if(native){if(native.hasPrompt)out({type:'control_cancel_request',request_id:'native-turn-request'});response();setTimeout(()=>endNative(true),settings.interruptDelay??1);return;}
     if(hasPrompt)out({type:'control_cancel_request',request_id:'native-request'});
     const acknowledge=()=>{response();setTimeout(()=>complete(!settings.completeOnInterrupt),settings.interruptDelay??1);};
     // interruptBarrier withholds every session's acknowledgement until that many sessions received one
@@ -98,9 +137,20 @@ export const startClaudeControl = () => {
      if(settings.doublePrompt)out({type:'control_request',request_id:'other-request',request:{subtype:'can_use_tool',tool_name:tool,tool_use_id:'other-tool',input:toolInput}});
     }else if(!settings.holdTurn)complete();
    };
-   if(settings.lateAck)setTimeout(acknowledge,31000);else acknowledge();
+   if(native)native.onEnd.push(acknowledge);
+   // nativeBeforeReplay starts a turn of Claude's own once, just as input arrives
+   else if(settings.nativeBeforeReplay&&!hasRaced){hasRaced=true;startNative(acknowledge);}
+   else if(settings.lateAck)setTimeout(acknowledge,31000);else acknowledge();
   }else if(message.type==='control_response'){
    if(settings.holdReply)return;
+   if(native&&message.response.request_id==='native-turn-request'){
+    const uuid=randomUUID(),content=[{type:'tool_result',tool_use_id:'native-tool',content:'Tool finished',is_error:false}];
+    record(uuid,'user',content,leaf);leaf=uuid;
+    out({type:'user',uuid,message:{role:'user',content}});
+    native.hasPrompt=false;
+    if(!settings.nativeHold)endNative(false);
+    return;
+   }
    if(settings.cancelReply){out({type:'control_cancel_request',request_id:message.response.request_id});return;}
    const uuid=randomUUID();const content=[{type:'tool_result',tool_use_id:'tool-request',content:settings.toolFailure?'Tool failed':'Tool finished',is_error:!!settings.toolFailure}];
    record(uuid,'user',content,leaf);leaf=uuid;

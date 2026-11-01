@@ -5,6 +5,9 @@
 - Accept Claude permission requests that carry fields HQ doesn't list. Claude adds fields between releases, such as `decision_reason_code` and `tool_kind`, and HQ refused every such request before the operator saw it. Known fields keep their validation, the rest are dropped, and the reply still holds only the displayed input.
 - Refuse a Claude control request HQ still can't present with the error `HQ couldn't present this request`, which Claude records as the tool call's failed result, instead of `Unsupported request`.
 - Report a Claude session's `systemInstructions` and `developerInstructions` as null when its process resumed the conversation, since Claude keeps the instructions it recorded when the conversation began.
+- Keep a Claude session available when Claude starts a turn of its own, as it does after a background command finishes. That turn's first frame used to fail the session and end its process group. HQ now records the turn under an ID it generates: the thread reports running, its items stream as live items, its permission prompts can be answered, Stop interrupts it, and its result completes it. Input written just before such a turn waits for Claude's replay after it, and keeps its own turn and result.
+- Keep a Claude session's process while a background command it started is still running, instead of parking the session after its idle hour, which ended the command.
+- Record a turn's or a compaction's acknowledgement after the lifecycle events its provider reported before it, so a turn the agent started and finished meanwhile can't be taken for it.
 
 ## 10.3.0
 
