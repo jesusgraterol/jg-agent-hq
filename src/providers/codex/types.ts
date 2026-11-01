@@ -122,6 +122,8 @@ export type ICodexEvents = {
   unavailable(): void;
   // the connection opened again after the daemon restarted or the transport stopped
   connected(): void;
+  // a message over the size limit was discarded, which may have been any session's
+  discarded(): void;
 };
 
 // native read models and explicit control operations; execution settings remain with Codex

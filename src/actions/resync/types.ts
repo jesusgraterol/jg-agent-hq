@@ -17,6 +17,8 @@ export type IResyncDecision =
       state: Exclude<NonNullable<IProviderReattachment['latestTurn']>['state'], 'running'>;
     }
   | { kind: 'gap' }
+  // the turn continues, and the session is watched until Codex reports it idle
+  | { kind: 'watch' }
   | { kind: 'reread'; nativeTurnId: string }
   | { kind: 'none' }
   | { kind: 'uncertain' };

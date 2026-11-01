@@ -281,6 +281,7 @@ export const createActions = (
     const thread = await store.getThread(receipt.threadId);
     if (thread?.nativeId && (outcome.kind === 'closed' || outcome.kind === 'archived')) {
       controlled.delete(key(thread.provider, thread.nativeId));
+      watched.delete(key(thread.provider, thread.nativeId));
     }
     if (
       thread?.state === 'completed' &&
@@ -541,6 +542,7 @@ export const createActions = (
   const observe = async (observation: INativeObservation): Promise<void> => {
     const result = await recordObservation(observation);
     if (observation.kind === 'turn-completed') {
+      watched.delete(key(observation.provider, observation.nativeThreadId));
       for (const [id, prompt] of prompts)
         if (
           prompt.native.provider === observation.provider &&
@@ -578,6 +580,12 @@ export const createActions = (
 
   // ends the waits of delayed re-checks when the runtime closes
   const resyncLifetime = new AbortController();
+  /*
+   * Sessions a re-check after an unidentified loss left running, or skipped while an action was in
+   * flight. Codex reporting one idle while its turn is recorded as active triggers the re-check a
+   * lost turn end gets, since that turn's completion may have been the lost message.
+   */
+  const watched = new Set<string>();
   /**
    * Makes up for a lost notification by reading the session from its native process, outside the
    * shared lane, then orders only the resulting observation behind the events before it. A failed
@@ -592,6 +600,11 @@ export const createActions = (
     if (closing || !controlled.has(key(provider, nativeId))) return;
     const record = await store.getTurnRecord(provider, nativeId);
     if (!record) return;
+    // an action in flight may have started a turn the record doesn't hold yet
+    if (request.lost === 'unknown' && record.hasPendingAction) {
+      watched.add(key(provider, nativeId));
+      return;
+    }
     let latest: IProviderReattachment['latestTurn'] | undefined;
     try {
       const control = await registry.get(provider);
@@ -613,7 +626,10 @@ export const createActions = (
         state: decision.state,
       });
     else if (decision.kind === 'gap') live.markGap(key(provider, nativeId));
-    else if (decision.kind === 'reread') {
+    else if (decision.kind === 'watch') {
+      live.markGap(key(provider, nativeId));
+      watched.add(key(provider, nativeId));
+    } else if (decision.kind === 'reread') {
       const reread = { lost: request.lost, isLastAttempt: true, turnId: decision.nativeTurnId };
       // the wait holds back no other session's re-check
       runOwned(async () => {
@@ -663,8 +679,19 @@ export const createActions = (
     },
     session(provider, nativeId, state) {
       observingProviders.add(provider);
+      const sessionKey = key(provider, nativeId);
       // a session this runtime controls reports its transitions through its own thread state
-      if (controlled.has(key(provider, nativeId))) return;
+      if (controlled.has(sessionKey)) {
+        if (watched.has(sessionKey) && state !== 'running' && state !== 'waiting') {
+          watched.delete(sessionKey);
+          resyncs.request(provider, nativeId, {
+            lost: 'turn-completed',
+            isLastAttempt: false,
+            turnId: null,
+          });
+        }
+        return;
+      }
       enqueue(provider, () => store.observeSessions(provider, [{ nativeId, state }], false));
     },
     delta(provider, nativeId, turnId, itemId, text) {

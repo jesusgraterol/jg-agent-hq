@@ -11,6 +11,7 @@ const running: ITurnRecord = {
   workspaceRoot: '/workspace',
   activeTurnId: 'turn-1',
   lastTurnId: 'turn-0',
+  hasPendingAction: false,
 };
 const idle: ITurnRecord = { ...running, activeTurnId: null, lastTurnId: 'turn-1' };
 const fresh = (lost: IResyncLoss): IResyncRequest => ({ lost, isLastAttempt: false, turnId: null });
@@ -49,11 +50,11 @@ test.each<[string, ITurnRecord, ITurn, IResyncRequest, IResyncDecision]>([
     { kind: 'gap' },
   ],
   [
-    'a running turn after an unidentified loss continues',
+    'a running turn after an unidentified loss continues, watched',
     running,
     turn('turn-1', 'running', true),
     fresh('unknown'),
-    { kind: 'gap' },
+    { kind: 'watch' },
   ],
   [
     'a running turn whose end was lost is read again',

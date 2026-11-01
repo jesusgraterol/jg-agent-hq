@@ -12,6 +12,7 @@
 - Add `unpresentable(nativeId, reject)` to `IAgentProviderEvents`, for a request an adapter can't present. HQ refuses it only on a session it controls.
 - Keep the Codex connection every managed Codex session shares open when a notification fails validation. A notification about items, text deltas, token usage or a session's status is dropped, with a gap in a managed session's live window, and a status newer than HQ knows makes the session `unknown`. A lost turn start, turn end or approval resolution makes HQ read the session from the daemon instead: a finished turn completes, a running turn whose start was lost continues, an ambiguous turn is read once more 2 seconds later, an unchanged idle session is left alone, and anything else marks the session uncertain.
 - Add `resync(nativeId, lost)` to `IAgentProviderEvents`, `IResyncLoss`, and the optional `isInferred` on `IProviderReattachment`'s latest turn, which the built-in Codex adapter sets when the saved turn is still in progress.
+- Skip a Codex message over the 8 MiB frame limit, through its final fragment, instead of failing the shared connection. Every managed Codex session is then read from the daemon: an idle, unchanged session is left alone, and a running one continues, watched until Codex reports it idle, when it is read as if its turn's end had been lost. A request whose response was skipped fails at its 30-second deadline.
 
 ## 10.3.0
 

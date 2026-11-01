@@ -184,6 +184,7 @@ export class ControlModel {
           workspaceRoot: thread.workspace_root,
           activeTurnId: thread.active_turn_id,
           lastTurnId: thread.last_turn_id,
+          hasPendingAction: thread.pending_action_id !== null,
         }
       : null;
   }

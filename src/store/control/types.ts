@@ -219,6 +219,8 @@ export const TurnRecordSchema = z.strictObject({
   workspaceRoot: ManagedThreadSchema.shape.workspaceRoot,
   activeTurnId: NativeIdSchema.nullable(),
   lastTurnId: NativeIdSchema.nullable(),
+  // an action is in flight, so the session's newest turn may not be recorded yet
+  hasPendingAction: z.boolean(),
 });
 export type ITurnRecord = z.infer<typeof TurnRecordSchema>;
 

@@ -39,6 +39,7 @@ export const createProviderProcess = (
   stopped: (failure: unknown) => void,
   cwd?: string,
   framing: IProviderFraming = LINE_FRAMING,
+  discarded: () => void = () => undefined,
 ): IProviderProcess => {
   const child = spawn(executable, args, { detached: true, stdio: ['pipe', 'pipe', 'pipe'], cwd });
   const { pid } = child;
@@ -83,6 +84,7 @@ export const createProviderProcess = (
     },
     open: () => markOpen(),
     fail,
+    discard: discarded,
   });
   child.stdout.on('data', (chunk: Buffer) => {
     try {

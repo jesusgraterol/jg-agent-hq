@@ -2938,3 +2938,178 @@ test.each([
     }
   },
 );
+
+const readCalls = async (fixture: Awaited<ReturnType<typeof setup>>, nativeId: string) =>
+  (await fixture.calls()).filter(
+    (call) => call.method === 'thread/read' && call.params.threadId === nativeId,
+  ).length;
+const sendMessage = async (fixture: Awaited<ReturnType<typeof setup>>, threadId: string) => {
+  const message = fixture.envelope({
+    kind: 'message',
+    threadId,
+    input: { kind: 'text', text: 'Still here' },
+  });
+  await fixture.submit(message);
+  return fixture.until(
+    () => fixture.receipt(message.id),
+    (entry) => entry.completion === 'completed',
+  );
+};
+
+test.each([
+  ['finishes', 'completed'],
+  ['never settles', 'inProgress'],
+])(
+  'an oversized Codex message keeps a running turn watched and idle sessions untouched, and Codex reporting it idle settles the turn whose end it may have held (%s)',
+  async (_label, savedStatus) => {
+    startHoldingDelays(2);
+    const fixture = await setup();
+    try {
+      const { thread: first } = await fixture.create('idle-one');
+      const { thread: second } = await fixture.create('idle-two');
+      const { thread, message, nativeId, turnId } = await startHeldTurn(fixture, 'watched');
+      const turns = (status: string) => ({
+        [nativeId]: [{ id: turnId, status, startedAt: 1_800_000_001, completedAt: null }],
+        [first.nativeId!]: [],
+        [second.nativeId!]: [],
+      });
+      await fixture.control({
+        holdTurn: true,
+        threadStatuses: { [nativeId]: { type: 'active', activeFlags: [] } },
+        threadTurns: turns('inProgress'),
+        emitOnce: true,
+        emitOversized: 1,
+      });
+      await fixture.request({ kind: 'usage', provider: 'codex' });
+      await expect.poll(() => readCalls(fixture, second.nativeId!)).toBe(1);
+      // the running turn continues, and the idle sessions keep their ownership and take input
+      expect(await fixture.thread(thread.id)).toMatchObject({
+        state: 'running',
+        ownership: 'managed',
+        activeTurnId: turnId,
+      });
+      await fixture.control({ threadTurns: turns('inProgress') });
+      await sendMessage(fixture, first.id);
+      await sendMessage(fixture, second.id);
+      // Codex reports the watched session idle: its turn's end may have been the lost message
+      await emit(
+        fixture,
+        {
+          holdTurn: true,
+          threadStatuses: { [nativeId]: { type: 'idle' } },
+          threadTurns: turns(savedStatus),
+        },
+        [
+          {
+            method: 'thread/status/changed',
+            params: { threadId: nativeId, status: { type: 'idle' } },
+          },
+        ],
+      );
+      if (savedStatus === 'completed')
+        expect(
+          await fixture.until(
+            () => fixture.receipt(message.id),
+            (entry) => entry.completion !== null,
+          ),
+        ).toMatchObject({ completion: 'completed' });
+      else {
+        await expect.poll(() => countHeldDelays(2)).toBe(1);
+        releaseHeldDelays(2);
+        await fixture.until(
+          () => fixture.thread(thread.id),
+          (entry) => entry.ownership === 'uncertain',
+        );
+      }
+    } finally {
+      stopHoldingDelays();
+      await fixture.close();
+    }
+  },
+);
+
+test('a burst of oversized Codex messages re-checks sessions one read at a time, once each, while actions keep working', async () => {
+  const fixture = await setup();
+  try {
+    const sessions = [];
+    for (const name of ['burst-a', 'burst-b', 'burst-c'])
+      sessions.push((await fixture.create(name)).thread);
+    const [held, ...others] = sessions.map((session) => session.nativeId!);
+    const threadTurns = Object.fromEntries(sessions.map((session) => [session.nativeId!, []]));
+    await fixture.control({
+      holdReadThread: held,
+      threadTurns,
+      emitOnce: true,
+      emitOversized: 2,
+    });
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    await expect.poll(() => readCalls(fixture, held!)).toBe(1);
+    // while the first read is held open, no other re-check reads
+    for (const nativeId of others) expect(await readCalls(fixture, nativeId)).toBe(0);
+    // a session created and messaged during the burst works
+    const { thread: during } = await fixture.create('during-burst');
+    await sendMessage(fixture, during.id);
+    await fixture.control({ threadTurns });
+    // the held session reads once more for the discard that came while it ran; the others once
+    await expect.poll(() => readCalls(fixture, held!)).toBe(2);
+    for (const nativeId of others) await expect.poll(() => readCalls(fixture, nativeId)).toBe(1);
+    for (const session of sessions)
+      expect(await fixture.thread(session.id)).toMatchObject({ ownership: 'managed' });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a lost turn end waiting for its 2-second re-read holds back no other session's re-check", async () => {
+  startHoldingDelays(2);
+  const fixture = await setup();
+  try {
+    const { thread: idle } = await fixture.create('idle-session');
+    const { message, nativeId, turnId } = await startHeldTurn(fixture, 'waiting-reread');
+    const running = (status: string) => ({
+      holdTurn: true,
+      threadStatuses: { [nativeId]: { type: 'active', activeFlags: [] } },
+      threadTurns: {
+        [nativeId]: [{ id: turnId, status, startedAt: 1_800_000_001, completedAt: null }],
+        [idle.nativeId!]: [],
+      },
+    });
+    await emit(fixture, running('inProgress'), [lostCompletion(nativeId, turnId)]);
+    await expect.poll(() => countHeldDelays(2)).toBe(1);
+    await fixture.control({ ...running('inProgress'), emitOnce: true, emitOversized: 1 });
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    await expect.poll(() => readCalls(fixture, idle.nativeId!)).toBe(1);
+    expect(countHeldDelays(2)).toBe(1);
+    await fixture.control(running('completed'));
+    releaseHeldDelays(2);
+    await fixture.until(
+      () => fixture.receipt(message.id),
+      (entry) => entry.completion === 'completed',
+    );
+  } finally {
+    stopHoldingDelays();
+    await fixture.close();
+  }
+});
+
+test('a response over the frame limit is discarded, leaving its request to fail at its deadline while the connection stays open', async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('oversized-response');
+    // the discard re-checks the idle session, whose saved history has no turns
+    const threadTurns = { [thread.nativeId!]: [] };
+    await fixture.control({ oversizeResponseTo: 'account/rateLimits/read', threadTurns });
+    const startedAt = Date.now();
+    const usage = await fixture
+      .request({ kind: 'usage', provider: 'codex' })
+      .catch((error) => error);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(29_000);
+    expect(usage).toMatchObject({ kind: 'usage', result: { state: 'unavailable' } });
+    await fixture.control({ threadTurns });
+    await sendMessage(fixture, thread.id);
+    expect(await fixture.thread(thread.id)).toMatchObject({ ownership: 'managed' });
+  } finally {
+    await fixture.close();
+  }
+  // the request waits out the native connection's 30-second response deadline on purpose
+}, 45_000);

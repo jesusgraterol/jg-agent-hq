@@ -1155,38 +1155,56 @@ test('a quota response from before an account change cannot restore that account
   });
 });
 
-test.each(['malformed', 'oversized', 'partial', 'empty'])(
+// starts Codex with a bad first frame and proves initialization fails, the host stays usable and cleanup runs
+const expectFailedInitialization = async (
+  mode: string,
+  failure = /The (HQ transport|Codex integration) failed/,
+): Promise<void> => {
+  const root = await mkdtemp(join(tmpdir(), 'jg-hq-bad-frame-'));
+  const stateRoot = join(root, 'state');
+  let runtime: IAgentHq | undefined;
+  try {
+    const bin = await installCodexFixture(root);
+    await writeFile(join(root, 'control.json'), JSON.stringify({ mode }));
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
+    vi.stubEnv('JG_HQ_FIXTURE_DIRECTORY', root);
+    vi.stubEnv('JG_HQ_FIXTURE_WORKSPACE', root);
+    runtime = await createAgentHq({ stateRoot, allowedRoots: [root] });
+    await expect(
+      runtime.request({ kind: 'threads', provider: 'codex', workspaceRoot: root }),
+    ).rejects.toThrow(failure);
+    const pids = PidsSchema.parse(JSON.parse(await readFile(join(root, 'pids.json'), 'utf8')));
+    // the native connection's own deadline, just after the provider's, closes a held initialization
+    await expect.poll(() => isAlive(pids.parent), { timeout: 5_000 }).toBe(false);
+    await expect.poll(() => isAlive(pids.child), { timeout: 5_000 }).toBe(false);
+    expect(await runtime.request({ kind: 'status' })).toMatchObject({
+      kind: 'status',
+      result: { store: 'ready' },
+    });
+    await runtime.close();
+    expect(await readdir(stateRoot)).toStrictEqual(['action.key', 'hq.sqlite']);
+  } finally {
+    await runtime?.close();
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
+  }
+};
+
+test.each(['malformed', 'partial', 'empty'])(
   'a %s native frame fails lazy initialization while the host remains usable and cleanup is confirmed',
   { timeout: 15_000 },
-  async (mode) => {
-    const root = await mkdtemp(join(tmpdir(), 'jg-hq-bad-frame-'));
-    const stateRoot = join(root, 'state');
-    let runtime: IAgentHq | undefined;
-    try {
-      const bin = await installCodexFixture(root);
-      await writeFile(join(root, 'control.json'), JSON.stringify({ mode }));
-      vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
-      vi.stubEnv('JG_HQ_FIXTURE_DIRECTORY', root);
-      vi.stubEnv('JG_HQ_FIXTURE_WORKSPACE', root);
-      runtime = await createAgentHq({ stateRoot, allowedRoots: [root] });
-      await expect(
-        runtime.request({ kind: 'threads', provider: 'codex', workspaceRoot: root }),
-      ).rejects.toThrow(/The (HQ transport|Codex integration) failed/);
-      const pids = PidsSchema.parse(JSON.parse(await readFile(join(root, 'pids.json'), 'utf8')));
-      expect(isAlive(pids.parent)).toBe(false);
-      expect(isAlive(pids.child)).toBe(false);
-      expect(await runtime.request({ kind: 'status' })).toMatchObject({
-        kind: 'status',
-        result: { store: 'ready' },
-      });
-      await runtime.close();
-      expect(await readdir(stateRoot)).toStrictEqual(['action.key', 'hq.sqlite']);
-    } finally {
-      await runtime?.close();
-      vi.unstubAllEnvs();
-      await rm(root, { recursive: true, force: true });
-    }
-  },
+  (mode) => expectFailedInitialization(mode),
+);
+
+test(
+  'an oversized answer to initialization is discarded, so initialization fails at its deadline while the host remains usable and cleanup is confirmed',
+  // the discarded answer leaves initialization to wait out its 30-second deadline
+  { timeout: 45_000 },
+  () =>
+    expectFailedInitialization(
+      'oversized',
+      /The HQ provider integration failed: The deadline passed/,
+    ),
 );
 
 test('unverifiable owners and linked database files are never reclaimed or followed', async () => {

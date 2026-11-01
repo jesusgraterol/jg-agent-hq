@@ -303,5 +303,7 @@ export const createCodexEvents = (
     },
     unavailable: () => events.unavailable(),
     connected: () => observeLoaded(),
+    // a discarded message's session can't be known, so every session HQ controls is read
+    discarded: () => events.resync(undefined, 'unknown'),
   };
 };

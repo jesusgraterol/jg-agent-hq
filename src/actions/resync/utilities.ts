@@ -28,9 +28,9 @@ export const mergeResync = (
 /**
  * Decides what a lost notification means for a session, from the turns it recorded and the latest
  * turn its native process reports. A finished turn completes; a running one continues unless its
- * end was lost; an ambiguous one is read once more; an idle, unchanged session is left alone; and
- * anything else, such as a newer turn, a lost approval resolution or a last attempt that still
- * can't settle, makes the session uncertain.
+ * end was lost, and is watched after an unidentified loss; an ambiguous one is read once more; an
+ * idle, unchanged session is left alone; and anything else, such as a newer turn, a lost approval
+ * resolution or a last attempt that still can't settle, makes the session uncertain.
  * @returns The decision the re-check applies.
  */
 export const decideResync = (
@@ -45,12 +45,11 @@ export const decideResync = (
   if (isActiveLatest && latest.state !== 'running' && !latest.isInferred)
     return { kind: 'complete', nativeTurnId: active, state: latest.state };
   if (request.isLastAttempt) return { kind: 'uncertain' };
-  if (
-    isActiveLatest &&
-    latest.state === 'running' &&
-    (request.lost === 'turn-started' || request.lost === 'unknown')
-  )
+  if (isActiveLatest && latest.state === 'running' && request.lost === 'turn-started')
     return { kind: 'gap' };
+  // an unidentified loss may have been this turn's end, which Codex's next idle status reveals
+  if (isActiveLatest && latest.state === 'running' && request.lost === 'unknown')
+    return { kind: 'watch' };
   if (
     isActiveLatest &&
     ((latest.state === 'running' && request.lost === 'turn-completed') ||

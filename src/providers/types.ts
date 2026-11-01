@@ -347,6 +347,8 @@ export type IProviderFraming = {
     reply(bytes: Buffer): void;
     open(): void;
     fail(cause: unknown): void;
+    // a message over the size limit was skipped instead of failing the connection
+    discard(): void;
   }): { push(chunk: Buffer): void; end(): void; stop(): void };
   encode(message: unknown): Buffer;
 };
