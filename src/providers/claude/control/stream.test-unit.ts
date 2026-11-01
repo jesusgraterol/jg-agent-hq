@@ -179,6 +179,31 @@ test('live frames and previews present what history will: thinking and notificat
   expect(session.previews.size).toBe(0);
 });
 
+test("a skill's text, which Claude adds as a synthetic user message, stays out of the live items as it does of history", () => {
+  const session = createSession();
+  const { events, items } = createEvents();
+  const receive = (frame: unknown) => receiveClaudeMessage(session, frame, events);
+  receive({
+    type: 'user',
+    session_id: 'session',
+    uuid: 'skill-text',
+    isSynthetic: true,
+    message: {
+      role: 'user',
+      content: [{ type: 'text', text: 'Base directory for this skill: /skills/example' }],
+    },
+  });
+  receive({
+    type: 'user',
+    session_id: 'session',
+    uuid: 'operator-text',
+    message: { role: 'user', content: 'Use the example skill' },
+  });
+  expect(items.map(({ item }) => [item.nativeId, item.kind])).toStrictEqual([
+    ['operator-text', 'user-message'],
+  ]);
+});
+
 test(
   'a live item is timed when its frame arrives, a preview and its record alike',
   { tags: ['full'] },
