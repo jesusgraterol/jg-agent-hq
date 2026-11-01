@@ -92,7 +92,8 @@ else {
     notify('turn/completed',{threadId,turn:{id:thread.activeTurn,status}});
     thread.activeTurn = null;
   };
-  const handle = (line) => {
+  // a held read is handled again once released, without logging the call twice
+  const handle = (line, isHeldRead = false) => {
     const request = JSON.parse(line);
     const control = controls();
     requestControl = control;
@@ -104,7 +105,7 @@ else {
       if (control.completeOnReply) complete(threadId);
       return;
     }
-    appendFileSync(join(directory,'calls.jsonl'),JSON.stringify({ method: request.method, params: request.params })+'\n');
+    if (!isHeldRead) appendFileSync(join(directory,'calls.jsonl'),JSON.stringify({ method: request.method, params: request.params })+'\n');
     if (request.id === undefined) return;
     if (request.method === 'initialize') {
       if (control.mode === 'malformed') { send('invalid JSON');return; }
@@ -269,6 +270,9 @@ else {
     }
     // loadedThreads lists the threads the daemon has loaded, for every client
     if (method === 'thread/loaded/list') { respond(request.id,{ data: control.loadedThreads ?? [], nextCursor: null });return; }
+    // failRead refuses a session read; holdReadThread answers that session's read only once the control drops it
+    if (method === 'thread/read' && control.failRead) { send(JSON.stringify({id:request.id,error:{code:-32603,message:'Synthetic read failure'}}));return; }
+    if (method === 'thread/read' && control.holdReadThread === params.threadId) { const answer = () => controls().holdReadThread === params.threadId ? setTimeout(answer,25) : handle(line,true); setTimeout(answer,25);return; }
     if (method === 'thread/read') { respond(request.id,{ thread: { ...threads[0],...managed.get(params.threadId),...(control.ephemeralThreads?.includes(params.threadId) ? { ephemeral: true } : {}),status: statusOf({ id: params.threadId,status: managed.get(params.threadId)?.status ?? threads[0].status }),...(control.unavailableSettings?{model:null,reasoningEffort:null}:{}),id: params.threadId,cwd: control.wrongRoot || managed.get(params.threadId)?.cwd || workspaceRoot } });return; }
     if (method === 'thread/turns/list') {
       // threadTurns lists one session's turns, oldest first, as the daemon reports them

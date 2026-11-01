@@ -10,6 +10,8 @@
 - Record a turn's or a compaction's acknowledgement after the lifecycle events its provider reported before it, so a turn the agent started and finished meanwhile can't be taken for it.
 - Leave approval requests on a Codex session another client drives for that client to answer. The shared daemon sends a session's requests to every connection that joined it, and HQ declined them at once, which declined the terminal user's approval. HQ now neither answers nor records them.
 - Add `unpresentable(nativeId, reject)` to `IAgentProviderEvents`, for a request an adapter can't present. HQ refuses it only on a session it controls.
+- Keep the Codex connection every managed Codex session shares open when a notification fails validation. A notification about items, text deltas, token usage or a session's status is dropped, with a gap in a managed session's live window, and a status newer than HQ knows makes the session `unknown`. A lost turn start, turn end or approval resolution makes HQ read the session from the daemon instead: a finished turn completes, a running turn whose start was lost continues, an ambiguous turn is read once more 2 seconds later, an unchanged idle session is left alone, and anything else marks the session uncertain.
+- Add `resync(nativeId, lost)` to `IAgentProviderEvents`, `IResyncLoss`, and the optional `isInferred` on `IProviderReattachment`'s latest turn, which the built-in Codex adapter sets when the saved turn is still in progress.
 
 ## 10.3.0
 

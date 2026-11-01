@@ -30,6 +30,7 @@ export type {
   IProviderThread,
   IProviderInspection,
   IProviderReattachment,
+  IResyncLoss,
   IProviderSkills,
   IProviderMcpServerPage,
   IProviderMcpTools,

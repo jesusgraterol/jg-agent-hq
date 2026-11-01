@@ -119,6 +119,9 @@ const startWorker = async (): Promise<void> => {
           case 'native-thread-read':
             result = controls.getThreadByNativeId(command.provider, command.nativeId);
             break;
+          case 'turn-record':
+            result = controls.getTurnRecord(command.provider, command.nativeId);
+            break;
           case 'native-threads':
             result = controls.getNativeThreads(command.provider, command.nativeIds);
             break;

@@ -22,6 +22,7 @@ import {
   LifecyclePageSchema,
   ApprovalIdentitySchema,
   ApprovalPageSchema,
+  TurnRecordSchema,
 } from './control/index.js';
 import { ActiveSessionRecordsSchema } from './sessions/index.js';
 import {
@@ -269,6 +270,8 @@ export const createStore = async (
       request({ kind: 'thread-name-suggest', name }, ManagedThreadSchema.shape.name),
     getThreadByNativeId: (provider, nativeId) =>
       request({ kind: 'native-thread-read', provider, nativeId }, ManagedThreadSchema.nullable()),
+    getTurnRecord: (provider, nativeId) =>
+      request({ kind: 'turn-record', provider, nativeId }, TurnRecordSchema.nullable()),
     getNativeThreads: (provider, nativeIds) =>
       request(
         { kind: 'native-threads', provider, nativeIds },

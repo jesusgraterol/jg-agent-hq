@@ -555,3 +555,58 @@ test('an approval the terminal answers first settles the prompt HQ holds', async
     });
   });
 });
+
+test('a Codex notification that fails validation never closes the shared connection', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    // a status newer than this package knows makes another client's session unknown
+    await broadcast(fixture, { type: 'active', activeFlags: [] });
+    await codex(fixture, { emitOnce: true, emit: [statusChanged({ type: 'hibernating' })] });
+    await fixture.runtime.request({ kind: 'usage', provider: 'codex' });
+    await expect
+      .poll(async () => (await transitions(fixture)).map((transition) => transition.state))
+      .toStrictEqual(['running', 'unknown']);
+    const managed = await createThread(fixture, 'tolerant-session');
+    await codex(fixture, { holdTurn: true });
+    await submit(fixture, {
+      kind: 'message',
+      threadId: managed.id,
+      input: { kind: 'text', text: 'Keep going' },
+    });
+    await expect.poll(async () => (await thread(fixture, managed.id))?.state).toBe('running');
+    const turnId = (await thread(fixture, managed.id))!.activeTurnId!;
+    // an item and a token count that fail validation only mark the live window's gap
+    await codex(fixture, {
+      holdTurn: true,
+      emitOnce: true,
+      emit: [
+        {
+          method: 'item/completed',
+          params: {
+            threadId: managed.nativeId,
+            turnId,
+            item: { id: 'broken-item', type: 'commandExecution', command: 42 },
+          },
+        },
+        {
+          method: 'thread/tokenUsage/updated',
+          params: { threadId: managed.nativeId, turnId, tokenUsage: 'unexpected' },
+        },
+      ],
+    });
+    await fixture.runtime.request({ kind: 'usage', provider: 'codex' });
+    await expect
+      .poll(async () => {
+        const live = await fixture.runtime.request({ kind: 'live-items', threadId: managed.id });
+        return live.kind === 'live-items' && live.result.hasGap;
+      })
+      .toBe(true);
+    expect(await thread(fixture, managed.id)).toMatchObject({
+      state: 'running',
+      ownership: 'managed',
+    });
+    // a message that is neither a request, a notification nor a response still fails it
+    await codex(fixture, { holdTurn: true, emitOnce: true, emitRequests: [{ result: {} }] });
+    await fixture.runtime.request({ kind: 'usage', provider: 'codex' }).catch(() => undefined);
+    await expect.poll(async () => (await thread(fixture, managed.id))?.ownership).toBe('uncertain');
+  });
+});

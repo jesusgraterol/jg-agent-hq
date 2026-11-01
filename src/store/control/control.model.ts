@@ -47,6 +47,7 @@ import {
   type IDispatch,
   type IApprovalRecord,
   type IReattachment,
+  type ITurnRecord,
 } from './types.js';
 
 const FailureSchema = z.object({
@@ -172,6 +173,19 @@ export class ControlModel {
   ): IManagedThread | null {
     const thread = this.__nativeThread(provider, nativeId);
     return thread ? toManagedThread(thread) : null;
+  }
+
+  /** Reads the turns a registered native session recorded, which a live re-check compares. */
+  public getTurnRecord(provider: IManagedThread['provider'], nativeId: string): ITurnRecord | null {
+    const thread = this.__nativeThread(provider, nativeId);
+    return thread
+      ? {
+          threadId: thread.id,
+          workspaceRoot: thread.workspace_root,
+          activeTurnId: thread.active_turn_id,
+          lastTurnId: thread.last_turn_id,
+        }
+      : null;
   }
 
   /** Resolves one native discovery page in a single indexed worker operation. */

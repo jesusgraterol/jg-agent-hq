@@ -9,6 +9,7 @@ export type {
   IProviderThread,
   IProviderInspection,
   IProviderReattachment,
+  IResyncLoss,
   IAgentProvider,
   IAgentProviderFactory,
   IAgentProviderContext,
@@ -20,6 +21,7 @@ export {
   ProviderInspectionSchema,
   ProviderReattachmentSchema,
   ProviderSkillsSchema,
+  ResyncLossSchema,
 } from './types.js';
 export { PROVIDER_INPUT_SCHEMA, SUPPORTED_PROVIDER_OPERATION } from './constants.js';
 export { createProviderProcess, isOwnedProcess } from './process.js';

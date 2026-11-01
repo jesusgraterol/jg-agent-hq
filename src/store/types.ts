@@ -47,6 +47,7 @@ import {
   type IDispatch,
   type IObservationResult,
   type IReattachment,
+  type ITurnRecord,
 } from './control/index.js';
 import type { IActiveSessionRecord } from './sessions/index.js';
 
@@ -99,6 +100,11 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('thread-name-suggest'), name: ManagedThreadSchema.shape.name }),
   z.strictObject({
     kind: z.literal('native-thread-read'),
+    provider: ManagedThreadSchema.shape.provider,
+    nativeId: z.string().min(1).max(4096),
+  }),
+  z.strictObject({
+    kind: z.literal('turn-record'),
     provider: ManagedThreadSchema.shape.provider,
     nativeId: z.string().min(1).max(4096),
   }),
@@ -329,6 +335,16 @@ export type IStore = {
     provider: IManagedThread['provider'],
     nativeId: string,
   ): Promise<IManagedThread | null>;
+  /**
+   * Reads the turns a registered native session recorded, including the last one it finished.
+   * @returns The session's turn record, or null for an external session.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  getTurnRecord(
+    provider: IManagedThread['provider'],
+    nativeId: string,
+  ): Promise<ITurnRecord | null>;
   /**
    * Resolves one bounded native discovery page in a single worker operation.
    * @returns The matching control records for the supplied native page.

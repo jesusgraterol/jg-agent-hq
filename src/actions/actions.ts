@@ -1,5 +1,6 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { Exception, extractMessage, isException } from 'jg-exception';
+import { delay } from 'jg-utilities';
 import { z } from 'zod';
 
 import type {
@@ -13,7 +14,7 @@ import type {
   ISessionTerminal,
 } from '../contracts/index.js';
 import { getErrorKind } from '../errors/index.js';
-import type { INativePrompt, IProviderThread } from '../providers/index.js';
+import type { INativePrompt, IProviderReattachment, IProviderThread } from '../providers/index.js';
 import { retainNativeLineage, readInputFiles } from '../providers/index.js';
 import { capabilityUnavailable, type createProviderRegistry } from '../providers/registry/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
@@ -22,6 +23,12 @@ import type { IStore } from '../store/index.js';
 import type { INativeOutcome, INativeObservation, IAdmission } from '../store/control/index.js';
 
 import { LiveItems } from './live/index.js';
+import {
+  RESYNC_REREAD_DELAY_SECONDS,
+  Resyncs,
+  decideResync,
+  type IResyncRequest,
+} from './resync/index.js';
 import { ActionWaits } from './waits/index.js';
 
 // item observations never change a receipt, and are too frequent to wake waits for
@@ -553,18 +560,88 @@ export const createActions = (
     if (result.canDispatchQueued && result.thread)
       advanceQueue(result.thread.id, result.thread.provider);
   };
+  /** Orders one observation about a controlled session behind the events before it. */
+  const receiveObservation = (
+    provider: IManagedThread['provider'],
+    observation: INativeObservation,
+  ): void => {
+    if (
+      !('nativeThreadId' in observation) ||
+      !observation.nativeThreadId ||
+      !controlled.has(key(provider, observation.nativeThreadId))
+    )
+      return;
+    if (observation.kind === 'turn-completed')
+      live.completeTurn(key(provider, observation.nativeThreadId), observation.nativeTurnId);
+    enqueue(provider, () => observe(observation));
+  };
+
+  // ends the waits of delayed re-checks when the runtime closes
+  const resyncLifetime = new AbortController();
+  /**
+   * Makes up for a lost notification by reading the session from its native process, outside the
+   * shared lane, then orders only the resulting observation behind the events before it. A failed
+   * read makes the session uncertain.
+   * @returns A promise resolved once the decision is applied or scheduled.
+   */
+  const recheck = async (
+    provider: IManagedThread['provider'],
+    nativeId: string,
+    request: IResyncRequest,
+  ): Promise<void> => {
+    if (closing || !controlled.has(key(provider, nativeId))) return;
+    const record = await store.getTurnRecord(provider, nativeId);
+    if (!record) return;
+    let latest: IProviderReattachment['latestTurn'] | undefined;
+    try {
+      const control = await registry.get(provider);
+      if (!control.readReattachment) capabilityUnavailable();
+      latest = (await control.readReattachment(nativeId, record.workspaceRoot)).latestTurn;
+    } catch {
+      latest = undefined;
+    }
+    const decision =
+      latest === undefined
+        ? ({ kind: 'uncertain' } as const)
+        : decideResync(record, latest, request);
+    if (decision.kind === 'complete')
+      receiveObservation(provider, {
+        kind: 'turn-completed',
+        provider,
+        nativeThreadId: nativeId,
+        nativeTurnId: decision.nativeTurnId,
+        state: decision.state,
+      });
+    else if (decision.kind === 'gap') live.markGap(key(provider, nativeId));
+    else if (decision.kind === 'reread') {
+      const reread = { lost: request.lost, isLastAttempt: true, turnId: decision.nativeTurnId };
+      // the wait holds back no other session's re-check
+      runOwned(async () => {
+        try {
+          await delay(RESYNC_REREAD_DELAY_SECONDS, { signal: resyncLifetime.signal });
+        } catch {
+          return;
+        }
+        if (!closing) resyncs.request(provider, nativeId, reread);
+      });
+    } else if (decision.kind === 'uncertain')
+      enqueue(provider, () =>
+        observe({ kind: 'native-unavailable', provider, nativeThreadId: nativeId }),
+      );
+  };
+  const resyncs = new Resyncs(recheck, runOwned);
 
   registry.setEvents({
-    observe(provider, observation) {
-      if (
-        !('nativeThreadId' in observation) ||
-        !observation.nativeThreadId ||
-        !controlled.has(key(provider, observation.nativeThreadId))
-      )
-        return;
-      if (observation.kind === 'turn-completed')
-        live.completeTurn(key(provider, observation.nativeThreadId), observation.nativeTurnId);
-      enqueue(provider, () => observe(observation));
+    observe: receiveObservation,
+    resync(provider, nativeId, lost) {
+      if (closing) return;
+      const request: IResyncRequest = { lost, isLastAttempt: false, turnId: null };
+      // without a session, every session this runtime controls through the provider is read
+      if (nativeId === undefined) {
+        for (const thread of controlled.values())
+          if (thread.provider === provider) resyncs.request(provider, thread.nativeId, request);
+      } else if (controlled.has(key(provider, nativeId)))
+        resyncs.request(provider, nativeId, request);
     },
     item(provider, nativeId, item, isComplete, replacedIds) {
       if (!controlled.has(key(provider, nativeId))) return;
@@ -1140,6 +1217,7 @@ export const createActions = (
      */
     async close(): Promise<void> {
       closing = true;
+      resyncLifetime.abort();
       let cleanupFailure: unknown;
       try {
         await Promise.allSettled([...admissions]);

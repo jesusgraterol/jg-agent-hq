@@ -213,6 +213,15 @@ export const ReattachmentSchema = z.strictObject({
 });
 export type IReattachment = z.infer<typeof ReattachmentSchema>;
 
+// the turns a session recorded, which a live re-check compares with what its native process reports
+export const TurnRecordSchema = z.strictObject({
+  threadId: z.uuid(),
+  workspaceRoot: ManagedThreadSchema.shape.workspaceRoot,
+  activeTurnId: NativeIdSchema.nullable(),
+  lastTurnId: NativeIdSchema.nullable(),
+});
+export type ITurnRecord = z.infer<typeof TurnRecordSchema>;
+
 // public cursors are decoded and query-bound before these trusted seek positions are sent
 export const ControlPageSchema = z.strictObject({
   limit: z.number().int().min(1).max(128),
