@@ -679,7 +679,7 @@ test('Claude closed sessions resume explicitly with the same native identity and
   });
 });
 
-test('Claude external adoption requires qualified workspace history and an explicit handoff', async () => {
+test('Claude external adoption requires qualified workspace history and an explicit handoff, and resumes with its settings', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture),
       nativeId = randomUUID();
@@ -702,6 +702,7 @@ test('Claude external adoption requires qualified workspace history and an expli
       nativeId,
       name: 'adopt-task',
       operatorConfirmation: 'I have closed the native CLI controller',
+      settings: { permissionMode: 'plan' },
     });
     const admitted = await api.submit(adopt);
     await api.settled(adopt.id);
@@ -710,6 +711,9 @@ test('Claude external adoption requires qualified workspace history and an expli
       ownership: 'managed',
       state: 'idle',
     });
+    const [start] = await readStarts(fixture);
+    expect(start!.args[start!.args.indexOf('--resume') + 1]).toBe(nativeId);
+    expect(start!.args[start!.args.indexOf('--permission-mode') + 1]).toBe('plan');
   });
 });
 
