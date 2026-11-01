@@ -11,6 +11,6 @@ export default defineConfig({
       '**/_backup/**',
       '**/_backups/**',
     ],
-    include: ['src/**/*.test-unit.ts'],
+    include: ['src/**/*.test-unit.ts', 'scripts/**/*.test-unit.ts'],
   },
 });

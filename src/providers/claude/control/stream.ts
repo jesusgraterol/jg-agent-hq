@@ -13,6 +13,8 @@ const MessageSchema = z.object({
   uuid: z.string().min(1).max(4096),
   message: z.object({ role: z.string(), content: z.unknown() }),
   tool_use_result: z.unknown().optional(),
+  // text Claude adds to a turn itself, such as a loaded skill's, which its transcript marks isMeta
+  isSynthetic: z.boolean().optional(),
 });
 const ResultSchema = z.object({
   subtype: z.string(),
@@ -117,17 +119,20 @@ export const receiveClaudeMessage = (
       isClaudeInterruptionMarker(message.message.content)
     )
       return;
-    const item = toClaudeItem(
-      RecordSchema.parse({
-        type: frame.type,
-        uuid: message.uuid,
-        message: message.message,
-        toolUseResult: message.tool_use_result,
-        // a live item is timed when its frame arrives
-        timestamp: new Date().toISOString(),
-      }),
-      input.id,
-    );
+    // like history, which skips the transcript's isMeta records, live items leave synthetic text out
+    const item = message.isSynthetic
+      ? null
+      : toClaudeItem(
+          RecordSchema.parse({
+            type: frame.type,
+            uuid: message.uuid,
+            message: message.message,
+            toolUseResult: message.tool_use_result,
+            // a live item is timed when its frame arrives
+            timestamp: new Date().toISOString(),
+          }),
+          input.id,
+        );
     // final wrappers may share an API message ID while containing different content blocks
     const content = z
       .object({ message: z.object({ id: z.string().optional(), content: z.unknown() }) })

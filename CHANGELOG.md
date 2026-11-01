@@ -1,5 +1,10 @@
 # Changelog
 
+## 10.2.0
+
+- `thread-adopt` accepts optional `settings`, as `thread-resume` does, and applies them to the resume it runs, so a host can adopt a session in a chosen permission mode. Codex refuses them for a thread another client still holds, as it does on resume.
+- Leave the text Claude adds to a turn itself, such as a loaded skill's, out of live items. Claude streams it as a user message marked `isSynthetic`, so a host showed it as the operator's message while the turn ran, although history, which skips the transcript's matching `isMeta` records, never lists it.
+
 ## 10.1.0
 
 - Add `codexDaemonLauncher` to `createAgentHq`: a command and its arguments that run `codex app-server daemon start`, such as `systemd-run --user --scope`. On Linux, Codex's shared daemon stays in the cgroup of whatever started it, so a host running as a systemd service that started it took it down, with the work of every terminal session on it, whenever the service stopped. Without the option, the start runs directly as before.

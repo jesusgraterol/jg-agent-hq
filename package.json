@@ -1,6 +1,6 @@
 {
   "name": "jg-agent-hq",
-  "version": "10.1.0",
+  "version": "10.2.0",
   "description": "Native Claude Code and Codex session control, history, usage and recoverable local storage for Node.js apps.",
   "type": "module",
   "license": "MIT",
@@ -37,14 +37,17 @@
   },
   "scripts": {
     "build": "node scripts/package/clean.ts && tsc -p tsconfig.build.json && node scripts/package/assets.ts",
-    "test": "pnpm build && pnpm test:unit && pnpm test:integration",
+    "test": "pnpm build && pnpm test:unit --tagsFilter=!full && pnpm test:integration --tagsFilter=!full",
+    "test:full": "pnpm build && pnpm test:unit && pnpm test:integration",
     "test:unit": "vitest run --config vitest/test-unit.config.ts",
     "test:integration": "vitest run --config vitest/test-integration.config.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.contracts.json",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check:package": "pnpm test && pnpm typecheck && pnpm format:check",
-    "check": "pnpm check:package && pnpm --dir website check"
+    "check:package:full": "pnpm test:full && pnpm typecheck && pnpm format:check",
+    "check": "pnpm check:package && pnpm --dir website check",
+    "check:full": "pnpm check:package:full && pnpm --dir website check:full"
   },
   "dependencies": {
     "jg-crypto": "0.3.0",

@@ -418,7 +418,9 @@ export const createActions = (
             nativeId,
             thread.workspaceRoot,
             thread.name,
-            command.kind === 'thread-resume' ? (command.settings ?? {}) : {},
+            command.kind === 'thread-resume' || command.kind === 'thread-adopt'
+              ? (command.settings ?? {})
+              : {},
           ),
         );
         await apply({

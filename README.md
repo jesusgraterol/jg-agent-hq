@@ -25,6 +25,16 @@ Use pnpm 12.4.0. Run `pnpm install`, then `pnpm check:package` to build, exercis
 
 Work on `development`; reviewed changes reach `main` through a pull request. After both Node checks pass on `main`, `check.yml` publishes the exact consumer-tested tarball through npm's configured trusted publisher, then deploys the website. No local npm login or token is needed. An identical published version is skipped; changed contents require a new version.
 
+[testing-commands:start]: #
+
+## Testing
+
+`pnpm test`, `pnpm check:package`, and `pnpm check` run essential coverage. Their `:full` counterparts retain complete package or package/website checks. Granular and focused commands remain complete by default. Full runs locally only on explicit request; see the [testing policy](https://github.com/jesusgraterol/jg-agent-hq/blob/main/docs/testing.md) for classification and affected-consumer checks.
+
+Testing maintenance can reuse an existing version when only these six aggregate scripts and this marked testing-command block differ. All runtime files, dependencies, exports, installation scripts, other documentation, and file permissions remain protected by the release check. This narrow exception to the general version rule above skips publication; it does not change the installed package.
+
+[testing-commands:end]: #
+
 ## Lock ownership
 
 Callers supply a trusted state root. Locks live in its private `.runtime/hq.lock`. A holder records its process ID, nonce, safe operation label and creation time. Live holders are awaited. Dead, incomplete or unverifiable owners require inspection and are never automatically reclaimed, because child processes may remain alive.

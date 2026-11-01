@@ -43,6 +43,7 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
     nativeId: NativeIdSchema,
     name: NameSchema,
     operatorConfirmation: z.string().min(1).max(1024),
+    settings: SessionSettingsSchema.optional(),
   }),
   z.strictObject({
     kind: z.literal('thread-resume'),
