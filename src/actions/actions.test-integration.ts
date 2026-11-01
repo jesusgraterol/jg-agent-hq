@@ -199,27 +199,30 @@ test.each(['codex', 'claude'])(
                 : { runtimeEpoch: null, state: 'inactive' }),
             },
           });
-        const calls = await readFile(join(root, 'calls.jsonl'), 'utf8');
-        if (provider === 'claude') expect(calls).toBe(callsBefore);
+        const calls = () => readFile(join(root, 'calls.jsonl'), 'utf8');
+        if (provider === 'claude') expect(await calls()).toBe(callsBefore);
         else
-          expect(
-            calls
-              .slice(callsBefore.length)
-              .trim()
-              .split('\n')
-              .map((line) => z.object({ method: z.string() }).parse(JSON.parse(line)).method)
-              // every connection also lists the sessions the daemon has loaded, for any client
-              .filter(
-                (method) =>
-                  method !== 'thread/loaded/list' &&
-                  (method.startsWith('thread/') || method.startsWith('turn/')),
-              ),
-          ).toStrictEqual([
-            'thread/read',
-            'thread/turns/list',
-            'thread/resume',
-            'thread/turns/list',
-          ]);
+          // the record is bound before the join runs, so the join's calls are awaited, not read once
+          await expect
+            .poll(async () =>
+              (await calls())
+                .slice(callsBefore.length)
+                .trim()
+                .split('\n')
+                .map((line) => z.object({ method: z.string() }).parse(JSON.parse(line)).method)
+                // every connection also lists the sessions the daemon has loaded, for any client
+                .filter(
+                  (method) =>
+                    method !== 'thread/loaded/list' &&
+                    (method.startsWith('thread/') || method.startsWith('turn/')),
+                ),
+            )
+            .toStrictEqual([
+              'thread/read',
+              'thread/turns/list',
+              'thread/resume',
+              'thread/turns/list',
+            ]);
       } finally {
         await reopened.close();
       }
@@ -2155,18 +2158,22 @@ test('the next runtime rejoins the Codex sessions a shutdown left running and ca
       completion: 'completed',
     });
     expect(await fixture.receipt(messages.get(running.id)!)).toMatchObject({ completion: null });
-    // rejoining changes no session's settings
-    const resumes = (await fixture.calls())
-      .slice(callCount)
-      .filter((call) => call.method === 'thread/resume')
-      .map((call) => call.params);
+    // rejoining changes no session's settings; a record is bound before its join, so joins are awaited
     const byThread = (left: Record<string, unknown>, right: Record<string, unknown>) =>
       String(left.threadId).localeCompare(String(right.threadId));
-    expect(resumes.sort(byThread)).toStrictEqual(
-      [running, finishing, idle]
-        .map((thread) => ({ threadId: thread.nativeId!, excludeTurns: true }))
-        .sort(byThread),
-    );
+    await expect
+      .poll(async () =>
+        (await fixture.calls())
+          .slice(callCount)
+          .filter((call) => call.method === 'thread/resume')
+          .map((call) => call.params)
+          .sort(byThread),
+      )
+      .toStrictEqual(
+        [running, finishing, idle]
+          .map((thread) => ({ threadId: thread.nativeId!, excludeTurns: true }))
+          .sort(byThread),
+      );
     // the turn still running completes through the rejoined session
     await fixture.control({
       ...daemon,
