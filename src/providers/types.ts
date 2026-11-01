@@ -79,6 +79,8 @@ export type IAgentProviderEvents = {
   gap(nativeId: string): void;
   delta(nativeId: string, turnId: string, itemId: string, text: string): void;
   prompt(prompt: INativePrompt): void;
+  // a request on a session that HQ can't present, which HQ refuses only on a session it controls
+  unpresentable(nativeId: string, reject: () => Promise<void>): void;
   outcome(outcome: IAgentProviderOutcome, thread?: IProviderThread): void;
   // the live state of a session another client drives, inside the allowed workspaces
   session(nativeId: string, state: ISessionState): void;

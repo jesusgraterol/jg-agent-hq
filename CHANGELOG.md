@@ -8,6 +8,8 @@
 - Keep a Claude session available when Claude starts a turn of its own, as it does after a background command finishes. That turn's first frame used to fail the session and end its process group. HQ now records the turn under an ID it generates: the thread reports running, its items stream as live items, its permission prompts can be answered, Stop interrupts it, and its result completes it. Input written just before such a turn waits for Claude's replay after it, and keeps its own turn and result.
 - Keep a Claude session's process while a background command it started is still running, instead of parking the session after its idle hour, which ended the command.
 - Record a turn's or a compaction's acknowledgement after the lifecycle events its provider reported before it, so a turn the agent started and finished meanwhile can't be taken for it.
+- Leave approval requests on a Codex session another client drives for that client to answer. The shared daemon sends a session's requests to every connection that joined it, and HQ declined them at once, which declined the terminal user's approval. HQ now neither answers nor records them.
+- Add `unpresentable(nativeId, reject)` to `IAgentProviderEvents`, for a request an adapter can't present. HQ refuses it only on a session it controls.
 
 ## 10.3.0
 

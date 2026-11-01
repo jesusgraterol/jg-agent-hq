@@ -2552,3 +2552,79 @@ test.each([
     await fixture.close();
   }
 });
+
+test('HQ answers no request on a session another client drives, and still refuses one it cannot present on its own', async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('own-session');
+    const replies = async () => {
+      try {
+        return (await readFile(join(fixture.root, 'replies.jsonl'), 'utf8'))
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as { id: string; error?: unknown });
+      } catch (error) {
+        if (hasErrorCode(error, 'ENOENT')) return [];
+        throw error;
+      }
+    };
+    // a session another client drives, which HQ never controlled
+    const other = 'thread-0003';
+    await fixture.control({
+      emitOnce: true,
+      emitRequests: [
+        {
+          id: 'other-approval',
+          method: 'item/commandExecution/requestApproval',
+          params: {
+            threadId: other,
+            turnId: 'turn-other',
+            itemId: 'item-other',
+            startedAtMs: Date.now(),
+            command: 'touch file',
+            cwd: fixture.workspaceRoot,
+            availableDecisions: ['accept', 'cancel'],
+          },
+        },
+        { id: 'other-unknown', method: 'item/future/requestInput', params: { threadId: other } },
+        {
+          id: 'own-unknown',
+          method: 'item/future/requestInput',
+          params: { threadId: thread.nativeId },
+        },
+      ],
+    });
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    // only the request on HQ's own session is refused
+    await expect.poll(replies).toMatchObject([{ id: 'own-unknown', error: expect.anything() }]);
+    // the other client answers, and the daemon reports its requests resolved
+    await fixture.control({
+      emitOnce: true,
+      emit: [
+        {
+          method: 'serverRequest/resolved',
+          params: { threadId: other, requestId: 'other-approval' },
+        },
+        {
+          method: 'serverRequest/resolved',
+          params: { threadId: other, requestId: 'other-unknown' },
+        },
+      ],
+    });
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    const message = fixture.envelope({
+      kind: 'message',
+      threadId: thread.id,
+      input: { kind: 'text', text: 'Still here' },
+    });
+    await fixture.submit(message);
+    await fixture.until(
+      () => fixture.receipt(message.id),
+      (entry) => entry.completion === 'completed',
+    );
+    expect((await replies()).map((reply) => reply.id)).toStrictEqual(['own-unknown']);
+  } finally {
+    await fixture.close();
+  }
+});

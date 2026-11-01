@@ -597,7 +597,9 @@ export const createActions = (
     prompt(provider, prompt) {
       // a session that outlives the runtime keeps its request for the next runtime to answer
       if (closing && registry.keepsSessions(provider)) return;
-      if (!controlled.has(key(provider, prompt.nativeThreadId)) || prompts.size >= 32 || closing) {
+      // the client driving a session HQ doesn't control answers its requests, so HQ stays silent
+      if (!controlled.has(key(provider, prompt.nativeThreadId))) return;
+      if (prompts.size >= 32 || closing) {
         runNativeOwned(provider, prompt.nativeThreadId, prompt.reject);
         return;
       }
@@ -622,6 +624,12 @@ export const createActions = (
           threadId: recorded.thread.id,
         });
       });
+    },
+    unpresentable(provider, nativeId, reject) {
+      if (closing && registry.keepsSessions(provider)) return;
+      // only a session HQ controls waits on HQ for an answer
+      if (!controlled.has(key(provider, nativeId))) return;
+      runNativeOwned(provider, nativeId, reject);
     },
     outcome(provider, outcome, nativeThread) {
       if (closing) return;

@@ -118,8 +118,10 @@ else {
     if (control.releaseInterrupts && !control.holdInterrupt) for (const pending of interrupts.splice(0)) { respond(pending.id,{});complete(pending.params.threadId,'interrupted'); }
     // threadStatuses reports sessions another client drives, by thread ID; ephemeralThreads lists the ones Codex doesn't save
     const statusOf = (thread) => control.threadStatuses?.[thread.id] ?? thread.status;
-    if (control.emitOnce) writeFileSync(join(directory,'control.json'),JSON.stringify({...control,emit:undefined,emitOnce:undefined}));
+    if (control.emitOnce) writeFileSync(join(directory,'control.json'),JSON.stringify({...control,emit:undefined,emitRequests:undefined,emitOnce:undefined}));
     if (control.emit) for (const event of control.emit) notify(event.method,event.params);
+    // emitRequests sends server requests, such as another client's approvals, with their own IDs
+    if (control.emitRequests) for (const native of control.emitRequests) send(JSON.stringify(native));
     if (method === 'model/list') {
       const choices = Array.from({length:control.modelCount??4},(_,index)=>({id:'model-'+String(index).padStart(4,'0'),model:'model-'+String(index).padStart(4,'0'),displayName:'Native model '+index,description:control.modelRevision?'Updated choice':'Native model choice',supportedReasoningEfforts:[{reasoningEffort:control.modelEffort??'native-effort'}],defaultReasoningEffort:control.modelEffort??'native-effort',isDefault:index===0}));
       if(control.modelsMalformed)choices[0].id='';

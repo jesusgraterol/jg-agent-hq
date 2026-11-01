@@ -194,7 +194,10 @@ export const createCodexEvents = (
     request(id, method, params) {
       const prompt = parseCodexPrompt(method, params);
       if (!prompt) {
-        void native.reject(id).catch(() => events.unavailable());
+        // a request on a session is refused only when HQ controls that session
+        const thread = z.object({ threadId: NativeIdSchema }).safeParse(params);
+        if (thread.success) events.unpresentable(thread.data.threadId, () => native.reject(id));
+        else void native.reject(id).catch(() => events.unavailable());
         return;
       }
       events.prompt({
