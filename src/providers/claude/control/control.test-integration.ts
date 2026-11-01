@@ -1647,6 +1647,25 @@ test('a permission prompt left unanswered expires when the turn Claude started e
   });
 });
 
+test('a Claude session that starts a turn of its own while it is being parked keeps its process', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture),
+      { thread } = await api.create();
+    await expect.poll(() => countHeldDelays(3_600)).toBe(1);
+    // Claude starts its turn while the park reads the session's settings
+    await fixture.control({ nativeOnSettings: true, nativeHold: true });
+    expect(releaseHeldDelays(3_600)).toBe(1);
+    await awaitNativeTurn(api, thread.id);
+    expect((await readPids(fixture)).every(isRunning)).toBe(true);
+    await fixture.control({ nativeRelease: true });
+    await api.until(
+      () => api.thread(thread.id),
+      (entry) => entry.state === 'completed' && entry.activeTurnId === null,
+    );
+    await parkIdleSessions(fixture);
+  });
+});
+
 test('a Claude session keeps its process while a background command it started runs, and parks once none runs', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture),

@@ -42,7 +42,9 @@ export const ProviderThreadSchema = ThreadSummarySchema.pick({
   nativeId: true,
   nativeLineage: true,
   workspaceRoot: true,
-}).extend({ nativeState: z.enum(['notLoaded', 'idle', 'systemError', 'active']) });
+}).extend({
+  nativeState: z.enum(['notLoaded', 'idle', 'systemError', 'active', 'unknown']),
+});
 export type IProviderThread = z.infer<typeof ProviderThreadSchema>;
 export const ProviderInspectionSchema = z.object({
   thread: ThreadSummarySchema,

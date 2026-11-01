@@ -22,7 +22,13 @@ import {
   NativeTurnSchema,
 } from './types.js';
 import { parseNative } from './validations.js';
-import { toHistoryItem, toNativeLineage, toSessionState, toTurnSummary } from './transformers.js';
+import {
+  toHistoryItem,
+  toNativeLineage,
+  toNativeState,
+  toSessionState,
+  toTurnSummary,
+} from './transformers.js';
 import { buildCodexReply, parseCodexPrompt, toApprovalPresentation } from './approvals/index.js';
 
 const TargetSchema = z.object({ threadId: NativeIdSchema, turnId: NativeIdSchema });
@@ -38,7 +44,7 @@ export const toProviderThread = (thread: INativeThread): IProviderThread => ({
   nativeId: thread.id,
   nativeLineage: toNativeLineage(thread),
   workspaceRoot: thread.cwd,
-  nativeState: thread.status.type,
+  nativeState: toNativeState(thread.status),
 });
 
 /**
@@ -63,6 +69,22 @@ export const createCodexEvents = (
   >();
   // each thread's running turn, which times its live items
   const runningTurns = new Map<string, ITurnSummary>();
+  /**
+   * Keeps HQ's result capture in step with a turn whose start or end failed validation: a lost
+   * start still binds the capture prepared for HQ's input, and a lost end drops its turn's capture,
+   * which would otherwise refuse the session's next turn that HQ didn't prepare, such as a
+   * compaction.
+   */
+  const settleLostCapture = (method: string, params: unknown): void => {
+    const lifecycle = z
+      .object({ threadId: NativeIdSchema, turn: z.object({ id: NativeIdSchema }) })
+      .safeParse(params);
+    if (!lifecycle.success) return;
+    const { threadId, turn } = lifecycle.data;
+    const captured = turns.get(threadId);
+    if (method === 'turn/started' && captured?.turnId === null) captured.turnId = turn.id;
+    if (method === 'turn/completed' && captured?.turnId === turn.id) turns.delete(threadId);
+  };
   /**
    * Turns one daemon notification into provider evidence.
    * @throws
@@ -104,7 +126,8 @@ export const createCodexEvents = (
           result.text = null;
           result.structuredOutput = null;
         }
-        turns.delete(threadId);
+        // a capture prepared for the session's next turn outlives an earlier turn's end
+        if (captured) turns.delete(threadId);
         events.observe({
           kind: 'turn-completed',
           provider: 'codex',
@@ -211,6 +234,7 @@ export const createCodexEvents = (
         // a notification that fails validation never fails the connection every session shares
         const thread = z.object({ threadId: NativeIdSchema }).safeParse(params);
         const threadId = thread.success ? thread.data.threadId : undefined;
+        settleLostCapture(method, params);
         const lost = LOST_NOTIFICATIONS.get(method);
         // a lost turn or approval notification is made up for by reading the session
         if (lost) events.resync(threadId, threadId === undefined ? 'unknown' : lost);

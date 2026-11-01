@@ -86,28 +86,29 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       () => undefined,
     );
   };
+  // whether a call, a request or a background command still uses an idle session's process
+  const isHeld = (session: IClaudeSession): boolean =>
+    activeCalls.has(session.id) ||
+    session.requests.size > 0 ||
+    session.backgroundTaskCount > 0 ||
+    hasExtensionRequest(session.id);
   /**
    * Reads an idle session's native settings once, then closes its process. The session stays idle
    * and records nothing; a call that arrives first keeps the process, and a background command
-   * still running holds the session for another idle period, since closing would end it.
+   * still running holds the session for another idle period, since closing would end it. Both are
+   * checked again once the read answers, along with a turn that started meanwhile.
    */
   const park = async (session: IClaudeSession): Promise<void> => {
     const connection = session.connection;
     if (
       isClosing ||
       session.isClosing ||
-      session.input ||
-      session.nativeTurn ||
+      isBusy(session) ||
       session.transition ||
       !connection?.isAvailable
     )
       return;
-    if (
-      activeCalls.has(session.id) ||
-      session.requests.size ||
-      session.backgroundTaskCount ||
-      hasExtensionRequest(session.id)
-    ) {
+    if (isHeld(session)) {
       scheduleIdleStop(session);
       return;
     }
@@ -119,7 +120,9 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
         scheduleIdleStop(session);
         return;
       }
-      if (isClosing || session.isClosing || activeCalls.has(session.id)) {
+      // a turn that started meanwhile schedules the next idle period once it ends
+      if (isClosing || session.isClosing || isBusy(session)) return;
+      if (isHeld(session)) {
         scheduleIdleStop(session);
         return;
       }

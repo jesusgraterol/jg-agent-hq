@@ -422,10 +422,15 @@ export const removeStaleHqLock = async (root: string): Promise<boolean> => {
     return false;
   }
   if (stored.kind !== 'owner' || getOwnerLiveness(stored.owner.pid) !== 'dead') return false;
-  const current = await readStoredLock(path);
-  if (current.kind !== 'owner' || current.content !== stored.content) return false;
-  await rm(path);
-  return true;
+  try {
+    const current = await readStoredLock(path);
+    if (current.kind !== 'owner' || current.content !== stored.content) return false;
+    await rm(path);
+    return true;
+  } catch {
+    // a lock that changed into something unreadable, or can't be removed, keeps its inspection
+    return false;
+  }
 };
 
 /**

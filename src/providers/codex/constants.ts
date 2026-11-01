@@ -17,3 +17,6 @@ export const LOST_NOTIFICATIONS = new Map<string, IResyncLoss>([
   ['turn/completed', 'turn-completed'],
   ['serverRequest/resolved', 'approval-resolved'],
 ]);
+
+// the session statuses this adapter knows; a newer one reads as an unknown native state
+export const KNOWN_NATIVE_STATES = ['notLoaded', 'idle', 'systemError', 'active'] as const;

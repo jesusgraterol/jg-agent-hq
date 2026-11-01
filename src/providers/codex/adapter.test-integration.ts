@@ -290,6 +290,28 @@ test('a Codex daemon restart leaves sessions uncertain, resends nothing and reco
   });
 });
 
+test('a Codex session whose status this package does not know is listed and read as unknown', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    await codex(fixture, { threadStatuses: { 'thread-1023': { type: 'hibernating' } } });
+    expect(
+      await fixture.runtime.request({
+        kind: 'threads',
+        provider: 'codex',
+        workspaceRoot: fixture.workspaceRoot,
+        limit: 1,
+      }),
+    ).toMatchObject({ result: { data: [{ nativeId: 'thread-1023', state: 'unknown' }] } });
+    expect(
+      await fixture.runtime.request({
+        kind: 'thread',
+        provider: 'codex',
+        workspaceRoot: fixture.workspaceRoot,
+        nativeId: 'thread-1023',
+      }),
+    ).toMatchObject({ result: { nativeId: 'thread-1023', state: 'unknown' } });
+  });
+});
+
 test('the daemon loaded threads record their states on every connect, skipping ephemeral ones', async () => {
   await withClaudeRuntime(async (fixture) => {
     const running = { type: 'active', activeFlags: [] };

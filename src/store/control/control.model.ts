@@ -1145,7 +1145,18 @@ export class ControlModel {
         .prepare('SELECT digest FROM hq_event WHERE runtime_epoch = ? AND event_key = ?')
         .get(this.__epoch, key);
       if (prior) {
-        if (prior.digest !== digest) this.__conflict();
+        /*
+         * a turn's end can arrive twice, once read back from its saved history after a lost
+         * notification and once as the notification itself: the first recorded stands, and the
+         * other only fills in a result the first lacked
+         */
+        if (prior.digest !== digest && observation.kind !== 'turn-completed') this.__conflict();
+        if (prior.digest !== digest && observation.kind === 'turn-completed' && observation.result)
+          this.__database
+            .prepare(
+              "UPDATE hq_action SET result = ?, updated_at = ? WHERE thread_id = ? AND native_turn_id = ? AND kind IN ('message', 'queue', 'thread-compact') AND result IS NULL",
+            )
+            .run(JSON.stringify(observation.result), now, thread.id, observation.nativeTurnId);
         return { thread: toManagedThread(thread), canDispatchQueued: false };
       }
       const turnId = 'nativeTurnId' in observation ? observation.nativeTurnId : null;

@@ -2699,6 +2699,190 @@ test('a lost Codex turn completion is read back: the turn completes, queued inpu
   }
 });
 
+test("a Codex turn completion arriving after its read-back fills in the turn's result, and every session keeps working", async () => {
+  const fixture = await setup();
+  try {
+    const { thread: other } = await fixture.create('other-session');
+    const { thread, message, nativeId, turnId } = await startHeldTurn(fixture, 'late-result');
+    // a discarded message leads to a read that finds the turn already saved as completed
+    await fixture.control({
+      holdTurn: true,
+      threadStatuses: { [nativeId]: { type: 'idle' } },
+      threadTurns: {
+        [nativeId]: [
+          { id: turnId, status: 'completed', startedAt: 1_800_000_001, completedAt: null },
+        ],
+        [other.nativeId!]: [],
+      },
+      emitOnce: true,
+      emitOversized: 1,
+    });
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    expect(
+      await fixture.until(
+        () => fixture.receipt(message.id),
+        (entry) => entry.completion !== null,
+      ),
+    ).toMatchObject({ completion: 'completed', result: null });
+    // the completion itself follows, carrying the result HQ captured
+    await emit(fixture, { holdTurn: true }, [
+      {
+        method: 'turn/completed',
+        params: { threadId: nativeId, turn: { id: turnId, status: 'completed' } },
+      },
+    ]);
+    expect(
+      await fixture.until(
+        () => fixture.receipt(message.id),
+        (entry) => entry.result !== null,
+      ),
+    ).toMatchObject({ completion: 'completed', result: { state: 'completed' } });
+    expect(await fixture.thread(thread.id)).toMatchObject({ ownership: 'managed' });
+    await fixture.control({});
+    await sendMessage(fixture, other.id);
+    await sendMessage(fixture, thread.id);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a lost start of HQ's own Codex turn keeps its session managed, and the turn completes", async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('lost-start');
+    const nativeId = thread.nativeId!;
+    const turns = (status: string) => ({
+      [nativeId]: [{ id: 'native-turn-1', status, startedAt: 1_800_000_001, completedAt: null }],
+    });
+    await fixture.control({
+      holdTurn: true,
+      loseTurnStarted: true,
+      threadStatuses: { [nativeId]: { type: 'active', activeFlags: [] } },
+      threadTurns: turns('inProgress'),
+    });
+    const message = fixture.envelope({
+      kind: 'message',
+      threadId: thread.id,
+      input: { kind: 'text', text: 'Start' },
+    });
+    await fixture.submit(message);
+    await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.state === 'running' && entry.activeTurnId === 'native-turn-1',
+    );
+    // the turn ends: Codex sends its completion and reports the session idle
+    await emit(
+      fixture,
+      {
+        holdTurn: true,
+        threadStatuses: { [nativeId]: { type: 'idle' } },
+        threadTurns: turns('completed'),
+      },
+      [
+        {
+          method: 'turn/completed',
+          params: { threadId: nativeId, turn: { id: 'native-turn-1', status: 'completed' } },
+        },
+        {
+          method: 'thread/status/changed',
+          params: { threadId: nativeId, status: { type: 'idle' } },
+        },
+      ],
+    );
+    expect(
+      await fixture.until(
+        () => fixture.receipt(message.id),
+        (entry) => entry.completion !== null,
+      ),
+    ).toMatchObject({
+      delivery: 'acknowledged',
+      completion: 'completed',
+      result: { state: 'completed' },
+    });
+    expect(await fixture.thread(thread.id)).toMatchObject({ ownership: 'managed' });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('a compaction right after a lost Codex turn completion gets its own turn', async () => {
+  const fixture = await setup();
+  try {
+    const { thread, message, nativeId, turnId } = await startHeldTurn(fixture, 'compact-after');
+    await emit(fixture, reads(nativeId, { type: 'idle' }, turnId, 'completed'), [
+      lostCompletion(nativeId, turnId),
+    ]);
+    await fixture.until(
+      () => fixture.receipt(message.id),
+      (entry) => entry.completion !== null,
+    );
+    await fixture.control({});
+    const compaction = fixture.envelope({ kind: 'thread-compact', threadId: thread.id });
+    await fixture.submit(compaction);
+    expect(
+      await fixture.until(
+        () => fixture.receipt(compaction.id),
+        (entry) => entry.completion !== null,
+      ),
+    ).toMatchObject({ completion: 'completed', nativeTurnId: expect.stringMatching(/^compact-/) });
+    expect(await fixture.thread(thread.id)).toMatchObject({ ownership: 'managed' });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a watched Codex turn's own completion arriving with Codex reporting it idle settles it once, and every session keeps working", async () => {
+  const fixture = await setup();
+  try {
+    const { thread: other } = await fixture.create('other-session');
+    const { thread, message, nativeId, turnId } = await startHeldTurn(fixture, 'watched-end');
+    const turns = (status: string) => ({
+      [nativeId]: [{ id: turnId, status, startedAt: 1_800_000_001, completedAt: null }],
+      [other.nativeId!]: [],
+    });
+    await fixture.control({
+      holdTurn: true,
+      threadStatuses: { [nativeId]: { type: 'active', activeFlags: [] } },
+      threadTurns: turns('inProgress'),
+      emitOnce: true,
+      emitOversized: 1,
+    });
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    await expect.poll(() => readCalls(fixture, other.nativeId!)).toBe(1);
+    // the turn ends normally: its completion and the idle status come together
+    await emit(
+      fixture,
+      {
+        holdTurn: true,
+        threadStatuses: { [nativeId]: { type: 'idle' } },
+        threadTurns: turns('completed'),
+      },
+      [
+        {
+          method: 'turn/completed',
+          params: { threadId: nativeId, turn: { id: turnId, status: 'completed' } },
+        },
+        {
+          method: 'thread/status/changed',
+          params: { threadId: nativeId, status: { type: 'idle' } },
+        },
+      ],
+    );
+    expect(
+      await fixture.until(
+        () => fixture.receipt(message.id),
+        (entry) => entry.completion !== null,
+      ),
+    ).toMatchObject({ completion: 'completed' });
+    expect(await fixture.thread(thread.id)).toMatchObject({ ownership: 'managed' });
+    await fixture.control({});
+    await sendMessage(fixture, other.id);
+    await sendMessage(fixture, thread.id);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test.each([
   ['finished', 'completed'],
   ['still running', 'inProgress'],

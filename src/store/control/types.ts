@@ -77,7 +77,7 @@ export const NativeOutcomeSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('resumed'),
     ...OutcomeFields,
-    nativeState: z.enum(['notLoaded', 'idle', 'systemError', 'active']),
+    nativeState: z.enum(['notLoaded', 'idle', 'systemError', 'active', 'unknown']),
     nativeLineage: NativeLineageSchema.nullable(),
   }),
   z.strictObject({ kind: z.literal('closed'), ...OutcomeFields }),

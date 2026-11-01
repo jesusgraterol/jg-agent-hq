@@ -32,6 +32,12 @@ import type {
   IProviderMcpResources,
 } from '../extensions/index.js';
 
+// a session's status, which may name one newer than this adapter knows
+export const NativeThreadStatusSchema = z.object({
+  type: z.string().min(1).max(256),
+  activeFlags: z.array(z.string()).optional(),
+});
+export type INativeThreadStatus = z.infer<typeof NativeThreadStatusSchema>;
 // additive native responses are narrowed to fields this adapter actually uses
 export const NativeThreadSchema = z.object({
   id: z.string().min(1).max(4096),
@@ -44,17 +50,8 @@ export const NativeThreadSchema = z.object({
   ephemeral: z.boolean().optional(),
   createdAt: z.number().int().safe(),
   updatedAt: z.number().int().safe(),
-  status: z.object({
-    type: z.enum(['notLoaded', 'idle', 'systemError', 'active']),
-    activeFlags: z.array(z.string()).optional(),
-  }),
+  status: NativeThreadStatusSchema,
 });
-// a status the daemon broadcasts, which may name one newer than this adapter knows
-export const NativeThreadStatusSchema = z.object({
-  type: z.string().min(1).max(256),
-  activeFlags: z.array(z.string()).optional(),
-});
-export type INativeThreadStatus = z.infer<typeof NativeThreadStatusSchema>;
 export const NativeTurnSchema = z.object({
   id: z.string().min(1).max(4096),
   status: z.enum(['completed', 'interrupted', 'failed', 'inProgress']),

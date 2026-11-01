@@ -216,7 +216,8 @@ else {
       thread.model=params.model??thread.model;thread.reasoningEffort=params.effort??thread.reasoningEffort;
       const turn = {id:(control.turnPrefix??'')+'native-turn-'+(++turnSequence),status:'inProgress',startedAt:1_800_000_000+turnSequence};
       thread.activeTurn=turn.id;
-      notify('turn/started',{threadId:thread.id,turn});
+      // loseTurnStarted sends this turn's start with a status no client accepts
+      notify('turn/started',{threadId:thread.id,turn:control.loseTurnStarted?{...turn,status:'startedSomehow'}:turn});
       const item = {id:'live-'+turnSequence,type:'agentMessage',text:''};
       notify('item/started',{threadId:thread.id,turnId:turn.id,item});
       notify('item/agentMessage/delta',{threadId:thread.id,turnId:turn.id,itemId:item.id,delta:'Live response'});
