@@ -601,7 +601,10 @@ export const createActions = (
     const record = await store.getTurnRecord(provider, nativeId);
     if (!record) return;
     // an action in flight may have started a turn the record doesn't hold yet
-    if (request.lost === 'unknown' && record.hasPendingAction) {
+    if (
+      (request.lost === 'unknown' || request.lost === 'turn-started') &&
+      record.hasPendingAction
+    ) {
       watched.add(key(provider, nativeId));
       return;
     }

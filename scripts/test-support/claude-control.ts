@@ -95,6 +95,8 @@ export const startClaudeControl = () => {
     if(settings.rejectExtension){out({type:'control_response',response:{subtype:'error',request_id:message.request_id,error:'Sensitive native failure must not escape'}});return;}
     const acknowledge=()=>response(subtype==='reload_plugins'?{held:!!settings.holdPlugins,error_count:settings.pluginErrors??0}:subtype==='reload_skills'?{}:undefined);if(settings.lateExtension)setTimeout(acknowledge,31000);else acknowledge();return;
    }
+   // nativeOnSettings starts a turn of its own just before answering a settings read
+   if(subtype==='get_settings'&&settings.nativeOnSettings&&!native&&!input)startNative();
    if(subtype==='get_settings'){response({effective:{model,effortLevel:'stale-effort',agent:flag('--agent'),secret:'must-not-leak'},applied:settings.unavailableSettings?{model:null,effort:null}:{model,effort}});return;}
    if(subtype==='mcp_status'){if(settings.mcpFailure){out({type:'control_response',response:{subtype:'error',request_id:message.request_id,error:'Native catalog unavailable'}});return;}response({mcpServers:settings.mcpServers??[{name:'fixture-server',status:'connected',source:'project',serverInfo:{name:'Fixture MCP',version:'1'},tools:[{name:'inspect',description:'Fixture native tool',annotations:{readOnly:true}}],config:{headers:{authorization:'credential-must-not-be-returned'}}}]});return;}
    if(subtype==='apply_flag_settings'){model=message.request.settings.model??model;effort=message.request.settings.effortLevel??effort;response();return;}

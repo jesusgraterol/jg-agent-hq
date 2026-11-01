@@ -1,5 +1,14 @@
 # Changelog
 
+## 10.4.1
+
+- Keep the Codex provider working when a turn's end arrives twice: once read back from Codex after a lost or skipped message, and once as the turn's own `turn/completed`. In either order, the first recorded stands and the other only fills in a result the first lacked. The two used to differ when the notification carried the turn's result, which failed every managed Codex session.
+- Keep HQ's own Codex turn going when its `turn/started` fails validation while the input that started it is still in flight. The session is watched instead of marked uncertain, and the turn keeps its result.
+- Keep a Codex session's next turn that HQ didn't prepare, such as a compaction, working after a turn's end failed validation. An earlier turn's end no longer drops the result capture of the turn HQ prepared next.
+- Read a Codex session whose status is newer than HQ knows as `nativeState: 'unknown'` in lists, reads, resumes and rejoins, instead of failing them. `IProviderThread`'s `nativeState` gains `unknown`.
+- Keep a Claude session's process when Claude starts a turn of its own, or a call or background command begins, while HQ parks the session.
+- Leave a state-root lock in place when it changes or can't be removed while startup reclaims it, instead of failing startup with an uncoded error.
+
 ## 10.4.0
 
 - Accept Claude permission requests that carry fields HQ doesn't list. Claude adds fields between releases, such as `decision_reason_code` and `tool_kind`, and HQ refused every such request before the operator saw it. Known fields keep their validation, the rest are dropped, and the reply still holds only the displayed input.

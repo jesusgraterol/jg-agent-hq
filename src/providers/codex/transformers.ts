@@ -33,6 +33,7 @@ import type {
   INativeTurn,
   INativeUsage,
 } from './types.js';
+import { KNOWN_NATIVE_STATES } from './constants.js';
 import { parseNative } from './validations.js';
 
 /** Preserves exact native tree identities independently of managed-agent relationships. */
@@ -61,6 +62,12 @@ export const toSessionState = (status: INativeThreadStatus): ISessionState =>
           ? 'failed'
           : 'unknown';
 
+/** @returns The native state a session status names, or `unknown` for one newer than this adapter knows. */
+export const toNativeState = (
+  status: INativeThreadStatus,
+): (typeof KNOWN_NATIVE_STATES)[number] | 'unknown' =>
+  KNOWN_NATIVE_STATES.find((state) => state === status.type) ?? 'unknown';
+
 /**
  * Converts native seconds to the public millisecond-based metadata contract.
  * @throws
@@ -75,7 +82,7 @@ export const toThreadSummary = (thread: INativeThread): IThreadSummary =>
     name: thread.name ?? null,
     createdAt: thread.createdAt * 1000,
     updatedAt: thread.updatedAt * 1000,
-    nativeState: thread.status.type,
+    nativeState: toNativeState(thread.status),
     state: toSessionState(thread.status),
     ownership: 'external',
     managedId: null,
