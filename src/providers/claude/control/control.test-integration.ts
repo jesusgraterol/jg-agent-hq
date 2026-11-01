@@ -849,11 +849,7 @@ test.each(['form', 'url'] as const)(
   },
 );
 
-test.each([
-  { requires_user_interaction: true },
-  { unknown_permission_policy: true },
-  { subtype: 'unknown-request' },
-])(
+test.each([{ requires_user_interaction: true }, { subtype: 'unknown-request' }])(
   'Claude does not turn unsupported native permission metadata %j into approval',
   async (permissionMetadata) => {
     await withClaudeRuntime(async (fixture) => {
@@ -868,7 +864,7 @@ test.each([
       expect(await api.approvals(thread.id)).toStrictEqual([]);
       expect(
         (await api.calls()).find((call) => call.type === 'control_response')?.response,
-      ).toMatchObject({ subtype: 'error', error: 'Unsupported request' });
+      ).toMatchObject({ subtype: 'error', error: "HQ couldn't present this request" });
     });
   },
 );
@@ -898,6 +894,49 @@ test('Claude permission acceptance copies only the displayed native input', asyn
       server_policy_ask_only: false,
       decision_reason_rule_source: 'localSettings',
     });
+    const reply = api.envelope({
+      kind: 'native-reply',
+      threadId: thread.id,
+      expectedTurnId: accepted.nativeTurnId!,
+      approvalId: prompt!.id,
+      response: { kind: 'decision', decision: 'accept' },
+    });
+    await api.submit(reply);
+    await api.settled(reply.id);
+    expect(
+      (await api.calls()).find((call) => call.type === 'control_response')!.response?.response,
+    ).toStrictEqual({ behavior: 'allow', updatedInput: { command: 'echo example' } });
+  });
+});
+
+// the request's shape as Claude Code 2.1.316 sends it, with the fields it adds in some modes
+test('Claude permission requests with fields this package does not list reach the operator', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture),
+      { thread } = await api.create();
+    await fixture.control({
+      prompt: 'permission',
+      permissionMetadata: {
+        description: 'Write note.txt',
+        display_name: 'Write',
+        permission_suggestions: [],
+        decision_reason_code: 'classifier_transcript_too_long',
+        decision_reason_hook_event: 'PreToolUse',
+        decision_reason_hook_source: 'userSettings',
+        decision_reason_hook_plugin_id: 'example-plugin',
+        tool_kind: 'browser',
+      },
+    });
+    const input = await api.message(thread.id),
+      accepted = await api.settled(input.id);
+    const [prompt] = await api.until(
+      () => api.approvals(thread.id),
+      (rows) => rows.length === 1,
+    );
+    const detail = JSON.parse(prompt!.presentation!.detail);
+    expect(detail).toMatchObject({ description: 'Write note.txt', display_name: 'Write' });
+    expect(detail).not.toHaveProperty('decision_reason_code');
+    expect(detail).not.toHaveProperty('tool_kind');
     const reply = api.envelope({
       kind: 'native-reply',
       threadId: thread.id,
@@ -1267,6 +1306,61 @@ test('a parked Claude session reopens for a message and a rename with its settin
       expect(start.args[start.args.indexOf('--resume') + 1]).toBe(thread.nativeId);
       expect(flags(start.args)).toStrictEqual(flags(starts[0]!.args));
     }
+  });
+});
+
+test('a Claude session reports its instructions only while its process started the conversation', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const create = api.envelope({
+      kind: 'thread-create',
+      provider: 'claude',
+      workspaceRoot: fixture.workspaceRoot,
+      name: 'instructed-session',
+      settings: {
+        systemInstructions: 'Answer briefly.',
+        developerInstructions: 'Name the files you read.',
+      },
+    });
+    const admitted = await api.submit(create);
+    await api.settled(create.id);
+    const thread = await api.thread(admitted.threadId!);
+    const instructions = async () => {
+      const response = await fixture.request({
+        kind: 'configuration',
+        provider: 'claude',
+        workspaceRoot: fixture.workspaceRoot,
+        threadId: thread.id,
+      });
+      if (response.kind !== 'configuration') throw new Error('Missing configuration');
+      const { systemInstructions, developerInstructions } = response.result.effective;
+      return { systemInstructions, developerInstructions };
+    };
+    expect(await instructions()).toStrictEqual({
+      systemInstructions: 'Answer briefly.',
+      developerInstructions: 'Name the files you read.',
+    });
+    const turn = async (text: string) => {
+      const input = await api.message(thread.id, text);
+      await api.until(
+        () => api.receipt(input.id),
+        (entry) => entry.completion === 'completed',
+      );
+    };
+    await turn('First request');
+    // the first process still reports what it started with
+    expect(await instructions()).toStrictEqual({
+      systemInstructions: 'Answer briefly.',
+      developerInstructions: 'Name the files you read.',
+    });
+    await parkIdleSessions(fixture);
+    await turn('Second request');
+    // the reopened process resumed the conversation, so Claude kept its recorded instructions
+    expect((await readStarts(fixture)).at(-1)!.args).toContain('--resume');
+    expect(await instructions()).toStrictEqual({
+      systemInstructions: null,
+      developerInstructions: null,
+    });
   });
 });
 

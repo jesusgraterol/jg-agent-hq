@@ -1,5 +1,11 @@
 # Changelog
 
+## 10.4.0
+
+- Accept Claude permission requests that carry fields HQ doesn't list. Claude adds fields between releases, such as `decision_reason_code` and `tool_kind`, and HQ refused every such request before the operator saw it. Known fields keep their validation, the rest are dropped, and the reply still holds only the displayed input.
+- Refuse a Claude control request HQ still can't present with the error `HQ couldn't present this request`, which Claude records as the tool call's failed result, instead of `Unsupported request`.
+- Report a Claude session's `systemInstructions` and `developerInstructions` as null when its process resumed the conversation, since Claude keeps the instructions it recorded when the conversation began.
+
 ## 10.3.0
 
 - Keep Codex sessions running when the runtime stops. Shutdown no longer interrupts their turns, cleans their background terminals or declines a request still waiting on an answer, and leaves their records bound to the stopped runtime. At startup, the next runtime rejoins each one that had no action in flight: it reads the session's state and latest turn from Codex's daemon, records the turn still running or completes the one that finished meanwhile, delivers the queued input waiting on it, and joins with `thread/resume` without settings, which makes the daemon send a still-waiting request again. A session another client moved past HQ's last turn, or one HQ can't read or join, is marked uncertain instead. Claude sessions still stop with the runtime.

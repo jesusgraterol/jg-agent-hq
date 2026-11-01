@@ -12,6 +12,7 @@ const createSession = (): IClaudeSession => ({
   scope: 'scope',
   isClosing: false,
   hasInput: true,
+  isResumed: false,
   opening: Promise.resolve(),
   previews: new Map(),
   requests: new Map(),

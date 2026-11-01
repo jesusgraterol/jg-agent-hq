@@ -283,7 +283,7 @@ export const receiveClaudeMessage = (
           response: {
             subtype: 'error',
             request_id: request.request_id,
-            error: 'Unsupported request',
+            error: "HQ couldn't present this request",
           },
         })
         .catch(() => events?.unavailable(session.id));

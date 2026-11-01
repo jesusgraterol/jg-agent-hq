@@ -33,6 +33,8 @@ export type IClaudeSession = {
   scope: string;
   isClosing: boolean;
   hasInput: boolean;
+  // whether the current process resumed its conversation, whose recorded instructions Claude reuses
+  isResumed: boolean;
   connection?: Awaited<ReturnType<typeof import('../rpc.js').createClaudeRpc>>;
   opening: Promise<void>;
   skills?: IProviderSkills | null;

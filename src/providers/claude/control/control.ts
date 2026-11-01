@@ -245,6 +245,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     signal?: AbortSignal,
   ): Promise<void> => {
     const nativeId = session.id;
+    session.isResumed = isResume || forkSourceNativeId !== undefined;
     const connection = await createClaudeRpc(
       (reason) => {
         if (reason !== 'unavailable' || session.isClosing || session.parked) return;
@@ -358,6 +359,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       scope: randomUUID(),
       isClosing: false,
       hasInput: isResume || forkSourceNativeId !== undefined,
+      isResumed: false,
       opening: Promise.resolve(),
       previews: new Map(),
       requests: new Map(),
@@ -575,6 +577,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
           native.agents,
           native.permissionMode,
           nativeId,
+          session.isResumed,
           session.settings,
           command,
         );

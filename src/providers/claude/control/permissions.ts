@@ -14,7 +14,11 @@ const QuestionSchema = z.object({
     .min(1)
     .max(32),
 });
-const RequestSchema = z.strictObject({
+/*
+ * Claude adds fields to its permission requests between releases, so the known fields are
+ * validated and the rest are dropped; the reply only ever echoes the request's own input.
+ */
+const RequestSchema = z.object({
   subtype: z.literal('can_use_tool'),
   tool_name: z.string().min(1).max(256),
   tool_use_id: z.string().min(1).max(4096),
@@ -52,7 +56,7 @@ const RequestSchema = z.strictObject({
   description: z.string().max(8192).optional(),
   requires_user_interaction: z.boolean().optional(),
 });
-const ElicitationRequestSchema = z.strictObject({
+const ElicitationRequestSchema = z.object({
   subtype: z.literal('elicitation'),
   mcp_server_name: z.string().min(1).max(256),
   message: z.string().max(8192),
