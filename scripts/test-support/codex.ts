@@ -184,8 +184,13 @@ else {
     }
     if (method === 'thread/resume') {
       const thread = managed.get(params.threadId) || { ...threads[0],id:params.threadId,activeTurn:null };
-      thread.status = {type:'idle'};thread.model=params.model??thread.model;thread.reasoningEffort=params.config?.model_reasoning_effort??thread.reasoningEffort; managed.set(thread.id,thread);
-      respond(request.id,{thread,model:thread.model,reasoningEffort:thread.reasoningEffort,approvalPolicy:params.approvalPolicy??'on-request',sandbox:{type:params.sandbox??'read-only'},instructionSources:[]});return;
+      // a session another runtime left running keeps its status and running turn when joined again
+      thread.status = control.threadStatuses?.[params.threadId] ?? {type:'idle'};thread.model=params.model??thread.model;thread.reasoningEffort=params.config?.model_reasoning_effort??thread.reasoningEffort; managed.set(thread.id,thread);
+      if (thread.status.type === 'active') thread.activeTurn = control.threadTurns?.[thread.id]?.at(-1)?.id ?? thread.activeTurn;
+      respond(request.id,{thread,model:thread.model,reasoningEffort:thread.reasoningEffort,approvalPolicy:params.approvalPolicy??'on-request',sandbox:{type:params.sandbox??'read-only'},instructionSources:[]});
+      // resumePrompt is the request Codex sends again to a client that joins a session waiting on it
+      if (control.resumePrompt) send(JSON.stringify({id:'native-approval-resumed',method:control.resumePrompt.method,params:{threadId:thread.id,turnId:thread.activeTurn,itemId:'tool-resumed',...control.resumePrompt.params}}));
+      return;
     }
     if (method === 'thread/name/set') { managed.get(params.threadId).name=params.name;respond(request.id,{});return; }
     if (method === 'thread/archive') { const thread=managed.get(params.threadId);thread.isArchived=true;thread.status={type:'notLoaded'};respond(request.id,{});return; }
@@ -264,7 +269,8 @@ else {
     if (method === 'thread/loaded/list') { respond(request.id,{ data: control.loadedThreads ?? [], nextCursor: null });return; }
     if (method === 'thread/read') { respond(request.id,{ thread: { ...threads[0],...managed.get(params.threadId),...(control.ephemeralThreads?.includes(params.threadId) ? { ephemeral: true } : {}),status: statusOf({ id: params.threadId,status: managed.get(params.threadId)?.status ?? threads[0].status }),...(control.unavailableSettings?{model:null,reasoningEffort:null}:{}),id: params.threadId,cwd: control.wrongRoot || managed.get(params.threadId)?.cwd || workspaceRoot } });return; }
     if (method === 'thread/turns/list') {
-      let selected = control.turns ?? [{ id: 'turn-a',status: 'completed',startedAt: 1_700_000_000,completedAt: 1_700_000_001 }];
+      // threadTurns lists one session's turns, oldest first, as the daemon reports them
+      let selected = control.threadTurns?.[params.threadId] ?? control.turns ?? [{ id: 'turn-a',status: 'completed',startedAt: 1_700_000_000,completedAt: 1_700_000_001 }];
       if(params.sortDirection==='desc')selected=[...selected].reverse();
       const after=params.cursor?selected.findIndex(turn=>turn.id===params.cursor)+1:0;
       const batch=selected.slice(after,after+params.limit);

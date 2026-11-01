@@ -8,13 +8,19 @@ export type {
   IProviderCall,
   IProviderThread,
   IProviderInspection,
+  IProviderReattachment,
   IAgentProvider,
   IAgentProviderFactory,
   IAgentProviderContext,
   IAgentProviderEvents,
   IAgentProviderOutcome,
 } from './types.js';
-export { ProviderThreadSchema, ProviderInspectionSchema, ProviderSkillsSchema } from './types.js';
+export {
+  ProviderThreadSchema,
+  ProviderInspectionSchema,
+  ProviderReattachmentSchema,
+  ProviderSkillsSchema,
+} from './types.js';
 export { PROVIDER_INPUT_SCHEMA, SUPPORTED_PROVIDER_OPERATION } from './constants.js';
 export { createProviderProcess, isOwnedProcess } from './process.js';
 

@@ -29,6 +29,7 @@ export type {
   IProviderCall,
   IProviderThread,
   IProviderInspection,
+  IProviderReattachment,
   IProviderSkills,
   IProviderMcpServerPage,
   IProviderMcpTools,

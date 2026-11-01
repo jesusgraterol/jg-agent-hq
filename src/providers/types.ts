@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { SkillPageSchema, SkillSchema, ThreadSummarySchema } from '../contracts/index.js';
+import { NativeIdSchema } from '../contracts/identities/index.js';
 import type {
   IActionCommand,
   IManagedThread,
@@ -49,6 +50,17 @@ export const ProviderInspectionSchema = z.object({
   canResume: z.boolean(),
 });
 export type IProviderInspection = z.infer<typeof ProviderInspectionSchema>;
+// a session a shared native process kept running, with its latest turn, or null before any turn
+export const ProviderReattachmentSchema = z.object({
+  thread: ProviderThreadSchema,
+  latestTurn: z
+    .object({
+      nativeId: NativeIdSchema,
+      state: z.enum(['running', 'completed', 'failed', 'interrupted']),
+    })
+    .nullable(),
+});
+export type IProviderReattachment = z.infer<typeof ProviderReattachmentSchema>;
 
 // adapters must honor cancellation and keep delivery uncertain when native consumption is unproven
 export type IProviderCall = { signal: AbortSignal };
@@ -153,6 +165,28 @@ export type IAgentProvider = {
     workspaceRoot: string,
     call: IProviderCall,
   ): Promise<IProviderInspection>;
+  /**
+   * Reads a session a shared native process kept running after the previous runtime stopped,
+   * without joining it. A built-in provider whose sessions outlive the runtime implements this and
+   * reattachThread.
+   * @returns The session's native metadata, checked against its workspace, and its latest turn.
+   */
+  readReattachment?(
+    nativeId: string,
+    workspaceRoot: string,
+    call: IProviderCall,
+  ): Promise<IProviderReattachment>;
+  /**
+   * Joins a session a shared native process kept running, without changing its settings. The
+   * native process then sends this runtime the requests still waiting on an answer.
+   * @returns The session once joined, with its latest turn.
+   */
+  reattachThread?(
+    requestId: string,
+    nativeId: string,
+    workspaceRoot: string,
+    call: IProviderCall,
+  ): Promise<IProviderReattachment>;
   /** @returns Native quota observations without starting a model turn. */
   readUsage(call: IProviderCall): Promise<IUsageSnapshot>;
   /** @returns Safe native account metadata, with an explicit unavailable observation when absent. */

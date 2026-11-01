@@ -196,6 +196,18 @@ export const ObservationResultSchema = z.object({
 });
 export type IObservationResult = z.infer<typeof ObservationResultSchema>;
 
+// a session another runtime left running, with its latest turn as its native process reports it
+export const ReattachmentSchema = z.strictObject({
+  threadId: z.uuid(),
+  latestTurn: z
+    .strictObject({
+      nativeTurnId: NativeIdSchema,
+      state: z.enum(['running', 'completed', 'failed', 'interrupted']),
+    })
+    .nullable(),
+});
+export type IReattachment = z.infer<typeof ReattachmentSchema>;
+
 // public cursors are decoded and query-bound before these trusted seek positions are sent
 export const ControlPageSchema = z.strictObject({
   limit: z.number().int().min(1).max(128),

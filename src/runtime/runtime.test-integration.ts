@@ -1530,7 +1530,7 @@ test(
 );
 
 test(
-  'a crashed host retains ownership evidence and requires explicit recovery before queued work can continue',
+  'a crashed host retains ownership evidence, and a Codex session it cannot rejoin needs explicit recovery before queued work continues',
   { timeout: 20_000 },
   async () => {
     const root = await mkdtemp(join(tmpdir(), 'jg-hq-crash-'));
@@ -1650,10 +1650,24 @@ test(
       vi.stubEnv('PATH', env.PATH);
       vi.stubEnv('JG_HQ_FIXTURE_DIRECTORY', root);
       vi.stubEnv('JG_HQ_FIXTURE_WORKSPACE', root);
+      // the daemon reports the session failed, so the new runtime can't rejoin it
+      const nativeId = active.result!.nativeId!;
+      await writeFixtureControl(root, 'control.json', {
+        threadStatuses: { [nativeId]: { type: 'systemError' } },
+      });
       recovered = await createAgentHq({ stateRoot, allowedRoots: [root] });
-      expect(await recovered.request({ kind: 'managed-thread', threadId })).toMatchObject({
+      const quarantined = await until(
+        () => recovered!.request({ kind: 'managed-thread', threadId }),
+        (response) =>
+          response.kind === 'managed-thread' && response.result?.ownership === 'uncertain',
+      );
+      expect(quarantined).toMatchObject({
         result: { id: threadId, name: 'recover-work', ownership: 'uncertain', state: 'unknown' },
       });
+      expect(await readFile(join(root, 'calls.jsonl'), 'utf8')).not.toContain(
+        '"method":"thread/resume"',
+      );
+      await writeFixtureControl(root, 'control.json', {});
       expect(await recovered.request({ kind: 'receipt', actionId: queuedId })).toMatchObject({
         result: { delivery: 'queued' },
       });
