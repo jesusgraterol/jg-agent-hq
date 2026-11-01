@@ -57,10 +57,22 @@ export const ProviderReattachmentSchema = z.object({
     .object({
       nativeId: NativeIdSchema,
       state: z.enum(['running', 'completed', 'failed', 'interrupted']),
+      // the saved turn is still in progress, so its state comes from the session's status
+      isInferred: z.boolean().optional(),
     })
     .nullable(),
 });
 export type IProviderReattachment = z.infer<typeof ProviderReattachmentSchema>;
+
+// the notification a live re-check stands in for: a turn's start or end, an approval's resolution,
+// or one the adapter couldn't identify
+export const ResyncLossSchema = z.enum([
+  'turn-started',
+  'turn-completed',
+  'approval-resolved',
+  'unknown',
+]);
+export type IResyncLoss = z.infer<typeof ResyncLossSchema>;
 
 // adapters must honor cancellation and keep delivery uncertain when native consumption is unproven
 export type IProviderCall = { signal: AbortSignal };
@@ -79,6 +91,13 @@ export type IAgentProviderEvents = {
   gap(nativeId: string): void;
   delta(nativeId: string, turnId: string, itemId: string, text: string): void;
   prompt(prompt: INativePrompt): void;
+  // a request on a session that HQ can't present, which HQ refuses only on a session it controls
+  unpresentable(nativeId: string, reject: () => Promise<void>): void;
+  /*
+   * A notification the adapter lost, which HQ makes up for by reading the session. Without a
+   * session, every session HQ controls through this adapter is read.
+   */
+  resync(nativeId: string | undefined, lost: IResyncLoss): void;
   outcome(outcome: IAgentProviderOutcome, thread?: IProviderThread): void;
   // the live state of a session another client drives, inside the allowed workspaces
   session(nativeId: string, state: ISessionState): void;
@@ -328,6 +347,8 @@ export type IProviderFraming = {
     reply(bytes: Buffer): void;
     open(): void;
     fail(cause: unknown): void;
+    // a message over the size limit was skipped instead of failing the connection
+    discard(): void;
   }): { push(chunk: Buffer): void; end(): void; stop(): void };
   encode(message: unknown): Buffer;
 };

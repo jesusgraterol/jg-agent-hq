@@ -175,6 +175,7 @@ export const createCodexProvider = async (
       events?.unavailable();
     },
     opened: () => events?.connected(),
+    discarded: () => events?.discarded(),
     notify: (method, params) => {
       authentication?.notify(method, params);
       events?.notify(method, params);

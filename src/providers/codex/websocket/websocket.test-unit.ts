@@ -56,11 +56,13 @@ const open = () => {
   const replies: Buffer[] = [];
   const failures: unknown[] = [];
   let opens = 0;
+  let discards = 0;
   const decoder = framing.createDecoder({
     receive: (message) => received.push(message),
     reply: (bytes) => replies.push(bytes),
     open: () => (opens += 1),
     fail: (cause) => failures.push(cause),
+    discard: () => (discards += 1),
   });
   const response = Buffer.from(
     `HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nsec-websocket-accept: ${accept}\r\n\r\n`,
@@ -75,6 +77,7 @@ const open = () => {
     response,
     accept,
     opens: () => opens,
+    discards: () => discards,
   };
 };
 
@@ -183,14 +186,14 @@ test.each([
   ['invalid UTF-8', serverFrame(Buffer.from([0xc3, 0x28]))],
   ['invalid JSON', serverFrame('{"id":')],
   [
-    'a declared length beyond the frame limit',
-    Buffer.concat([Buffer.from([0x81, 127]), Buffer.from([0, 0, 0, 0, 0, 0x80, 0, 1])]),
+    'a declared length beyond what can be counted',
+    Buffer.from([0x81, 127, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
   ],
   [
-    'fragments beyond the frame limit',
+    'a new message while an oversized one is skipped',
     Buffer.concat([
-      serverFrame(Buffer.alloc(4_194_304, 0x20), { isFinal: false }),
-      serverFrame(Buffer.alloc(4_194_305, 0x20), { opcode: 0 }),
+      serverFrame(Buffer.alloc(8_388_609, 0x20), { isFinal: false }),
+      serverFrame('{}'),
     ]),
   ],
 ])('decode(%s) -> transport failure', (_label, frame) => {
@@ -279,4 +282,52 @@ test('a 1 MiB message split into 4 KiB chunks reassembles exactly once', () => {
     connection.decoder.push(bytes.subarray(offset, offset + 4096));
   expect(connection.received).toStrictEqual([message]);
   connection.decoder.end();
+});
+
+test('a message over the frame limit is skipped across chunk boundaries and reported once, and the next one still arrives', () => {
+  const connection = open();
+  const bytes = Buffer.concat([
+    connection.response,
+    serverFrame(Buffer.alloc(8_388_609, 0x20)),
+    serverFrame('{"id":3,"result":null}'),
+  ]);
+  for (let offset = 0; offset < bytes.length; offset += 65_536)
+    connection.decoder.push(bytes.subarray(offset, offset + 65_536));
+  expect(connection.discards()).toBe(1);
+  expect(connection.received).toStrictEqual([{ id: 3, result: null }]);
+  expect(connection.failures).toStrictEqual([]);
+  connection.decoder.end();
+});
+
+test('a fragmented message that grows past the frame limit is skipped through its final fragment, with pings still answered', () => {
+  const connection = open();
+  connection.decoder.push(
+    Buffer.concat([
+      connection.response,
+      serverFrame(Buffer.alloc(4_194_304, 0x20), { isFinal: false }),
+      serverFrame(Buffer.alloc(4_194_305, 0x20), { opcode: 0, isFinal: false }),
+      serverFrame('keepalive', { opcode: 9 }),
+    ]),
+  );
+  // the discard is reported only once the message's final fragment has been skipped
+  expect(connection.discards()).toBe(0);
+  expect(connection.replies).toHaveLength(1);
+  connection.decoder.push(
+    Buffer.concat([serverFrame('"end"', { opcode: 0 }), serverFrame('{"id":4,"result":null}')]),
+  );
+  expect(connection.discards()).toBe(1);
+  expect(connection.received).toStrictEqual([{ id: 4, result: null }]);
+  expect(connection.failures).toStrictEqual([]);
+});
+
+test('a stream that ends while an oversized message is skipped is incomplete', () => {
+  const connection = open();
+  connection.decoder.push(
+    Buffer.concat([
+      connection.response,
+      serverFrame(Buffer.alloc(8_388_609, 0x20)).subarray(0, 4_096),
+    ]),
+  );
+  expect(connection.discards()).toBe(0);
+  expectToThrowCode(() => connection.decoder.end(), 'JG_AGENT_HQ_TRANSPORT_FAILED');
 });

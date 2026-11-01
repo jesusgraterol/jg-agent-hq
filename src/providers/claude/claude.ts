@@ -235,6 +235,7 @@ export const createClaudeProvider = (store: IStore) => {
           native.initialization.agents,
           native.initialization.current_permission_mode,
           undefined,
+          false,
           {},
           command,
         ),

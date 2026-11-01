@@ -54,6 +54,8 @@ export const toClaudeSessionFlags = (settings: ISessionSettings): string[] => {
 
 /**
  * Reads known native settings without exposing sources, hooks, tokens or arbitrary configuration.
+ * Instructions are reported only for a process that started its conversation: Claude records them
+ * once per conversation (`--system-prompt-snapshot`, on by default) and reuses them on resume.
  * @returns Effective session settings and a bounded, query-bound native agent page.
  * @throws
  * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
@@ -64,6 +66,7 @@ export const toClaudeConfiguration = (
   agentsInput: unknown,
   permissionMode: unknown,
   nativeId: string | undefined,
+  isResumed: boolean,
   settings: ISessionSettings,
   command: IConfigurationRequest,
 ): ISessionConfiguration => {
@@ -105,8 +108,9 @@ export const toClaudeConfiguration = (
       nativeProfile: null,
       permissionMode: typeof permissionMode === 'string' ? permissionMode : null,
       sandbox: null,
-      systemInstructions: nativeId ? (settings.systemInstructions ?? null) : null,
-      developerInstructions: nativeId ? (settings.developerInstructions ?? null) : null,
+      systemInstructions: nativeId && !isResumed ? (settings.systemInstructions ?? null) : null,
+      developerInstructions:
+        nativeId && !isResumed ? (settings.developerInstructions ?? null) : null,
     },
     instructionSources: { data: [], isComplete: false },
     choices: agents.success ? page.choices : null,

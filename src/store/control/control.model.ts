@@ -47,6 +47,7 @@ import {
   type IDispatch,
   type IApprovalRecord,
   type IReattachment,
+  type ITurnRecord,
 } from './types.js';
 
 const FailureSchema = z.object({
@@ -172,6 +173,20 @@ export class ControlModel {
   ): IManagedThread | null {
     const thread = this.__nativeThread(provider, nativeId);
     return thread ? toManagedThread(thread) : null;
+  }
+
+  /** Reads the turns a registered native session recorded, which a live re-check compares. */
+  public getTurnRecord(provider: IManagedThread['provider'], nativeId: string): ITurnRecord | null {
+    const thread = this.__nativeThread(provider, nativeId);
+    return thread
+      ? {
+          threadId: thread.id,
+          workspaceRoot: thread.workspace_root,
+          activeTurnId: thread.active_turn_id,
+          lastTurnId: thread.last_turn_id,
+          hasPendingAction: thread.pending_action_id !== null,
+        }
+      : null;
   }
 
   /** Resolves one native discovery page in a single indexed worker operation. */
@@ -1137,7 +1152,12 @@ export class ControlModel {
       let eventKind: ILifecycleEvent['kind'] = 'thread-updated';
       if (observation.kind === 'turn-started') {
         const pending = thread.pending_action_id ? this.__action(thread.pending_action_id) : null;
-        if (pending?.kind === 'thread-compact' && pending.native_turn_id === null) {
+        // a turn the agent started can't be a waiting compaction's, which gets its own turn
+        if (
+          !observation.isAgentInitiated &&
+          pending?.kind === 'thread-compact' &&
+          pending.native_turn_id === null
+        ) {
           this.__database
             .prepare('UPDATE hq_action SET native_turn_id = ?, updated_at = ? WHERE id = ?')
             .run(observation.nativeTurnId, now, pending.id);

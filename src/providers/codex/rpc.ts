@@ -39,6 +39,8 @@ export const createCodexRpc = async (
     lateResponse(id: string, result: unknown, error: unknown): void;
     unavailable(): void;
     opened(): void;
+    // a message over the size limit was discarded, so whatever it said is unknown
+    discarded(): void;
   },
 ) => {
   const [launcherCommand, ...launcherArguments] = daemonLauncher;
@@ -190,6 +192,7 @@ export const createCodexRpc = async (
       stopped,
       undefined,
       createWebSocketFraming(),
+      () => handlers.discarded(),
     );
     try {
       const initialized = z

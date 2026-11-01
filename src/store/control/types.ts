@@ -130,7 +130,12 @@ const NativeTurnFields = {
   nativeTurnId: NativeIdSchema,
 };
 export const NativeObservationSchema = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('turn-started'), ...NativeTurnFields }),
+  z.strictObject({
+    kind: z.literal('turn-started'),
+    ...NativeTurnFields,
+    // a turn the agent started without HQ input, which no waiting action may claim
+    isAgentInitiated: z.boolean().optional(),
+  }),
   z.strictObject({
     kind: z.literal('turn-completed'),
     ...NativeTurnFields,
@@ -207,6 +212,17 @@ export const ReattachmentSchema = z.strictObject({
     .nullable(),
 });
 export type IReattachment = z.infer<typeof ReattachmentSchema>;
+
+// the turns a session recorded, which a live re-check compares with what its native process reports
+export const TurnRecordSchema = z.strictObject({
+  threadId: z.uuid(),
+  workspaceRoot: ManagedThreadSchema.shape.workspaceRoot,
+  activeTurnId: NativeIdSchema.nullable(),
+  lastTurnId: NativeIdSchema.nullable(),
+  // an action is in flight, so the session's newest turn may not be recorded yet
+  hasPendingAction: z.boolean(),
+});
+export type ITurnRecord = z.infer<typeof TurnRecordSchema>;
 
 // public cursors are decoded and query-bound before these trusted seek positions are sent
 export const ControlPageSchema = z.strictObject({

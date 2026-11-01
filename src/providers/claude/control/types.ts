@@ -26,6 +26,16 @@ export type IClaudeInput = {
   reject(error: unknown): void;
   timer: ReturnType<typeof setTimeout>;
 };
+
+// a turn Claude starts with no HQ input, such as after a background command finishes
+export type IClaudeNativeTurn = {
+  id: string;
+  interruptRequested: boolean;
+  hasInterruptionMarker: boolean;
+};
+
+// the turn the session's frames belong to: an acknowledged HQ input or a turn Claude started
+export type IClaudeTurn = IClaudeInput | IClaudeNativeTurn;
 export type IClaudeSession = {
   id: string;
   workspaceRoot: string;
@@ -33,10 +43,15 @@ export type IClaudeSession = {
   scope: string;
   isClosing: boolean;
   hasInput: boolean;
+  // whether the current process resumed its conversation, whose recorded instructions Claude reuses
+  isResumed: boolean;
   connection?: Awaited<ReturnType<typeof import('../rpc.js').createClaudeRpc>>;
   opening: Promise<void>;
   skills?: IProviderSkills | null;
   input?: IClaudeInput;
+  nativeTurn?: IClaudeNativeTurn;
+  // how many background commands Claude last reported running, which keep the session from parking
+  backgroundTaskCount: number;
   apiMessageId?: string;
   previews: Map<number, { id: string; type: string }>;
   // what an idle session answers with while it has no process, until input reopens it

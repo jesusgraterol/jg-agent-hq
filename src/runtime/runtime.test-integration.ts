@@ -1155,38 +1155,56 @@ test('a quota response from before an account change cannot restore that account
   });
 });
 
-test.each(['malformed', 'oversized', 'partial', 'empty'])(
+// starts Codex with a bad first frame and proves initialization fails, the host stays usable and cleanup runs
+const expectFailedInitialization = async (
+  mode: string,
+  failure = /The (HQ transport|Codex integration) failed/,
+): Promise<void> => {
+  const root = await mkdtemp(join(tmpdir(), 'jg-hq-bad-frame-'));
+  const stateRoot = join(root, 'state');
+  let runtime: IAgentHq | undefined;
+  try {
+    const bin = await installCodexFixture(root);
+    await writeFile(join(root, 'control.json'), JSON.stringify({ mode }));
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
+    vi.stubEnv('JG_HQ_FIXTURE_DIRECTORY', root);
+    vi.stubEnv('JG_HQ_FIXTURE_WORKSPACE', root);
+    runtime = await createAgentHq({ stateRoot, allowedRoots: [root] });
+    await expect(
+      runtime.request({ kind: 'threads', provider: 'codex', workspaceRoot: root }),
+    ).rejects.toThrow(failure);
+    const pids = PidsSchema.parse(JSON.parse(await readFile(join(root, 'pids.json'), 'utf8')));
+    // the native connection's own deadline, just after the provider's, closes a held initialization
+    await expect.poll(() => isAlive(pids.parent), { timeout: 5_000 }).toBe(false);
+    await expect.poll(() => isAlive(pids.child), { timeout: 5_000 }).toBe(false);
+    expect(await runtime.request({ kind: 'status' })).toMatchObject({
+      kind: 'status',
+      result: { store: 'ready' },
+    });
+    await runtime.close();
+    expect(await readdir(stateRoot)).toStrictEqual(['action.key', 'hq.sqlite']);
+  } finally {
+    await runtime?.close();
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
+  }
+};
+
+test.each(['malformed', 'partial', 'empty'])(
   'a %s native frame fails lazy initialization while the host remains usable and cleanup is confirmed',
   { timeout: 15_000 },
-  async (mode) => {
-    const root = await mkdtemp(join(tmpdir(), 'jg-hq-bad-frame-'));
-    const stateRoot = join(root, 'state');
-    let runtime: IAgentHq | undefined;
-    try {
-      const bin = await installCodexFixture(root);
-      await writeFile(join(root, 'control.json'), JSON.stringify({ mode }));
-      vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
-      vi.stubEnv('JG_HQ_FIXTURE_DIRECTORY', root);
-      vi.stubEnv('JG_HQ_FIXTURE_WORKSPACE', root);
-      runtime = await createAgentHq({ stateRoot, allowedRoots: [root] });
-      await expect(
-        runtime.request({ kind: 'threads', provider: 'codex', workspaceRoot: root }),
-      ).rejects.toThrow(/The (HQ transport|Codex integration) failed/);
-      const pids = PidsSchema.parse(JSON.parse(await readFile(join(root, 'pids.json'), 'utf8')));
-      expect(isAlive(pids.parent)).toBe(false);
-      expect(isAlive(pids.child)).toBe(false);
-      expect(await runtime.request({ kind: 'status' })).toMatchObject({
-        kind: 'status',
-        result: { store: 'ready' },
-      });
-      await runtime.close();
-      expect(await readdir(stateRoot)).toStrictEqual(['action.key', 'hq.sqlite']);
-    } finally {
-      await runtime?.close();
-      vi.unstubAllEnvs();
-      await rm(root, { recursive: true, force: true });
-    }
-  },
+  (mode) => expectFailedInitialization(mode),
+);
+
+test(
+  'an oversized answer to initialization is discarded, so initialization fails at its deadline while the host remains usable and cleanup is confirmed',
+  // the discarded answer leaves initialization to wait out its 30-second deadline
+  { timeout: 45_000 },
+  () =>
+    expectFailedInitialization(
+      'oversized',
+      /The HQ provider integration failed: The deadline passed/,
+    ),
 );
 
 test('unverifiable owners and linked database files are never reclaimed or followed', async () => {
@@ -1788,4 +1806,121 @@ test('locks lists the machine locks with their holders, alive or gone, without t
       }
     }
   });
+});
+
+// a process that held the state root and was killed: its PID is free and its socket stays behind
+const killRuntimeHolder = async (stateRoot: string): Promise<number> => {
+  const holder = spawn(
+    process.execPath,
+    [
+      '-e',
+      "require('node:net').createServer().listen(process.argv[1], () => console.log('listening'))",
+      join(stateRoot, 'hq.sock'),
+    ],
+    { stdio: ['ignore', 'pipe', 'ignore'] },
+  );
+  await new Promise<void>((resolve) => holder.stdout.once('data', () => resolve()));
+  const exited = new Promise((resolve) => holder.once('exit', resolve));
+  holder.kill('SIGKILL');
+  await exited;
+  await writeFile(
+    join(stateRoot, 'hq-owner.json'),
+    `${JSON.stringify({ pid: holder.pid, nonce: randomUUID(), command: 'serve', createdAt: new Date().toISOString() })}\n`,
+    { mode: 0o600 },
+  );
+  return holder.pid!;
+};
+
+test('a runtime that stopped without releasing its state root is replaced once the host proves it stopped, clearing its leftover socket', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'jg-hq-reclaim-'));
+  const stateRoot = join(root, 'state');
+  let runtime: IAgentHq | undefined;
+  try {
+    await mkdir(stateRoot, { mode: 0o700 });
+    const pid = await killRuntimeHolder(stateRoot);
+    expect((await lstat(join(stateRoot, 'hq.sock'))).isSocket()).toBe(true);
+    const check = vi.fn(async () => true);
+    runtime = await createAgentHq({
+      stateRoot,
+      allowedRoots: [root],
+      isPreviousRuntimeStopped: check,
+    });
+    expect(check).toHaveBeenCalledWith({ pid, createdAt: expect.any(String) });
+    expect(await requestAgentHq(stateRoot, { kind: 'status' })).toMatchObject({
+      kind: 'status',
+      result: { store: 'ready' },
+    });
+  } finally {
+    await runtime?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a symbolic link at the control socket path is never removed, even when the previous runtime is proven stopped', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'jg-hq-reclaim-link-'));
+  const stateRoot = join(root, 'state');
+  try {
+    await mkdir(stateRoot, { mode: 0o700 });
+    await killRuntimeHolder(stateRoot);
+    await rm(join(stateRoot, 'hq.sock'));
+    const target = join(root, 'elsewhere');
+    await writeFile(target, 'untouched');
+    await symlink(target, join(stateRoot, 'hq.sock'));
+    await expectToRejectCode(
+      createAgentHq({
+        stateRoot,
+        allowedRoots: [root],
+        isPreviousRuntimeStopped: async () => true,
+      }),
+      'JG_AGENT_HQ_TRANSPORT_FAILED',
+    );
+    expect((await lstat(join(stateRoot, 'hq.sock'))).isSymbolicLink()).toBe(true);
+    expect(await readFile(target, 'utf8')).toBe('untouched');
+    // the failed start released the record it took over
+    await expect(lstat(join(stateRoot, 'hq-owner.json'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a starter without a check fails while a reclaimer waits in its check, and the reclaimer then owns the runtime', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'jg-hq-reclaim-race-'));
+  const stateRoot = join(root, 'state');
+  let runtime: IAgentHq | undefined;
+  try {
+    await mkdir(stateRoot, { mode: 0o700 });
+    await killRuntimeHolder(stateRoot);
+    let proceed = (): void => undefined;
+    let checking = (): void => undefined;
+    const isChecking = new Promise<void>((resolve) => {
+      checking = resolve;
+    });
+    const reclaimer = createAgentHq({
+      stateRoot,
+      allowedRoots: [root],
+      isPreviousRuntimeStopped: () => {
+        checking();
+        return new Promise((resolve) => {
+          proceed = () => resolve(true);
+        });
+      },
+    });
+    await isChecking;
+    await expectToRejectCode(
+      createAgentHq({ stateRoot, allowedRoots: [root] }),
+      'JG_AGENT_HQ_RUNTIME_ALREADY_OWNED',
+      'The HQ runtime is already owned',
+    );
+    proceed();
+    runtime = await reclaimer;
+    expect(await requestAgentHq(stateRoot, { kind: 'status' })).toMatchObject({
+      kind: 'status',
+      result: { store: 'ready' },
+    });
+  } finally {
+    await runtime?.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });

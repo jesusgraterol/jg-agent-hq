@@ -9,5 +9,5 @@ export {
 } from './constants.js';
 
 // local command connections
-export { createIpcServer } from './server.js';
+export { createIpcServer, removeLeftoverSocket } from './server.js';
 export { requestAgentHq } from './client.js';

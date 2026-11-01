@@ -38,6 +38,7 @@ import {
   ProviderReattachmentSchema,
   ProviderThreadSchema,
   ProviderSkillsSchema,
+  ResyncLossSchema,
   type IAgentProvider,
   type IAgentProviderEvents,
   type IProviderCall,
@@ -279,6 +280,27 @@ export const createProviderRegistry = (
           if (handlers) handlers.prompt(provider, normalized);
           else void normalized.reject().catch((cause) => quarantine(entry, cause));
         }),
+      unpresentable: (nativeId, reject) =>
+        deliver(() => {
+          if (typeof reject !== 'function') rejectProviderResponse();
+          const bound = async (): Promise<void> => {
+            try {
+              await bounded(() => reject(), lifetime.signal);
+            } catch (cause) {
+              throw normalizeProviderError(cause, entry.registration.isBuiltIn);
+            }
+          };
+          if (handlers) handlers.unpresentable(provider, NativeIdSchema.parse(nativeId), bound);
+          else void bound().catch((cause) => quarantine(entry, cause));
+        }),
+      resync: (nativeId, lost) =>
+        deliver(() =>
+          handlers?.resync(
+            provider,
+            nativeId === undefined ? undefined : NativeIdSchema.parse(nativeId),
+            ResyncLossSchema.parse(lost),
+          ),
+        ),
       outcome: (input, thread) =>
         deliver(() => {
           const metadata = thread === undefined ? undefined : ProviderThreadSchema.parse(thread);

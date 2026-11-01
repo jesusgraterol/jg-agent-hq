@@ -15,7 +15,12 @@ export {
 
 // native runtime and local client
 export { createAgentHq } from './runtime/index.js';
-export type { IAgentHq, IAgentHqOptions } from './runtime/index.js';
+export type {
+  IAgentHq,
+  IAgentHqOptions,
+  IPreviousRuntimeCheck,
+  IPreviousRuntimeOwner,
+} from './runtime/index.js';
 export { requestAgentHq } from './ipc/index.js';
 
 // trusted native provider adapters
@@ -30,6 +35,7 @@ export type {
   IProviderThread,
   IProviderInspection,
   IProviderReattachment,
+  IResyncLoss,
   IProviderSkills,
   IProviderMcpServerPage,
   IProviderMcpTools,

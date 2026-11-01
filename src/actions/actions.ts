@@ -1,5 +1,6 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { Exception, extractMessage, isException } from 'jg-exception';
+import { delay } from 'jg-utilities';
 import { z } from 'zod';
 
 import type {
@@ -13,7 +14,7 @@ import type {
   ISessionTerminal,
 } from '../contracts/index.js';
 import { getErrorKind } from '../errors/index.js';
-import type { INativePrompt, IProviderThread } from '../providers/index.js';
+import type { INativePrompt, IProviderReattachment, IProviderThread } from '../providers/index.js';
 import { retainNativeLineage, readInputFiles } from '../providers/index.js';
 import { capabilityUnavailable, type createProviderRegistry } from '../providers/registry/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
@@ -22,6 +23,12 @@ import type { IStore } from '../store/index.js';
 import type { INativeOutcome, INativeObservation, IAdmission } from '../store/control/index.js';
 
 import { LiveItems } from './live/index.js';
+import {
+  RESYNC_REREAD_DELAY_SECONDS,
+  Resyncs,
+  decideResync,
+  type IResyncRequest,
+} from './resync/index.js';
 import { ActionWaits } from './waits/index.js';
 
 // item observations never change a receipt, and are too frequent to wake waits for
@@ -274,6 +281,7 @@ export const createActions = (
     const thread = await store.getThread(receipt.threadId);
     if (thread?.nativeId && (outcome.kind === 'closed' || outcome.kind === 'archived')) {
       controlled.delete(key(thread.provider, thread.nativeId));
+      watched.delete(key(thread.provider, thread.nativeId));
     }
     if (
       thread?.state === 'completed' &&
@@ -282,6 +290,15 @@ export const createActions = (
     )
       advanceQueue(thread.id, thread.provider);
     return receipt;
+  };
+  /**
+   * Applies a turn's acknowledgement after the lifecycle events reported before it, such as a
+   * turn the agent started and ended while the input waited, so the ledger sees them in order.
+   * @returns The updated receipt.
+   */
+  const applyAfterEvents = async (outcome: INativeOutcome): Promise<IActionReceipt | null> => {
+    await lane.catch(() => undefined);
+    return apply(outcome);
   };
 
   const continuePhases = async (receipt: IActionReceipt, thread: IManagedThread): Promise<void> => {
@@ -450,7 +467,7 @@ export const createActions = (
         if (!nativeId) conflict();
         live.reset(key(thread.provider, nativeId));
         const turn = await control.compactThread(requestId, nativeId);
-        await apply({
+        await applyAfterEvents({
           kind: 'compaction-accepted',
           actionId: receipt.id,
           requestId,
@@ -470,7 +487,7 @@ export const createActions = (
           input.settings,
           files,
         );
-        await apply({
+        await applyAfterEvents({
           kind: 'turn-accepted',
           actionId: receipt.id,
           requestId,
@@ -525,6 +542,7 @@ export const createActions = (
   const observe = async (observation: INativeObservation): Promise<void> => {
     const result = await recordObservation(observation);
     if (observation.kind === 'turn-completed') {
+      watched.delete(key(observation.provider, observation.nativeThreadId));
       for (const [id, prompt] of prompts)
         if (
           prompt.native.provider === observation.provider &&
@@ -544,18 +562,102 @@ export const createActions = (
     if (result.canDispatchQueued && result.thread)
       advanceQueue(result.thread.id, result.thread.provider);
   };
+  /** Orders one observation about a controlled session behind the events before it. */
+  const receiveObservation = (
+    provider: IManagedThread['provider'],
+    observation: INativeObservation,
+  ): void => {
+    if (
+      !('nativeThreadId' in observation) ||
+      !observation.nativeThreadId ||
+      !controlled.has(key(provider, observation.nativeThreadId))
+    )
+      return;
+    if (observation.kind === 'turn-completed')
+      live.completeTurn(key(provider, observation.nativeThreadId), observation.nativeTurnId);
+    enqueue(provider, () => observe(observation));
+  };
+
+  // ends the waits of delayed re-checks when the runtime closes
+  const resyncLifetime = new AbortController();
+  /*
+   * Sessions a re-check after an unidentified loss left running, or skipped while an action was in
+   * flight. Codex reporting one idle while its turn is recorded as active triggers the re-check a
+   * lost turn end gets, since that turn's completion may have been the lost message.
+   */
+  const watched = new Set<string>();
+  /**
+   * Makes up for a lost notification by reading the session from its native process, outside the
+   * shared lane, then orders only the resulting observation behind the events before it. A failed
+   * read makes the session uncertain.
+   * @returns A promise resolved once the decision is applied or scheduled.
+   */
+  const recheck = async (
+    provider: IManagedThread['provider'],
+    nativeId: string,
+    request: IResyncRequest,
+  ): Promise<void> => {
+    if (closing || !controlled.has(key(provider, nativeId))) return;
+    const record = await store.getTurnRecord(provider, nativeId);
+    if (!record) return;
+    // an action in flight may have started a turn the record doesn't hold yet
+    if (request.lost === 'unknown' && record.hasPendingAction) {
+      watched.add(key(provider, nativeId));
+      return;
+    }
+    let latest: IProviderReattachment['latestTurn'] | undefined;
+    try {
+      const control = await registry.get(provider);
+      if (!control.readReattachment) capabilityUnavailable();
+      latest = (await control.readReattachment(nativeId, record.workspaceRoot)).latestTurn;
+    } catch {
+      latest = undefined;
+    }
+    const decision =
+      latest === undefined
+        ? ({ kind: 'uncertain' } as const)
+        : decideResync(record, latest, request);
+    if (decision.kind === 'complete')
+      receiveObservation(provider, {
+        kind: 'turn-completed',
+        provider,
+        nativeThreadId: nativeId,
+        nativeTurnId: decision.nativeTurnId,
+        state: decision.state,
+      });
+    else if (decision.kind === 'gap') live.markGap(key(provider, nativeId));
+    else if (decision.kind === 'watch') {
+      live.markGap(key(provider, nativeId));
+      watched.add(key(provider, nativeId));
+    } else if (decision.kind === 'reread') {
+      const reread = { lost: request.lost, isLastAttempt: true, turnId: decision.nativeTurnId };
+      // the wait holds back no other session's re-check
+      runOwned(async () => {
+        try {
+          await delay(RESYNC_REREAD_DELAY_SECONDS, { signal: resyncLifetime.signal });
+        } catch {
+          return;
+        }
+        if (!closing) resyncs.request(provider, nativeId, reread);
+      });
+    } else if (decision.kind === 'uncertain')
+      enqueue(provider, () =>
+        observe({ kind: 'native-unavailable', provider, nativeThreadId: nativeId }),
+      );
+  };
+  const resyncs = new Resyncs(recheck, runOwned);
 
   registry.setEvents({
-    observe(provider, observation) {
-      if (
-        !('nativeThreadId' in observation) ||
-        !observation.nativeThreadId ||
-        !controlled.has(key(provider, observation.nativeThreadId))
-      )
-        return;
-      if (observation.kind === 'turn-completed')
-        live.completeTurn(key(provider, observation.nativeThreadId), observation.nativeTurnId);
-      enqueue(provider, () => observe(observation));
+    observe: receiveObservation,
+    resync(provider, nativeId, lost) {
+      if (closing) return;
+      const request: IResyncRequest = { lost, isLastAttempt: false, turnId: null };
+      // without a session, every session this runtime controls through the provider is read
+      if (nativeId === undefined) {
+        for (const thread of controlled.values())
+          if (thread.provider === provider) resyncs.request(provider, thread.nativeId, request);
+      } else if (controlled.has(key(provider, nativeId)))
+        resyncs.request(provider, nativeId, request);
     },
     item(provider, nativeId, item, isComplete, replacedIds) {
       if (!controlled.has(key(provider, nativeId))) return;
@@ -577,8 +679,19 @@ export const createActions = (
     },
     session(provider, nativeId, state) {
       observingProviders.add(provider);
+      const sessionKey = key(provider, nativeId);
       // a session this runtime controls reports its transitions through its own thread state
-      if (controlled.has(key(provider, nativeId))) return;
+      if (controlled.has(sessionKey)) {
+        if (watched.has(sessionKey) && state !== 'running' && state !== 'waiting') {
+          watched.delete(sessionKey);
+          resyncs.request(provider, nativeId, {
+            lost: 'turn-completed',
+            isLastAttempt: false,
+            turnId: null,
+          });
+        }
+        return;
+      }
       enqueue(provider, () => store.observeSessions(provider, [{ nativeId, state }], false));
     },
     delta(provider, nativeId, turnId, itemId, text) {
@@ -588,7 +701,9 @@ export const createActions = (
     prompt(provider, prompt) {
       // a session that outlives the runtime keeps its request for the next runtime to answer
       if (closing && registry.keepsSessions(provider)) return;
-      if (!controlled.has(key(provider, prompt.nativeThreadId)) || prompts.size >= 32 || closing) {
+      // the client driving a session HQ doesn't control answers its requests, so HQ stays silent
+      if (!controlled.has(key(provider, prompt.nativeThreadId))) return;
+      if (prompts.size >= 32 || closing) {
         runNativeOwned(provider, prompt.nativeThreadId, prompt.reject);
         return;
       }
@@ -613,6 +728,12 @@ export const createActions = (
           threadId: recorded.thread.id,
         });
       });
+    },
+    unpresentable(provider, nativeId, reject) {
+      if (closing && registry.keepsSessions(provider)) return;
+      // only a session HQ controls waits on HQ for an answer
+      if (!controlled.has(key(provider, nativeId))) return;
+      runNativeOwned(provider, nativeId, reject);
     },
     outcome(provider, outcome, nativeThread) {
       if (closing) return;
@@ -1123,6 +1244,7 @@ export const createActions = (
      */
     async close(): Promise<void> {
       closing = true;
+      resyncLifetime.abort();
       let cleanupFailure: unknown;
       try {
         await Promise.allSettled([...admissions]);

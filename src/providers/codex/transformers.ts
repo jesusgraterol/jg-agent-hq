@@ -26,7 +26,13 @@ import {
 } from '../../sessions/index.js';
 import { nativeProvenance } from '../../sessions/evidence/index.js';
 
-import type { INativeItem, INativeThread, INativeTurn, INativeUsage } from './types.js';
+import type {
+  INativeItem,
+  INativeThread,
+  INativeThreadStatus,
+  INativeTurn,
+  INativeUsage,
+} from './types.js';
 import { parseNative } from './validations.js';
 
 /** Preserves exact native tree identities independently of managed-agent relationships. */
@@ -36,8 +42,11 @@ export const toNativeLineage = (thread: INativeThread): INativeLineage => ({
   forkedFromId: thread.forkedFromId ?? null,
 });
 
-/** Maps a native thread status to the shared session state; an active thread can wait on the operator. */
-export const toSessionState = (status: INativeThread['status']): ISessionState =>
+/**
+ * Maps a native thread status to the shared session state; an active thread can wait on the
+ * operator, and a status newer than this adapter knows is unknown.
+ */
+export const toSessionState = (status: INativeThreadStatus): ISessionState =>
   status.type === 'active'
     ? status.activeFlags?.some(
         (flag) => flag === 'waitingOnApproval' || flag === 'waitingOnUserInput',
@@ -48,7 +57,9 @@ export const toSessionState = (status: INativeThread['status']): ISessionState =
       ? 'idle'
       : status.type === 'notLoaded'
         ? 'closed'
-        : 'failed';
+        : status.type === 'systemError'
+          ? 'failed'
+          : 'unknown';
 
 /**
  * Converts native seconds to the public millisecond-based metadata contract.

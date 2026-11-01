@@ -49,6 +49,12 @@ export const NativeThreadSchema = z.object({
     activeFlags: z.array(z.string()).optional(),
   }),
 });
+// a status the daemon broadcasts, which may name one newer than this adapter knows
+export const NativeThreadStatusSchema = z.object({
+  type: z.string().min(1).max(256),
+  activeFlags: z.array(z.string()).optional(),
+});
+export type INativeThreadStatus = z.infer<typeof NativeThreadStatusSchema>;
 export const NativeTurnSchema = z.object({
   id: z.string().min(1).max(4096),
   status: z.enum(['completed', 'interrupted', 'failed', 'inProgress']),
@@ -116,6 +122,8 @@ export type ICodexEvents = {
   unavailable(): void;
   // the connection opened again after the daemon restarted or the transport stopped
   connected(): void;
+  // a message over the size limit was discarded, which may have been any session's
+  discarded(): void;
 };
 
 // native read models and explicit control operations; execution settings remain with Codex

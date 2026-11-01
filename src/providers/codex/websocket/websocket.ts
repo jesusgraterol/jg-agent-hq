@@ -65,12 +65,16 @@ export const createWebSocketFraming = (): IProviderFraming => {
     ),
     encode: (message) =>
       encodeFrame(WEBSOCKET_OPCODES.text, Buffer.from(JSON.stringify(message), 'utf8')),
-    createDecoder({ receive, reply, open, fail }) {
+    createDecoder({ receive, reply, open, fail, discard }) {
       const chunks: Buffer[] = [];
       let buffered = 0;
       let state: 'handshake' | 'frames' | 'closed' = 'handshake';
       let fragments: Buffer[] | null = null;
       let fragmentBytes = 0;
+      // a message over the size limit is skipped through its final fragment, then reported
+      let isDiscarding = false;
+      let skipping = 0;
+      let isDiscardComplete = false;
       let keepalive: ReturnType<typeof setInterval> | undefined;
       let isAwaitingPong = false;
       const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -111,6 +115,27 @@ export const createWebSocketFraming = (): IProviderFraming => {
         }
         return result;
       };
+      // drops bytes that are being skipped without joining them first
+      const drop = (length: number): void => {
+        let remaining = length;
+        while (remaining > 0) {
+          const first = chunks[0]!;
+          if (first.length <= remaining) {
+            chunks.shift();
+            remaining -= first.length;
+          } else {
+            chunks[0] = first.subarray(remaining);
+            remaining = 0;
+          }
+        }
+        buffered -= length;
+      };
+      // reports a discarded message once its final fragment has been skipped
+      const settleDiscard = (): void => {
+        if (skipping > 0 || !isDiscardComplete) return;
+        isDiscardComplete = false;
+        discard();
+      };
       const handshake = (): boolean => {
         const head = read(Math.min(buffered, MAX_HANDSHAKE_BYTES), false);
         const end = head.indexOf('\r\n\r\n');
@@ -138,6 +163,13 @@ export const createWebSocketFraming = (): IProviderFraming => {
       };
       // returns false until a complete frame is buffered
       const frame = (): boolean => {
+        if (skipping > 0) {
+          const dropped = Math.min(skipping, buffered);
+          drop(dropped);
+          skipping -= dropped;
+          settleDiscard();
+          return skipping === 0;
+        }
         if (buffered < 2) return false;
         const start = read(Math.min(buffered, 10), false);
         const isFinal = (start[0]! & 0x80) !== 0;
@@ -152,13 +184,30 @@ export const createWebSocketFraming = (): IProviderFraming => {
         } else if (length === 127) {
           if (start.length < 10) return false;
           const extended = start.readBigUInt64BE(2);
-          if (extended > BigInt(MAX_FRAME_BYTES)) invalid();
+          if (extended > BigInt(Number.MAX_SAFE_INTEGER)) invalid();
           length = Number(extended);
           offset = 10;
         }
         const isControl = opcode >= WEBSOCKET_OPCODES.close;
         if (isControl && (!isFinal || length > 125)) invalid();
-        if (!isControl && fragmentBytes + length > MAX_FRAME_BYTES) invalid();
+        const isData =
+          opcode === WEBSOCKET_OPCODES.text || opcode === WEBSOCKET_OPCODES.continuation;
+        if (!isControl && !isData) invalid();
+        // a text frame starts a message, and a continuation frame continues one
+        if (isData && (opcode === WEBSOCKET_OPCODES.text) === (fragments !== null || isDiscarding))
+          invalid();
+        if (isData && (isDiscarding || fragmentBytes + length > MAX_FRAME_BYTES)) {
+          // the message is too large: drop what it gathered and skip it through its final fragment
+          if (buffered < offset) return false;
+          read(offset, true);
+          fragments = null;
+          fragmentBytes = 0;
+          isDiscarding = !isFinal;
+          isDiscardComplete = isFinal;
+          skipping = length;
+          settleDiscard();
+          return true;
+        }
         if (buffered < offset + length) return false;
         read(offset, true);
         const payload = Buffer.from(read(length, true));
@@ -174,8 +223,7 @@ export const createWebSocketFraming = (): IProviderFraming => {
               data: { kind: 'agent-unavailable' },
             }),
           );
-        } else if (opcode === WEBSOCKET_OPCODES.text || opcode === WEBSOCKET_OPCODES.continuation) {
-          if ((opcode === WEBSOCKET_OPCODES.text) === (fragments !== null)) invalid();
+        } else {
           if (isFinal && !fragments) deliver(payload);
           else {
             (fragments ??= []).push(payload);
@@ -187,7 +235,7 @@ export const createWebSocketFraming = (): IProviderFraming => {
               deliver(message);
             }
           }
-        } else invalid();
+        }
         return true;
       };
       return {
@@ -200,7 +248,11 @@ export const createWebSocketFraming = (): IProviderFraming => {
         },
         end() {
           stop();
-          if (state === 'handshake' || (state === 'frames' && (buffered || fragments))) invalid();
+          if (
+            state === 'handshake' ||
+            (state === 'frames' && (buffered || fragments || isDiscarding || skipping))
+          )
+            invalid();
         },
         stop,
       };

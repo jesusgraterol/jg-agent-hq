@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
@@ -5,7 +6,12 @@ import { RecordSchema, toClaudeItem } from '../history/index.js';
 import { MAX_RESULT_BYTES, type ITurnUsage } from '../../../contracts/index.js';
 import { toTurnResult } from '../../results/index.js';
 
-import type { IClaudeControlEvents, IClaudeSession } from './types.js';
+import type {
+  IClaudeControlEvents,
+  IClaudeNativeTurn,
+  IClaudeSession,
+  IClaudeTurn,
+} from './types.js';
 import { createClaudePrompt } from './permissions.js';
 
 const FrameSchema = z.object({ type: z.string(), session_id: z.string().optional() });
@@ -19,7 +25,8 @@ const MessageSchema = z.object({
 const ResultSchema = z.object({
   subtype: z.string(),
   is_error: z.boolean(),
-  user_message_uuid: z.uuid(),
+  // absent from the result of a turn Claude started itself
+  user_message_uuid: z.uuid().optional(),
   errors: z.array(z.string()).max(128).optional(),
   structured_output: z.unknown().optional(),
   result: z.string().optional(),
@@ -61,6 +68,11 @@ const BlockDeltaSchema = z.object({
     delta: z.object({ type: z.string(), text: z.string().optional() }),
   }),
 });
+// Claude's list of the background commands still running, sent whenever one starts or ends
+const BackgroundTasksSchema = z.object({
+  subtype: z.literal('background_tasks_changed'),
+  tasks: z.array(z.object({ task_id: z.string() })).max(1024),
+});
 
 const unavailable: () => never = () => {
   throw new Exception('The Claude integration failed', {
@@ -68,6 +80,13 @@ const unavailable: () => never = () => {
     data: { kind: 'agent-unavailable' },
   });
 };
+
+/**
+ * Returns the turn the session's frames belong to: a turn Claude started, or the acknowledged
+ * input's. Input still waiting for its replay has no turn yet.
+ */
+const getActiveTurn = (session: IClaudeSession): IClaudeTurn | undefined =>
+  session.nativeTurn ?? (session.input?.isAcknowledged ? session.input : undefined);
 
 /** Acknowledges the single current input before forwarding its ordered turn evidence. */
 const acknowledge = (session: IClaudeSession, events: IClaudeControlEvents | undefined): void => {
@@ -90,7 +109,47 @@ const acknowledge = (session: IClaudeSession, events: IClaudeControlEvents | und
 };
 
 /**
- * Normalizes native stream evidence without retaining another conversation buffer.
+ * Starts tracking a turn Claude began without HQ input, under an ID HQ generates. Input waiting
+ * for its replay keeps waiting: Claude replays it only after this turn's result.
+ */
+const startNativeTurn = (
+  session: IClaudeSession,
+  events: IClaudeControlEvents | undefined,
+): IClaudeNativeTurn => {
+  const turn = { id: randomUUID(), interruptRequested: false, hasInterruptionMarker: false };
+  session.nativeTurn = turn;
+  events?.observe({
+    kind: 'turn-started',
+    provider: 'claude',
+    nativeThreadId: session.id,
+    nativeTurnId: turn.id,
+    isAgentInitiated: true,
+  });
+  return turn;
+};
+
+/** Classifies a result: interrupted only after the marker of an interrupt HQ requested. */
+const toTurnState = (
+  result: z.infer<typeof ResultSchema>,
+  turn: IClaudeTurn,
+): 'completed' | 'interrupted' | 'failed' =>
+  !result.is_error && result.subtype === 'success'
+    ? 'completed'
+    : turn.hasInterruptionMarker
+      ? 'interrupted'
+      : 'failed';
+
+/** Releases what a finished turn held: its previews and its unanswered requests. */
+const endTurn = (session: IClaudeSession, events: IClaudeControlEvents | undefined): void => {
+  if (session.previews.size) events?.gap(session.id);
+  session.previews.clear();
+  session.requests.clear();
+};
+
+/**
+ * Normalizes native stream evidence without retaining another conversation buffer. A turn frame
+ * that arrives while no turn is active, and isn't the waiting input's replay, starts a turn of
+ * Claude's own; frames then belong to the active turn until its result.
  * @throws
  * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
  */
@@ -101,24 +160,25 @@ export const receiveClaudeMessage = (
 ): void => {
   const frame = FrameSchema.parse(raw);
   if (frame.session_id && frame.session_id !== session.id) unavailable();
-  const input = session.input;
   if (frame.type === 'user' || frame.type === 'assistant') {
     const message = MessageSchema.parse(raw);
-    if (!input) unavailable();
-    if (frame.type === 'user' && message.uuid === input.id) acknowledge(session, events);
-    else if (
-      frame.type === 'user' &&
-      input.interruptRequested &&
-      isClaudeInterruptionMarker(message.message.content)
-    )
-      input.hasInterruptionMarker = true;
+    const isReplay =
+      frame.type === 'user' && session.input !== undefined && message.uuid === session.input.id;
+    if (isReplay) {
+      // Claude replays input written during its own turn only after that turn's result
+      if (session.nativeTurn) unavailable();
+      acknowledge(session, events);
+    }
+    const turn = getActiveTurn(session) ?? startNativeTurn(session, events);
     if (
       frame.type === 'user' &&
-      message.uuid !== input.id &&
-      input.interruptRequested &&
+      !isReplay &&
+      turn.interruptRequested &&
       isClaudeInterruptionMarker(message.message.content)
-    )
+    ) {
+      turn.hasInterruptionMarker = true;
       return;
+    }
     // like history, which skips the transcript's isMeta records, live items leave synthetic text out
     const item = message.isSynthetic
       ? null
@@ -131,14 +191,16 @@ export const receiveClaudeMessage = (
             // a live item is timed when its frame arrives
             timestamp: new Date().toISOString(),
           }),
-          input.id,
+          turn.id,
         );
     // final wrappers may share an API message ID while containing different content blocks
     const content = z
       .object({ message: z.object({ id: z.string().optional(), content: z.unknown() }) })
       .parse(raw).message;
     const blocks = z.array(z.object({ type: z.string() })).safeParse(content.content);
-    if (frame.type === 'assistant' && blocks.success) {
+    // only an HQ input's turn captures a result, since only its action can hold one
+    const input = session.input;
+    if (frame.type === 'assistant' && blocks.success && input && turn === input) {
       const texts = z
         .array(z.object({ type: z.string(), text: z.string().optional() }))
         .parse(content.content)
@@ -182,7 +244,7 @@ export const receiveClaudeMessage = (
         }
     }
   } else if (frame.type === 'stream_event') {
-    if (!input) unavailable();
+    const turn = getActiveTurn(session) ?? startNativeTurn(session, events);
     const event = PartialSchema.parse(raw).event;
     if (event.type === 'message_start') {
       if (session.previews.size) events?.gap(session.id);
@@ -191,7 +253,7 @@ export const receiveClaudeMessage = (
     } else if (event.type === 'content_block_start') {
       const block = BlockStartSchema.parse(raw).event;
       if (!session.apiMessageId) unavailable();
-      const id = `live:${input.id}:${session.apiMessageId}:${block.index}`;
+      const id = `live:${turn.id}:${session.apiMessageId}:${block.index}`;
       const preview = toClaudeItem(
         {
           type: 'assistant',
@@ -199,7 +261,7 @@ export const receiveClaudeMessage = (
           message: { role: 'assistant', content: [block.content_block] },
           timestamp: new Date().toISOString(),
         },
-        input.id,
+        turn.id,
       );
       // a block the CLI leaves out, such as thinking, has no preview to show or replace
       if (preview) {
@@ -211,23 +273,32 @@ export const receiveClaudeMessage = (
       if (block.delta.type === 'text_delta') {
         const preview = session.previews.get(block.index);
         if (!preview || block.delta.text === undefined) unavailable();
-        events?.delta(session.id, input.id, preview.id, block.delta.text);
+        events?.delta(session.id, turn.id, preview.id, block.delta.text);
       }
     }
   } else if (frame.type === 'result') {
     const result = ResultSchema.parse(raw);
-    if (!input || input.id !== result.user_message_uuid) unavailable();
+    if (result.user_message_uuid === undefined) {
+      // a turn Claude started completes without a captured result, since no action owns it
+      const turn = session.nativeTurn;
+      if (!turn) unavailable();
+      session.nativeTurn = undefined;
+      endTurn(session, events);
+      events?.observe({
+        kind: 'turn-completed',
+        provider: 'claude',
+        nativeThreadId: session.id,
+        nativeTurnId: turn.id,
+        state: toTurnState(result, turn),
+      });
+      return;
+    }
+    const input = session.input;
+    if (!input || input.id !== result.user_message_uuid || session.nativeTurn) unavailable();
     acknowledge(session, events);
-    const state =
-      !result.is_error && result.subtype === 'success'
-        ? 'completed'
-        : input.hasInterruptionMarker
-          ? 'interrupted'
-          : 'failed';
+    const state = toTurnState(result, input);
     session.input = undefined;
-    if (session.previews.size) events?.gap(session.id);
-    session.previews.clear();
-    session.requests.clear();
+    endTurn(session, events);
     const observedUsage = UsageSchema.safeParse(result.usage);
     const usage: ITurnUsage | null = observedUsage.success
       ? {
@@ -261,16 +332,18 @@ export const receiveClaudeMessage = (
     });
   } else if (frame.type === 'control_request') {
     const request = RequestSchema.parse(raw);
-    if (!input || !session.connection) unavailable();
+    const turn = getActiveTurn(session);
+    if (!turn || !session.connection) unavailable();
     const parsed = createClaudePrompt(
       request.request,
       session.id,
-      input.id,
+      turn.id,
       session.scope,
       request.request_id,
       async (message) => {
         const pending = session.requests.get(request.request_id);
-        if (session.input !== input || !pending || pending.isWritten) unavailable();
+        // a reply belongs to the turn its request came from, so it is written only while it runs
+        if (getActiveTurn(session) !== turn || !pending || pending.isWritten) unavailable();
         pending.isWritten = true;
         await session.connection!.write(message);
         // elicitation control replies have no tool_result acknowledgement on this native protocol
@@ -283,7 +356,7 @@ export const receiveClaudeMessage = (
           response: {
             subtype: 'error',
             request_id: request.request_id,
-            error: 'Unsupported request',
+            error: "HQ couldn't present this request",
           },
         })
         .catch(() => events?.unavailable(session.id));
@@ -312,5 +385,9 @@ export const receiveClaudeMessage = (
         requestId: request.scopedId,
       });
     session.requests.delete(id);
+  } else if (frame.type === 'system') {
+    // a list in an unexpected shape leaves the count as it was, as parking only waits on it
+    const background = BackgroundTasksSchema.safeParse(raw);
+    if (background.success) session.backgroundTaskCount = background.data.tasks.length;
   }
 };

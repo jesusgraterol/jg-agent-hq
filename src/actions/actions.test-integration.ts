@@ -19,10 +19,21 @@ import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
+  countHeldDelays,
   installCodexFixture,
+  releaseHeldDelays,
+  startHoldingDelays,
+  stopHoldingDelays,
   writeFixtureControl,
   withClaudeRuntime,
 } from '../../scripts/test-support/index.js';
+
+// a re-check's 2-second re-read is released by the tests that hold it instead of waited out
+vi.mock('jg-utilities', async (original) => {
+  const actual = await original<typeof import('jg-utilities')>();
+  const { holdDelays } = await import('../../scripts/test-support/delays.js');
+  return { ...actual, delay: holdDelays(actual.delay) };
+});
 
 const setup = async () => {
   const root = await mkdtemp(join(tmpdir(), 'jg-hq-actions-'));
@@ -2309,14 +2320,7 @@ test('a kept Codex session another client moved past its recorded turn is marked
   }
 });
 
-test.each([
-  'overflow',
-  'malformed-turn',
-  'malformed-item',
-  'malformed-delta',
-  'malformed-resolution',
-  'contradictory-completion',
-])('%s native events stop control and preserve explicit uncertain ownership', async (scenario) => {
+test('overflowing native events stop control and preserve explicit uncertain ownership', async () => {
   const fixture = await setup();
   try {
     const { thread } = await fixture.create('event-overflow');
@@ -2332,53 +2336,16 @@ test.each([
       () => fixture.thread(thread.id),
       (entry) => entry.state === 'running',
     );
-    const malformed: Record<string, { method: string; params: unknown }> = {
-      'malformed-turn': {
-        method: 'turn/completed',
-        params: { threadId: thread.nativeId, turn: { status: 'completed' } },
-      },
-      'malformed-item': {
+    await fixture.control({
+      holdTurn: true,
+      emit: Array.from({ length: 2048 }, (_, index) => ({
         method: 'item/completed',
         params: {
           threadId: thread.nativeId,
           turnId: active.activeTurnId,
-          item: { type: 'agentMessage', text: 'Missing identity' },
+          item: { id: `overflow-${index}`, type: 'agentMessage', text: 'item' },
         },
-      },
-      'malformed-delta': {
-        method: 'item/agentMessage/delta',
-        params: {
-          threadId: thread.nativeId,
-          turnId: active.activeTurnId,
-          itemId: 'invalid-delta',
-          delta: 42,
-        },
-      },
-      'malformed-resolution': {
-        method: 'serverRequest/resolved',
-        params: { threadId: thread.nativeId, requestId: null },
-      },
-      'contradictory-completion': {
-        method: 'turn/completed',
-        params: {
-          threadId: thread.nativeId,
-          turn: { id: active.activeTurnId, status: 'inProgress' },
-        },
-      },
-    };
-    await fixture.control({
-      holdTurn: true,
-      emit:
-        scenario === 'overflow'
-          ? Array.from({ length: 2048 }, (_, index) => ({
-              method: 'item/completed',
-              params: {
-                threadId: thread.nativeId,
-                turnId: active.activeTurnId,
-                item: { id: `overflow-${index}`, type: 'agentMessage', text: 'item' },
-              },
-            }))
-          : [malformed[scenario]],
+      })),
     });
     await fixture.request({ kind: 'usage', provider: 'codex' });
     await fixture.until(
@@ -2552,3 +2519,597 @@ test.each([
     await fixture.close();
   }
 });
+
+test('HQ answers no request on a session another client drives, and still refuses one it cannot present on its own', async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('own-session');
+    const replies = async () => {
+      try {
+        return (await readFile(join(fixture.root, 'replies.jsonl'), 'utf8'))
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as { id: string; error?: unknown });
+      } catch (error) {
+        if (hasErrorCode(error, 'ENOENT')) return [];
+        throw error;
+      }
+    };
+    // a session another client drives, which HQ never controlled
+    const other = 'thread-0003';
+    await fixture.control({
+      emitOnce: true,
+      emitRequests: [
+        {
+          id: 'other-approval',
+          method: 'item/commandExecution/requestApproval',
+          params: {
+            threadId: other,
+            turnId: 'turn-other',
+            itemId: 'item-other',
+            startedAtMs: Date.now(),
+            command: 'touch file',
+            cwd: fixture.workspaceRoot,
+            availableDecisions: ['accept', 'cancel'],
+          },
+        },
+        { id: 'other-unknown', method: 'item/future/requestInput', params: { threadId: other } },
+        {
+          id: 'own-unknown',
+          method: 'item/future/requestInput',
+          params: { threadId: thread.nativeId },
+        },
+      ],
+    });
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    // only the request on HQ's own session is refused
+    await expect.poll(replies).toMatchObject([{ id: 'own-unknown', error: expect.anything() }]);
+    // the other client answers, and the daemon reports its requests resolved
+    await fixture.control({
+      emitOnce: true,
+      emit: [
+        {
+          method: 'serverRequest/resolved',
+          params: { threadId: other, requestId: 'other-approval' },
+        },
+        {
+          method: 'serverRequest/resolved',
+          params: { threadId: other, requestId: 'other-unknown' },
+        },
+      ],
+    });
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    const message = fixture.envelope({
+      kind: 'message',
+      threadId: thread.id,
+      input: { kind: 'text', text: 'Still here' },
+    });
+    await fixture.submit(message);
+    await fixture.until(
+      () => fixture.receipt(message.id),
+      (entry) => entry.completion === 'completed',
+    );
+    expect((await replies()).map((reply) => reply.id)).toStrictEqual(['own-unknown']);
+  } finally {
+    await fixture.close();
+  }
+});
+
+// starts one held Codex turn on a new session and returns the session with that turn's ID
+const startHeldTurn = async (fixture: Awaited<ReturnType<typeof setup>>, name: string) => {
+  const { thread } = await fixture.create(name);
+  await fixture.control({ holdTurn: true });
+  const message = fixture.envelope({
+    kind: 'message',
+    threadId: thread.id,
+    input: { kind: 'text', text: `Work on ${name}` },
+  });
+  await fixture.submit(message);
+  const running = await fixture.until(
+    () => fixture.thread(thread.id),
+    (entry) => entry.state === 'running' && entry.activeTurnId !== null,
+  );
+  return { thread, message, nativeId: thread.nativeId!, turnId: running.activeTurnId! };
+};
+// what Codex reports for one session: its status and its saved turns
+const reads = (nativeId: string, status: object, turnId: string, turnStatus: string) => ({
+  holdTurn: true,
+  threadStatuses: { [nativeId]: status },
+  threadTurns: {
+    [nativeId]: [{ id: turnId, status: turnStatus, startedAt: 1_800_000_001, completedAt: null }],
+  },
+});
+// the daemon sends notifications along with its answer to the next request
+const emit = async (
+  fixture: Awaited<ReturnType<typeof setup>>,
+  settings: object,
+  notifications: object[],
+) => {
+  await fixture.control({ ...settings, emitOnce: true, emit: notifications });
+  await fixture.request({ kind: 'usage', provider: 'codex' });
+};
+const lostCompletion = (nativeId: string, turnId: string) => ({
+  method: 'turn/completed',
+  params: { threadId: nativeId, turn: { id: turnId, status: 'finishedSomehow' } },
+});
+
+test('a lost Codex turn completion is read back: the turn completes, queued input follows, and a late original changes nothing', async () => {
+  const fixture = await setup();
+  try {
+    const { thread: other } = await fixture.create('other-session');
+    const { thread, message, nativeId, turnId } = await startHeldTurn(fixture, 'lost-completion');
+    const queued = fixture.envelope({
+      kind: 'queue',
+      threadId: thread.id,
+      expectedTurnId: turnId,
+      input: { kind: 'text', text: 'Next' },
+    });
+    expect((await fixture.submit(queued)).delivery).toBe('queued');
+    const finished = reads(nativeId, { type: 'idle' }, turnId, 'completed');
+    await emit(fixture, finished, [lostCompletion(nativeId, turnId)]);
+    expect(
+      await fixture.until(
+        () => fixture.receipt(message.id),
+        (entry) => entry.completion !== null,
+      ),
+    ).toMatchObject({ completion: 'completed', result: null });
+    await fixture.until(
+      () => fixture.receipt(queued.id),
+      (entry) => entry.delivery === 'acknowledged',
+    );
+    const next = await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.state === 'running' && ![null, turnId].includes(entry.activeTurnId),
+    );
+    // the original notification arriving late leaves the session as reconciled
+    await emit(fixture, finished, [
+      {
+        method: 'turn/completed',
+        params: { threadId: nativeId, turn: { id: turnId, status: 'completed' } },
+      },
+    ]);
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    expect(await fixture.thread(thread.id)).toMatchObject({
+      ownership: 'managed',
+      state: 'running',
+      activeTurnId: next.activeTurnId,
+    });
+    // another session keeps working throughout
+    await fixture.control({});
+    const elsewhere = fixture.envelope({
+      kind: 'message',
+      threadId: other.id,
+      input: { kind: 'text', text: 'Elsewhere' },
+    });
+    await fixture.submit(elsewhere);
+    await fixture.until(
+      () => fixture.receipt(elsewhere.id),
+      (entry) => entry.completion === 'completed',
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test.each([
+  ['finished', 'completed'],
+  ['still running', 'inProgress'],
+])(
+  'a lost Codex turn completion whose turn still reads as running is read once more after 2 seconds (%s)',
+  async (_label, secondStatus) => {
+    startHoldingDelays(2);
+    const fixture = await setup();
+    try {
+      const { thread, message, nativeId, turnId } = await startHeldTurn(fixture, 'lagging-history');
+      const active = { type: 'active', activeFlags: [] };
+      await emit(fixture, reads(nativeId, active, turnId, 'inProgress'), [
+        lostCompletion(nativeId, turnId),
+      ]);
+      // the re-check found the turn running and waits to read it once more
+      await expect.poll(() => countHeldDelays(2)).toBe(1);
+      expect(await fixture.thread(thread.id)).toMatchObject({ ownership: 'managed' });
+      await fixture.control(
+        reads(
+          nativeId,
+          secondStatus === 'completed' ? { type: 'idle' } : active,
+          turnId,
+          secondStatus,
+        ),
+      );
+      expect(releaseHeldDelays(2)).toBe(1);
+      if (secondStatus === 'completed')
+        expect(
+          await fixture.until(
+            () => fixture.receipt(message.id),
+            (entry) => entry.completion !== null,
+          ),
+        ).toMatchObject({ completion: 'completed' });
+      else
+        await fixture.until(
+          () => fixture.thread(thread.id),
+          (entry) => entry.ownership === 'uncertain',
+        );
+    } finally {
+      stopHoldingDelays();
+      await fixture.close();
+    }
+  },
+);
+
+test('a saved turn still in progress on an idle Codex session is read again, and completes as Codex finally saves it', async () => {
+  startHoldingDelays(2);
+  const fixture = await setup();
+  try {
+    const { thread, message, nativeId, turnId } = await startHeldTurn(fixture, 'idle-in-progress');
+    const queued = fixture.envelope({
+      kind: 'queue',
+      threadId: thread.id,
+      expectedTurnId: turnId,
+      input: { kind: 'text', text: 'Next' },
+    });
+    await fixture.submit(queued);
+    // the idle status would infer an interruption, which a live re-check doesn't trust
+    await emit(fixture, reads(nativeId, { type: 'idle' }, turnId, 'inProgress'), [
+      lostCompletion(nativeId, turnId),
+    ]);
+    await expect.poll(() => countHeldDelays(2)).toBe(1);
+    await fixture.control(reads(nativeId, { type: 'idle' }, turnId, 'completed'));
+    releaseHeldDelays(2);
+    expect(
+      await fixture.until(
+        () => fixture.receipt(message.id),
+        (entry) => entry.completion !== null,
+      ),
+    ).toMatchObject({ completion: 'completed' });
+    await fixture.until(
+      () => fixture.receipt(queued.id),
+      (entry) => entry.delivery === 'acknowledged',
+    );
+  } finally {
+    stopHoldingDelays();
+    await fixture.close();
+  }
+});
+
+test.each([
+  ['a lost turn completion whose read fails', 'read-failure'],
+  ['a lost approval resolution', 'approval'],
+])('%s makes the Codex session uncertain', async (_label, kind) => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('uncertain-session');
+    await fixture.control({
+      prompt: {
+        method: 'item/commandExecution/requestApproval',
+        params: {
+          startedAtMs: Date.now(),
+          command: 'echo needs-approval',
+          cwd: fixture.workspaceRoot,
+          availableDecisions: ['accept', 'cancel'],
+        },
+      },
+    });
+    const message = fixture.envelope({
+      kind: 'message',
+      threadId: thread.id,
+      input: { kind: 'text', text: 'Run it' },
+    });
+    await fixture.submit(message);
+    const waiting = await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.state === 'waiting-approval',
+    );
+    const nativeId = thread.nativeId!;
+    const turnId = waiting.activeTurnId!;
+    const active = { type: 'active', activeFlags: ['waitingOnApproval'] };
+    await emit(
+      fixture,
+      {
+        ...reads(nativeId, active, turnId, 'inProgress'),
+        ...(kind === 'read-failure' ? { failRead: true } : {}),
+      },
+      [
+        kind === 'read-failure'
+          ? lostCompletion(nativeId, turnId)
+          : {
+              method: 'serverRequest/resolved',
+              params: { threadId: nativeId, requestId: { unexpected: true } },
+            },
+      ],
+    );
+    await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.ownership === 'uncertain',
+    );
+    const approvals = await fixture.request({ kind: 'approvals', threadId: thread.id });
+    expect(approvals).toMatchObject({
+      result: { data: [expect.objectContaining({ state: 'expired' })] },
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('a re-check whose read Codex holds open leaves other sessions working meanwhile', async () => {
+  const fixture = await setup();
+  try {
+    const { thread: other } = await fixture.create('other-session');
+    const { thread, message, nativeId, turnId } = await startHeldTurn(fixture, 'held-read');
+    const finished = reads(nativeId, { type: 'idle' }, turnId, 'completed');
+    await emit(fixture, { ...finished, holdReadThread: nativeId, holdTurn: false }, [
+      lostCompletion(nativeId, turnId),
+    ]);
+    const elsewhere = fixture.envelope({
+      kind: 'message',
+      threadId: other.id,
+      input: { kind: 'text', text: 'Elsewhere' },
+    });
+    await fixture.submit(elsewhere);
+    await fixture.until(
+      () => fixture.receipt(elsewhere.id),
+      (entry) => entry.completion === 'completed',
+    );
+    // the held session's re-check is still waiting on its read
+    expect(await fixture.receipt(message.id)).toMatchObject({ completion: null });
+    await fixture.control({ ...finished, holdTurn: false });
+    await fixture.until(
+      () => fixture.receipt(message.id),
+      (entry) => entry.completion === 'completed',
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test.each([
+  ['malformed-item', 'gap'],
+  ['malformed-delta', 'gap'],
+  ['malformed-turn', 'uncertain'],
+  ['malformed-resolution', 'uncertain'],
+  ['contradictory-completion', 'uncertain'],
+])(
+  '%s native events leave the shared Codex connection open, affecting only their session (%s)',
+  async (scenario, outcome) => {
+    const fixture = await setup();
+    try {
+      const { thread: other } = await fixture.create('other-session');
+      const { thread, nativeId, turnId } = await startHeldTurn(fixture, 'malformed-events');
+      const malformed: Record<string, { method: string; params: unknown }> = {
+        'malformed-turn': {
+          method: 'turn/completed',
+          params: { threadId: nativeId, turn: { status: 'completed' } },
+        },
+        'malformed-item': {
+          method: 'item/completed',
+          params: {
+            threadId: nativeId,
+            turnId,
+            item: { type: 'agentMessage', text: 'Missing identity' },
+          },
+        },
+        'malformed-delta': {
+          method: 'item/agentMessage/delta',
+          params: { threadId: nativeId, turnId, itemId: 'invalid-delta', delta: 42 },
+        },
+        'malformed-resolution': {
+          method: 'serverRequest/resolved',
+          params: { threadId: nativeId, requestId: null },
+        },
+        'contradictory-completion': {
+          method: 'turn/completed',
+          params: { threadId: nativeId, turn: { id: turnId, status: 'inProgress' } },
+        },
+      };
+      // the daemon's saved history shows another turn, which a re-check can't reconcile
+      await emit(fixture, { holdTurn: true }, [malformed[scenario]!]);
+      if (outcome === 'gap') {
+        await expect
+          .poll(async () => {
+            const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
+            return live.kind === 'live-items' && live.result.hasGap;
+          })
+          .toBe(true);
+        expect(await fixture.thread(thread.id)).toMatchObject({
+          state: 'running',
+          ownership: 'managed',
+          activeTurnId: turnId,
+        });
+      } else
+        await fixture.until(
+          () => fixture.thread(thread.id),
+          (entry) => entry.ownership === 'uncertain',
+        );
+      // the connection every Codex session shares stays open
+      await fixture.control({});
+      const elsewhere = fixture.envelope({
+        kind: 'message',
+        threadId: other.id,
+        input: { kind: 'text', text: 'Elsewhere' },
+      });
+      await fixture.submit(elsewhere);
+      await fixture.until(
+        () => fixture.receipt(elsewhere.id),
+        (entry) => entry.completion === 'completed',
+      );
+      expect(await fixture.thread(other.id)).toMatchObject({ ownership: 'managed' });
+    } finally {
+      await fixture.close();
+    }
+  },
+);
+
+const readCalls = async (fixture: Awaited<ReturnType<typeof setup>>, nativeId: string) =>
+  (await fixture.calls()).filter(
+    (call) => call.method === 'thread/read' && call.params.threadId === nativeId,
+  ).length;
+const sendMessage = async (fixture: Awaited<ReturnType<typeof setup>>, threadId: string) => {
+  const message = fixture.envelope({
+    kind: 'message',
+    threadId,
+    input: { kind: 'text', text: 'Still here' },
+  });
+  await fixture.submit(message);
+  return fixture.until(
+    () => fixture.receipt(message.id),
+    (entry) => entry.completion === 'completed',
+  );
+};
+
+test.each([
+  ['finishes', 'completed'],
+  ['never settles', 'inProgress'],
+])(
+  'an oversized Codex message keeps a running turn watched and idle sessions untouched, and Codex reporting it idle settles the turn whose end it may have held (%s)',
+  async (_label, savedStatus) => {
+    startHoldingDelays(2);
+    const fixture = await setup();
+    try {
+      const { thread: first } = await fixture.create('idle-one');
+      const { thread: second } = await fixture.create('idle-two');
+      const { thread, message, nativeId, turnId } = await startHeldTurn(fixture, 'watched');
+      const turns = (status: string) => ({
+        [nativeId]: [{ id: turnId, status, startedAt: 1_800_000_001, completedAt: null }],
+        [first.nativeId!]: [],
+        [second.nativeId!]: [],
+      });
+      await fixture.control({
+        holdTurn: true,
+        threadStatuses: { [nativeId]: { type: 'active', activeFlags: [] } },
+        threadTurns: turns('inProgress'),
+        emitOnce: true,
+        emitOversized: 1,
+      });
+      await fixture.request({ kind: 'usage', provider: 'codex' });
+      await expect.poll(() => readCalls(fixture, second.nativeId!)).toBe(1);
+      // the running turn continues, and the idle sessions keep their ownership and take input
+      expect(await fixture.thread(thread.id)).toMatchObject({
+        state: 'running',
+        ownership: 'managed',
+        activeTurnId: turnId,
+      });
+      await fixture.control({ threadTurns: turns('inProgress') });
+      await sendMessage(fixture, first.id);
+      await sendMessage(fixture, second.id);
+      // Codex reports the watched session idle: its turn's end may have been the lost message
+      await emit(
+        fixture,
+        {
+          holdTurn: true,
+          threadStatuses: { [nativeId]: { type: 'idle' } },
+          threadTurns: turns(savedStatus),
+        },
+        [
+          {
+            method: 'thread/status/changed',
+            params: { threadId: nativeId, status: { type: 'idle' } },
+          },
+        ],
+      );
+      if (savedStatus === 'completed')
+        expect(
+          await fixture.until(
+            () => fixture.receipt(message.id),
+            (entry) => entry.completion !== null,
+          ),
+        ).toMatchObject({ completion: 'completed' });
+      else {
+        await expect.poll(() => countHeldDelays(2)).toBe(1);
+        releaseHeldDelays(2);
+        await fixture.until(
+          () => fixture.thread(thread.id),
+          (entry) => entry.ownership === 'uncertain',
+        );
+      }
+    } finally {
+      stopHoldingDelays();
+      await fixture.close();
+    }
+  },
+);
+
+test('a burst of oversized Codex messages re-checks sessions one read at a time, once each, while actions keep working', async () => {
+  const fixture = await setup();
+  try {
+    const sessions = [];
+    for (const name of ['burst-a', 'burst-b', 'burst-c'])
+      sessions.push((await fixture.create(name)).thread);
+    const [held, ...others] = sessions.map((session) => session.nativeId!);
+    const threadTurns = Object.fromEntries(sessions.map((session) => [session.nativeId!, []]));
+    await fixture.control({
+      holdReadThread: held,
+      threadTurns,
+      emitOnce: true,
+      emitOversized: 2,
+    });
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    await expect.poll(() => readCalls(fixture, held!)).toBe(1);
+    // while the first read is held open, no other re-check reads
+    for (const nativeId of others) expect(await readCalls(fixture, nativeId)).toBe(0);
+    // a session created and messaged during the burst works
+    const { thread: during } = await fixture.create('during-burst');
+    await sendMessage(fixture, during.id);
+    await fixture.control({ threadTurns });
+    // the held session reads once more for the discard that came while it ran; the others once
+    await expect.poll(() => readCalls(fixture, held!)).toBe(2);
+    for (const nativeId of others) await expect.poll(() => readCalls(fixture, nativeId)).toBe(1);
+    for (const session of sessions)
+      expect(await fixture.thread(session.id)).toMatchObject({ ownership: 'managed' });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a lost turn end waiting for its 2-second re-read holds back no other session's re-check", async () => {
+  startHoldingDelays(2);
+  const fixture = await setup();
+  try {
+    const { thread: idle } = await fixture.create('idle-session');
+    const { message, nativeId, turnId } = await startHeldTurn(fixture, 'waiting-reread');
+    const running = (status: string) => ({
+      holdTurn: true,
+      threadStatuses: { [nativeId]: { type: 'active', activeFlags: [] } },
+      threadTurns: {
+        [nativeId]: [{ id: turnId, status, startedAt: 1_800_000_001, completedAt: null }],
+        [idle.nativeId!]: [],
+      },
+    });
+    await emit(fixture, running('inProgress'), [lostCompletion(nativeId, turnId)]);
+    await expect.poll(() => countHeldDelays(2)).toBe(1);
+    await fixture.control({ ...running('inProgress'), emitOnce: true, emitOversized: 1 });
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    await expect.poll(() => readCalls(fixture, idle.nativeId!)).toBe(1);
+    expect(countHeldDelays(2)).toBe(1);
+    await fixture.control(running('completed'));
+    releaseHeldDelays(2);
+    await fixture.until(
+      () => fixture.receipt(message.id),
+      (entry) => entry.completion === 'completed',
+    );
+  } finally {
+    stopHoldingDelays();
+    await fixture.close();
+  }
+});
+
+test('a response over the frame limit is discarded, leaving its request to fail at its deadline while the connection stays open', async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('oversized-response');
+    // the discard re-checks the idle session, whose saved history has no turns
+    const threadTurns = { [thread.nativeId!]: [] };
+    await fixture.control({ oversizeResponseTo: 'account/rateLimits/read', threadTurns });
+    const startedAt = Date.now();
+    const usage = await fixture
+      .request({ kind: 'usage', provider: 'codex' })
+      .catch((error) => error);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(29_000);
+    expect(usage).toMatchObject({ kind: 'usage', result: { state: 'unavailable' } });
+    await fixture.control({ threadTurns });
+    await sendMessage(fixture, thread.id);
+    expect(await fixture.thread(thread.id)).toMatchObject({ ownership: 'managed' });
+  } finally {
+    await fixture.close();
+  }
+  // the request waits out the native connection's 30-second response deadline on purpose
+}, 45_000);

@@ -849,11 +849,7 @@ test.each(['form', 'url'] as const)(
   },
 );
 
-test.each([
-  { requires_user_interaction: true },
-  { unknown_permission_policy: true },
-  { subtype: 'unknown-request' },
-])(
+test.each([{ requires_user_interaction: true }, { subtype: 'unknown-request' }])(
   'Claude does not turn unsupported native permission metadata %j into approval',
   async (permissionMetadata) => {
     await withClaudeRuntime(async (fixture) => {
@@ -868,7 +864,7 @@ test.each([
       expect(await api.approvals(thread.id)).toStrictEqual([]);
       expect(
         (await api.calls()).find((call) => call.type === 'control_response')?.response,
-      ).toMatchObject({ subtype: 'error', error: 'Unsupported request' });
+      ).toMatchObject({ subtype: 'error', error: "HQ couldn't present this request" });
     });
   },
 );
@@ -898,6 +894,49 @@ test('Claude permission acceptance copies only the displayed native input', asyn
       server_policy_ask_only: false,
       decision_reason_rule_source: 'localSettings',
     });
+    const reply = api.envelope({
+      kind: 'native-reply',
+      threadId: thread.id,
+      expectedTurnId: accepted.nativeTurnId!,
+      approvalId: prompt!.id,
+      response: { kind: 'decision', decision: 'accept' },
+    });
+    await api.submit(reply);
+    await api.settled(reply.id);
+    expect(
+      (await api.calls()).find((call) => call.type === 'control_response')!.response?.response,
+    ).toStrictEqual({ behavior: 'allow', updatedInput: { command: 'echo example' } });
+  });
+});
+
+// the request's shape as Claude Code 2.1.316 sends it, with the fields it adds in some modes
+test('Claude permission requests with fields this package does not list reach the operator', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture),
+      { thread } = await api.create();
+    await fixture.control({
+      prompt: 'permission',
+      permissionMetadata: {
+        description: 'Write note.txt',
+        display_name: 'Write',
+        permission_suggestions: [],
+        decision_reason_code: 'classifier_transcript_too_long',
+        decision_reason_hook_event: 'PreToolUse',
+        decision_reason_hook_source: 'userSettings',
+        decision_reason_hook_plugin_id: 'example-plugin',
+        tool_kind: 'browser',
+      },
+    });
+    const input = await api.message(thread.id),
+      accepted = await api.settled(input.id);
+    const [prompt] = await api.until(
+      () => api.approvals(thread.id),
+      (rows) => rows.length === 1,
+    );
+    const detail = JSON.parse(prompt!.presentation!.detail);
+    expect(detail).toMatchObject({ description: 'Write note.txt', display_name: 'Write' });
+    expect(detail).not.toHaveProperty('decision_reason_code');
+    expect(detail).not.toHaveProperty('tool_kind');
     const reply = api.envelope({
       kind: 'native-reply',
       threadId: thread.id,
@@ -1270,6 +1309,61 @@ test('a parked Claude session reopens for a message and a rename with its settin
   });
 });
 
+test('a Claude session reports its instructions only while its process started the conversation', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const create = api.envelope({
+      kind: 'thread-create',
+      provider: 'claude',
+      workspaceRoot: fixture.workspaceRoot,
+      name: 'instructed-session',
+      settings: {
+        systemInstructions: 'Answer briefly.',
+        developerInstructions: 'Name the files you read.',
+      },
+    });
+    const admitted = await api.submit(create);
+    await api.settled(create.id);
+    const thread = await api.thread(admitted.threadId!);
+    const instructions = async () => {
+      const response = await fixture.request({
+        kind: 'configuration',
+        provider: 'claude',
+        workspaceRoot: fixture.workspaceRoot,
+        threadId: thread.id,
+      });
+      if (response.kind !== 'configuration') throw new Error('Missing configuration');
+      const { systemInstructions, developerInstructions } = response.result.effective;
+      return { systemInstructions, developerInstructions };
+    };
+    expect(await instructions()).toStrictEqual({
+      systemInstructions: 'Answer briefly.',
+      developerInstructions: 'Name the files you read.',
+    });
+    const turn = async (text: string) => {
+      const input = await api.message(thread.id, text);
+      await api.until(
+        () => api.receipt(input.id),
+        (entry) => entry.completion === 'completed',
+      );
+    };
+    await turn('First request');
+    // the first process still reports what it started with
+    expect(await instructions()).toStrictEqual({
+      systemInstructions: 'Answer briefly.',
+      developerInstructions: 'Name the files you read.',
+    });
+    await parkIdleSessions(fixture);
+    await turn('Second request');
+    // the reopened process resumed the conversation, so Claude kept its recorded instructions
+    expect((await readStarts(fixture)).at(-1)!.args).toContain('--resume');
+    expect(await instructions()).toStrictEqual({
+      systemInstructions: null,
+      developerInstructions: null,
+    });
+  });
+});
+
 test('a parked Claude session keeps its controlled slot, so 32 processes never run beside it and it still reopens', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture);
@@ -1298,3 +1392,289 @@ test('a parked Claude session keeps its controlled slot, so 32 processes never r
   });
   // starting 32 native sessions, one after another, is legitimately slow
 }, 120_000);
+
+// waits for the turn Claude starts on its own and returns the ID HQ gave it
+const awaitNativeTurn = async (api: Awaited<ReturnType<typeof actions>>, threadId: string) =>
+  (
+    await api.until(
+      () => api.thread(threadId),
+      (entry) => entry.state === 'running' && entry.activeTurnId !== null,
+    )
+  ).activeTurnId!;
+const writtenInputs = async (api: Awaited<ReturnType<typeof actions>>) =>
+  (await api.calls()).filter((call) => call.type === 'user');
+
+test('a turn Claude starts on its own runs as session activity, streams live items and completes at its result', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture),
+      { thread } = await api.create();
+    await fixture.control({ nativeTurn: 'after-background-command', nativeHold: true });
+    const turnId = await awaitNativeTurn(api, thread.id);
+    // Claude sends no user frame for this turn, so HQ gives it an ID of its own
+    expect(z.uuid().safeParse(turnId).success).toBe(true);
+    const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
+    expect(live).toMatchObject({
+      result: {
+        data: expect.arrayContaining([
+          expect.objectContaining({ turnId, kind: 'agent-message', text: 'Native follow-up' }),
+        ]),
+      },
+    });
+    await fixture.control({ nativeRelease: true });
+    await api.until(
+      () => api.thread(thread.id),
+      (entry) => entry.state === 'completed' && entry.activeTurnId === null,
+    );
+    expect((await api.thread(thread.id)).ownership).toBe('managed');
+    // the session stays available and takes input afterwards
+    const input = await api.message(thread.id, 'Next request');
+    expect(
+      await api.until(
+        () => api.receipt(input.id),
+        (entry) => entry.completion !== null,
+      ),
+    ).toMatchObject({
+      completion: 'completed',
+      result: { text: 'Native response to Next request' },
+    });
+  });
+});
+
+test('Stop interrupts a turn Claude started on its own and completes it as interrupted', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture),
+      { thread } = await api.create();
+    await fixture.control({ nativeTurn: 'after-background-command', nativeHold: true });
+    const turnId = await awaitNativeTurn(api, thread.id);
+    const stop = api.envelope({ kind: 'interrupt', threadId: thread.id, expectedTurnId: turnId });
+    await api.submit(stop);
+    await api.settled(stop.id);
+    await api.until(
+      () => api.thread(thread.id),
+      (entry) => entry.state === 'interrupted' && entry.activeTurnId === null,
+    );
+    expect(
+      (await api.calls()).filter((call) => call.request?.subtype === 'interrupt'),
+    ).toHaveLength(1);
+    await fixture.control({});
+    const input = await api.message(thread.id, 'After the stop');
+    expect(
+      (
+        await api.until(
+          () => api.receipt(input.id),
+          (entry) => entry.completion !== null,
+        )
+      ).completion,
+    ).toBe('completed');
+  });
+});
+
+test('input queued while a turn Claude started runs is delivered after that turn completes', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture),
+      { thread } = await api.create();
+    await fixture.control({ nativeTurn: 'after-background-command', nativeHold: true });
+    const turnId = await awaitNativeTurn(api, thread.id);
+    const queued = api.envelope({
+      kind: 'queue',
+      threadId: thread.id,
+      expectedTurnId: turnId,
+      input: { kind: 'text', text: 'Follow up' },
+    });
+    expect((await api.submit(queued)).delivery).toBe('queued');
+    expect(await writtenInputs(api)).toHaveLength(0);
+    await fixture.control({ nativeRelease: true });
+    expect(
+      await api.until(
+        () => api.receipt(queued.id),
+        (entry) => entry.completion !== null,
+      ),
+    ).toMatchObject({ completion: 'completed', result: { text: 'Native response to Follow up' } });
+    expect(await writtenInputs(api)).toHaveLength(1);
+  });
+});
+
+test.each([
+  ['a message', 'Waiting request', 'Native response to Waiting request'],
+  ['a compaction', '/compact', 'Native response to /compact'],
+])(
+  '%s waiting for acknowledgement when Claude starts a turn of its own keeps its own turn, result and completion',
+  async (_label, text, response) => {
+    await withClaudeRuntime(async (fixture) => {
+      const api = await actions(fixture),
+        { thread } = await api.create();
+      await fixture.control({ nativeBeforeReplay: true, holdTurn: true });
+      const action =
+        text === '/compact'
+          ? api.envelope({ kind: 'thread-compact', threadId: thread.id })
+          : await api.message(thread.id, text);
+      if (text === '/compact') await api.submit(action);
+      // Claude replays the input after its own turn, whose result is held by no receipt
+      const acknowledged = await api.until(
+        () => api.receipt(action.id),
+        (entry) => entry.delivery === 'acknowledged',
+      );
+      const [written] = await writtenInputs(api);
+      expect(acknowledged).toMatchObject({
+        nativeTurnId: written!.uuid,
+        completion: null,
+        result: null,
+      });
+      expect((await api.thread(thread.id)).activeTurnId).toBe(written!.uuid);
+      await fixture.control({ release: true });
+      expect(
+        await api.until(
+          () => api.receipt(action.id),
+          (entry) => entry.completion !== null,
+        ),
+      ).toMatchObject({
+        nativeTurnId: written!.uuid,
+        completion: 'completed',
+        result: { text: response },
+      });
+    });
+  },
+);
+
+test('input written just before a turn Claude starts that outlasts the acknowledgement deadline is uncertain until its replay, then completes as its own turn', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture),
+      { thread } = await api.create();
+    await fixture.control({ nativeBeforeReplay: true, nativeTurnMs: 31_000 });
+    const input = await api.message(thread.id, 'Early request');
+    await api.until(
+      () => api.receipt(input.id),
+      (entry) => entry.delivery === 'uncertain',
+      32_000,
+    );
+    const done = await api.until(
+      () => api.receipt(input.id),
+      (entry) => entry.completion !== null,
+      8_000,
+    );
+    const [written] = await writtenInputs(api);
+    expect(done).toMatchObject({
+      delivery: 'acknowledged',
+      nativeTurnId: written!.uuid,
+      completion: 'completed',
+      result: { text: 'Native response to Early request' },
+    });
+    expect(await api.thread(thread.id)).toMatchObject({
+      ownership: 'managed',
+      state: 'completed',
+      activeTurnId: null,
+    });
+    expect(await writtenInputs(api)).toHaveLength(1);
+  });
+  // the turn Claude starts outlasts the 30-second acknowledgement deadline on purpose
+}, 45_000);
+
+test.each([false, true])(
+  'a permission prompt during a turn Claude started reaches the operator under that turn, and its reply is written (input waiting: %s)',
+  async (isInputWaiting) => {
+    await withClaudeRuntime(async (fixture) => {
+      const api = await actions(fixture),
+        { thread } = await api.create();
+      await fixture.control(
+        isInputWaiting
+          ? { nativeBeforeReplay: true, nativePrompt: true }
+          : { nativeTurn: 'after-background-command', nativePrompt: true },
+      );
+      const input = isInputWaiting ? await api.message(thread.id, 'Waiting request') : null;
+      const [prompt] = await api.until(
+        () => api.approvals(thread.id),
+        (rows) => rows.length === 1,
+      );
+      const turnId = (await api.thread(thread.id)).activeTurnId;
+      expect(prompt).toMatchObject({ kind: 'permission', nativeTurnId: turnId });
+      if (input) expect(turnId).not.toBe((await writtenInputs(api))[0]!.uuid);
+      const reply = api.envelope({
+        kind: 'native-reply',
+        threadId: thread.id,
+        expectedTurnId: turnId!,
+        approvalId: prompt!.id,
+        response: { kind: 'decision', decision: 'accept' },
+      });
+      await api.submit(reply);
+      await api.settled(reply.id);
+      const written = (await api.calls()).find((call) => call.type === 'control_response');
+      expect(written?.response).toMatchObject({
+        request_id: 'native-turn-request',
+        response: { behavior: 'allow' },
+      });
+      if (input)
+        expect(
+          await api.until(
+            () => api.receipt(input.id),
+            (entry) => entry.completion !== null,
+          ),
+        ).toMatchObject({
+          completion: 'completed',
+          result: { text: 'Native response to Waiting request' },
+        });
+      await api.until(
+        () => api.thread(thread.id),
+        (entry) => entry.state === 'completed' && entry.activeTurnId === null,
+      );
+    });
+  },
+);
+
+test('a permission prompt left unanswered expires when the turn Claude started ends', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture),
+      { thread } = await api.create();
+    await fixture.control({ nativeTurn: 'after-background-command', nativePrompt: true });
+    const [prompt] = await api.until(
+      () => api.approvals(thread.id),
+      (rows) => rows.length === 1,
+    );
+    await fixture.control({ nativeAbandonPrompt: true });
+    await api.until(
+      () => api.thread(thread.id),
+      (entry) => entry.state === 'completed' && entry.activeTurnId === null,
+    );
+    expect(await api.approvals(thread.id)).toHaveLength(0);
+    const expired = await fixture.request({
+      kind: 'approvals',
+      threadId: thread.id,
+      state: 'expired',
+    });
+    expect(expired).toMatchObject({
+      result: { data: [expect.objectContaining({ id: prompt!.id, state: 'expired' })] },
+    });
+    expect((await api.calls()).some((call) => call.type === 'control_response')).toBe(false);
+  });
+});
+
+test('a Claude session keeps its process while a background command it started runs, and parks once none runs', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture),
+      { thread } = await api.create();
+    await expect.poll(() => countHeldDelays(3_600)).toBe(1);
+    await fixture.control({ backgroundTask: true });
+    const input = await api.message(thread.id, 'Start a background command');
+    await api.until(
+      () => api.receipt(input.id),
+      (entry) => entry.completion === 'completed',
+    );
+    // the idle period that starts at the turn's end passes while the command still runs
+    await expect.poll(() => countHeldDelays(3_600)).toBe(1);
+    expect(releaseHeldDelays(3_600)).toBe(1);
+    await expect.poll(() => countHeldDelays(3_600)).toBe(1);
+    expect((await readPids(fixture)).every(isRunning)).toBe(true);
+    // the command finishes, and Claude starts a turn of its own to report it
+    await fixture.control({
+      finishBackgroundTask: true,
+      nativeTurn: 'after-background-command',
+      nativeHold: true,
+    });
+    await awaitNativeTurn(api, thread.id);
+    await fixture.control({ nativeRelease: true });
+    await api.until(
+      () => api.thread(thread.id),
+      (entry) => entry.state === 'completed' && entry.activeTurnId === null,
+    );
+    await parkIdleSessions(fixture);
+  });
+});

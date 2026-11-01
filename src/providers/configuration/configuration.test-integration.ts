@@ -99,7 +99,9 @@ test.each(['codex', 'claude'])(
           effective: {
             model: 'model-0003',
             effort: 'restart-effort',
-            developerInstructions: restartSettings.developerInstructions,
+            // Claude reuses the instructions it recorded when the conversation began
+            developerInstructions:
+              provider === 'claude' ? null : restartSettings.developerInstructions,
           },
         },
       });
