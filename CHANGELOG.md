@@ -1,5 +1,9 @@
 # Changelog
 
+## 10.6.0
+
+- Steer a Claude session's active turn. Claude reports `steer` as supported and writes the text as a user message into the exact active turn, without interrupting it, and acknowledges the steer when Claude replays the message: at the turn's next tool boundary, where the turn takes it in and ends with one result, or, for text written while the turn's final answer streams, after the turn's result, where it runs as the session's next turn under the message's UUID. Either replay acknowledges the steer against the turn it named. A steer never replayed fails 30 seconds after that turn ends, and one pending when the process stops fails at once. Claude used to reject `steer` as unavailable.
+
 ## 10.5.4
 
 - Keep a Claude response's parallel tool calls in its history when their results finish out of order. Claude Code links each result to its own call, so a result that came back after a later call's result started a side branch, and history left out the later calls and results: they stayed `awaiting-flush` after the session's answer, and an open page's cursor was rejected as changed. Such a result now follows the latest record of its turn. Every Claude history is indexed again once.

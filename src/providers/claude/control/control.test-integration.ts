@@ -159,7 +159,7 @@ test('Claude creates and names an idle native session, deduplicates input and re
     });
     expect(capabilities).toMatchObject({
       kind: 'capabilities',
-      result: { operations: { steer: { state: 'unsupported' } } },
+      result: { operations: { steer: { state: 'supported' } } },
     });
     const created = await api.create();
     expect(created.thread).toMatchObject({ provider: 'claude', name: 'fix-login', state: 'idle' });
@@ -387,31 +387,112 @@ test('Claude interrupt acknowledgement does not complete the turn or dispatch qu
   });
 });
 
-test('Claude rejects steering and stale interruptions without substituting another action', async () => {
+test('Claude steers the running turn, which takes the text in and ends once, and refuses a stale steer or interrupt', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture),
       { thread } = await api.create();
-    await fixture.control({ holdTurn: true });
+    // Claude takes the text in at the turn's next tool boundary, as it does for a tool-using turn
+    await fixture.control({ holdTurn: true, steer: 'join' });
     const input = await api.message(thread.id),
       accepted = await api.settled(input.id);
-    await expectToRejectCode(
-      fixture.runtime.request({
-        kind: 'action',
-        action: api.envelope({
-          kind: 'steer',
-          threadId: thread.id,
-          expectedTurnId: accepted.nativeTurnId!,
-          text: 'Change direction',
-        }),
-      }),
-      'JG_AGENT_HQ_CAPABILITY_UNAVAILABLE',
-      'The HQ capability is unavailable',
-    );
+    const steer = api.envelope({
+      kind: 'steer',
+      threadId: thread.id,
+      expectedTurnId: accepted.nativeTurnId!,
+      text: 'Also check the logout path',
+    });
+    await api.submit(steer);
+    expect(await api.settled(steer.id)).toMatchObject({ nativeTurnId: accepted.nativeTurnId });
+    // the turn runs on, uninterrupted, with the text among its live items
+    expect((await api.thread(thread.id)).activeTurnId).toBe(accepted.nativeTurnId);
+    const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
+    if (live.kind !== 'live-items') throw new Error('Missing live items');
+    expect(
+      live.result.data
+        .filter((item) => item.kind === 'user-message')
+        .map(({ text, turnId }) => [text, turnId]),
+    ).toContainEqual(['Also check the logout path', accepted.nativeTurnId]);
+    const users = (await api.calls()).filter((call) => call.type === 'user');
+    expect(users).toHaveLength(2);
+    expect((await api.calls()).some((call) => call.request?.subtype === 'interrupt')).toBe(false);
+
     const stale = await api.submit(
-      api.envelope({ kind: 'interrupt', threadId: thread.id, expectedTurnId: 'different-turn' }),
+      api.envelope({
+        kind: 'steer',
+        threadId: thread.id,
+        expectedTurnId: 'different-turn',
+        text: 'Too late',
+      }),
     );
     expect(stale).toMatchObject({ delivery: 'failed', failure: 'state-conflict' });
-    expect((await api.calls()).some((call) => call.request?.subtype === 'interrupt')).toBe(false);
+    const staleStop = await api.submit(
+      api.envelope({ kind: 'interrupt', threadId: thread.id, expectedTurnId: 'different-turn' }),
+    );
+    expect(staleStop).toMatchObject({ delivery: 'failed', failure: 'state-conflict' });
+    expect((await api.calls()).filter((call) => call.type === 'user')).toHaveLength(2);
+
+    await fixture.control({ release: true, steer: 'join' });
+    await api.until(
+      () => api.receipt(input.id),
+      (entry) => entry.completion === 'completed',
+    );
+    expect((await api.thread(thread.id)).activeTurnId).toBeNull();
+  });
+});
+
+test("a Claude steer written while the turn's answer streams runs as the next turn, once the turn ends", async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture),
+      { thread } = await api.create();
+    // Claude ends the turn first, then replays the text and answers it as a turn of its own
+    await fixture.control({ holdTurn: true, steer: 'next' });
+    const input = await api.message(thread.id),
+      accepted = await api.settled(input.id);
+    const steer = api.envelope({
+      kind: 'steer',
+      threadId: thread.id,
+      expectedTurnId: accepted.nativeTurnId!,
+      text: 'Add a summary at the end',
+    });
+    await api.submit(steer);
+    expect((await api.receipt(steer.id)).delivery).not.toBe('acknowledged');
+
+    await fixture.control({ release: true, steer: 'next' });
+    // the steer is acknowledged against the turn it named, which completed as it was
+    expect(await api.settled(steer.id)).toMatchObject({ nativeTurnId: accepted.nativeTurnId });
+    await api.until(
+      () => api.receipt(input.id),
+      (entry) => entry.completion === 'completed',
+    );
+    // the next turn answers the steer, and the session has no turn running once it ends
+    const readHistory = async () => {
+      const history = await fixture.request({
+        kind: 'items',
+        provider: 'claude',
+        workspaceRoot: fixture.workspaceRoot,
+        nativeId: thread.nativeId!,
+      });
+      if (history.kind !== 'items') throw new Error('Missing history');
+      return history.result.data.map(({ kind, text, turnId }) => ({ kind, text, turnId }));
+    };
+    const [answer, asked] = await api.until(
+      readHistory,
+      ([newest]) => newest?.text.startsWith('Native response to Add a summary') ?? false,
+    );
+    expect([answer, asked]).toStrictEqual([
+      {
+        kind: 'agent-message',
+        text: 'Native response to Add a summary at the end',
+        turnId: asked!.turnId,
+      },
+      { kind: 'user-message', text: 'Add a summary at the end', turnId: asked!.turnId },
+    ]);
+    // a turn of its own, after the turn the steer named
+    expect(asked!.turnId).not.toBe(accepted.nativeTurnId);
+    await api.until(
+      () => api.thread(thread.id),
+      (entry) => entry.activeTurnId === null && entry.state === 'completed',
+    );
   });
 });
 

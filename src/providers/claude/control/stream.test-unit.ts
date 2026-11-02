@@ -18,6 +18,7 @@ const createSession = (): IClaudeSession => ({
   opening: Promise.resolve(),
   previews: new Map(),
   requests: new Map(),
+  steers: new Map(),
   input: {
     id: 'input',
     requestId: 'request',
@@ -417,4 +418,126 @@ test("a subagent's tool result still settles the approval it asked for", () => {
   );
   expect(resolved).toStrictEqual(['scoped-request']);
   expect(session.requests.size).toBe(0);
+});
+
+// the input's turn and the steer written into it, each a UUID, as results name them
+const INPUT = '11111111-1111-4111-8111-111111111111';
+const STEER = '22222222-2222-4222-8222-222222222222';
+
+// a steer HQ wrote into the input's turn, with what it settled with
+const addSteer = (session: IClaudeSession) => {
+  session.input!.id = INPUT;
+  const settled: { turnId?: string; error?: unknown } = {};
+  session.steers.set(STEER, {
+    id: STEER,
+    turnId: INPUT,
+    resolve: (turnId) => {
+      settled.turnId = turnId;
+    },
+    reject: (error) => {
+      settled.error = error;
+    },
+  });
+  return settled;
+};
+const userFrame = (uuid: string, content: unknown) => ({
+  type: 'user',
+  session_id: 'session',
+  uuid,
+  message: { role: 'user', content },
+});
+const resultFrame = (userMessageUuid: string) => ({
+  type: 'result',
+  session_id: 'session',
+  subtype: 'success',
+  is_error: false,
+  user_message_uuid: userMessageUuid,
+  result: 'Done',
+});
+
+test('a steer Claude replays at a tool boundary joins the turn it named, which ends with one result', () => {
+  const session = createSession();
+  const { events, items } = createEvents();
+  const observed: unknown[] = [];
+  events.observe = (observation) => observed.push(observation);
+  const settled = addSteer(session);
+
+  receiveClaudeMessage(session, userFrame(STEER, 'Also run the linter.'), events);
+
+  expect(settled).toStrictEqual({ turnId: INPUT });
+  expect(session.steers.size).toBe(0);
+  expect(session.nativeTurn).toBeUndefined();
+  expect(items.map(({ item }) => [item.kind, item.turnId, item.text])).toStrictEqual([
+    ['user-message', INPUT, 'Also run the linter.'],
+  ]);
+  receiveClaudeMessage(session, resultFrame(INPUT), events);
+  expect(observed).toStrictEqual([
+    expect.objectContaining({ kind: 'turn-completed', nativeTurnId: INPUT, state: 'completed' }),
+  ]);
+});
+
+test("a steer Claude replays after its turn's result runs as the next turn, which its result ends", () => {
+  vi.useFakeTimers();
+  const session = createSession();
+  const { events, items } = createEvents();
+  const observed: { kind: string; nativeTurnId?: string; isAgentInitiated?: boolean }[] = [];
+  events.observe = (observation) => observed.push(observation);
+  const settled = addSteer(session);
+
+  // written while the final answer streamed, so Claude ends the turn first
+  receiveClaudeMessage(session, resultFrame(INPUT), events);
+  expect(settled).toStrictEqual({});
+  receiveClaudeMessage(session, userFrame(STEER, 'Also add a summary.'), events);
+  vi.advanceTimersByTime(60_000);
+
+  expect(settled).toStrictEqual({ turnId: INPUT });
+  expect(session.nativeTurn?.id).toBe(STEER);
+  receiveClaudeMessage(
+    session,
+    {
+      type: 'assistant',
+      session_id: 'session',
+      uuid: 'answer',
+      message: {
+        id: 'api-answer',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Summary' }],
+      },
+    },
+    events,
+  );
+  receiveClaudeMessage(session, resultFrame(STEER), events);
+
+  expect(items.map(({ item }) => [item.kind, item.turnId])).toStrictEqual([
+    ['user-message', STEER],
+    ['agent-message', STEER],
+  ]);
+  // the operator's steer started it, not Claude
+  expect(
+    observed.map(({ kind, nativeTurnId, isAgentInitiated }) => [
+      kind,
+      nativeTurnId,
+      isAgentInitiated,
+    ]),
+  ).toStrictEqual([
+    ['turn-completed', INPUT, undefined],
+    ['turn-started', STEER, undefined],
+    ['turn-completed', STEER, undefined],
+  ]);
+  expect(session.nativeTurn).toBeUndefined();
+});
+
+test('a steer Claude never replays fails 30 seconds after the turn it named ended', () => {
+  vi.useFakeTimers();
+  const session = createSession();
+  const { events } = createEvents();
+  const settled = addSteer(session);
+
+  receiveClaudeMessage(session, resultFrame(INPUT), events);
+  vi.advanceTimersByTime(29_999);
+  expect(settled).toStrictEqual({});
+  vi.advanceTimersByTime(1);
+
+  expect(settled.error).toMatchObject({ code: 'JG_AGENT_HQ_CLAUDE_FAILED' });
+  expect(session.steers.size).toBe(0);
 });
