@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, fstatSync, opendirSync, readSync, type Dir } from 'node:fs';
-import type { DatabaseSync, StatementSync } from 'node:sqlite';
+import type { DatabaseSync, SQLOutputValue, StatementSync } from 'node:sqlite';
 import { Exception, extractMessage, hasErrorCode, isException } from 'jg-exception';
 import { z } from 'zod';
 
@@ -51,7 +51,7 @@ import {
 } from './utilities.js';
 
 // identifies the path and record interpretation used by persisted projection entries
-const HISTORY_PROJECTION_VERSION = 7;
+const HISTORY_PROJECTION_VERSION = 8;
 // one record, such as a tool result holding images, and an indexing read, which fits the largest
 const MAX_RECORD_BYTES = 8_388_608;
 const MAX_REFRESH_BYTES = 16_777_216;
@@ -95,7 +95,7 @@ export class ClaudeHistoryModel {
     this.__database = database;
     this.__recordStatements = {
       parentTurn: database.prepare(
-        `SELECT turn_id, turn_start_offset, anchor_id FROM hq_claude_entry
+        `SELECT turn_id, turn_start_offset, anchor_id, is_current FROM hq_claude_entry
       WHERE workspace_root = ? AND native_id = ? AND uuid = ?`,
       ),
       recordedParent: database.prepare(
@@ -911,24 +911,41 @@ export class ClaudeHistoryModel {
       this.__unavailable();
     const createdAt = Date.parse(record.timestamp);
     const statements = this.__recordStatements;
-    const parentUuid = readClaudeParentUuid(record);
-    const parent = parentUuid ? statements.parentTurn.get(root, nativeId, parentUuid) : undefined;
+    const nativeParentUuid = readClaudeParentUuid(record);
+    const nativeParent = nativeParentUuid
+      ? statements.parentTurn.get(root, nativeId, nativeParentUuid)
+      : undefined;
     // the CLI's presentation decides what is shown, the kind evidence filters on and where turns start
     const item =
       record.message !== undefined && !record.isMeta ? toClaudeItem(record, record.uuid) : null;
     const visible = item !== null;
-    if (parentUuid === record.uuid) this.__unavailable();
-    if (parentUuid && !parent) {
+    if (nativeParentUuid === record.uuid) this.__unavailable();
+    if (nativeParentUuid && !nativeParent) {
       if (visible) this.__unavailable();
-      if (!isOrphanAllowed) return parentUuid;
+      if (!isOrphanAllowed) return nativeParentUuid;
     }
+    const previous = statements.recordedParent.get(root, nativeId, record.uuid);
+    const isCallResult =
+      item?.nativeType === 'tool-result' &&
+      nativeParentUuid !== null &&
+      record.sourceToolAssistantUUID === nativeParentUuid;
+    // a result indexed again keeps the record it was made to follow
+    const parentUuid =
+      isCallResult && typeof previous?.parent_uuid === 'string'
+        ? previous.parent_uuid
+        : isCallResult && !previous
+          ? this.__resultParent(root, nativeId, row, nativeParentUuid, nativeParent)
+          : nativeParentUuid;
+    const parent =
+      parentUuid === nativeParentUuid
+        ? nativeParent
+        : statements.parentTurn.get(root, nativeId, parentUuid!);
     const textPrompt = item?.kind === 'user-message';
     const turnId = textPrompt
       ? record.uuid
       : typeof parent?.turn_id === 'string'
         ? parent.turn_id
         : record.uuid;
-    const previous = statements.recordedParent.get(root, nativeId, record.uuid);
     if (previous && previous.parent_uuid !== parentUuid) this.__unavailable();
     const isAppend = row.leaf_id === null || parent?.anchor_id === row.leaf_id;
     const isSameLeaf = record.uuid === row.leaf_id && previous?.parent_uuid === parentUuid;
@@ -969,6 +986,32 @@ export class ClaudeHistoryModel {
     row.created_at = Math.min(row.created_at, createdAt);
     row.updated_at = Math.max(row.updated_at, createdAt);
     return null;
+  }
+
+  /**
+   * Claude Code links a tool result to its own call. When parallel calls finish out of order, an
+   * earlier call is no longer the leaf, so its result would start a side branch that the current
+   * chain leaves out, with the calls and results written after that call. Such a result follows
+   * the leaf of its call's turn instead, which keeps one response's calls and all their results
+   * on the chain; the record after them follows the last result written, the leaf by then.
+   * @returns The record the result follows in the projection: the leaf, or its own call.
+   */
+  private __resultParent(
+    root: string,
+    nativeId: string,
+    row: IFileRow,
+    callUuid: string,
+    call: Record<string, SQLOutputValue> | undefined,
+  ): string {
+    if (
+      row.leaf_id === null ||
+      call?.is_current !== 1 ||
+      call.anchor_id !== callUuid ||
+      call.anchor_id === row.leaf_id
+    )
+      return callUuid;
+    const leaf = this.__recordStatements.parentTurn.get(root, nativeId, row.leaf_id);
+    return leaf?.is_current === 1 && leaf.turn_id === call.turn_id ? row.leaf_id : callUuid;
   }
 
   private __hasEntry(root: string, nativeId: string, uuid: string): boolean {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 10.5.4
+
+- Keep a Claude response's parallel tool calls in its history when their results finish out of order. Claude Code links each result to its own call, so a result that came back after a later call's result started a side branch, and history left out the later calls and results: they stayed `awaiting-flush` after the session's answer, and an open page's cursor was rejected as changed. Such a result now follows the latest record of its turn. Every Claude history is indexed again once.
+
 ## 10.5.3
 
 - Leave a Claude subagent's stream frames, which name the Agent call that started it, out of a session's live items and turns. History leaves the subagent's sidechain out, so its prompt, tool calls and results stayed `awaiting-flush` after the session's answer, its prompt read as the operator's message, and a background subagent's frames after the session's turn started a turn of Claude's own that never ended, which held the next message as starting. A subagent's tool results still settle the approvals it asked for.

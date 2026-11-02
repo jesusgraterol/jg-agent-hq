@@ -61,6 +61,8 @@ export const RecordSchema = z.object({
   message: z.object({ role: z.string(), content: z.unknown() }).optional(),
   // the CLI's own result metadata, such as an edit's patch, which live frames call tool_use_result
   toolUseResult: z.unknown().optional(),
+  // the call a tool result answers, which Claude Code also writes as the result's parent
+  sourceToolAssistantUUID: z.string().optional(),
 });
 export type IRecord = z.infer<typeof RecordSchema>;
 // the file Claude Code records on an Edit or Write result; a created file's patch is empty

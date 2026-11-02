@@ -440,6 +440,92 @@ test('incomplete tails are retained, appends advance, and changed chain revision
   });
 });
 
+test('parallel tool calls whose results finish out of order stay in the history, and a page cursor stays valid', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const target = { provider: 'claude', workspaceRoot, nativeId } as const;
+    const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'Search three things' });
+    const records: Record<string, unknown>[] = [prompt];
+    // one response calls three tools, each block a record that follows the one before
+    const calls = ['first', 'second', 'third'].map((query, index) => {
+      const call = {
+        ...claudeRecord(workspaceRoot, nativeId, {
+          type: 'assistant',
+          parentUuid: index === 0 ? prompt.uuid : (records.at(-1) as { uuid: string }).uuid,
+        }),
+        message: {
+          id: 'msg_parallel',
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: `toolu_${query}`, name: 'WebSearch', input: { query } },
+          ],
+        },
+      };
+      records.push(call);
+      return call;
+    });
+    // Claude Code links each result to its own call, and the reply to the last result written
+    const result = (index: number) => ({
+      ...claudeRecord(workspaceRoot, nativeId, { parentUuid: calls[index]!.uuid }),
+      sourceToolAssistantUUID: calls[index]!.uuid,
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: `toolu_${['first', 'second', 'third'][index]}`,
+            content: `found ${index}`,
+          },
+        ],
+      },
+    });
+    const third = result(2);
+    const first = result(0);
+    const second = result(1);
+    const write = (rows: Record<string, unknown>[]) =>
+      appendFile(transcript(nativeId), rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+    await write([...records, third]);
+    const page = await request({ kind: 'items', ...target, limit: 2 });
+    if (page.kind !== 'items') throw new Error('wrong response');
+    expect(page.result.data.map((item) => item.nativeId)).toStrictEqual([
+      third.uuid,
+      calls[2]!.uuid,
+    ]);
+    const reply = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: second.uuid,
+      text: 'All three found',
+    });
+    await write([first, second, reply]);
+    const items = await request({ kind: 'items', ...target });
+    expect(items.kind === 'items' && items.result.data.map((item) => item.nativeId)).toStrictEqual(
+      [reply, second, first, third, ...[...calls].reverse(), prompt].map((record) => record.uuid),
+    );
+    // the results came back without branching the chain, so the open page still reads on
+    const older = await request({
+      kind: 'items',
+      ...target,
+      limit: 2,
+      cursor: page.result.nextCursor!,
+    });
+    expect(older.kind === 'items' && older.result.data.map((item) => item.nativeId)).toStrictEqual([
+      calls[1]!.uuid,
+      calls[0]!.uuid,
+    ]);
+    // the first call's result, now furthest from its call, still finds it and its tool's name
+    const detail = await request({
+      kind: 'item-detail',
+      ...target,
+      turnId: prompt.uuid,
+      nativeItemId: first.uuid,
+    });
+    expect(detail.kind === 'item-detail' && detail.result?.tool).toMatchObject({
+      name: 'WebSearch',
+      result: 'found 0',
+    });
+  });
+});
+
 test('reads over unchanged transcripts write nothing to SQLite, while an append and a removal are indexed', async () => {
   await withClaudeRuntime(async ({ workspaceRoot, stateRoot, transcript, request }) => {
     const sessions = [randomUUID(), randomUUID()].map((nativeId) => {
