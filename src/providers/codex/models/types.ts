@@ -16,6 +16,11 @@ export const NativeModelsSchema = z.object({
           .max(32),
         defaultReasoningEffort: z.string().min(1).max(64),
         isDefault: z.boolean(),
+        // absent from catalogs older than service tiers, where fast support is unknown
+        serviceTiers: z
+          .array(z.object({ id: z.string().min(1).max(256) }))
+          .max(32)
+          .optional(),
       }),
     )
     .max(MAX_PAGE_SIZE),

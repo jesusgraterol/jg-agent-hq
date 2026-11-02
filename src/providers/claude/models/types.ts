@@ -13,6 +13,7 @@ export const NativeModelsSchema = z
           displayName: ProviderModelSchema.shape.name,
           description: ProviderModelSchema.shape.description,
           supportedEffortLevels: z.array(z.string().min(1).max(64)).max(32).optional(),
+          supportsFastMode: z.boolean().optional(),
         }),
       )
       .max(4096),

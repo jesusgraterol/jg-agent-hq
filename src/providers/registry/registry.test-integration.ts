@@ -174,6 +174,8 @@ const createFixtureProvider = () => {
           effective: {
             model: null,
             effort: null,
+            fast: null,
+            fastUnavailableReason: null,
             nativeAgent: null,
             nativeProfile: null,
             permissionMode: null,

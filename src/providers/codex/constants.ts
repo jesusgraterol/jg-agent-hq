@@ -20,3 +20,7 @@ export const LOST_NOTIFICATIONS = new Map<string, IResyncLoss>([
 
 // the session statuses this adapter knows; a newer one reads as an unknown native state
 export const KNOWN_NATIVE_STATES = ['notLoaded', 'idle', 'systemError', 'active'] as const;
+
+// the service tiers Codex names Fast and standard; a turn's tier also applies to the turns after it
+export const CODEX_FAST_SERVICE_TIER = 'priority';
+export const CODEX_STANDARD_SERVICE_TIER = 'default';

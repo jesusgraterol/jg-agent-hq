@@ -9,6 +9,8 @@ const SelectionSchema = z.string().min(1).max(256);
 export const TurnSettingsSchema = z.strictObject({
   model: NativeIdSchema.optional(),
   effort: z.string().min(1).max(64).optional(),
+  // the provider's fast mode, which trades more usage for speed on models that support it
+  fast: z.boolean().optional(),
   outputSchema: OutputSchemaSchema.optional(),
 });
 export type ITurnSettings = z.infer<typeof TurnSettingsSchema>;
@@ -45,6 +47,9 @@ export const SessionConfigurationSchema = z.object({
   effective: z.object({
     model: NativeIdSchema.nullable(),
     effort: z.string().min(1).max(64).nullable(),
+    fast: z.boolean().nullable(),
+    // the provider's reason fast mode can't serve the session, such as a plan without it
+    fastUnavailableReason: z.string().min(1).max(64).nullable(),
     nativeAgent: SelectionSchema.nullable(),
     nativeProfile: SelectionSchema.nullable(),
     permissionMode: SelectionSchema.nullable(),

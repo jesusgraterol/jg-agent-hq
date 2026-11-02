@@ -1309,6 +1309,43 @@ test('a parked Claude session reopens for a message and a rename with its settin
   });
 });
 
+test('a parked Claude session reopens with the fast mode a message chose', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create('fast-session');
+    const input = api.envelope({
+      kind: 'message',
+      threadId: thread.id,
+      input: { kind: 'text', text: 'Answer quickly' },
+      settings: { fast: true },
+    });
+    await api.submit(input);
+    await api.until(
+      () => api.receipt(input.id),
+      (entry) => entry.completion === 'completed',
+    );
+    await parkIdleSessions(fixture);
+    const next = await api.message(thread.id, 'Second request');
+    await api.until(
+      () => api.receipt(next.id),
+      (entry) => entry.completion === 'completed',
+    );
+    const starts = await readStarts(fixture);
+    expect(starts).toHaveLength(2);
+    expect(starts[0]!.args).not.toContain('--settings');
+    expect(starts[1]!.args[starts[1]!.args.indexOf('--settings') + 1]).toBe('{"fastMode":true}');
+    const configuration = await fixture.request({
+      kind: 'configuration',
+      provider: 'claude',
+      workspaceRoot: fixture.workspaceRoot,
+      threadId: thread.id,
+    });
+    expect(configuration.kind === 'configuration' && configuration.result.effective.fast).toBe(
+      true,
+    );
+  });
+});
+
 test('a Claude session reports its instructions only while its process started the conversation', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture);

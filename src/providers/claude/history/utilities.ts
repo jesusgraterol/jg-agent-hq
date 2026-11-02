@@ -22,6 +22,9 @@ import { FilePatchSchema, type IFilePatch, type IRecord } from './types.js';
 
 const EXCLUDED = new Set(['_archive', '_archives', '_backup', '_backups']);
 
+const hasExcludedSegment = (path: string): boolean =>
+  path.split(sep).some((part) => EXCLUDED.has(part));
+
 /**
  * Resolves only the verified native project layout, without following directory links.
  * @returns The exact native project directory; no recursive discovery is used.
@@ -79,7 +82,7 @@ export const isClaudeWorkspaceCwd = (cwd: string | undefined, workspaceRoot: str
     cwd.length > 4096 ||
     !isAbsolute(cwd) ||
     resolve(cwd) !== cwd ||
-    cwd.split(sep).some((part) => EXCLUDED.has(part))
+    hasExcludedSegment(cwd)
   )
     return false;
   const child = relative(workspaceRoot, cwd);
@@ -88,7 +91,7 @@ export const isClaudeWorkspaceCwd = (cwd: string | undefined, workspaceRoot: str
   while (ancestor !== workspaceRoot) {
     try {
       const canonical = realpathSync(ancestor);
-      if (canonical.split(sep).some((part) => EXCLUDED.has(part))) return false;
+      if (hasExcludedSegment(canonical)) return false;
       const resolved = relative(workspaceRoot, canonical);
       return !isAbsolute(resolved) && resolved !== '..' && !resolved.startsWith(`..${sep}`);
     } catch (cause) {
@@ -97,6 +100,26 @@ export const isClaudeWorkspaceCwd = (cwd: string | undefined, workspaceRoot: str
     }
   }
   return true;
+};
+
+/**
+ * Verifies the native cwd one of a session's records names, inside its workspace or not, such as
+ * a sibling task worktree the session moved into.
+ * @returns Whether it is an absolute, normalized path whose segments, and those of its nearest
+ * existing ancestor's real path, name no excluded folder.
+ */
+export const isClaudeRecordCwd = (cwd: string | undefined, workspaceRoot: string): boolean => {
+  if (cwd === workspaceRoot) return true;
+  if (!cwd || cwd.length > 4096 || !isAbsolute(cwd) || resolve(cwd) !== cwd) return false;
+  if (hasExcludedSegment(cwd)) return false;
+  // the filesystem root always resolves, so the walk ends there at the latest
+  for (let ancestor = cwd; ; ancestor = dirname(ancestor)) {
+    try {
+      return !hasExcludedSegment(realpathSync(ancestor));
+    } catch (cause) {
+      if (!hasErrorCode(cause, 'ENOENT') && !hasErrorCode(cause, 'ENOTDIR')) throw cause;
+    }
+  }
 };
 
 /**

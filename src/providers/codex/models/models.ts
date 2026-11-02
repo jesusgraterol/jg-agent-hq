@@ -1,5 +1,6 @@
 import type { IProviderModel } from '../../../contracts/index.js';
 
+import { CODEX_FAST_SERVICE_TIER } from '../constants.js';
 import { parseNative } from '../index.js';
 
 import { NativeModelsSchema } from './types.js';
@@ -23,6 +24,7 @@ export const toCodexModels = (
       efforts: model.supportedReasoningEfforts.map((effort) => effort.reasoningEffort),
       defaultEffort: model.defaultReasoningEffort,
       isDefault: model.isDefault,
+      supportsFast: model.serviceTiers?.some((tier) => tier.id === CODEX_FAST_SERVICE_TIER) ?? null,
     })),
     nextCursor: page.nextCursor,
   };

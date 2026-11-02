@@ -31,6 +31,7 @@ export const readClaudeModels = (
       efforts: model.supportedEffortLevels ?? null,
       defaultEffort: null,
       isDefault: null,
+      supportsFast: model.supportsFastMode ?? null,
     }));
     models.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
   } catch (cause) {

@@ -216,6 +216,8 @@ export type ICodexProvider = {
     nativeId?: string,
     signal?: AbortSignal,
   ): Promise<ISessionConfiguration>;
+  /** Records the service tier Codex reports a session HQ started or resumed now uses. */
+  observeServiceTier(nativeId: string, serviceTier: string | null): void;
   /**
    * Forks stored history into a new native identity.
    * @returns An idle native fork with its source identity.

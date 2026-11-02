@@ -1,5 +1,10 @@
 # Changelog
 
+## 10.5.0
+
+- Add per-session fast mode: `fast` in session and turn settings, `effective.fast` and `effective.fastUnavailableReason` in `configuration`, and `supportsFast` in `models`. Codex sends it as the `priority` service tier, or `default` to turn it off, and reads it back from the session's start, resume and settings updates. Claude sends `fastMode` as a flag setting at startup and before input, keeps it when a parked session reopens, and reads it back from `fast_mode_state`, with the reason Claude gives when fast mode can't serve the session.
+- Read a Claude session that worked in another folder for part of its life, such as a task worktree it moved into and back out of. A transcript belongs to a workspace once one of its records ran there, and its records from other folders are listed and read with the rest. One record outside the workspace used to make the whole history unavailable for good. A record with another session's ID, or a folder with an excluded segment, still makes it unavailable, and a transcript with no record inside the workspace stays out until one is written. Every indexed transcript is indexed again after the upgrade.
+
 ## 10.4.1
 
 - Keep the Codex provider working when a turn's end arrives twice: once read back from Codex after a lost or skipped message, and once as the turn's own `turn/completed`. In either order, the first recorded stands and the other only fills in a result the first lacked. The two used to differ when the notification carried the turn's result, which failed every managed Codex session.

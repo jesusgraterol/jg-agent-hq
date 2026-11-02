@@ -73,6 +73,21 @@ const BackgroundTasksSchema = z.object({
   subtype: z.literal('background_tasks_changed'),
   tasks: z.array(z.object({ task_id: z.string() })).max(1024),
 });
+// fast mode as a session's start and each turn's result report it
+const FastModeSchema = z.object({
+  fast_mode_state: z.enum(['on', 'cooldown', 'off']),
+  fast_mode_disabled_reason: z.string().min(1).max(64).optional(),
+});
+
+/** Keeps the fast mode a frame reports; a frame without it, or with a newer state, changes nothing. */
+const observeFastMode = (session: IClaudeSession, raw: unknown): void => {
+  const reported = FastModeSchema.safeParse(raw);
+  if (reported.success)
+    session.fastMode = {
+      state: reported.data.fast_mode_state,
+      disabledReason: reported.data.fast_mode_disabled_reason ?? null,
+    };
+};
 
 const unavailable: () => never = () => {
   throw new Exception('The Claude integration failed', {
@@ -278,6 +293,7 @@ export const receiveClaudeMessage = (
     }
   } else if (frame.type === 'result') {
     const result = ResultSchema.parse(raw);
+    observeFastMode(session, raw);
     if (result.user_message_uuid === undefined) {
       // a turn Claude started completes without a captured result, since no action owns it
       const turn = session.nativeTurn;
@@ -389,5 +405,6 @@ export const receiveClaudeMessage = (
     // a list in an unexpected shape leaves the count as it was, as parking only waits on it
     const background = BackgroundTasksSchema.safeParse(raw);
     if (background.success) session.backgroundTaskCount = background.data.tasks.length;
+    observeFastMode(session, raw);
   }
 };
