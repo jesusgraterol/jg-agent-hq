@@ -7,6 +7,7 @@ import type { IProviderFraming } from '../../index.js';
 import {
   KEEPALIVE_INTERVAL_MS,
   MAX_HANDSHAKE_BYTES,
+  MAX_OUTGOING_FRAGMENT_BYTES,
   WEBSOCKET_GUID,
   WEBSOCKET_OPCODES,
 } from './constants.js';
@@ -25,13 +26,14 @@ const invalid = (cause?: unknown): never => {
 };
 
 /**
- * Builds one final client frame, masked as RFC 6455 requires of clients.
+ * Builds one client frame, masked as RFC 6455 requires of clients.
+ * @param isFinal Whether the frame ends its message; a fragment before the last one is not.
  * @returns The complete frame bytes.
  */
-const encodeFrame = (opcode: number, payload: Buffer): Buffer => {
+const encodeFrame = (opcode: number, payload: Buffer, isFinal = true): Buffer => {
   const lengthBytes = payload.length < 126 ? 0 : payload.length < 65_536 ? 2 : 8;
   const header = Buffer.alloc(2 + lengthBytes + 4);
-  header[0] = 0x80 | opcode;
+  header[0] = (isFinal ? 0x80 : 0) | opcode;
   if (lengthBytes === 0) header[1] = 0x80 | payload.length;
   else if (lengthBytes === 2) {
     header[1] = 0x80 | 126;
@@ -49,6 +51,23 @@ const encodeFrame = (opcode: number, payload: Buffer): Buffer => {
 };
 
 /**
+ * Builds one text message: a single final frame of at most MAX_OUTGOING_FRAGMENT_BYTES, or else a
+ * non-final text frame followed by continuation frames of at most that size, the last one final.
+ * @returns The frames' bytes, in order.
+ */
+const encodeTextMessage = (payload: Buffer): Buffer => {
+  if (payload.length <= MAX_OUTGOING_FRAGMENT_BYTES)
+    return encodeFrame(WEBSOCKET_OPCODES.text, payload);
+  const frames: Buffer[] = [];
+  for (let start = 0; start < payload.length; start += MAX_OUTGOING_FRAGMENT_BYTES) {
+    const end = Math.min(start + MAX_OUTGOING_FRAGMENT_BYTES, payload.length);
+    const opcode = start === 0 ? WEBSOCKET_OPCODES.text : WEBSOCKET_OPCODES.continuation;
+    frames.push(encodeFrame(opcode, payload.subarray(start, end), end === payload.length));
+  }
+  return Buffer.concat(frames);
+};
+
+/**
  * Speaks WebSocket over a byte stream, such as the Codex daemon's stdio proxy: an HTTP upgrade
  * with a verified accept key, masked text frames out, and bounded server frames in.
  * @returns Framing for one connection; each call uses a fresh handshake key.
@@ -63,8 +82,7 @@ export const createWebSocketFraming = (): IProviderFraming => {
       `GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`,
       'latin1',
     ),
-    encode: (message) =>
-      encodeFrame(WEBSOCKET_OPCODES.text, Buffer.from(JSON.stringify(message), 'utf8')),
+    encode: (message) => encodeTextMessage(Buffer.from(JSON.stringify(message), 'utf8')),
     createDecoder({ receive, reply, open, fail, discard }) {
       const chunks: Buffer[] = [];
       let buffered = 0;

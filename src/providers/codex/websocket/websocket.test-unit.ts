@@ -146,6 +146,41 @@ test.each([
   expect(JSON.parse(frame.payload.toString('utf8'))).toBe(text);
 });
 
+// splits client bytes into their frames, in order
+const clientFrames = (bytes: Buffer) => {
+  const frames: ReturnType<typeof unmaskClientFrame>[] = [];
+  for (let offset = 0; offset < bytes.length; ) {
+    const frame = unmaskClientFrame(bytes.subarray(offset));
+    frames.push(frame);
+    const lengthBytes = frame.length < 126 ? 0 : frame.length < 65_536 ? 2 : 8;
+    offset += 2 + lengthBytes + 4 + frame.length;
+  }
+  return frames;
+};
+
+test('a message of 1 MiB, quotes included, stays one final frame', () => {
+  const text = 'x'.repeat(1_048_576 - 2);
+  const frames = clientFrames(open().framing.encode(text));
+  expect(
+    frames.map(({ isFinal, opcode, isMasked, length }) => ({ isFinal, opcode, isMasked, length })),
+  ).toStrictEqual([{ isFinal: true, opcode: 1, isMasked: true, length: 1_048_576 }]);
+});
+
+test('a 3 MiB message goes as a text frame and continuation frames of at most 1 MiB, only the last final', () => {
+  // two-byte characters, so a fragment boundary falls inside one of them
+  const text = 'é'.repeat(1_572_863);
+  const frames = clientFrames(open().framing.encode(text));
+  expect(
+    frames.map(({ isFinal, opcode, isMasked, length }) => ({ isFinal, opcode, isMasked, length })),
+  ).toStrictEqual([
+    { isFinal: false, opcode: 1, isMasked: true, length: 1_048_576 },
+    { isFinal: false, opcode: 0, isMasked: true, length: 1_048_576 },
+    { isFinal: true, opcode: 0, isMasked: true, length: 1_048_576 },
+  ]);
+  const payload = Buffer.concat(frames.map((frame) => frame.payload));
+  expect(JSON.parse(payload.toString('utf8'))).toBe(text);
+});
+
 test('fragments reassemble across arbitrary chunk boundaries while interleaved pings are answered', () => {
   const connection = open();
   const message = JSON.stringify({ method: 'turn/started', params: { text: '🧪'.repeat(40_000) } });
@@ -192,7 +227,7 @@ test.each([
   [
     'a new message while an oversized one is skipped',
     Buffer.concat([
-      serverFrame(Buffer.alloc(8_388_609, 0x20), { isFinal: false }),
+      serverFrame(Buffer.alloc(33_554_433, 0x20), { isFinal: false }),
       serverFrame('{}'),
     ]),
   ],
@@ -288,7 +323,7 @@ test('a message over the frame limit is skipped across chunk boundaries and repo
   const connection = open();
   const bytes = Buffer.concat([
     connection.response,
-    serverFrame(Buffer.alloc(8_388_609, 0x20)),
+    serverFrame(Buffer.alloc(33_554_433, 0x20)),
     serverFrame('{"id":3,"result":null}'),
   ]);
   for (let offset = 0; offset < bytes.length; offset += 65_536)
@@ -304,8 +339,8 @@ test('a fragmented message that grows past the frame limit is skipped through it
   connection.decoder.push(
     Buffer.concat([
       connection.response,
-      serverFrame(Buffer.alloc(4_194_304, 0x20), { isFinal: false }),
-      serverFrame(Buffer.alloc(4_194_305, 0x20), { opcode: 0, isFinal: false }),
+      serverFrame(Buffer.alloc(16_777_216, 0x20), { isFinal: false }),
+      serverFrame(Buffer.alloc(16_777_217, 0x20), { opcode: 0, isFinal: false }),
       serverFrame('keepalive', { opcode: 9 }),
     ]),
   );
@@ -325,7 +360,7 @@ test('a stream that ends while an oversized message is skipped is incomplete', (
   connection.decoder.push(
     Buffer.concat([
       connection.response,
-      serverFrame(Buffer.alloc(8_388_609, 0x20)).subarray(0, 4_096),
+      serverFrame(Buffer.alloc(33_554_433, 0x20)).subarray(0, 4_096),
     ]),
   );
   expect(connection.discards()).toBe(0);

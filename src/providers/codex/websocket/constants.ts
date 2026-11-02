@@ -10,6 +10,12 @@ export const MAX_HANDSHAKE_BYTES = 16_384;
  */
 export const KEEPALIVE_INTERVAL_MS = 10_000;
 
+/*
+ * The largest payload one outgoing frame carries. A larger message goes as fragments, which RFC
+ * 6455 requires servers to accept, so no single frame meets a server's per-frame limit.
+ */
+export const MAX_OUTGOING_FRAGMENT_BYTES = 1_048_576;
+
 // RFC 6455 frame opcodes used by the daemon connection
 export const WEBSOCKET_OPCODES = {
   continuation: 0x0,
