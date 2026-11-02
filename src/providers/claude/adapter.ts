@@ -90,15 +90,7 @@ export const createClaudeProviderFactory = (
             close: SUPPORTED_PROVIDER_OPERATION,
             interrupt: SUPPORTED_PROVIDER_OPERATION,
             recover: SUPPORTED_PROVIDER_OPERATION,
-            steer: {
-              state: 'unsupported',
-              changeMode: null,
-              reason: {
-                code: 'native-control-unsupported',
-                message:
-                  'The structured Claude interface does not support steering an active turn.',
-              },
-            },
+            steer: SUPPORTED_PROVIDER_OPERATION,
             history: SUPPORTED_PROVIDER_OPERATION,
             usage: SUPPORTED_PROVIDER_OPERATION,
             models,
@@ -307,7 +299,8 @@ export const createClaudeProviderFactory = (
       },
       startTurn: (requestId, nativeId, text, _skill, settings, files, call) =>
         control.startTurn(requestId, nativeId, text, settings, call.signal, files),
-      steer: async () => capabilityUnavailable(),
+      steer: (requestId, nativeId, expectedTurnId, text) =>
+        control.steer(requestId, nativeId, expectedTurnId, text),
       interrupt: (requestId, nativeId, nativeTurnId) =>
         control.interrupt(requestId, nativeId, nativeTurnId),
       cleanThread: (requestId, nativeId) => control.stopSession(requestId, nativeId),

@@ -34,6 +34,20 @@ export type IClaudeNativeTurn = {
   hasInterruptionMarker: boolean;
 };
 
+/*
+ * Text HQ wrote into an active turn, which Claude replays once it takes it in: within that turn,
+ * at its next tool boundary, or after the turn's result, when it runs as the session's next turn.
+ * Either replay acknowledges it against the turn it named; the timer fails it when that turn
+ * ended and no replay followed.
+ */
+export type IClaudeSteer = {
+  id: string;
+  turnId: string;
+  resolve(turnId: string): void;
+  reject(error: unknown): void;
+  timer?: ReturnType<typeof setTimeout>;
+};
+
 // the turn the session's frames belong to: an acknowledged HQ input or a turn Claude started
 export type IClaudeTurn = IClaudeInput | IClaudeNativeTurn;
 
@@ -56,6 +70,8 @@ export type IClaudeSession = {
   skills?: IProviderSkills | null;
   input?: IClaudeInput;
   nativeTurn?: IClaudeNativeTurn;
+  // steers written into an active turn that Claude hasn't replayed yet, by their message UUID
+  steers: Map<string, IClaudeSteer>;
   // how many background commands Claude last reported running, which keep the session from parking
   backgroundTaskCount: number;
   // read from Claude's start and turn results, and kept while the session is parked

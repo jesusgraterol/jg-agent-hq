@@ -41,7 +41,7 @@ test('dedicated CLI provider selection reads Claude capabilities and reports una
       result: {
         provider: 'claude',
         scope: { kind: 'provider' },
-        operations: { steer: { state: 'unsupported' } },
+        operations: { steer: { state: 'supported' } },
       },
     });
     const unavailable = await run(

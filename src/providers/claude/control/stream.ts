@@ -10,6 +10,7 @@ import type {
   IClaudeControlEvents,
   IClaudeNativeTurn,
   IClaudeSession,
+  IClaudeSteer,
   IClaudeTurn,
 } from './types.js';
 import { createClaudePrompt } from './permissions.js';
@@ -105,7 +106,7 @@ const unavailable: () => never = () => {
  * Returns the turn the session's frames belong to: a turn Claude started, or the acknowledged
  * input's. Input still waiting for its replay has no turn yet.
  */
-const getActiveTurn = (session: IClaudeSession): IClaudeTurn | undefined =>
+export const getActiveTurn = (session: IClaudeSession): IClaudeTurn | undefined =>
   session.nativeTurn ?? (session.input?.isAcknowledged ? session.input : undefined);
 
 /** Acknowledges the single current input before forwarding its ordered turn evidence. */
@@ -146,6 +147,62 @@ const startNativeTurn = (
     isAgentInitiated: true,
   });
   return turn;
+};
+
+/**
+ * Fails the steers Claude never replayed, as when its process stops, so no steer waits forever.
+ * @param session The session.
+ * @param turnId The turn whose steers fail, or every pending steer when omitted.
+ */
+export const failSteers = (session: IClaudeSession, turnId?: string): void => {
+  for (const steer of session.steers.values()) {
+    if (turnId !== undefined && steer.turnId !== turnId) continue;
+    clearTimeout(steer.timer);
+    session.steers.delete(steer.id);
+    steer.reject(
+      new Exception('The Claude integration failed', {
+        code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+        data: { kind: 'agent-unavailable' },
+      }),
+    );
+  }
+};
+
+/*
+ * Claude replays a steer written while a turn's final answer streams only after that turn's
+ * result, at once; a steer still unreplayed this long after its turn ended fails.
+ */
+const STEER_REPLAY_GRACE_MS = 30_000;
+
+/** Gives the steers of a turn that just ended their grace period for a replay after its result. */
+const awaitLateSteers = (session: IClaudeSession, turnId: string): void => {
+  for (const steer of session.steers.values())
+    if (steer.turnId === turnId && steer.timer === undefined)
+      steer.timer = setTimeout(() => failSteers(session, turnId), STEER_REPLAY_GRACE_MS);
+};
+
+/**
+ * Takes in a steer's replay. During the turn it named, the steer joined it; after that turn's
+ * result, the steer runs as the session's next turn, under its own UUID, which its result names.
+ * Either way the steer is acknowledged against the turn it named.
+ */
+const acknowledgeSteer = (
+  session: IClaudeSession,
+  steer: IClaudeSteer,
+  events: IClaudeControlEvents | undefined,
+): void => {
+  clearTimeout(steer.timer);
+  session.steers.delete(steer.id);
+  if (!getActiveTurn(session)) {
+    session.nativeTurn = { id: steer.id, interruptRequested: false, hasInterruptionMarker: false };
+    events?.observe({
+      kind: 'turn-started',
+      provider: 'claude',
+      nativeThreadId: session.id,
+      nativeTurnId: steer.id,
+    });
+  }
+  steer.resolve(steer.turnId);
 };
 
 /** Classifies a result: interrupted only after the marker of an interrupt HQ requested. */
@@ -217,6 +274,8 @@ export const receiveClaudeMessage = (
   }
   if (frame.type === 'user' || frame.type === 'assistant') {
     const message = MessageSchema.parse(raw);
+    const steer = frame.type === 'user' ? session.steers.get(message.uuid) : undefined;
+    if (steer) acknowledgeSteer(session, steer, events);
     const isReplay =
       frame.type === 'user' && session.input !== undefined && message.uuid === session.input.id;
     if (isReplay) {
@@ -318,12 +377,16 @@ export const receiveClaudeMessage = (
   } else if (frame.type === 'result') {
     const result = ResultSchema.parse(raw);
     observeFastMode(session, raw);
-    if (result.user_message_uuid === undefined) {
-      // a turn Claude started completes without a captured result, since no action owns it
+    // a turn Claude started, or one a steer runs after its turn, has no action to capture its result
+    if (
+      result.user_message_uuid === undefined ||
+      result.user_message_uuid === session.nativeTurn?.id
+    ) {
       const turn = session.nativeTurn;
       if (!turn) unavailable();
       session.nativeTurn = undefined;
       endTurn(session, events);
+      awaitLateSteers(session, turn.id);
       events?.observe({
         kind: 'turn-completed',
         provider: 'claude',
@@ -339,6 +402,7 @@ export const receiveClaudeMessage = (
     const state = toTurnState(result, input);
     session.input = undefined;
     endTurn(session, events);
+    awaitLateSteers(session, input.id);
     const observedUsage = UsageSchema.safeParse(result.usage);
     const usage: ITurnUsage | null = observedUsage.success
       ? {

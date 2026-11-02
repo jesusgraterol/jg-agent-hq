@@ -19,7 +19,7 @@ import { createClaudeRpc } from '../rpc.js';
 import { ClaudeInitializeSchema } from '../types.js';
 
 import type { IClaudeControlEvents, IClaudeSession } from './types.js';
-import { receiveClaudeMessage } from './stream.js';
+import { failSteers, getActiveTurn, receiveClaudeMessage } from './stream.js';
 import { toClaudeSkills } from './skills.js';
 
 // a session idle this long since its last turn ended gives up its process until it is needed
@@ -265,6 +265,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     const connection = await createClaudeRpc(
       (reason) => {
         if (reason !== 'unavailable' || session.isClosing || session.parked) return;
+        failSteers(session);
         if (session.input) {
           clearTimeout(session.input.timer);
           session.input.reject(
@@ -381,6 +382,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       opening: Promise.resolve(),
       previews: new Map(),
       requests: new Map(),
+      steers: new Map(),
     };
     sessions.set(nativeId, session);
     session.opening = start(session, isResume, forkSourceNativeId, signal);
@@ -733,6 +735,48 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       );
     },
     /**
+     * Writes text into the exact active turn, HQ input's or one Claude started, without
+     * interrupting it. Claude takes it in at the turn's next tool boundary and replays it there,
+     * or, for text written while the turn's final answer streams, replays it after the turn's
+     * result and runs it as the session's next turn. Either replay acknowledges the steer against
+     * the turn it named; a stopped process, or no replay within 30 seconds of that turn's end,
+     * fails it.
+     * @returns The turn the steer named, once Claude replayed it.
+     * @throws
+     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+     */
+    async steer(
+      _requestId: string,
+      nativeId: string,
+      turnId: string,
+      text: string,
+    ): Promise<string> {
+      // a parked session is idle, so it has no turn to steer
+      return withSession(nativeId, false, (session) => {
+        if (getActiveTurn(session)?.id !== turnId) conflict();
+        if (session.isClosing || !session.connection?.isAvailable) unavailable();
+        return new Promise<string>((resolve, reject) => {
+          const id = randomUUID();
+          session.steers.set(id, { id, turnId, resolve, reject });
+          void session
+            .connection!.write({
+              type: 'user',
+              uuid: id,
+              session_id: nativeId,
+              message: { role: 'user', content: text },
+              parent_tool_use_id: null,
+            })
+            .catch((error: unknown) => {
+              session.steers.delete(id);
+              reject(error);
+            });
+        });
+      });
+    },
+    /**
      * Requests interruption of the exact active turn, HQ input's or one Claude started; completion
      * arrives separately.
      * @returns Acknowledgement of the native interruption request.
@@ -762,6 +806,8 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       if (!session) conflict();
       cancelIdleStop(session);
       session.isClosing = true;
+      // a stopped process replays nothing more
+      failSteers(session);
       // a parked session finishes without a process
       await session.transition?.catch(() => undefined);
       await session.opening.catch((cause: unknown) => {
@@ -799,6 +845,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
         [...sessions.values()].map(async (session) => {
           cancelIdleStop(session);
           session.isClosing = true;
+          failSteers(session);
           if (session.input) {
             clearTimeout(session.input.timer);
             session.input.reject(
