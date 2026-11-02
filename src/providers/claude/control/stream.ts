@@ -14,7 +14,12 @@ import type {
 } from './types.js';
 import { createClaudePrompt } from './permissions.js';
 
-const FrameSchema = z.object({ type: z.string(), session_id: z.string().optional() });
+const FrameSchema = z.object({
+  type: z.string(),
+  session_id: z.string().optional(),
+  // the Agent call whose subagent a frame comes from, which history keeps out of the session
+  parent_tool_use_id: z.string().nullish(),
+});
 const MessageSchema = z.object({
   uuid: z.string().min(1).max(4096),
   message: z.object({ role: z.string(), content: z.unknown() }),
@@ -161,6 +166,29 @@ const endTurn = (session: IClaudeSession, events: IClaudeControlEvents | undefin
   session.requests.clear();
 };
 
+/** Settles the approvals a user frame's tool results answer, as Claude ran or refused each tool. */
+const resolveRequests = (
+  session: IClaudeSession,
+  message: z.infer<typeof MessageSchema>,
+  events: IClaudeControlEvents | undefined,
+): void => {
+  const results = ToolResultsSchema.safeParse(message.message.content);
+  if (!results.success) return;
+  for (const result of results.data) {
+    if (result.type !== 'tool_result' || !result.tool_use_id) continue;
+    for (const [id, request] of session.requests)
+      if (request.toolId === result.tool_use_id) {
+        events?.observe({
+          kind: 'request-resolved',
+          provider: 'claude',
+          nativeThreadId: session.id,
+          requestId: request.scopedId,
+        });
+        session.requests.delete(id);
+      }
+  }
+};
+
 /**
  * Normalizes native stream evidence without retaining another conversation buffer. A turn frame
  * that arrives while no turn is active, and isn't the waiting input's replay, starts a turn of
@@ -175,6 +203,18 @@ export const receiveClaudeMessage = (
 ): void => {
   const frame = FrameSchema.parse(raw);
   if (frame.session_id && frame.session_id !== session.id) unavailable();
+  /*
+   * A subagent's frames name the Agent call that started it. History leaves its sidechain out, so
+   * they show no live item, start no turn and hold no result, even after the session's turn ended
+   * while a background subagent runs on; its tool results still settle the approvals it asked for.
+   */
+  if (
+    frame.parent_tool_use_id &&
+    (frame.type === 'user' || frame.type === 'assistant' || frame.type === 'stream_event')
+  ) {
+    if (frame.type === 'user') resolveRequests(session, MessageSchema.parse(raw), events);
+    return;
+  }
   if (frame.type === 'user' || frame.type === 'assistant') {
     const message = MessageSchema.parse(raw);
     const isReplay =
@@ -241,23 +281,7 @@ export const receiveClaudeMessage = (
         }
       }
     if (item) events?.item(session.id, item, true, replacedIds);
-    if (frame.type === 'user') {
-      const results = ToolResultsSchema.safeParse(message.message.content);
-      if (results.success)
-        for (const result of results.data) {
-          if (result.type !== 'tool_result' || !result.tool_use_id) continue;
-          for (const [id, request] of session.requests)
-            if (request.toolId === result.tool_use_id) {
-              events?.observe({
-                kind: 'request-resolved',
-                provider: 'claude',
-                nativeThreadId: session.id,
-                requestId: request.scopedId,
-              });
-              session.requests.delete(id);
-            }
-        }
-    }
+    if (frame.type === 'user') resolveRequests(session, message, events);
   } else if (frame.type === 'stream_event') {
     const turn = getActiveTurn(session) ?? startNativeTurn(session, events);
     const event = PartialSchema.parse(raw).event;
