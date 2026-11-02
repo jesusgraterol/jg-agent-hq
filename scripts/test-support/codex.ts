@@ -82,6 +82,8 @@ else {
   const respond = (id,result) => send(JSON.stringify({ id,result }));
   const notify = (method,params) => send(JSON.stringify({ method,params }));
   const managed = new Map();
+  // each thread's service tier, which Codex reports with its start and resume but not its record
+  const tiers = new Map();
   let threadSequence = 0;
   let turnSequence = 0;
   const interrupts = [];
@@ -128,7 +130,7 @@ else {
     // oversizeResponseTo answers that method with a response over the frame limit
     if (control.oversizeResponseTo === method) { send(JSON.stringify({id:request.id,result:'x'.repeat(9_437_184)}));return; }
     if (method === 'model/list') {
-      const choices = Array.from({length:control.modelCount??4},(_,index)=>({id:'model-'+String(index).padStart(4,'0'),model:'model-'+String(index).padStart(4,'0'),displayName:'Native model '+index,description:control.modelRevision?'Updated choice':'Native model choice',supportedReasoningEfforts:[{reasoningEffort:control.modelEffort??'native-effort'}],defaultReasoningEffort:control.modelEffort??'native-effort',isDefault:index===0}));
+      const choices = Array.from({length:control.modelCount??4},(_,index)=>({id:'model-'+String(index).padStart(4,'0'),model:'model-'+String(index).padStart(4,'0'),displayName:'Native model '+index,description:control.modelRevision?'Updated choice':'Native model choice',supportedReasoningEfforts:[{reasoningEffort:control.modelEffort??'native-effort'}],defaultReasoningEffort:control.modelEffort??'native-effort',isDefault:index===0,serviceTiers:index%2===0?[{id:'priority',name:'Fast',description:'Faster responses'}]:[]}));
       if(control.modelsMalformed)choices[0].id='';
       const offset=params.cursor?Number(params.cursor.split(':')[1]):0;
       respond(request.id,{data:choices.slice(offset,offset+params.limit),nextCursor:offset+params.limit<choices.length?'models:'+String(offset+params.limit):null});return;
@@ -178,9 +180,9 @@ else {
       const nativeId='native-'+(++threadSequence);
       const thread = { ...threads[0],id:nativeId,sessionId:'session-for-'+nativeId,parentThreadId:null,forkedFromId:null,cwd:params.cwd,name:null,status:{type:'idle'},activeTurn:null };
       thread.model=params.model??'model-0000';thread.reasoningEffort=params.config?.model_reasoning_effort??'native-effort';
-      managed.set(thread.id,thread);
+      managed.set(thread.id,thread);tiers.set(thread.id,params.serviceTier??null);
       if(control.suppressStartAck)return;
-      respond(request.id,{thread,model:thread.model,reasoningEffort:thread.reasoningEffort,approvalPolicy:params.approvalPolicy??'on-request',sandbox:{type:params.sandbox??'read-only'},instructionSources:[]});return;
+      respond(request.id,{thread,model:thread.model,reasoningEffort:thread.reasoningEffort,serviceTier:tiers.get(thread.id),approvalPolicy:params.approvalPolicy??'on-request',sandbox:{type:params.sandbox??'read-only'},instructionSources:[]});return;
     }
     if (method === 'thread/fork') {
       if(control.rejectFork){send(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic fork rejection'}}));return;}
@@ -193,8 +195,9 @@ else {
       const thread = managed.get(params.threadId) || { ...threads[0],id:params.threadId,activeTurn:null };
       // a session another runtime left running keeps its status and running turn when joined again
       thread.status = control.threadStatuses?.[params.threadId] ?? {type:'idle'};thread.model=params.model??thread.model;thread.reasoningEffort=params.config?.model_reasoning_effort??thread.reasoningEffort; managed.set(thread.id,thread);
+      if (params.serviceTier != null || !tiers.has(thread.id)) tiers.set(thread.id,params.serviceTier??null);
       if (thread.status.type === 'active') thread.activeTurn = control.threadTurns?.[thread.id]?.at(-1)?.id ?? thread.activeTurn;
-      respond(request.id,{thread,model:thread.model,reasoningEffort:thread.reasoningEffort,approvalPolicy:params.approvalPolicy??'on-request',sandbox:{type:params.sandbox??'read-only'},instructionSources:[]});
+      respond(request.id,{thread,model:thread.model,reasoningEffort:thread.reasoningEffort,serviceTier:tiers.get(thread.id),approvalPolicy:params.approvalPolicy??'on-request',sandbox:{type:params.sandbox??'read-only'},instructionSources:[]});
       // resumePrompt is the request Codex sends again to a client that joins a session waiting on it
       if (control.resumePrompt) send(JSON.stringify({id:'native-approval-resumed',method:control.resumePrompt.method,params:{threadId:thread.id,turnId:thread.activeTurn,itemId:'tool-resumed',...control.resumePrompt.params}}));
       return;
@@ -214,6 +217,8 @@ else {
       if (control.rejectTurn) { send(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic input rejection'}}));return; }
       const thread = managed.get(params.threadId);
       thread.model=params.model??thread.model;thread.reasoningEffort=params.effort??thread.reasoningEffort;
+      // a turn's tier also applies to the turns after it, and Codex reports the change
+      if (params.serviceTier != null) { tiers.set(thread.id,params.serviceTier);notify('thread/settings/updated',{threadId:thread.id,threadSettings:{model:thread.model,effort:thread.reasoningEffort,serviceTier:params.serviceTier}}); }
       const turn = {id:(control.turnPrefix??'')+'native-turn-'+(++turnSequence),status:'inProgress',startedAt:1_800_000_000+turnSequence};
       thread.activeTurn=turn.id;
       // loseTurnStarted sends this turn's start with a status no client accepts

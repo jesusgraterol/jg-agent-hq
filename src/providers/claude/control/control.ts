@@ -596,6 +596,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
           native.permissionMode,
           nativeId,
           session.isResumed,
+          session.fastMode,
           session.settings,
           command,
         );
@@ -645,16 +646,19 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
         async (session) => {
           if (signal?.aborted) unavailable();
           if (session.input) conflict();
-          if (settings.model || settings.effort) {
+          if (settings.model || settings.effort || settings.fast !== undefined) {
             await session.connection!.requestControl({
               subtype: 'apply_flag_settings',
               settings: {
                 ...(settings.model ? { model: settings.model } : {}),
                 ...(settings.effort ? { effortLevel: settings.effort } : {}),
+                ...(settings.fast !== undefined ? { fastMode: settings.fast } : {}),
               },
             });
+            // a parked session reopens with what was applied, so it keeps these choices
             if (settings.model) session.settings.model = settings.model;
             if (settings.effort) session.settings.effort = settings.effort;
+            if (settings.fast !== undefined) session.settings.fast = settings.fast;
           }
           if (signal?.aborted || session.isClosing || !session.connection?.isAvailable)
             unavailable();

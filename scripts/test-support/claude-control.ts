@@ -12,6 +12,10 @@ export const startClaudeControl = () => {
  const startupControls=JSON.parse(readFileSync(join(root,'claude-control.json'),'utf8'));
  if(startupControls.rejectDialectReference&&flag('--json-schema')&&JSON.parse(flag('--json-schema')).$schema){process.exitCode=1;return;}
  let model=flag('--model')??'model-0000',effort=flag('--effort')??'native-effort';
+ // fast mode set through flag settings, null until one sets it; fastUnavailable names a reason it can't serve
+ let fast=flag('--settings')?JSON.parse(flag('--settings')).fastMode??null:null;
+ // like Claude, an SDK client without the flag set hears that it must opt in first
+ const fastReport=()=>!fast?{fast_mode_state:'off',fast_mode_disabled_reason:'sdk_opt_in_required'}:control().fastUnavailable?{fast_mode_state:'off',fast_mode_disabled_reason:control().fastUnavailable}:{fast_mode_state:'on'};
  const id=args[args.indexOf(args.includes('--session-id')?'--session-id':'--resume')+1];
  const directory=join(process.env.CLAUDE_CONFIG_DIR,'projects',process.cwd().replace(/[^a-zA-Z0-9]/g,'-'));
  mkdirSync(directory,{recursive:true});
@@ -34,14 +38,14 @@ export const startClaudeControl = () => {
   if(!native)return;
   const ended=native;native=null;
   if(interrupted){const uuid=randomUUID(),content=[{type:'text',text:'[Request interrupted by user]'}];record(uuid,'user',content,leaf);leaf=uuid;out({type:'user',uuid,message:{role:'user',content}});}
-  out({type:'result',subtype:interrupted?'error_during_execution':'success',is_error:interrupted,usage:{input_tokens:5,output_tokens:2}});
+  out({type:'result',subtype:interrupted?'error_during_execution':'success',is_error:interrupted,usage:{input_tokens:5,output_tokens:2},...fastReport()});
   // Claude replays input written during its own turn only after that turn's result
   for(const next of ended.onEnd)next();
  };
  const startNative=onEnd=>{
   const settings=control();
   native={onEnd:onEnd?[onEnd]:[],hasPrompt:false};
-  out({type:'system',subtype:'init'});
+  out({type:'system',subtype:'init',...fastReport()});
   out({type:'stream_event',event:{type:'message_start',message:{id:'native-message'}}});
   out({type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'text'}}});
   out({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'Native follow-up'}}});
@@ -72,7 +76,7 @@ export const startClaudeControl = () => {
   if(interrupted){const uuid=randomUUID(),content=[{type:'text',text:'[Request interrupted by user]'}];record(uuid,'user',content,leaf);leaf=uuid;out({type:'user',uuid,message:{role:'user',content}});}
   // a turn that starts a background command reports it, as Claude does, before its result
   if(!interrupted&&control().backgroundTask&&!isTaskRunning){isTaskRunning=true;out({type:'system',subtype:'background_tasks_changed',tasks:[{task_id:'task-1',run_id:'run-1',description:'sleep',task_type:'local_bash'}]});out({type:'system',subtype:'task_started',task_id:'task-1',run_id:'run-1',tool_use_id:'tool-task',description:'sleep',is_backgrounded:true,task_type:'local_bash'});}
-  out({type:'result',subtype:interrupted?'error_during_execution':'success',is_error:interrupted,user_message_uuid:input.uuid,structured_output:control().structuredOutput,usage:control().usageMalformed?'unknown-usage':{input_tokens:7,output_tokens:3,cache_read_input_tokens:2},errors:interrupted?['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null']:undefined});
+  out({type:'result',subtype:interrupted?'error_during_execution':'success',is_error:interrupted,user_message_uuid:input.uuid,structured_output:control().structuredOutput,usage:control().usageMalformed?'unknown-usage':{input_tokens:7,output_tokens:3,cache_read_input_tokens:2},errors:interrupted?['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null']:undefined,...fastReport()});
   input=null;hasPrompt=false;
  };
  const lines=createInterface({input:process.stdin});
@@ -97,9 +101,9 @@ export const startClaudeControl = () => {
    }
    // nativeOnSettings starts a turn of its own just before answering a settings read
    if(subtype==='get_settings'&&settings.nativeOnSettings&&!native&&!input)startNative();
-   if(subtype==='get_settings'){response({effective:{model,effortLevel:'stale-effort',agent:flag('--agent'),secret:'must-not-leak'},applied:settings.unavailableSettings?{model:null,effort:null}:{model,effort}});return;}
+   if(subtype==='get_settings'){response({effective:{model,effortLevel:'stale-effort',agent:flag('--agent'),...(fast===null?{}:{fastMode:fast}),secret:'must-not-leak'},applied:settings.unavailableSettings?{model:null,effort:null}:{model,effort}});return;}
    if(subtype==='mcp_status'){if(settings.mcpFailure){out({type:'control_response',response:{subtype:'error',request_id:message.request_id,error:'Native catalog unavailable'}});return;}response({mcpServers:settings.mcpServers??[{name:'fixture-server',status:'connected',source:'project',serverInfo:{name:'Fixture MCP',version:'1'},tools:[{name:'inspect',description:'Fixture native tool',annotations:{readOnly:true}}],config:{headers:{authorization:'credential-must-not-be-returned'}}}]});return;}
-   if(subtype==='apply_flag_settings'){model=message.request.settings.model??model;effort=message.request.settings.effortLevel??effort;response();return;}
+   if(subtype==='apply_flag_settings'){model=message.request.settings.model??model;effort=message.request.settings.effortLevel??effort;fast=message.request.settings.fastMode??fast;response();return;}
    if(subtype==='initialize'){response({...(settings.omitVersion?{}:{claude_code_version:settings.version??'2.1.304'}),futureMetadata:settings.futureMetadata,agents:settings.agentsUnavailable?undefined:Array.from({length:settings.agentCount??4},(_,index)=>({name:'agent-'+String(index).padStart(4,'0'),description:settings.configRevision?'Updated agent':'Native agent',model:'model-0000'})),current_permission_mode:flag('--permission-mode')??'default',session_state:settings.omitIdle?undefined:settings.nativeState??'idle',commands:settings.skillsFailure?undefined:Array.from({length:settings.skillNames?.length??settings.skillCount??2},(_,index)=>({name:settings.skillNames?.[index]??(settings.skillRevision?'changed-':'')+(index===0?(settings.symbolicCommand?'native/command':'explicit-skill'):index===1?'implicit-skill':'skill-'+index),description:settings.skillDescriptionSize?'d'.repeat(settings.skillDescriptionSize):'Native installed skill '+index,argumentHint:'[task]'}))});return;}
    if(subtype==='rename_session'){
     if(settings.rejectName){out({type:'control_response',response:{subtype:'error',request_id:message.request_id,error:'Synthetic name rejection'}});return;}

@@ -195,6 +195,17 @@ export const createCodexEvents = (
         params,
       );
       observeSession(threadId, toSessionState(status));
+    } else if (method === 'thread/settings/updated') {
+      // the thread record leaves the tier out, so a turn that changes it is followed here
+      const { threadId, threadSettings } = parseNative(
+        z.object({
+          threadId: NativeIdSchema,
+          threadSettings: z.object({ serviceTier: z.string().min(1).max(4096).nullish() }),
+        }),
+        params,
+      );
+      if (threadSettings.serviceTier !== undefined)
+        native.observeServiceTier(threadId, threadSettings.serviceTier);
     } else if (method === 'serverRequest/resolved') {
       const { threadId, requestId } = parseNative(
         z.object({

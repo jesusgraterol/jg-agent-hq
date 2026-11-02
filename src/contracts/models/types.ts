@@ -13,6 +13,7 @@ export const ProviderModelSchema = z.object({
   efforts: z.array(z.string().min(1).max(64)).max(32).nullable(),
   defaultEffort: z.string().min(1).max(64).nullable(),
   isDefault: z.boolean().nullable(),
+  supportsFast: z.boolean().nullable(),
 });
 export type IProviderModel = z.infer<typeof ProviderModelSchema>;
 

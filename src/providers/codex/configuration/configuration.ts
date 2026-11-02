@@ -7,6 +7,7 @@ import type {
 } from '../../../contracts/index.js';
 import { pageConfigurationChoices } from '../../configuration/index.js';
 import { capabilityUnavailable } from '../../registry/index.js';
+import { CODEX_FAST_SERVICE_TIER, CODEX_STANDARD_SERVICE_TIER } from '../constants.js';
 import { parseNative } from '../validations.js';
 
 const SelectionSchema = z.string().min(1).max(4096).nullable().optional();
@@ -19,6 +20,7 @@ const ConfigSchema = z.object({
   config: z.object({
     model: SelectionSchema,
     model_reasoning_effort: SelectionSchema,
+    service_tier: SelectionSchema,
     profile: SelectionSchema,
     approval_policy: z.unknown().optional(),
     sandbox_mode: SelectionSchema,
@@ -37,6 +39,8 @@ const SessionSchema = z.object({
   }),
   model: SelectionSchema,
   reasoningEffort: SelectionSchema,
+  // a thread's own record leaves the tier out, so it comes from its start, resume and later updates
+  serviceTier: SelectionSchema,
   approvalPolicy: z.unknown().optional(),
   sandbox: z.object({ type: z.string().max(256) }).optional(),
   instructionSources: z.array(z.string().max(4096)).max(4096).optional(),
@@ -54,6 +58,14 @@ export const readCodexConfigurationObservation = (input: unknown) => {
 };
 
 /**
+ * Names the service tier a fast mode choice selects, so turning it off also replaces an earlier
+ * Fast tier, which a null or omitted tier would keep.
+ * @returns The native tier.
+ */
+export const toCodexServiceTier = (fast: boolean): string =>
+  fast ? CODEX_FAST_SERVICE_TIER : CODEX_STANDARD_SERVICE_TIER;
+
+/**
  * Maps explicit creation settings to supported native parameters without changing config files.
  * @returns The selected native overrides; omitted settings retain native defaults.
  * @throws
@@ -64,6 +76,7 @@ export const toCodexSessionSettings = (settings: ISessionSettings) => {
   return {
     ...(settings.model ? { model: settings.model } : {}),
     ...(settings.effort ? { config: { model_reasoning_effort: settings.effort } } : {}),
+    ...(settings.fast !== undefined ? { serviceTier: toCodexServiceTier(settings.fast) } : {}),
     ...(settings.permissionMode ? { approvalPolicy: settings.permissionMode } : {}),
     ...(settings.sandbox ? { sandbox: settings.sandbox } : {}),
     ...(settings.systemInstructions !== undefined
@@ -128,6 +141,13 @@ export const toCodexConfiguration = (
           ? session.thread.reasoningEffort
           : (session.reasoningEffort ?? null)
         : (config.model_reasoning_effort ?? null),
+      // a session started before Codex reported its tier reads as unknown
+      fast: session
+        ? session.serviceTier === undefined
+          ? null
+          : session.serviceTier === CODEX_FAST_SERVICE_TIER
+        : config.service_tier === CODEX_FAST_SERVICE_TIER,
+      fastUnavailableReason: null,
       nativeAgent: null,
       nativeProfile: session ? null : (config.profile ?? null),
       permissionMode: typeof policy === 'string' ? policy : null,

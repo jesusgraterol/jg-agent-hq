@@ -123,6 +123,116 @@ test.each(['codex', 'claude'])(
   },
 );
 
+test.each(['codex', 'claude'])(
+  'native %s fast mode is sent with creation and input, off included, and read back',
+  async (provider) => {
+    await withClaudeRuntime(async ({ runtime, request, workspaceRoot, root }) => {
+      const status = await runtime.request({ kind: 'status' });
+      if (status.kind !== 'status') throw new Error('Missing runtime');
+      const send = async (command: IActionCommand) => {
+        const id = randomUUID();
+        const result = await request({
+          kind: 'action',
+          action: { id, runtimeEpoch: status.result.runtimeEpoch, command },
+        });
+        if (result.kind !== 'action') throw new Error('Missing action');
+        await expect
+          .poll(() => request({ kind: 'receipt', actionId: id }))
+          .toMatchObject({ kind: 'receipt', result: { delivery: 'acknowledged' } });
+        return result.result;
+      };
+      const models = await request({ kind: 'models', provider });
+      expect(
+        models.kind === 'models' &&
+          models.result.data.slice(0, 2).map((model) => [model.id, model.supportsFast]),
+      ).toStrictEqual([
+        ['model-0000', true],
+        ['model-0001', false],
+      ]);
+      const created = await send({
+        kind: 'thread-create',
+        provider,
+        workspaceRoot,
+        name: 'fast',
+        settings: { fast: true },
+      });
+      const threadId = created.threadId!;
+      const fastMode = async () => {
+        const response = await request({
+          kind: 'configuration',
+          provider,
+          workspaceRoot,
+          threadId,
+        });
+        if (response.kind !== 'configuration') throw new Error('Missing configuration');
+        const { fast, fastUnavailableReason } = response.result.effective;
+        return { fast, fastUnavailableReason };
+      };
+      expect(await fastMode()).toStrictEqual({ fast: true, fastUnavailableReason: null });
+      const turn = async (fast: boolean) => {
+        const message = await send({
+          kind: 'message',
+          threadId,
+          input: { kind: 'text', text: 'Check fast mode' },
+          settings: { fast },
+        });
+        await expect
+          .poll(() => request({ kind: 'receipt', actionId: message.id }))
+          .toMatchObject({ kind: 'receipt', result: { completion: 'completed' } });
+      };
+      await turn(false);
+      expect(await fastMode()).toStrictEqual({ fast: false, fastUnavailableReason: null });
+      await turn(true);
+      expect(await fastMode()).toStrictEqual({ fast: true, fastUnavailableReason: null });
+      const lines = async (filename: string) =>
+        (await readFile(join(root, filename), 'utf8'))
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => z.record(z.string(), z.unknown()).parse(JSON.parse(line)));
+      if (provider === 'codex') {
+        const calls = z
+          .array(z.object({ method: z.string(), params: z.object({ serviceTier: z.unknown() }) }))
+          .parse(
+            (await lines('calls.jsonl')).filter((call) =>
+              ['thread/start', 'turn/start'].includes(String(call.method)),
+            ),
+          );
+        expect(calls.map((call) => [call.method, call.params.serviceTier])).toStrictEqual([
+          ['thread/start', 'priority'],
+          ['turn/start', 'default'],
+          ['turn/start', 'priority'],
+        ]);
+        return;
+      }
+      const [start] = z
+        .array(z.object({ args: z.array(z.string()) }))
+        .parse(await lines('claude-starts.jsonl'));
+      expect(start!.args[start!.args.indexOf('--settings') + 1]).toBe('{"fastMode":true}');
+      const applied = z
+        .array(z.object({ request: z.object({ settings: z.object({ fastMode: z.boolean() }) }) }))
+        .parse(
+          (await lines('claude-calls.jsonl')).filter(
+            (call) =>
+              z
+                .object({ request: z.object({ subtype: z.literal('apply_flag_settings') }) })
+                .safeParse(call).success,
+          ),
+        );
+      expect(applied.map((call) => call.request.settings.fastMode)).toStrictEqual([false, true]);
+      // a reason Claude gives for fast mode not serving reads back after the next turn
+      await writeFixtureControl(root, 'claude-control.json', {
+        fastUnavailable: 'extra_usage_disabled',
+      });
+      await turn(true);
+      expect(await fastMode()).toStrictEqual({
+        fast: false,
+        fastUnavailableReason: 'extra_usage_disabled',
+      });
+    });
+  },
+);
+
 test('configuration choices use bounded, revision-bound pages and reject changed scope', async () => {
   await withClaudeRuntime(async ({ request, workspaceRoot, root }) => {
     await writeFixtureControl(root, 'control.json', { profileCount: 256 });

@@ -36,6 +36,12 @@ export type IClaudeNativeTurn = {
 
 // the turn the session's frames belong to: an acknowledged HQ input or a turn Claude started
 export type IClaudeTurn = IClaudeInput | IClaudeNativeTurn;
+
+// fast mode as Claude last reported it, on, cooling down after a rate limit, or off with a reason
+export type IClaudeFastMode = {
+  state: 'on' | 'cooldown' | 'off';
+  disabledReason: string | null;
+};
 export type IClaudeSession = {
   id: string;
   workspaceRoot: string;
@@ -52,6 +58,8 @@ export type IClaudeSession = {
   nativeTurn?: IClaudeNativeTurn;
   // how many background commands Claude last reported running, which keep the session from parking
   backgroundTaskCount: number;
+  // read from Claude's start and turn results, and kept while the session is parked
+  fastMode?: IClaudeFastMode;
   apiMessageId?: string;
   previews: Map<number, { id: string; type: string }>;
   // what an idle session answers with while it has no process, until input reopens it

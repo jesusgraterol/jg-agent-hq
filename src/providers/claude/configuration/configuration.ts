@@ -8,13 +8,17 @@ import type {
 } from '../../../contracts/index.js';
 import { pageConfigurationChoices } from '../../configuration/index.js';
 import { capabilityUnavailable } from '../../registry/index.js';
+import type { IClaudeFastMode } from '../control/index.js';
 
 const SelectionSchema = z.string().min(1).max(4096).nullable().optional();
+// Claude's reason while an SDK client hasn't turned fast mode on, which the fast setting supplies
+const FAST_OPT_IN_REASON = 'sdk_opt_in_required';
 const SettingsSchema = z.object({
   effective: z.object({
     model: SelectionSchema,
     effortLevel: SelectionSchema,
     agent: SelectionSchema,
+    fastMode: z.boolean().optional(),
   }),
   applied: z.object({ model: SelectionSchema, effort: SelectionSchema }).optional(),
 });
@@ -41,6 +45,10 @@ export const toClaudeSessionFlags = (settings: ISessionSettings): string[] => {
     ...(settings.model ? ['--model', settings.model] : []),
     ...(settings.outputSchema ? ['--json-schema', JSON.stringify(settings.outputSchema)] : []),
     ...(settings.effort ? ['--effort', settings.effort] : []),
+    // a flag setting is the opt-in an SDK client like HQ needs before fast mode can serve it
+    ...(settings.fast !== undefined
+      ? ['--settings', JSON.stringify({ fastMode: settings.fast })]
+      : []),
     ...(settings.nativeAgent ? ['--agent', settings.nativeAgent] : []),
     ...(settings.permissionMode ? ['--permission-mode', settings.permissionMode] : []),
     ...(settings.systemInstructions !== undefined
@@ -56,6 +64,7 @@ export const toClaudeSessionFlags = (settings: ISessionSettings): string[] => {
  * Reads known native settings without exposing sources, hooks, tokens or arbitrary configuration.
  * Instructions are reported only for a process that started its conversation: Claude records them
  * once per conversation (`--system-prompt-snapshot`, on by default) and reuses them on resume.
+ * Fast mode comes from what the session last reported, and before that from the settings read.
  * @returns Effective session settings and a bounded, query-bound native agent page.
  * @throws
  * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
@@ -67,6 +76,7 @@ export const toClaudeConfiguration = (
   permissionMode: unknown,
   nativeId: string | undefined,
   isResumed: boolean,
+  fastMode: IClaudeFastMode | undefined,
   settings: ISessionSettings,
   command: IConfigurationRequest,
 ): ISessionConfiguration => {
@@ -101,6 +111,10 @@ export const toClaudeConfiguration = (
         value.applied?.effort !== undefined
           ? value.applied.effort
           : (value.effective.effortLevel ?? null),
+      // cooling down after a rate limit is still fast mode the session chose
+      fast: fastMode ? fastMode.state !== 'off' : (value.effective.fastMode ?? null),
+      fastUnavailableReason:
+        fastMode?.disabledReason === FAST_OPT_IN_REASON ? null : (fastMode?.disabledReason ?? null),
       nativeAgent:
         value.effective.agent !== undefined
           ? value.effective.agent

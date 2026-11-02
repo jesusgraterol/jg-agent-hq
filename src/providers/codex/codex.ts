@@ -48,6 +48,7 @@ import { toCodexModels } from './models/index.js';
 import { HOST_SKILL_SCOPE, readSkillRoots, toCapabilityRoots } from './skill-roots/index.js';
 import {
   toCodexConfiguration,
+  toCodexServiceTier,
   toCodexSessionSettings,
   readCodexConfigurationObservation,
 } from './configuration/index.js';
@@ -376,6 +377,10 @@ export const createCodexProvider = async (
         : undefined;
       return toCodexConfiguration(config, response, recorded?.settings ?? {}, command);
     },
+    observeServiceTier(nativeId, serviceTier) {
+      const recorded = configurations.get(nativeId);
+      if (recorded) recorded.response = { ...recorded.response, serviceTier };
+    },
     async forkThread(requestId, nativeId) {
       const result = parseNative(
         z.object({
@@ -614,6 +619,7 @@ export const createCodexProvider = async (
       );
     },
     async startTurn(requestId, nativeId, text, skill, settings = {}, files = []) {
+      const { fast, ...turnSettings } = settings;
       const outputSchema = settings.outputSchema ?? outputSchemas.get(nativeId);
       events?.prepareTurn(nativeId, outputSchema);
       return parseNative(
@@ -623,7 +629,8 @@ export const createCodexProvider = async (
           {
             threadId: nativeId,
             clientUserMessageId: requestId,
-            ...settings,
+            ...turnSettings,
+            ...(fast !== undefined ? { serviceTier: toCodexServiceTier(fast) } : {}),
             ...(outputSchema ? { outputSchema } : {}),
             input: [
               { type: 'text', text },
