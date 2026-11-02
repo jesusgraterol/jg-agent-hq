@@ -23,6 +23,7 @@ export const FileRowSchema = z.object({
   created_at: z.number(),
   updated_at: z.number(),
   supported: z.number(),
+  // matching once a record ran inside the workspace; foreign while every record named another folder
   workspace_state: z.enum(['unknown', 'matching', 'foreign']),
 });
 export type IFileRow = z.infer<typeof FileRowSchema>;

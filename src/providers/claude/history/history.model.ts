@@ -40,6 +40,7 @@ import {
 import {
   isClaudeAnswer,
   isClaudeCallFor,
+  isClaudeRecordCwd,
   isClaudeWorkspaceCwd,
   openTranscript,
   projectDirectory,
@@ -49,7 +50,7 @@ import {
 } from './utilities.js';
 
 // identifies the path and record interpretation used by persisted projection entries
-const HISTORY_PROJECTION_VERSION = 5;
+const HISTORY_PROJECTION_VERSION = 6;
 // one record, such as a tool result holding images, and an indexing read, which fits the largest
 const MAX_RECORD_BYTES = 8_388_608;
 const MAX_REFRESH_BYTES = 16_777_216;
@@ -332,7 +333,7 @@ export class ClaudeHistoryModel {
         const record = RecordSchema.parse(
           JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
         );
-        if (record.uuid !== entry.uuid || !isClaudeWorkspaceCwd(record.cwd, root))
+        if (record.uuid !== entry.uuid || !isClaudeRecordCwd(record.cwd, root))
           this.__unavailable();
         // the index stores only records the CLI shows, so a dropped one means it no longer matches
         const item = toClaudeItem(record, entry.turn_id) ?? this.__unavailable();
@@ -453,7 +454,7 @@ export class ClaudeHistoryModel {
     const record = RecordSchema.parse(
       JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
     );
-    if (record.uuid !== entry.uuid || !isClaudeWorkspaceCwd(record.cwd, root)) this.__unavailable();
+    if (record.uuid !== entry.uuid || !isClaudeRecordCwd(record.cwd, root)) this.__unavailable();
     return record;
   }
 
@@ -530,7 +531,7 @@ export class ClaudeHistoryModel {
           record.uuid !== entry.uuid ||
           (record.parentUuid ?? null) !== entry.parent_uuid ||
           record.sessionId !== command.nativeId ||
-          !isClaudeWorkspaceCwd(record.cwd, command.workspaceRoot)
+          !isClaudeRecordCwd(record.cwd, command.workspaceRoot)
         )
           this.__unavailable();
         items.push(toClaudeItem(record, entry.turn_id, true) ?? this.__unavailable());
@@ -865,18 +866,24 @@ export class ClaudeHistoryModel {
     if (metadata.success) {
       if (
         metadata.data.sessionId !== nativeId ||
-        (metadata.data.cwd !== undefined && !isClaudeWorkspaceCwd(metadata.data.cwd, root))
+        (metadata.data.cwd !== undefined && !isClaudeRecordCwd(metadata.data.cwd, root))
       )
         this.__unavailable();
       return null;
     }
     const record = RecordSchema.parse(input);
     if (record.cwd !== undefined) {
-      if (!isClaudeWorkspaceCwd(record.cwd, root) || record.sessionId !== nativeId) {
+      if (!isClaudeRecordCwd(record.cwd, root) || record.sessionId !== nativeId) {
         row.workspace_state = 'foreign';
         this.__unavailable();
       }
-      row.workspace_state = 'matching';
+      /*
+       * Punctuation replacement can give two workspaces one native directory, so the transcript
+       * belongs to this workspace once one of its records ran inside it. Until then it stays
+       * foreign, which leaves it out without making it unreadable for good.
+       */
+      if (row.workspace_state !== 'matching')
+        row.workspace_state = isClaudeWorkspaceCwd(record.cwd, root) ? 'matching' : 'foreign';
     }
     if (record.type === 'custom-title') {
       if (record.sessionId !== nativeId || record.customTitle === undefined) this.__unavailable();
@@ -896,7 +903,7 @@ export class ClaudeHistoryModel {
       this.__unavailable();
     if (
       record.sessionId !== nativeId ||
-      !isClaudeWorkspaceCwd(record.cwd, root) ||
+      !isClaudeRecordCwd(record.cwd, root) ||
       record.timestamp === undefined ||
       !Number.isFinite(Date.parse(record.timestamp))
     )

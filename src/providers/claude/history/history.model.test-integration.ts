@@ -155,16 +155,16 @@ test('empty discovery and byte-limited indexing/pages return honest boundaries',
   });
 });
 
-test.each(['session', 'workspace'])(
-  'native API metadata with a foreign %s cannot bypass history boundaries',
+test.each(['another session', 'an excluded folder'])(
+  'native API metadata from %s cannot bypass history boundaries',
   async (scenario) => {
     await withClaudeRuntime(async ({ workspaceRoot, root, transcript, request }) => {
       const nativeId = randomUUID();
       const first = claudeRecord(workspaceRoot, nativeId);
       const metadata = {
         type: 'api-request-blob',
-        sessionId: scenario === 'session' ? randomUUID() : nativeId,
-        cwd: scenario === 'workspace' ? join(root, 'foreign') : workspaceRoot,
+        sessionId: scenario === 'another session' ? randomUUID() : nativeId,
+        cwd: scenario === 'an excluded folder' ? join(root, '_backup', 'work') : workspaceRoot,
         message: { role: 'user', content: 'Diagnostic' },
       };
       await writeFile(
@@ -1140,6 +1140,160 @@ test.each(['sibling', 'symlink', 'excluded', 'symlink-excluded'])(
     });
   },
 );
+
+test('a session that moves into a sibling folder and back is listed and read whole', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'Start in the checkout' });
+    const moved = claudeRecord(`${workspaceRoot}--task-worktree`, nativeId, {
+      type: 'assistant',
+      parentUuid: prompt.uuid,
+      text: 'Work in the task worktree',
+    });
+    const back = claudeRecord(workspaceRoot, nativeId, {
+      parentUuid: moved.uuid,
+      text: 'Back in the checkout',
+    });
+    await writeFile(
+      transcript(nativeId),
+      [prompt, moved, back].map((record) => JSON.stringify(record)).join('\n') + '\n',
+    );
+    const threads = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+    expect(
+      threads.kind === 'threads' &&
+        threads.result.data.map((thread) => [thread.nativeId, thread.historyState]),
+    ).toStrictEqual([[nativeId, 'available']]);
+    const items = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
+    expect(items.kind === 'items' && items.result.data.map((item) => item.text)).toStrictEqual([
+      'Back in the checkout',
+      'Work in the task worktree',
+      'Start in the checkout',
+    ]);
+    const detail = await request({
+      kind: 'item-detail',
+      provider: 'claude',
+      workspaceRoot,
+      nativeId,
+      turnId: prompt.uuid,
+      nativeItemId: moved.uuid,
+    });
+    expect(detail.kind === 'item-detail' && detail.result?.item.text).toBe(
+      'Work in the task worktree',
+    );
+    const evidence = await request({
+      kind: 'session-evidence',
+      provider: 'claude',
+      workspaceRoot,
+      nativeId,
+      kinds: ['agent-message'],
+    });
+    expect(evidence).toMatchObject({
+      kind: 'session-evidence',
+      result: { data: [{ text: 'Work in the task worktree' }] },
+    });
+  });
+});
+
+test('a session that starts in a sibling folder is listed and read once a record runs inside the workspace', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const first = claudeRecord(`${workspaceRoot}--task-worktree`, nativeId, {
+      text: 'Start in the task worktree',
+    });
+    await writeFile(transcript(nativeId), JSON.stringify(first) + '\n');
+    const before = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+    expect(before.kind === 'threads' && before.result.data).toStrictEqual([]);
+    await expect(
+      request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId }),
+    ).rejects.toThrow('Coding agent is unavailable');
+    const next = claudeRecord(workspaceRoot, nativeId, {
+      parentUuid: first.uuid,
+      text: 'Continue in the checkout',
+      timestamp: '2026-10-19T12:01:00.000Z',
+    });
+    await appendFile(transcript(nativeId), JSON.stringify(next) + '\n');
+    const after = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+    expect(
+      after.kind === 'threads' && after.result.data.map((thread) => thread.nativeId),
+    ).toStrictEqual([nativeId]);
+    const items = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
+    expect(items.kind === 'items' && items.result.data.map((item) => item.text)).toStrictEqual([
+      'Continue in the checkout',
+      'Start in the task worktree',
+    ]);
+  });
+});
+
+test.each(['another session', 'an excluded folder'])(
+  'a record from %s keeps a session unavailable after records inside the workspace',
+  async (scenario) => {
+    await withClaudeRuntime(async ({ workspaceRoot, root, transcript, request }) => {
+      const nativeId = randomUUID();
+      const first = claudeRecord(workspaceRoot, nativeId);
+      const intruder =
+        scenario === 'another session'
+          ? claudeRecord(workspaceRoot, randomUUID(), { type: 'assistant', parentUuid: first.uuid })
+          : claudeRecord(join(root, '_backup', 'work'), nativeId, {
+              type: 'assistant',
+              parentUuid: first.uuid,
+            });
+      await writeFile(
+        transcript(nativeId),
+        [first, intruder].map((record) => JSON.stringify(record)).join('\n') + '\n',
+      );
+      const threads = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+      expect(threads.kind === 'threads' && threads.result.data).toStrictEqual([]);
+      await expect(
+        request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId }),
+      ).rejects.toThrow('Coding agent is unavailable');
+    });
+  },
+);
+
+test('a transcript the previous projection marked foreign is indexed again and read whole', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, stateRoot, runtime, request }) => {
+    const nativeId = randomUUID();
+    const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'Start in the checkout' });
+    const moved = claudeRecord(`${workspaceRoot}--task-worktree`, nativeId, {
+      type: 'assistant',
+      parentUuid: prompt.uuid,
+      text: 'Work in the task worktree',
+    });
+    await writeFile(
+      transcript(nativeId),
+      [prompt, moved].map((record) => JSON.stringify(record)).join('\n') + '\n',
+    );
+    const initial = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
+    expect(initial.kind === 'items' && initial.result.data.length).toBe(2);
+    await runtime.close();
+    // projection version 5 rejected the sibling record for good
+    const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'));
+    try {
+      database
+        .prepare(
+          `UPDATE hq_claude_file SET identity = '5' || substr(identity, instr(identity, ':')),
+          supported = -1, workspace_state = 'foreign' WHERE native_id = ?`,
+        )
+        .run(nativeId);
+    } finally {
+      database.close();
+    }
+    const replacement = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
+    try {
+      const refreshed = await replacement.request({
+        kind: 'items',
+        provider: 'claude',
+        workspaceRoot,
+        nativeId,
+      });
+      expect(
+        refreshed.kind === 'items' && refreshed.result.data.map((item) => item.text),
+      ).toStrictEqual(['Work in the task worktree', 'Start in the checkout']);
+    } finally {
+      await replacement.close();
+    }
+  });
+});
 
 test('workspace authorization, excluded subtrees, links and malformed native identity fail closed', async () => {
   await withClaudeRuntime(async ({ workspaceRoot, projectRoot, transcript, request, root }) => {
