@@ -1,6 +1,10 @@
 import type { IHistoryItem } from '../../contracts/index.js';
 
-type ILiveEntry = { item: IHistoryItem; isComplete: boolean; bytes: number };
+/*
+ * An unfinished entry's turn ended before its provider finished it, as when an interrupt or a
+ * Codex steer cuts a message the provider never saves.
+ */
+type ILiveEntry = { item: IHistoryItem; isComplete: boolean; isUnfinished: boolean; bytes: number };
 type ILiveThread = { items: Map<string, ILiveEntry>; hasGap: boolean; revision: number };
 // serialized accounting includes escaping/identifiers and leaves space inside the 8 MiB IPC frame
 const MAX_LIVE_BYTES = 4 * 1024 * 1024;
@@ -31,7 +35,7 @@ export class LiveItems {
     const previous = thread.items.get(key);
     if (previous) this.__bytes -= previous.bytes;
     const bytes = Buffer.byteLength(JSON.stringify({ ...item, state: 'awaiting-flush' }));
-    thread.items.set(key, { item, isComplete, bytes });
+    thread.items.set(key, { item, isComplete, isUnfinished: false, bytes });
     this.__bytes += bytes;
     while (thread.items.size > 128) this.__drop(thread, thread.items.keys().next().value!);
     while (this.__bytes > MAX_LIVE_BYTES) {
@@ -123,11 +127,19 @@ export class LiveItems {
   /**
    * Drops completed items once persisted history holds them: with exactly matching normalized
    * content, or, for an item with an outcome, the same final outcome, since a provider can shorten
-   * long output when it saves it, as Codex does.
+   * long output when it saves it, as Codex does. An item its turn ended before the provider
+   * finished goes once persisted history holds that turn, which then shows what was saved of it.
    */
   public reconcile(nativeId: string, persisted: IHistoryItem[]): void {
     const thread = this.__threads.get(nativeId);
     if (!thread) return;
+    const turns = new Set(persisted.map((item) => item.turnId));
+    for (const [key, entry] of thread.items)
+      if (entry.isUnfinished && turns.has(entry.item.turnId)) {
+        this.__bytes -= entry.bytes;
+        thread.items.delete(key);
+        thread.revision = ++this.__revision;
+      }
     for (const item of persisted) {
       const key = JSON.stringify([item.turnId, item.nativeId]);
       const entry = thread.items.get(key);
@@ -145,13 +157,16 @@ export class LiveItems {
     }
   }
 
-  /** Keeps interrupted partial items available while their final native history is pending. */
+  /** Keeps a turn's partial items available until native history holds the turn. */
   public completeTurn(nativeId: string, turnId: string): void {
     const thread = this.__threads.get(nativeId);
-    if (thread) thread.revision = ++this.__revision;
-    if (thread)
-      for (const entry of thread.items.values())
-        if (entry.item.turnId === turnId) entry.isComplete = true;
+    if (!thread) return;
+    thread.revision = ++this.__revision;
+    for (const entry of thread.items.values())
+      if (entry.item.turnId === turnId && !entry.isComplete) {
+        entry.isComplete = true;
+        entry.isUnfinished = true;
+      }
   }
 
   /** Releases one cached window when the bounded window collection must evict it. */

@@ -20,7 +20,7 @@ import { expect, test } from 'vitest';
 
 import { claudeRecord, withClaudeRuntime } from '../../../../scripts/test-support/index.js';
 
-test('native API diagnostics stay out of compacted conversation history and preserve resume eligibility', async () => {
+test('compacted history reads on past the compaction, without native API diagnostics, and keeps resume eligibility', async () => {
   await withClaudeRuntime(async ({ workspaceRoot, transcript, request, runtime }) => {
     const nativeId = randomUUID();
     const first = claudeRecord(workspaceRoot, nativeId, { text: 'Before compaction' });
@@ -65,15 +65,15 @@ test('native API diagnostics stay out of compacted conversation history and pres
         .join('\n') + '\n',
     );
     const items = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
-    expect(items).toMatchObject({
-      kind: 'items',
-      result: {
-        data: [
-          { nativeId: answer.uuid, text: 'After compaction' },
-          { nativeId: summary.uuid, text: 'Native compacted summary' },
-        ],
-      },
-    });
+    // the boundary starts a new chain with no parent, and names the record it follows instead
+    expect(
+      items.kind === 'items' &&
+        items.result.data.map((item) => [item.nativeId, item.kind, item.text, item.turnId]),
+    ).toStrictEqual([
+      [answer.uuid, 'agent-message', 'After compaction', first.uuid],
+      [summary.uuid, 'notice', 'Native compacted summary', first.uuid],
+      [first.uuid, 'user-message', 'Before compaction', first.uuid],
+    ]);
     expect(JSON.stringify(items)).not.toContain('PRIVATE API DIAGNOSTIC');
     const status = await runtime.request({ kind: 'status' });
     if (status.kind !== 'status') throw new Error('Missing status');

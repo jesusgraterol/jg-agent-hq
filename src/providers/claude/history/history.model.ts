@@ -44,13 +44,14 @@ import {
   isClaudeWorkspaceCwd,
   openTranscript,
   projectDirectory,
+  readClaudeParentUuid,
   toClaudeDetail,
   toClaudeImageData,
   toClaudeItem,
 } from './utilities.js';
 
 // identifies the path and record interpretation used by persisted projection entries
-const HISTORY_PROJECTION_VERSION = 6;
+const HISTORY_PROJECTION_VERSION = 7;
 // one record, such as a tool result holding images, and an indexing read, which fits the largest
 const MAX_RECORD_BYTES = 8_388_608;
 const MAX_REFRESH_BYTES = 16_777_216;
@@ -529,7 +530,7 @@ export class ClaudeHistoryModel {
         );
         if (
           record.uuid !== entry.uuid ||
-          (record.parentUuid ?? null) !== entry.parent_uuid ||
+          readClaudeParentUuid(record) !== entry.parent_uuid ||
           record.sessionId !== command.nativeId ||
           !isClaudeRecordCwd(record.cwd, command.workspaceRoot)
         )
@@ -910,17 +911,16 @@ export class ClaudeHistoryModel {
       this.__unavailable();
     const createdAt = Date.parse(record.timestamp);
     const statements = this.__recordStatements;
-    const parent = record.parentUuid
-      ? statements.parentTurn.get(root, nativeId, record.parentUuid)
-      : undefined;
+    const parentUuid = readClaudeParentUuid(record);
+    const parent = parentUuid ? statements.parentTurn.get(root, nativeId, parentUuid) : undefined;
     // the CLI's presentation decides what is shown, the kind evidence filters on and where turns start
     const item =
       record.message !== undefined && !record.isMeta ? toClaudeItem(record, record.uuid) : null;
     const visible = item !== null;
-    if (record.parentUuid === record.uuid) this.__unavailable();
-    if (record.parentUuid && !parent) {
+    if (parentUuid === record.uuid) this.__unavailable();
+    if (parentUuid && !parent) {
       if (visible) this.__unavailable();
-      if (!isOrphanAllowed) return record.parentUuid;
+      if (!isOrphanAllowed) return parentUuid;
     }
     const textPrompt = item?.kind === 'user-message';
     const turnId = textPrompt
@@ -929,10 +929,9 @@ export class ClaudeHistoryModel {
         ? parent.turn_id
         : record.uuid;
     const previous = statements.recordedParent.get(root, nativeId, record.uuid);
-    if (previous && previous.parent_uuid !== (record.parentUuid ?? null)) this.__unavailable();
+    if (previous && previous.parent_uuid !== parentUuid) this.__unavailable();
     const isAppend = row.leaf_id === null || parent?.anchor_id === row.leaf_id;
-    const isSameLeaf =
-      record.uuid === row.leaf_id && previous?.parent_uuid === (record.parentUuid ?? null);
+    const isSameLeaf = record.uuid === row.leaf_id && previous?.parent_uuid === parentUuid;
     if (visible && !isAppend) row.revision = randomUUID();
     const turnStart = textPrompt
       ? offset
@@ -950,7 +949,7 @@ export class ClaudeHistoryModel {
       root,
       nativeId,
       record.uuid,
-      record.parentUuid ?? null,
+      parentUuid,
       turnId,
       offset,
       bytes.length,

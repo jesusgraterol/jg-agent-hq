@@ -48,6 +48,9 @@ export const RecordSchema = z.object({
   type: z.string().min(1).max(256),
   uuid: z.string().min(1).max(4096).optional(),
   parentUuid: z.string().nullable().optional(),
+  // a compaction boundary starts a new chain, and names the record it follows here
+  logicalParentUuid: z.string().nullable().optional(),
+  subtype: z.string().optional(),
   sessionId: z.string().optional(),
   cwd: z.string().optional(),
   timestamp: z.string().optional(),

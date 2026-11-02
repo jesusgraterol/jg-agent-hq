@@ -72,6 +72,22 @@ export const projectDirectory = (workspaceRoot: string): string => {
 };
 
 /**
+ * Names the record a record follows in its conversation: its parent, or, for the boundary a
+ * compaction writes, which starts a new chain with no parent, the record before the compaction,
+ * so the history reads on past it.
+ * @param record The record.
+ * @returns The record it follows, or null for the conversation's first.
+ * @example
+ * const parent = readClaudeParentUuid({ type: 'system', subtype: 'compact_boundary', parentUuid: null, logicalParentUuid: 'a1' });
+ * // => 'a1'
+ */
+export const readClaudeParentUuid = (record: IRecord): string | null =>
+  record.parentUuid ??
+  (record.type === 'system' && record.subtype === 'compact_boundary'
+    ? (record.logicalParentUuid ?? null)
+    : null);
+
+/**
  * Verifies a native cwd within its selected workspace, including removed subdirectories.
  * @returns Whether existing path ancestors remain inside the workspace without excluded segments.
  */

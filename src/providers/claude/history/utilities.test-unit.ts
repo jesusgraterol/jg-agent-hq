@@ -2,6 +2,7 @@ import { expect, test } from 'vitest';
 
 import type { IRecord } from './types.js';
 import { toClaudeItem } from './index.js';
+import { readClaudeParentUuid } from './utilities.js';
 
 const user = (content: unknown, extra: Partial<IRecord> = {}): IRecord => ({
   type: 'user',
@@ -272,3 +273,23 @@ test('outcome and files come from the full record before the text is cut', () =>
   expect(item?.outcome).toBe('failed');
   expect(item?.files).toStrictEqual([{ path: '/workspace/a.ts', added: 40_000, removed: 0 }]);
 });
+
+test.each([
+  ['a compaction boundary', 'before', 'compact_boundary', null, 'before'],
+  ['another system record', null, 'informational', null, 'before'],
+  ['a boundary with a parent', 'parent', 'compact_boundary', 'parent', 'before'],
+  ['a boundary without a logical parent', null, 'compact_boundary', null, undefined],
+] as const)(
+  'readClaudeParentUuid(%s) -> %s',
+  (_, expected, subtype, parentUuid, logicalParentUuid) => {
+    expect(
+      readClaudeParentUuid({
+        type: 'system',
+        uuid: 'record',
+        subtype,
+        parentUuid,
+        logicalParentUuid,
+      }),
+    ).toBe(expected);
+  },
+);
