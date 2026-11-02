@@ -183,8 +183,21 @@ const COMMAND_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
 const PERSISTED_OUTPUT =
   /^<persisted-output>\nOutput too large \(([^)\n]{1,64})\)\. Full output saved to: [^\n]*\n\nPreview \([^)\n]*\):\n([\s\S]*?)\n?<\/persisted-output>([\s\S]*)$/;
 
-/** Shows a result saved to a file as its size and preview, without the file's path. */
+// a part of a tool result made of content blocks, as the CLI shows it, with an image as [Image]
+const toResultPartText = (part: unknown): string => {
+  const block = BlockSchema.safeParse(part).data;
+  if (!block) return UNSUPPORTED;
+  if (block.type === 'text') return block.text ?? '';
+  return block.type === 'image' ? '[Image]' : `[Native ${block.type}]`;
+};
+
+/**
+ * Shows a tool result as the CLI does: its text, the parts of one made of content blocks, such as
+ * a screenshot's caption and image, and one saved to a file as its size and preview, without the
+ * file's path.
+ */
 const toResultText = (block: IBlock): string => {
+  if (Array.isArray(block.content)) return block.content.map(toResultPartText).join('\n');
   if (typeof block.content !== 'string') return `[Native ${block.type}]`;
   const persisted = PERSISTED_OUTPUT.exec(block.content);
   return persisted

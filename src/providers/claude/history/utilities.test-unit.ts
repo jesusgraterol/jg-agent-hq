@@ -201,6 +201,33 @@ test.each([
   ).toBe(outcome);
 });
 
+test.each([
+  [
+    'text and a screenshot',
+    'Captured the page\n[Image]',
+    [
+      { type: 'text', text: 'Captured the page' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } },
+    ],
+  ],
+  [
+    'a screenshot alone',
+    '[Image]',
+    [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } }],
+  ],
+  ['a part HQ has no reader for', '[Native search_result]', [{ type: 'search_result' }]],
+])('a result made of %s reads as %o', (_, text, content) => {
+  expect(
+    presented(user([{ type: 'tool_result', tool_use_id: 'toolu_shot', content }])),
+  ).toStrictEqual({
+    kind: 'tool',
+    text,
+    callId: 'toolu_shot',
+    outcome: 'succeeded',
+    files: [],
+  });
+});
+
 test('a result saved to a file reads as its size and preview, without its path', () => {
   const content =
     '<persisted-output>\nOutput too large (45.2KB). Full output saved to: /home/user/.claude/tool-results/b1.txt\n\nPreview (first 2KB):\nline one\nline two\n</persisted-output>\nShell cwd was reset to /workspace';

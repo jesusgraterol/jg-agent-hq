@@ -1,5 +1,9 @@
 # Changelog
 
+## 10.5.2
+
+- Show a Claude tool result made of content blocks, such as a browser tool's caption and screenshot, as its text, with each image as `[Image]`. Such results used to read `[Native tool_result]`.
+
 ## 10.5.1
 
 - Read a compacted Claude session to the start of its conversation. A compaction starts a new chain whose boundary has no parent and names the record before it as its logical parent, and history used to stop there. Every indexed transcript is indexed again after the upgrade.
