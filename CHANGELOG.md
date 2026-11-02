@@ -3,6 +3,7 @@
 ## 10.5.1
 
 - Read a compacted Claude session to the start of its conversation. A compaction starts a new chain whose boundary has no parent and names the record before it as its logical parent, and history used to stop there. Every indexed transcript is indexed again after the upgrade.
+- Drop a live item that was still streaming when its turn ended, such as a message a Codex steer or an interrupt cut, once a native history page holds an item of that turn. Codex never saves a message a steer cut, so it stayed `awaiting-flush` until the window evicted it.
 
 ## 10.5.0
 

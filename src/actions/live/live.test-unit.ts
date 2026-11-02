@@ -106,3 +106,35 @@ test('host provenance enrichment does not keep an already persisted native body 
   ]);
   expect(live.read('thread').data).toStrictEqual([]);
 });
+
+test('a message its turn ended before the provider finished goes once history holds that turn', () => {
+  const live = new LiveItems();
+  const answer = { ...item, nativeId: 'answer', text: 'The answer, after the steer' };
+  live.open('thread');
+  live.put('thread', item, false);
+  live.put('thread', answer, true);
+  live.completeTurn('thread', 'turn');
+  // a page of another turn says nothing about this one
+  live.reconcile('thread', [{ ...item, nativeId: 'earlier', turnId: 'earlier-turn' }]);
+  expect(live.read('thread').data).toStrictEqual([
+    { ...item, state: 'awaiting-flush' },
+    { ...answer, state: 'awaiting-flush' },
+  ]);
+  // the prompt saved before the answer leaves the finished answer waiting for its own copy
+  live.reconcile('thread', [{ ...item, nativeId: 'prompt', kind: 'user-message' }]);
+  expect(live.read('thread').data).toStrictEqual([{ ...answer, state: 'awaiting-flush' }]);
+  live.reconcile('thread', [answer]);
+  expect(live.read('thread').data).toStrictEqual([]);
+});
+
+test('an unfinished message the provider finishes after its turn ended waits for its saved copy', () => {
+  const live = new LiveItems();
+  live.open('thread');
+  live.put('thread', item, false);
+  live.completeTurn('thread', 'turn');
+  live.put('thread', { ...item, text: 'hello world' }, true);
+  live.reconcile('thread', [{ ...item, nativeId: 'prompt', kind: 'user-message' }]);
+  expect(live.read('thread').data).toStrictEqual([
+    { ...item, text: 'hello world', state: 'awaiting-flush' },
+  ]);
+});

@@ -1372,6 +1372,89 @@ test('native-session adoption is exclusive and stale epochs cannot create anothe
   }
 });
 
+test('a message Codex cut and never saved leaves the live window once history holds its turn', async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('cut-message');
+    await fixture.control({ holdTurn: true });
+    await fixture.submit(
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Explain worktrees' },
+      }),
+    );
+    const active = await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.state === 'running',
+    );
+    const steer = await fixture.submit(
+      fixture.envelope({
+        kind: 'steer',
+        threadId: thread.id,
+        expectedTurnId: active.activeTurnId!,
+        text: 'End with: Steering received.',
+      }),
+    );
+    await fixture.until(
+      () => fixture.receipt(steer.id),
+      (entry) => entry.delivery === 'acknowledged',
+    );
+    // the turn ends with its first message started and never finished
+    await fixture.submit(
+      fixture.envelope({
+        kind: 'interrupt',
+        threadId: thread.id,
+        expectedTurnId: active.activeTurnId!,
+      }),
+    );
+    await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.state === 'interrupted',
+    );
+    const cut = await fixture.request({ kind: 'live-items', threadId: thread.id });
+    expect(
+      cut.kind === 'live-items' &&
+        cut.result.data.map(({ nativeId, text, state }) => [nativeId, text, state]),
+    ).toStrictEqual([['live-1', 'Live response', 'awaiting-flush']]);
+    // a page of another turn leaves it waiting
+    await fixture.control({
+      items: [
+        {
+          turnId: 'earlier-turn',
+          item: { id: 'earlier', type: 'agentMessage', text: 'Earlier answer' },
+        },
+      ],
+    });
+    await fixture.request({
+      kind: 'items',
+      provider: 'codex',
+      workspaceRoot: fixture.workspaceRoot,
+      nativeId: thread.nativeId!,
+    });
+    expect(await fixture.request({ kind: 'live-items', threadId: thread.id })).toStrictEqual(cut);
+    await fixture.control({
+      items: [
+        {
+          turnId: active.activeTurnId!,
+          item: { id: 'answer', type: 'agentMessage', text: 'Steering received.' },
+        },
+      ],
+    });
+    await fixture.request({
+      kind: 'items',
+      provider: 'codex',
+      workspaceRoot: fixture.workspaceRoot,
+      nativeId: thread.nativeId!,
+    });
+    expect(await fixture.request({ kind: 'live-items', threadId: thread.id })).toMatchObject({
+      result: { data: [] },
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('completion while steering cannot silently start a replacement turn or resurrect the finished turn', async () => {
   const fixture = await setup();
   try {
