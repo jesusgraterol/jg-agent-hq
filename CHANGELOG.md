@@ -1,5 +1,9 @@
 # Changelog
 
+## 10.5.3
+
+- Leave a Claude subagent's stream frames, which name the Agent call that started it, out of a session's live items and turns. History leaves the subagent's sidechain out, so its prompt, tool calls and results stayed `awaiting-flush` after the session's answer, its prompt read as the operator's message, and a background subagent's frames after the session's turn started a turn of Claude's own that never ended, which held the next message as starting. A subagent's tool results still settle the approvals it asked for.
+
 ## 10.5.2
 
 - Show a Claude tool result made of content blocks, such as a browser tool's caption and screenshot, as its text, with each image as `[Image]`. Such results used to read `[Native tool_result]`.

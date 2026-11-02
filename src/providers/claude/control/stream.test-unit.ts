@@ -315,3 +315,106 @@ test('input replayed while a turn Claude started still runs makes the session un
     'The Claude integration failed',
   );
 });
+
+// a frame of the subagent an Agent call started, which names that call
+const subagent = (frame: Record<string, unknown>) => ({
+  ...frame,
+  session_id: 'session',
+  parent_tool_use_id: 'toolu_agent',
+});
+
+test("a subagent's frames show no live item and the session's own still do, as history leaves sidechains out", () => {
+  const session = createSession();
+  const { events, items } = createEvents();
+  const receive = (frame: unknown) => receiveClaudeMessage(session, frame, events);
+  receive(
+    subagent({
+      type: 'user',
+      uuid: 'sub-prompt',
+      message: { role: 'user', content: 'Read the official pages' },
+    }),
+  );
+  receive(subagent(streamEvent({ type: 'message_start', message: { id: 'api-sub' } })));
+  receive(
+    subagent(
+      streamEvent({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      }),
+    ),
+  );
+  receive(
+    subagent({
+      type: 'assistant',
+      uuid: 'sub-fetch',
+      message: {
+        id: 'api-sub',
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'toolu_fetch', name: 'WebFetch', input: { url: 'x' } }],
+      },
+    }),
+  );
+  expect(items).toStrictEqual([]);
+  receive({
+    type: 'assistant',
+    session_id: 'session',
+    parent_tool_use_id: null,
+    uuid: 'answer',
+    message: { id: 'api-main', role: 'assistant', content: [{ type: 'text', text: 'The answer' }] },
+  });
+  expect(items.map(({ item }) => [item.nativeId, item.text])).toStrictEqual([
+    ['answer', 'The answer'],
+  ]);
+  // a subagent's text is never the turn's result
+  expect(session.input?.finalText).toBe('The answer');
+});
+
+test("a background subagent's frames after the session's turn start no turn of Claude's own", () => {
+  const session: IClaudeSession = { ...createSession(), input: undefined };
+  const observed: string[] = [];
+  const { events, items } = createEvents();
+  receiveClaudeMessage(
+    session,
+    subagent({
+      type: 'assistant',
+      uuid: 'sub-fetch',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Still reading' }] },
+    }),
+    { ...events, observe: (observation) => observed.push(observation.kind) },
+  );
+  expect(session.nativeTurn).toBeUndefined();
+  expect(observed).toStrictEqual([]);
+  expect(items).toStrictEqual([]);
+});
+
+test("a subagent's tool result still settles the approval it asked for", () => {
+  const session = createSession();
+  session.requests.set('native-request', {
+    toolId: 'toolu_fetch',
+    scopedId: 'scoped-request',
+    fingerprint: 'fingerprint',
+    isWritten: true,
+  });
+  const resolved: string[] = [];
+  const { events } = createEvents();
+  receiveClaudeMessage(
+    session,
+    subagent({
+      type: 'user',
+      uuid: 'sub-result',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_fetch', content: 'Fetched' }],
+      },
+    }),
+    {
+      ...events,
+      observe: (observation) => {
+        if (observation.kind === 'request-resolved') resolved.push(observation.requestId);
+      },
+    },
+  );
+  expect(resolved).toStrictEqual(['scoped-request']);
+  expect(session.requests.size).toBe(0);
+});
