@@ -128,6 +128,22 @@ test('a message its turn ended before the provider finished goes once history ho
   expect(live.read('thread').data).toStrictEqual([]);
 });
 
+test("a turn awaits flush while its window holds a finished item no history page held, and not another turn's", () => {
+  const live = new LiveItems();
+  live.open('thread');
+  expect(live.awaitsFlush('thread', 'turn')).toBe(false);
+  // an item still streaming isn't saved yet
+  live.put('thread', item, false);
+  expect(live.awaitsFlush('thread', 'turn')).toBe(false);
+  live.put('thread', { ...item, nativeId: 'other', turnId: 'other-turn' }, true);
+  expect(live.awaitsFlush('thread', 'turn')).toBe(false);
+  live.put('thread', item, true);
+  expect(live.awaitsFlush('thread', 'turn')).toBe(true);
+  live.reconcile('thread', [item]);
+  expect(live.awaitsFlush('thread', 'turn')).toBe(false);
+  expect(live.awaitsFlush('missing', 'turn')).toBe(false);
+});
+
 test('an unfinished message the provider finishes after its turn ended waits for its saved copy', () => {
   const live = new LiveItems();
   live.open('thread');

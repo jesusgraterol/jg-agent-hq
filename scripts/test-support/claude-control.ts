@@ -63,8 +63,10 @@ export const startClaudeControl = () => {
   }else if(settings.nativeTurnMs)setTimeout(()=>endNative(false),settings.nativeTurnMs);
   else if(!settings.nativeHold)endNative(false);
  };
+ // holdResult streams and saves a turn's answer, then holds its result until releaseResult
+ let heldResult=null;
  const complete=(interrupted=false)=>{
-  if(!input)return;
+  if(!input||heldResult)return;
   // scripted frames are written to the transcript as the CLI would, with their result metadata
   if(!interrupted&&control().frames)for(const frame of control().frames){out(frame);if(frame.type==='user'||frame.type==='assistant'){record(frame.uuid,frame.type,frame.message.content,leaf,frame.tool_use_result);leaf=frame.uuid;}}
   else if(!interrupted){
@@ -76,6 +78,10 @@ export const startClaudeControl = () => {
    out({type:'assistant',uuid,message:{id:'api-message',role:'assistant',content:[{type:'text',text}]}});
    out({type:'stream_event',event:{type:'message_delta',delta:{stop_reason:'end_turn',stop_sequence:null}}});
   }
+  if(!interrupted&&control().holdResult){heldResult=()=>finish(false);return;}
+  finish(interrupted);
+ };
+ const finish=interrupted=>{
   if(interrupted){const uuid=randomUUID(),content=[{type:'text',text:'[Request interrupted by user]'}];record(uuid,'user',content,leaf);leaf=uuid;out({type:'user',uuid,message:{role:'user',content}});}
   // a turn that starts a background command reports it, as Claude does, before its result
   if(!interrupted&&control().backgroundTask&&!isTaskRunning){isTaskRunning=true;out({type:'system',subtype:'background_tasks_changed',tasks:[{task_id:'task-1',run_id:'run-1',description:'sleep',task_type:'local_bash'}]});out({type:'system',subtype:'task_started',task_id:'task-1',run_id:'run-1',tool_use_id:'tool-task',description:'sleep',is_backgrounded:true,task_type:'local_bash'});}
@@ -94,6 +100,7 @@ export const startClaudeControl = () => {
  const lines=createInterface({input:process.stdin});
  const interval=setInterval(()=>{
   if(input&&!native&&control().release&&!hasPrompt){if(control().releaseOnce)writeFileSync(join(root,'claude-control.json'),JSON.stringify({...control(),release:false,releaseOnce:false}));complete();}
+  if(heldResult&&control().releaseResult){const held=heldResult;heldResult=null;held();}
   const settings=control();
   if(isTaskRunning&&settings.finishBackgroundTask){isTaskRunning=false;out({type:'system',subtype:'task_updated',task_id:'task-1',run_id:'run-1',patch:{status:'completed',end_time:Date.now()}});out({type:'system',subtype:'task_notification',task_id:'task-1',run_id:'run-1',tool_use_id:'tool-task',status:'completed',output_file:'',summary:'done'});out({type:'system',subtype:'background_tasks_changed',tasks:[]});}
   if(native&&!native.hasPrompt&&settings.nativeRelease)endNative(false);

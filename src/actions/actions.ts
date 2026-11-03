@@ -3,15 +3,17 @@ import { Exception, extractMessage, isException } from 'jg-exception';
 import { delay } from 'jg-utilities';
 import { z } from 'zod';
 
-import type {
-  IActionEnvelope,
-  IActionReceipt,
-  IManagedThread,
-  INativeApproval,
-  INativeApprovalSummary,
-  IPreparedInput,
-  ILoginObservation,
-  ISessionTerminal,
+import {
+  MAX_ITEM_TEXT_LENGTH,
+  MAX_PAGE_SIZE,
+  type IActionEnvelope,
+  type IActionReceipt,
+  type IManagedThread,
+  type INativeApproval,
+  type INativeApprovalSummary,
+  type IPreparedInput,
+  type ILoginObservation,
+  type ISessionTerminal,
 } from '../contracts/index.js';
 import { getErrorKind } from '../errors/index.js';
 import type { INativePrompt, IProviderReattachment, IProviderThread } from '../providers/index.js';
@@ -36,6 +38,9 @@ const ITEM_OBSERVATIONS: ReadonlySet<INativeObservation['kind']> = new Set([
   'item-started',
   'item-completed',
 ]);
+
+// the most history pages of 128 items a finished turn's own read takes, as a Codex page reads turns
+const TURN_FLUSH_PAGES = 8;
 
 const NativeRejectionSchema = z.union([
   z.object({ nativeCode: z.number() }),
@@ -539,9 +544,68 @@ export const createActions = (
     }
   };
 
+  // finished turns whose own history is being read, so a turn is read by one task at a time
+  const flushing = new Set<string>();
+  /*
+   * A saved item leaves the live window only once a native history page holds it, and a client may
+   * never read the pages that do, so a finished turn's own history is read here, newest first,
+   * until none of its saved items remain. Codex's saved state can trail its turn's end, so a turn
+   * whose items remain is read once more after the re-check wait. An aborted wait or a failed read
+   * leaves them to the next history read, as before, and never fails the session's events.
+   */
+  const flushTurn = (
+    provider: IManagedThread['provider'],
+    nativeId: string,
+    workspaceRoot: string,
+    turnId: string,
+  ): void => {
+    const liveKey = key(provider, nativeId);
+    const flushKey = JSON.stringify([liveKey, turnId]);
+    if (flushing.has(flushKey)) return;
+    flushing.add(flushKey);
+    runOwned(async () => {
+      try {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          if (attempt > 0)
+            await delay(RESYNC_REREAD_DELAY_SECONDS, { signal: resyncLifetime.signal });
+          const control = await registry.get(provider);
+          let cursor: string | undefined;
+          for (let page = 0; page < TURN_FLUSH_PAGES; page += 1) {
+            if (closing || !live.awaitsFlush(liveKey, turnId)) return;
+            const response = await control.readHistory({
+              kind: 'items',
+              provider,
+              workspaceRoot,
+              nativeId,
+              turnId,
+              limit: MAX_PAGE_SIZE,
+              cursor,
+              textLimit: MAX_ITEM_TEXT_LENGTH,
+            });
+            if (response.kind !== 'items') return;
+            live.reconcile(liveKey, response.result.data);
+            if (response.result.nextCursor === null) break;
+            cursor = response.result.nextCursor;
+          }
+        }
+      } catch {
+        // the items wait for the next history read
+      } finally {
+        flushing.delete(flushKey);
+      }
+    });
+  };
+
   const observe = async (observation: INativeObservation): Promise<void> => {
     const result = await recordObservation(observation);
     if (observation.kind === 'turn-completed') {
+      if (result.thread && controlled.has(key(observation.provider, observation.nativeThreadId)))
+        flushTurn(
+          observation.provider,
+          observation.nativeThreadId,
+          result.thread.workspaceRoot,
+          observation.nativeTurnId,
+        );
       watched.delete(key(observation.provider, observation.nativeThreadId));
       for (const [id, prompt] of prompts)
         if (
@@ -578,7 +642,7 @@ export const createActions = (
     enqueue(provider, () => observe(observation));
   };
 
-  // ends the waits of delayed re-checks when the runtime closes
+  // ends the waits of delayed re-checks and turn reads when the runtime closes
   const resyncLifetime = new AbortController();
   /*
    * Sessions a re-check after an unidentified loss left running, or skipped while an action was in

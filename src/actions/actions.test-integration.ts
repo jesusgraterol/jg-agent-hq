@@ -1333,6 +1333,87 @@ test('live items remain available through native flush; lifecycle replay is boun
   }
 });
 
+test("a finished turn's saved items leave the live window once its history holds them, though no client reads it", async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('turn-flush');
+    const image = { id: 'live-image', type: 'imageView', path: '/workspace/shot.png' };
+    await fixture.control({
+      turnItems: [image],
+      items: [
+        { turnId: 'native-turn-1', item: image },
+        {
+          turnId: 'native-turn-1',
+          item: { id: 'live-1', type: 'agentMessage', text: 'Live response' },
+        },
+      ],
+    });
+    await fixture.submit(
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Show the screenshot' },
+      }),
+    );
+    await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.state === 'completed',
+    );
+    const live = await fixture.until(
+      () => fixture.request({ kind: 'live-items', threadId: thread.id }),
+      (response) => response.kind === 'live-items' && response.result.data.length === 0,
+    );
+    expect(live).toMatchObject({ kind: 'live-items', result: { data: [], hasGap: false } });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('a finished turn whose history trails its end is read once more, and then leaves the live window', async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('turn-flush-late');
+    await fixture.control({ awaitingFlush: true });
+    await fixture.submit(
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Say hello' },
+      }),
+    );
+    await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.state === 'completed',
+    );
+    const turnReads = async () =>
+      (await fixture.calls()).filter(
+        ({ method, params }) =>
+          method === 'thread/items/list' && params['turnId'] === 'native-turn-1',
+      );
+    // the read as the turn ends finds nothing saved yet, so the item stays
+    await fixture.until(turnReads, (reads) => reads.length === 1);
+    expect(await fixture.request({ kind: 'live-items', threadId: thread.id })).toMatchObject({
+      result: { data: [{ nativeId: 'live-1', state: 'awaiting-flush' }] },
+    });
+    await fixture.control({
+      items: [
+        {
+          turnId: 'native-turn-1',
+          item: { id: 'live-1', type: 'agentMessage', text: 'Live response' },
+        },
+      ],
+    });
+    await fixture.until(
+      () => fixture.request({ kind: 'live-items', threadId: thread.id }),
+      (response) => response.kind === 'live-items' && response.result.data.length === 0,
+      5000,
+    );
+    expect(await turnReads()).toHaveLength(2);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('native-session adoption is exclusive and stale epochs cannot create another controller action', async () => {
   const fixture = await setup();
   try {
@@ -3265,6 +3346,9 @@ test.each([
       await fixture.control({ threadTurns: turns('inProgress') });
       await sendMessage(fixture, first.id);
       await sendMessage(fixture, second.id);
+      // the fixture's history never holds their turns, so each turn's own read waits to read again
+      await expect.poll(() => countHeldDelays(2)).toBe(2);
+      releaseHeldDelays(2);
       // Codex reports the watched session idle: its turn's end may have been the lost message
       await emit(
         fixture,

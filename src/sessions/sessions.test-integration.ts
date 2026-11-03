@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
@@ -472,7 +472,11 @@ test('a Claude skill input, which Claude records as command markup, correlates w
       threadId: created.threadId!,
       input: { kind: 'text', text },
     });
-    // Claude Code records the skill as command markup, which the fake CLI doesn't
+    /*
+     * Claude Code records the skill as command markup, which the fake CLI doesn't. The runtime may
+     * have indexed the transcript as the turn ended, and Claude only ever appends to one, so the
+     * rewritten transcript replaces the file rather than changing it in place.
+     */
     const transcript = fixture.transcript(thread.result.nativeId);
     const records = (await readFile(transcript, 'utf8'))
       .trim()
@@ -482,7 +486,9 @@ test('a Claude skill input, which Claude records as command markup, correlates w
       if (record.type === 'user' && record.message?.content === text)
         record.message.content =
           '<command-message>jg-review-session</command-message>\n<command-name>/jg-review-session</command-name>\n<command-args>Review this work against its plan.</command-args>';
-    await writeFile(transcript, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+    const rewritten = `${transcript}.rewrite`;
+    await writeFile(rewritten, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+    await rename(rewritten, transcript);
 
     const page = await fixture.request({
       kind: 'items',
