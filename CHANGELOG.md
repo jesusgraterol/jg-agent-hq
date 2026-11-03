@@ -1,5 +1,13 @@
 # Changelog
 
+## 11.0.0
+
+- Read the skill catalog of a folder without a session. `skills` now takes `provider` and `workspaceRoot`, with `threadId` optional: with it, the request reads that controlled session's catalog as before, and refuses a session of another provider or folder with JG_AGENT_HQ_REQUEST_INVALID; without it, the request reads the catalog a session started in the folder would have. Codex lists the folder, and Claude reads the initialization command list of a session-less read process started there, without a user prompt or model turn. A skill has the same ID in both catalogs, so a folder's catalog can pick a skill for a session's first input.
+- Breaking: a `skills` request must name `provider` and `workspaceRoot`; one with only `threadId` is invalid. The CLI's `skills` takes `--workspace-root`, with `--provider` defaulting to `codex` and `--thread-id` optional.
+- Breaking: `IAgentProvider.readSkills` takes `(workspaceRoot, nativeId, call)`, with `nativeId` undefined for a folder's inventory, in the order `readConfiguration` uses.
+- Start every folder-scoped Claude read process, configuration reads included, with the trusted additional directories sessions get, so a folder read sees the commands a session there sees.
+- Store nothing new: the schema and existing databases are unchanged.
+
 ## 10.9.3
 
 - Clear a finished turn's saved items from the live window without waiting on a client's history read. A saved item used to stay `awaiting-flush` until some `items` read happened to cover it, so a session nobody read while it worked kept its items, and a client that read only its newest pages later showed them after the newest items. When a turn ends, the runtime now reads that turn's history itself, newest first and at most 8 pages of 128, until none of its finished items remain, and once more 2 seconds later when some do, since Codex's saved state can trail its turn's end. A failed read leaves them to the next history read, as before.
