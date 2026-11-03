@@ -45,6 +45,7 @@ import {
   openTranscript,
   projectDirectory,
   readClaudeParentUuid,
+  readContinuedIn,
   toClaudeDetail,
   toClaudeImageData,
   toClaudeItem,
@@ -52,6 +53,8 @@ import {
 
 // identifies the path and record interpretation used by persisted projection entries
 const HISTORY_PROJECTION_VERSION = 9;
+// the transcripts whose continuing session is remembered, oldest dropped first
+const MAX_CONTINUED_ANSWERS = 1_024;
 // one record, such as a tool result holding images, and an indexing read, which fits the largest
 const MAX_RECORD_BYTES = 33_554_432;
 const MAX_REFRESH_BYTES = 67_108_864;
@@ -77,6 +80,11 @@ const CHAIN = `WITH RECURSIVE current_chain AS (
  */
 export class ClaudeHistoryModel {
   private readonly __database: DatabaseSync;
+  // the session each indexed transcript's chat continues in, by the file size and time it was read at
+  private readonly __continued = new Map<
+    string,
+    { fileSize: number; modifiedAt: number | null; continuedIn: string | null }
+  >();
   // each workspace's open directory scan, with the transcripts it has inspected so far
   private readonly __scans = new Map<
     string,
@@ -208,7 +216,7 @@ export class ClaudeHistoryModel {
       return HqResponseSchema.parse({
         kind: 'threads',
         result: {
-          data: page.map((row) => this.__summary(row)),
+          data: page.map((row) => this.__summary(row, directory)),
           source: 'native',
           nextCursor: encodeHistoryCursor(
             rows.length > command.limit && last
@@ -234,7 +242,8 @@ export class ClaudeHistoryModel {
     if (!isIndexed) return { kind: 'indexing' };
     const row = this.__file(root, command.nativeId);
     if (!row || row.supported !== 1 || row.workspace_state !== 'matching') this.__unavailable();
-    if (command.kind === 'thread') return { kind: 'thread', result: this.__summary(row) };
+    if (command.kind === 'thread')
+      return { kind: 'thread', result: this.__summary(row, directory) };
     if (command.kind === 'session-evidence')
       return { kind: 'session-evidence', result: this.__evidence(command, row, directory) };
     if (command.kind === 'item-detail')
@@ -459,7 +468,24 @@ export class ClaudeHistoryModel {
     return record;
   }
 
-  private __summary(row: IFileRow): IThreadSummary {
+  /**
+   * Summarizes one indexed transcript. Which session its chat continues in comes from its end, read
+   * once per file size and modification time.
+   */
+  private __summary(row: IFileRow, directory: string): IThreadSummary {
+    const key = JSON.stringify([row.workspace_root, row.native_id]);
+    let continued = this.__continued.get(key);
+    if (continued?.fileSize !== row.file_size || continued.modifiedAt !== row.modified_at) {
+      continued = {
+        fileSize: row.file_size,
+        modifiedAt: row.modified_at,
+        continuedIn: readContinuedIn(directory, row.native_id),
+      };
+      this.__continued.delete(key);
+      this.__continued.set(key, continued);
+      if (this.__continued.size > MAX_CONTINUED_ANSWERS)
+        this.__continued.delete(this.__continued.keys().next().value!);
+    }
     return {
       provider: 'claude',
       nativeId: row.native_id,
@@ -472,6 +498,8 @@ export class ClaudeHistoryModel {
       // claude agents observations supply the live state and the terminal that runs it
       state: 'unknown',
       terminal: null,
+      backgroundCommands: 0,
+      continuedIn: continued.continuedIn,
       ownership: 'external',
       managedId: null,
       historyState: row.supported === 1 ? 'available' : 'unavailable',

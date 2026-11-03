@@ -1,4 +1,12 @@
-import { constants, lstatSync, openSync, realpathSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync,
+  realpathSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { Exception, hasErrorCode } from 'jg-exception';
@@ -153,6 +161,63 @@ export const openTranscript = (directory: string, nativeId: string): number => {
       },
     });
   return openSync(join(directory, `${nativeId}.jsonl`), constants.O_RDONLY | constants.O_NOFOLLOW);
+};
+
+// the bytes at a transcript's end that a `continued-in` record is looked for in
+const CONTINUED_TAIL_BYTES = 65_536;
+
+// the record Claude Code writes at a transcript's end when it moves the chat into a new session
+const ContinuedInSchema = z.object({
+  type: z.literal('continued-in'),
+  continuedInSessionId: z.uuid(),
+});
+
+/**
+ * Reads the session a Claude session's chat continues in: the one the last `continued-in` record
+ * in its transcript's final 65,536 bytes names, when no message follows that record and the named
+ * session's transcript is in the same project directory. A session resumed after the move wrote
+ * messages after it, so it continues in none.
+ * @param directory The Claude project directory that holds the transcript.
+ * @param nativeId The session's ID.
+ * @returns The continuing session's ID, or null, including when a transcript can't be read.
+ */
+export const readContinuedIn = (directory: string, nativeId: string): string | null => {
+  let fd: number;
+  try {
+    fd = openTranscript(directory, nativeId);
+  } catch {
+    return null;
+  }
+  try {
+    const { size } = fstatSync(fd);
+    const start = Math.max(0, size - CONTINUED_TAIL_BYTES);
+    const tail = Buffer.alloc(size - start);
+    readSync(fd, tail, 0, tail.length, start);
+    // a tail that starts inside a line leaves that partial line out
+    const lines = tail.toString('utf8').split('\n');
+    if (start > 0) lines.shift();
+    let continuedIn: string | null = null;
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let record: unknown;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const moved = ContinuedInSchema.safeParse(record);
+      if (moved.success) continuedIn = moved.data.continuedInSessionId;
+      else if (z.object({ type: z.enum(['user', 'assistant']) }).safeParse(record).success)
+        continuedIn = null;
+    }
+    if (continuedIn === null) return null;
+    const entry = lstatSync(join(directory, `${continuedIn}.jsonl`), { throwIfNoEntry: false });
+    return entry?.isFile() ? continuedIn : null;
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
 };
 
 const BlockSchema = z.object({

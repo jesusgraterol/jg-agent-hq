@@ -1802,6 +1802,16 @@ test('a Claude session keeps its process while a background command it started r
       return live.result.backgroundCommands;
     };
     await expect.poll(readBackground).toBe(1);
+    // the session's summary carries the count, and it stays among the active sessions while idle
+    const activeCount = async () => {
+      const response = await fixture.request({ kind: 'active-sessions' });
+      if (response.kind !== 'active-sessions') throw new Error('Missing active sessions');
+      return (
+        response.result.data.find((entry) => entry.managedId === thread.id)?.backgroundCommands ??
+        null
+      );
+    };
+    await expect.poll(activeCount).toBe(1);
     // the idle period that starts at the turn's end passes while the command still runs
     await expect.poll(() => countHeldDelays(3_600)).toBe(1);
     expect(releaseHeldDelays(3_600)).toBe(1);
@@ -1820,6 +1830,8 @@ test('a Claude session keeps its process while a background command it started r
       () => api.thread(thread.id),
       (entry) => entry.state === 'completed' && entry.activeTurnId === null,
     );
+    // idle with nothing running, it is no longer active
+    await expect.poll(activeCount).toBeNull();
     await parkIdleSessions(fixture);
   });
 });

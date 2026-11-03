@@ -69,6 +69,25 @@ export class LiveItems {
     thread.revision = ++this.__revision;
   }
 
+  /**
+   * Reads how many commands a session runs in the background, as its provider last reported.
+   * @param nativeId The session's key.
+   * @returns The count, or 0 for a session without a window.
+   */
+  backgroundCommandsOf(nativeId: string): number {
+    return this.__threads.get(nativeId)?.backgroundCommands ?? 0;
+  }
+
+  /**
+   * Lists the sessions that run commands in the background.
+   * @returns Their keys.
+   */
+  backgroundKeys(): string[] {
+    return [...this.__threads].flatMap(([key, thread]) =>
+      thread.backgroundCommands > 0 ? [key] : [],
+    );
+  }
+
   /** Clears a reverted presentation and requires a fresh native history read. */
   public reset(nativeId: string): void {
     // the session's background commands outlive its reverted presentation

@@ -22,12 +22,17 @@ const ActiveRowSchema = z.object({
   history: z.string().nullable(),
 });
 /*
- * Running and waiting sessions by their latest state change. A stopping managed thread reports the
- * state it stops, from its last transition, and an observed Claude session joins its indexed
- * transcript, if any, by session ID.
+ * Running and waiting sessions by their latest state change, with the idle ones among the included
+ * sessions, which run background commands. A stopping managed thread reports the state it stops,
+ * from its last transition, and an observed Claude session joins its indexed transcript, if any,
+ * by session ID. The included sessions are one JSON array of [provider, native ID] pairs.
  */
-const ACTIVE_SESSIONS = `SELECT provider, native_id, state, changed_at, thread, history FROM (
+const ACTIVE_SESSIONS = `WITH included(provider, native_id) AS (
+  SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?)
+)
+SELECT provider, native_id, state, changed_at, thread, history FROM (
   SELECT hq_thread.provider, hq_thread.native_id,
+    EXISTS (SELECT 1 FROM included WHERE included.provider = hq_thread.provider AND included.native_id = hq_thread.native_id) AS is_included,
     coalesce(map.session_state, (SELECT state FROM hq_session_transition WHERE thread_id = hq_thread.id ORDER BY sequence DESC LIMIT 1), 'unknown') AS state,
     coalesce((SELECT recorded_at FROM hq_session_transition WHERE thread_id = hq_thread.id ORDER BY sequence DESC LIMIT 1), hq_thread.updated_at) AS changed_at,
     json_object('id', hq_thread.id, 'ownership', hq_thread.ownership, 'name', hq_thread.name,
@@ -35,9 +40,12 @@ const ACTIVE_SESSIONS = `SELECT provider, native_id, state, changed_at, thread, 
       'createdAt', hq_thread.created_at, 'updatedAt', hq_thread.updated_at) AS thread,
     NULL AS history
   FROM hq_thread INNER JOIN hq_session_state_map AS map ON map.thread_state = hq_thread.state
-  WHERE hq_thread.native_id IS NOT NULL AND (map.session_state IS NULL OR map.session_state IN ('running', 'waiting'))
+  WHERE hq_thread.native_id IS NOT NULL AND (map.session_state IS NULL OR map.session_state IN ('running', 'waiting')
+    OR EXISTS (SELECT 1 FROM included WHERE included.provider = hq_thread.provider AND included.native_id = hq_thread.native_id))
   UNION ALL
-  SELECT observed.provider, observed.native_id, observed.state, observed.observed_at, NULL,
+  SELECT observed.provider, observed.native_id,
+    EXISTS (SELECT 1 FROM included WHERE included.provider = observed.provider AND included.native_id = observed.native_id),
+    observed.state, observed.observed_at, NULL,
     CASE WHEN observed.provider = 'claude' THEN (
       SELECT json_object('name', name, 'createdAt', created_at, 'updatedAt', updated_at,
         'isSupported', json(CASE WHEN supported = 1 THEN 'true' ELSE 'false' END))
@@ -45,7 +53,13 @@ const ACTIVE_SESSIONS = `SELECT provider, native_id, state, changed_at, thread, 
       ORDER BY updated_at DESC LIMIT 1
     ) END
   FROM hq_observed_session AS observed WHERE observed.state IN ('running', 'waiting')
-) WHERE state IN ('running', 'waiting') ORDER BY changed_at DESC, native_id DESC LIMIT ?`;
+    OR EXISTS (SELECT 1 FROM included WHERE included.provider = observed.provider AND included.native_id = observed.native_id)
+) WHERE state IN ('running', 'waiting') OR (is_included AND state = 'idle')
+ORDER BY changed_at DESC, native_id DESC LIMIT ?`;
+
+// the workspace whose Claude project directory holds a session's indexed transcript
+const CLAUDE_TRANSCRIPT_ROOT = `SELECT workspace_root FROM hq_claude_file
+WHERE native_id = ? AND workspace_state = 'matching' ORDER BY updated_at DESC LIMIT 1`;
 
 const TransitionRowSchema = z.object({
   sequence: z.number().int(),
@@ -166,13 +180,22 @@ export class SessionsModel {
   }
 
   /**
-   * Reads running and waiting sessions, managed and observed, newest state change first.
+   * Reads running and waiting sessions, managed and observed, newest state change first, with the
+   * included sessions that are idle.
+   * @param limit The most records to return.
+   * @param includedKeys The sessions that run background commands, which count as active while idle.
    * @returns At most `limit` records and whether more sessions are active.
    */
-  public active(limit: number): { data: IActiveSessionRecord[]; isTruncated: boolean } {
+  public active(
+    limit: number,
+    includedKeys: { provider: string; nativeId: string }[],
+  ): { data: IActiveSessionRecord[]; isTruncated: boolean } {
+    const included = JSON.stringify(
+      includedKeys.map(({ provider, nativeId }) => [provider, nativeId]),
+    );
     const rows = this.__database
       .prepare(ACTIVE_SESSIONS)
-      .all(limit + 1)
+      .all(included, limit + 1)
       .map((row) => ActiveRowSchema.parse(row));
     return {
       data: rows.slice(0, limit).map((row) =>
@@ -187,6 +210,16 @@ export class SessionsModel {
       ),
       isTruncated: rows.length > limit,
     };
+  }
+
+  /**
+   * Finds the workspace whose Claude project directory holds a session's indexed transcript.
+   * @param nativeId The session's ID.
+   * @returns The workspace root, or null when no transcript of it is indexed in a workspace it ran in.
+   */
+  public claudeTranscriptRoot(nativeId: string): string | null {
+    const row = this.__database.prepare(CLAUDE_TRANSCRIPT_ROOT).get(nativeId);
+    return z.object({ workspace_root: z.string() }).safeParse(row).data?.workspace_root ?? null;
   }
 
   /**

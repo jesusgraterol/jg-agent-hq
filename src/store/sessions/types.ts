@@ -3,14 +3,15 @@ import { z } from 'zod';
 import { NativeLineageSchema, SessionStateSchema } from '../../contracts/index.js';
 
 /*
- * One running or waiting session as the store knows it. A managed session carries its thread,
+ * One running or waiting session as the store knows it, or an idle one that runs background
+ * commands. A managed session carries its thread,
  * and an observed Claude session its history index entry when its transcript is indexed; an
  * observed session's workspace is resolved outside the store.
  */
 export const ActiveSessionRecordSchema = z.object({
   provider: z.string(),
   nativeId: z.string(),
-  state: SessionStateSchema.extract(['running', 'waiting']),
+  state: SessionStateSchema.extract(['running', 'waiting', 'idle']),
   changedAt: z.number().int(),
   thread: z
     .object({

@@ -99,7 +99,10 @@ const startWorker = async (): Promise<void> => {
             result = sessions.transitions(command.afterSequence, command.limit);
             break;
           case 'sessions-active':
-            result = sessions.active(command.limit);
+            result = sessions.active(command.limit, command.includedKeys);
+            break;
+          case 'claude-transcript-root':
+            result = sessions.claudeTranscriptRoot(command.nativeId);
             break;
           case 'claude-history':
             result = claudeHistory.read(command.request);

@@ -21,6 +21,7 @@ import {
   readActiveSessions,
   readNativeHistory,
   readUnstartedThreads,
+  type IClaudeSessions,
 } from '../sessions/index.js';
 import { suggestThreadName } from '../sessions/names/index.js';
 import { createSkills } from '../skills/index.js';
@@ -132,6 +133,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const claudeAgents = observeClaudeAgents(
     (sessions) => storage.background(() => projection.observeSessions('claude', sessions, true)),
     allowedRoots,
+    (nativeId) => projection.getClaudeTranscriptRoot(nativeId),
   );
   const accounts = createAccounts(providers);
   const extensions = createExtensions(providers, projection, allowedRoots);
@@ -150,6 +152,32 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     },
     (nativeId) => claudeAgents.terminalOf(nativeId),
   );
+  /*
+   * What session reads join to each summary: the poll's listing and, for a session HQ runs, the
+   * background commands its live window holds, the larger count winning for a session in both.
+   */
+  const liveKey = (provider: string, nativeId: string) => JSON.stringify([provider, nativeId]);
+  const claudeSessions: IClaudeSessions = {
+    workspaceOf: (nativeId) => claudeAgents.workspaceOf(nativeId),
+    terminalOf: (nativeId) => claudeAgents.terminalOf(nativeId),
+    backgroundCommandsOf: (nativeId) =>
+      Math.max(
+        actions.live.backgroundCommandsOf(liveKey('claude', nativeId)),
+        claudeAgents.backgroundCommandsOf(nativeId),
+      ),
+    refreshBackgroundCommands: async (nativeId) =>
+      Math.max(
+        actions.live.backgroundCommandsOf(liveKey('claude', nativeId)),
+        await claudeAgents.refreshBackgroundCommands(nativeId),
+      ),
+    backgroundSessions: () => [
+      ...actions.live.backgroundKeys().flatMap((key) => {
+        const parsed = z.tuple([z.string(), z.string()]).safeParse(JSON.parse(key));
+        return parsed.success ? [{ provider: parsed.data[0], nativeId: parsed.data[1] }] : [];
+      }),
+      ...claudeAgents.backgroundSessionIds().map((nativeId) => ({ provider: 'claude', nativeId })),
+    ],
+  };
   let resolveClosed: () => void = () => undefined;
   let rejectClosed: (error: unknown) => void = () => undefined;
   const closed = new Promise<void>((resolve, reject) => {
@@ -301,12 +329,12 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       case 'active-sessions':
         return {
           kind: 'active-sessions',
-          result: await readActiveSessions(providers, projection, allowedRoots, claudeAgents),
+          result: await readActiveSessions(providers, projection, allowedRoots, claudeSessions),
         };
       case 'unstarted-threads':
         return {
           kind: 'unstarted-threads',
-          result: await readUnstartedThreads(command, projection, allowedRoots, claudeAgents),
+          result: await readUnstartedThreads(command, projection, allowedRoots, claudeSessions),
         };
       case 'observation-pace':
         claudeAgents.setPace(command.pace);
@@ -322,7 +350,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           providers,
           projection,
           allowedRoots,
-          claudeAgents,
+          claudeSessions,
         );
         if (command.kind !== 'items' || response.kind !== 'items') return response;
         // live items reconcile against the persisted text before it is cut

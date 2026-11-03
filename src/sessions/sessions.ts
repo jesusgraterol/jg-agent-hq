@@ -131,7 +131,7 @@ export const readNativeHistory = async (
         return HqResponseSchema.parse({ kind: 'item-detail', result: null });
       if (command.kind === 'item-image') return imageUnavailable();
       const [summary] = await toManagedSummaries(projection, [unstarted]);
-      return HqResponseSchema.parse({ kind: 'thread', result: withTerminal(summary!, claude) });
+      return HqResponseSchema.parse({ kind: 'thread', result: withListing(summary!, claude) });
     }
   }
   const adapter = await registry.get(command.provider);
@@ -156,6 +156,9 @@ export const readNativeHistory = async (
       });
     thread.workspaceRoot = actualRoot;
   }
+  // one session's read counts its background commands from what its transcript holds now
+  if (response.kind === 'thread' && command.provider === 'claude')
+    await claude.refreshBackgroundCommands(response.result.nativeId);
   if (threads.length) {
     const managed = new Map(
       (
@@ -182,7 +185,7 @@ export const readNativeHistory = async (
         thread.nativeLineage = retainNativeLineage(control.nativeLineage, thread.nativeLineage);
       }
       thread.state = states.get(thread.nativeId) ?? thread.state;
-      thread.terminal = withTerminal(thread, claude).terminal;
+      Object.assign(thread, withListing(thread, claude));
     }
   }
   const items =
@@ -218,10 +221,12 @@ export const readNativeHistory = async (
   return HqResponseSchema.parse(response);
 };
 
-// a summary with the terminal that runs it, which only Claude sessions report
-const withTerminal = (summary: IThreadSummary, claude: IClaudeSessions): IThreadSummary => ({
+// a summary with the terminal that runs it and its background commands, which only Claude reports
+const withListing = (summary: IThreadSummary, claude: IClaudeSessions): IThreadSummary => ({
   ...summary,
   terminal: summary.provider === 'claude' ? claude.terminalOf(summary.nativeId) : null,
+  backgroundCommands:
+    summary.provider === 'claude' ? claude.backgroundCommandsOf(summary.nativeId) : 0,
 });
 
 /**
@@ -257,6 +262,8 @@ const toManagedSummaries = async (
     managedId: thread.id,
     historyState: 'available',
     terminal: null,
+    backgroundCommands: 0,
+    continuedIn: null,
   }));
 };
 
@@ -282,7 +289,7 @@ export const readUnstartedThreads = async (
   );
   return {
     data: (await toManagedSummaries(projection, page.data)).map((summary) =>
-      withTerminal(summary, claude),
+      withListing(summary, claude),
     ),
     isTruncated: page.isTruncated,
   };
@@ -315,6 +322,8 @@ const toActiveSummary = async (
       managedId: record.thread.id,
       historyState: 'available',
       terminal: null,
+      backgroundCommands: 0,
+      continuedIn: null,
     };
   }
   if (record.provider === 'claude') {
@@ -333,6 +342,8 @@ const toActiveSummary = async (
       managedId: null,
       historyState: record.history?.isSupported === false ? 'unavailable' : 'available',
       terminal: null,
+      backgroundCommands: 0,
+      continuedIn: null,
     };
   }
   let thread: IThreadSummary;
@@ -349,10 +360,10 @@ const toActiveSummary = async (
 };
 
 /**
- * Reads every running and waiting session, managed and observed, newest state change first, each
- * as the summary `threads` returns. An observed Claude session's workspace is the `cwd` the
- * latest `claude agents --json` run reported, and other observed sessions' come from their
- * provider's `readObservedThread`.
+ * Reads every running and waiting session, managed and observed, and every idle one that runs
+ * background commands, newest state change first, each as the summary `threads` returns. An
+ * observed Claude session's workspace is the `cwd` the latest `claude agents --json` run
+ * reported, and other observed sessions' come from their provider's `readObservedThread`.
  * @returns At most 128 summaries and whether more sessions are active.
  * @throws
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
@@ -363,7 +374,7 @@ export const readActiveSessions = async (
   allowedRoots: string[],
   claude: IClaudeSessions,
 ): Promise<IActiveSessions> => {
-  const records = await projection.listActiveSessions(MAX_PAGE_SIZE);
+  const records = await projection.listActiveSessions(MAX_PAGE_SIZE, claude.backgroundSessions());
   // each directory is authorized once per read
   const roots = new Map<string, Promise<string | null>>();
   const resolveRoot = (directory: string): Promise<string | null> => {
@@ -377,7 +388,7 @@ export const readActiveSessions = async (
   const data: IThreadSummary[] = [];
   for (const record of records.data) {
     const summary = await toActiveSummary(record, registry, resolveRoot, claude);
-    if (summary) data.push(withTerminal(summary, claude));
+    if (summary) data.push(withListing(summary, claude));
   }
   return { data, isTruncated: records.isTruncated };
 };
