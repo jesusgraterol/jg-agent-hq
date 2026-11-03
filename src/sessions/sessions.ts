@@ -263,6 +263,7 @@ const toManagedSummaries = async (
     historyState: 'available',
     terminal: null,
     backgroundCommands: 0,
+    continuedIn: null,
   }));
 };
 
@@ -322,6 +323,7 @@ const toActiveSummary = async (
       historyState: 'available',
       terminal: null,
       backgroundCommands: 0,
+      continuedIn: null,
     };
   }
   if (record.provider === 'claude') {
@@ -341,6 +343,7 @@ const toActiveSummary = async (
       historyState: record.history?.isSupported === false ? 'unavailable' : 'available',
       terminal: null,
       backgroundCommands: 0,
+      continuedIn: null,
     };
   }
   let thread: IThreadSummary;

@@ -2130,3 +2130,54 @@ test('the index stores what the CLI shows: hidden thinking and notifications, pr
     }
   });
 });
+
+test('a transcript Claude Code moved into a new session names it in its summary, read again only once it changes', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const [old, next] = [randomUUID(), randomUUID()];
+    const prompt = claudeRecord(workspaceRoot, old, { text: 'Before the move' });
+    const moved = {
+      type: 'continued-in',
+      timestamp: '2026-11-03T11:25:59.088Z',
+      sessionId: old,
+      continuedInSessionId: next,
+    };
+    await writeFile(
+      transcript(old),
+      [prompt, moved, { type: 'ephemeral' }, { type: 'cost-state' }]
+        .map((entry) => `${JSON.stringify(entry)}\n`)
+        .join(''),
+    );
+    await writeFile(
+      transcript(next),
+      `${JSON.stringify(claudeRecord(workspaceRoot, next, { text: 'After the move' }))}\n`,
+    );
+    const listed = async () => {
+      const response = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+      if (response.kind !== 'threads') throw new Error('Missing Claude sessions');
+      return new Map(response.result.data.map((thread) => [thread.nativeId, thread.continuedIn]));
+    };
+    const read = async (nativeId: string) => {
+      const response = await request({
+        kind: 'thread',
+        provider: 'claude',
+        workspaceRoot,
+        nativeId,
+      });
+      if (response.kind !== 'thread') throw new Error('Missing Claude session');
+      return response.result.continuedIn;
+    };
+    expect(await listed()).toStrictEqual(
+      new Map([
+        [old, next],
+        [next, null],
+      ]),
+    );
+    expect(await read(old)).toBe(next);
+    // an unchanged transcript keeps its answer, even once the new transcript is gone
+    await rm(transcript(next));
+    expect(await read(old)).toBe(next);
+    // once it changes, it is read again
+    await appendFile(transcript(old), `${JSON.stringify({ type: 'cost-state' })}\n`);
+    expect(await read(old)).toBeNull();
+  });
+});

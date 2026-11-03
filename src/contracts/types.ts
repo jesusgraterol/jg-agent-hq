@@ -227,6 +227,8 @@ export const ThreadSummarySchema = z.object({
   terminal: SessionTerminalSchema.nullable(),
   // the background tasks the session runs, which Claude resumes it after; 0 when none or unknown
   backgroundCommands: z.number().int().nonnegative(),
+  // the session a Claude session's chat continues in, when its transcript names one beside it
+  continuedIn: NativeIdSchema.nullable(),
 });
 export type IThreadSummary = z.infer<typeof ThreadSummarySchema>;
 

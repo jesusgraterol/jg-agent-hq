@@ -125,6 +125,7 @@ const createFixtureProvider = () => {
           historyState: 'available',
           terminal: null,
           backgroundCommands: 0,
+          continuedIn: null,
         }),
         readLogin: async () => ({
           state: 'unavailable',
@@ -270,6 +271,7 @@ const createFixtureProvider = () => {
             historyState: 'available',
             terminal: null,
             backgroundCommands: 0,
+            continuedIn: null,
           });
           if (shouldDeferCreation) {
             pendingCreation = { requestId, nativeId, workspaceRoot };
@@ -1155,6 +1157,7 @@ test('a third provider reads its observed sessions for active-sessions, and an a
             historyState: 'available',
             terminal: null,
             backgroundCommands: 0,
+            continuedIn: null,
           },
         ],
         isTruncated: false,

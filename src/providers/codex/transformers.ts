@@ -89,6 +89,7 @@ export const toThreadSummary = (thread: INativeThread): IThreadSummary =>
     historyState: 'available',
     terminal: null,
     backgroundCommands: 0,
+    continuedIn: null,
   });
 
 /**
