@@ -92,7 +92,23 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     afterSequence: z.number().int().nonnegative(),
     limit: z.number().int().min(1).max(128),
   }),
-  z.strictObject({ kind: z.literal('sessions-active'), limit: z.number().int().min(1).max(128) }),
+  z.strictObject({
+    kind: z.literal('sessions-active'),
+    limit: z.number().int().min(1).max(128),
+    // from at most 32 live windows and the 1,024 sessions one claude agents run can list
+    includedKeys: z
+      .array(
+        z.strictObject({
+          provider: z.string().min(1).max(64),
+          nativeId: z.string().min(1).max(4096),
+        }),
+      )
+      .max(2048),
+  }),
+  z.strictObject({
+    kind: z.literal('claude-transcript-root'),
+    nativeId: z.string().min(1).max(4096),
+  }),
   z.strictObject({ kind: z.literal('close') }),
   z.strictObject({ kind: z.literal('action-read'), id: z.uuid() }),
   z.strictObject({ kind: z.literal('thread-read'), id: z.uuid() }),
@@ -278,14 +294,23 @@ export type IStore = {
     latestSequence: number;
     isReset: boolean;
   }>;
-  /** Reads running and waiting sessions, managed and observed, newest state change first.
+  /** Reads running and waiting sessions, managed and observed, newest state change first, with
+   * the included sessions that are idle.
    * @returns At most `limit` records and whether more sessions are active.
    * @throws
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   listActiveSessions(
     limit: number,
+    includedKeys: { provider: string; nativeId: string }[],
   ): Promise<{ data: IActiveSessionRecord[]; isTruncated: boolean }>;
+  /**
+   * Finds the workspace whose Claude project directory holds a session's indexed transcript.
+   * @returns The workspace root, or null when none is indexed.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  getClaudeTranscriptRoot(nativeId: string): Promise<string | null>;
   /**
    * Runs the Claude-owned identity-checked incremental reader in the filesystem worker.
    * @returns One history page or a private indexing marker, without persisting conversation bodies.

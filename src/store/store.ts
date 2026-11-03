@@ -260,8 +260,10 @@ export const createStore = async (
       ),
     listSessionTransitions: (afterSequence, limit) =>
       request({ kind: 'session-transitions', afterSequence, limit }, SessionTransitionPageSchema),
-    listActiveSessions: (limit) =>
-      request({ kind: 'sessions-active', limit }, ActiveSessionRecordsSchema),
+    listActiveSessions: (limit, includedKeys) =>
+      request({ kind: 'sessions-active', limit, includedKeys }, ActiveSessionRecordsSchema),
+    getClaudeTranscriptRoot: (nativeId) =>
+      request({ kind: 'claude-transcript-root', nativeId }, z.string().nullable()),
     getAction: (id) => request({ kind: 'action-read', id }, ActionReceiptSchema.nullable()),
     getThread: (id) => request({ kind: 'thread-read', id }, ManagedThreadSchema.nullable()),
     getThreadByName: (name) =>

@@ -225,10 +225,15 @@ export const ThreadSummarySchema = z.object({
   historyState: z.enum(['available', 'unavailable']),
   // the terminal that runs the session, while one does; always null for Codex
   terminal: SessionTerminalSchema.nullable(),
+  // the background tasks the session runs, which Claude resumes it after; 0 when none or unknown
+  backgroundCommands: z.number().int().nonnegative(),
 });
 export type IThreadSummary = z.infer<typeof ThreadSummarySchema>;
 
-// every running and waiting session, newest state change first, with whether more are active
+/*
+ * Every running and waiting session, and every idle one that runs background commands, newest
+ * state change first, with whether more are active.
+ */
 export const ActiveSessionsSchema = z.object({
   data: z.array(ThreadSummarySchema).max(MAX_PAGE_SIZE),
   isTruncated: z.boolean(),

@@ -88,6 +88,7 @@ export const toThreadSummary = (thread: INativeThread): IThreadSummary =>
     managedId: null,
     historyState: 'available',
     terminal: null,
+    backgroundCommands: 0,
   });
 
 /**

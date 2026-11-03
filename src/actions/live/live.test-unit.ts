@@ -158,3 +158,14 @@ test('the background command count is part of the window: a change invalidates t
     backgroundCommands: 0,
   });
 });
+
+test('background counts read without copying a window, and only sessions that run commands are listed', () => {
+  const live = new LiveItems();
+  expect(live.backgroundCommandsOf('thread')).toBe(0);
+  live.setBackgroundCommands('thread', 2);
+  live.setBackgroundCommands('other', 0);
+  expect(live.backgroundCommandsOf('thread')).toBe(2);
+  expect(live.backgroundKeys()).toStrictEqual(['thread']);
+  live.setBackgroundCommands('thread', 0);
+  expect(live.backgroundKeys()).toStrictEqual([]);
+});

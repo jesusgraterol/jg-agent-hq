@@ -472,6 +472,7 @@ export class ClaudeHistoryModel {
       // claude agents observations supply the live state and the terminal that runs it
       state: 'unknown',
       terminal: null,
+      backgroundCommands: 0,
       ownership: 'external',
       managedId: null,
       historyState: row.supported === 1 ? 'available' : 'unavailable',

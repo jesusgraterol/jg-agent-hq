@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ISessionTransition } from 'jg-agent-hq/contracts';
 import { expect, test, vi } from 'vitest';
@@ -525,6 +525,168 @@ test(
         submit({ kind: 'message', threadId, input: { kind: 'text', text: 'From the app' } }),
       ).rejects.toMatchObject({ code: 'JG_AGENT_HQ_ACTION_CONFLICT' });
       expect(await processes()).toBe(before);
+    });
+  },
+);
+
+test(
+  'a listed session counts the background commands its transcript runs, before its state is recorded',
+  // two separately released observer polls
+  { timeout: 40_000 },
+  async () => {
+    await withPollingRuntime(async (fixture) => {
+      await live(fixture);
+      const [working, quiet] = [randomUUID(), randomUUID()];
+      const startedAt = Date.parse('2026-10-19T11:00:00.000Z');
+      // a tool result that moved a command to the background, as Claude Code 2.1.317 writes it
+      const started = (
+        sessionId: string,
+        parentUuid: string,
+        taskId: string,
+        timestamp: string,
+      ) => ({
+        ...claudeRecord(fixture.workspaceRoot, sessionId, { parentUuid, timestamp }),
+        message: {
+          role: 'user',
+          content: [
+            {
+              tool_use_id: `toolu_${taskId}`,
+              type: 'tool_result',
+              content: `Command running in background with ID: ${taskId}`,
+            },
+          ],
+        },
+        toolUseResult: { stdout: '', stderr: '', backgroundTaskId: taskId },
+      });
+      const lines = (...records: object[]) =>
+        records.map((entry) => `${JSON.stringify(entry)}\n`).join('');
+      const workingPrompt = claudeRecord(fixture.workspaceRoot, working, {
+        timestamp: '2026-10-19T10:00:00.000Z',
+      });
+      const quietPrompt = claudeRecord(fixture.workspaceRoot, quiet, {
+        timestamp: '2026-10-19T11:30:00.000Z',
+      });
+      await writeFile(
+        fixture.transcript(working),
+        lines(
+          workingPrompt,
+          // an earlier Claude process started this one, so it doesn't count
+          started(working, workingPrompt.uuid, 'bearly01', '2026-10-19T10:30:00.000Z'),
+          started(working, workingPrompt.uuid, 'bnow0001', '2026-10-19T11:30:00.000Z'),
+        ),
+      );
+      await writeFile(fixture.transcript(quiet), lines(quietPrompt));
+      const agent = (sessionId: string) => ({
+        pid: sessionId === working ? 1 : 2,
+        cwd: fixture.workspaceRoot,
+        kind: 'interactive',
+        sessionId,
+        status: 'idle',
+        startedAt,
+      });
+      const active = async () => {
+        const response = await fixture.runtime.request({ kind: 'active-sessions' });
+        if (response.kind !== 'active-sessions') throw new Error('Missing active sessions');
+        return response.result.data.map((thread) => [
+          thread.nativeId,
+          thread.state,
+          thread.backgroundCommands,
+        ]);
+      };
+      const listedCounts = async () => {
+        const response = await fixture.runtime.request({
+          kind: 'threads',
+          provider: 'claude',
+          workspaceRoot: fixture.workspaceRoot,
+        });
+        if (response.kind !== 'threads') throw new Error('Missing Claude sessions');
+        return new Map(
+          response.result.data.map((thread) => [thread.nativeId, thread.backgroundCommands]),
+        );
+      };
+      const readCount = async (nativeId: string) => {
+        const response = await fixture.runtime.request({
+          kind: 'thread',
+          provider: 'claude',
+          workspaceRoot: fixture.workspaceRoot,
+          nativeId,
+        });
+        if (response.kind !== 'thread') throw new Error('Missing Claude session');
+        return response.result.backgroundCommands;
+      };
+      await report(fixture, { agents: [agent(working), agent(quiet)] });
+      // the poll that recorded the idle states had already counted, so no later poll is needed
+      expect(await active()).toStrictEqual([[working, 'idle', 1]]);
+      expect(await listedCounts()).toStrictEqual(
+        new Map([
+          [working, 1],
+          [quiet, 0],
+        ]),
+      );
+      // a start the transcript gains after the poll counts in a read of that session at once
+      await appendFile(
+        fixture.transcript(quiet),
+        lines(started(quiet, quietPrompt.uuid, 'blater01', '2026-10-19T11:40:00.000Z')),
+      );
+      expect(await readCount(quiet)).toBe(1);
+      // a session the next run doesn't list is forgotten
+      await report(fixture, { agents: [agent(quiet)] });
+      expect(await active()).toStrictEqual([[quiet, 'idle', 1]]);
+      expect((await listedCounts()).get(working)).toBe(0);
+    });
+  },
+);
+
+test(
+  'a session that moved into a subfolder is counted from the transcript its index found',
+  // one released observer poll
+  { timeout: 20_000 },
+  async () => {
+    await withPollingRuntime(async (fixture) => {
+      await live(fixture);
+      const nativeId = randomUUID();
+      const prompt = claudeRecord(fixture.workspaceRoot, nativeId);
+      await writeFile(
+        fixture.transcript(nativeId),
+        [
+          prompt,
+          {
+            ...claudeRecord(fixture.workspaceRoot, nativeId, { parentUuid: prompt.uuid }),
+            message: {
+              role: 'user',
+              content: [
+                {
+                  tool_use_id: 'toolu_moved',
+                  type: 'tool_result',
+                  content: 'Command running in background',
+                },
+              ],
+            },
+            toolUseResult: { stdout: '', stderr: '', backgroundTaskId: 'bmoved01' },
+          },
+        ]
+          .map((entry) => `${JSON.stringify(entry)}\n`)
+          .join(''),
+      );
+      // the workspace's read indexes the transcript where the session started
+      await fixture.runtime.request({
+        kind: 'threads',
+        provider: 'claude',
+        workspaceRoot: fixture.workspaceRoot,
+      });
+      // the session now works in a subfolder, whose Claude project directory holds nothing
+      const subfolder = join(fixture.workspaceRoot, 'packages');
+      await mkdir(subfolder);
+      await report(fixture, {
+        agents: [
+          { pid: 1, cwd: subfolder, kind: 'interactive', sessionId: nativeId, status: 'idle' },
+        ],
+      });
+      const response = await fixture.runtime.request({ kind: 'active-sessions' });
+      if (response.kind !== 'active-sessions') throw new Error('Missing active sessions');
+      expect(
+        response.result.data.map((thread) => [thread.nativeId, thread.backgroundCommands]),
+      ).toStrictEqual([[nativeId, 1]]);
     });
   },
 );
