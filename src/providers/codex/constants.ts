@@ -11,6 +11,9 @@ export const MAX_TURN_TIME_PAGES = 8;
 // the most threads whose running turn the live events keep
 export const RUNNING_TURNS_CAPACITY = 1024;
 
+// the most skill files a catalog read reads at once for their argument hints
+export const SKILL_HINT_READ_CONCURRENCY = 8;
+
 // the lifecycle notifications whose loss a live re-check of the session makes up for
 export const LOST_NOTIFICATIONS = new Map<string, IResyncLoss>([
   ['turn/started', 'turn-started'],
