@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ISessionTransition } from 'jg-agent-hq/contracts';
 import { expect, test, vi } from 'vitest';
@@ -79,6 +79,40 @@ const report = async (fixture: IClaudeFixture, control: object): Promise<void> =
 // live pace requests five-second intervals; pollAgents releases each one
 const live = (fixture: IClaudeFixture) =>
   fixture.runtime.request({ kind: 'observation-pace', pace: 'live' });
+
+// a tool result that moved a command to the background, as Claude Code 2.1.317 writes it
+const backgroundStart = (
+  workspaceRoot: string,
+  sessionId: string,
+  parentUuid: string,
+  taskId: string,
+  timestamp: string,
+) => ({
+  ...claudeRecord(workspaceRoot, sessionId, { parentUuid, timestamp }),
+  message: {
+    role: 'user',
+    content: [
+      {
+        tool_use_id: `toolu_${taskId}`,
+        type: 'tool_result',
+        content: `Command running in background with ID: ${taskId}`,
+      },
+    ],
+  },
+  toolUseResult: { stdout: '', stderr: '', backgroundTaskId: taskId },
+});
+const lines = (...records: object[]) =>
+  records.map((entry) => `${JSON.stringify(entry)}\n`).join('');
+// each active session's ID, state and background commands; unlike a `thread` read, it reads no transcript
+const activeCounts = async (fixture: IClaudeFixture) => {
+  const response = await fixture.runtime.request({ kind: 'active-sessions' });
+  if (response.kind !== 'active-sessions') throw new Error('Missing active sessions');
+  return response.result.data.map((thread) => [
+    thread.nativeId,
+    thread.state,
+    thread.backgroundCommands,
+  ]);
+};
 
 test(
   'claude agents report states by their fields, and a session that stops running disappears',
@@ -538,28 +572,8 @@ test(
       await live(fixture);
       const [working, quiet] = [randomUUID(), randomUUID()];
       const startedAt = Date.parse('2026-10-19T11:00:00.000Z');
-      // a tool result that moved a command to the background, as Claude Code 2.1.317 writes it
-      const started = (
-        sessionId: string,
-        parentUuid: string,
-        taskId: string,
-        timestamp: string,
-      ) => ({
-        ...claudeRecord(fixture.workspaceRoot, sessionId, { parentUuid, timestamp }),
-        message: {
-          role: 'user',
-          content: [
-            {
-              tool_use_id: `toolu_${taskId}`,
-              type: 'tool_result',
-              content: `Command running in background with ID: ${taskId}`,
-            },
-          ],
-        },
-        toolUseResult: { stdout: '', stderr: '', backgroundTaskId: taskId },
-      });
-      const lines = (...records: object[]) =>
-        records.map((entry) => `${JSON.stringify(entry)}\n`).join('');
+      const started = (sessionId: string, parentUuid: string, taskId: string, timestamp: string) =>
+        backgroundStart(fixture.workspaceRoot, sessionId, parentUuid, taskId, timestamp);
       const workingPrompt = claudeRecord(fixture.workspaceRoot, working, {
         timestamp: '2026-10-19T10:00:00.000Z',
       });
@@ -584,15 +598,7 @@ test(
         status: 'idle',
         startedAt,
       });
-      const active = async () => {
-        const response = await fixture.runtime.request({ kind: 'active-sessions' });
-        if (response.kind !== 'active-sessions') throw new Error('Missing active sessions');
-        return response.result.data.map((thread) => [
-          thread.nativeId,
-          thread.state,
-          thread.backgroundCommands,
-        ]);
-      };
+      const active = () => activeCounts(fixture);
       const listedCounts = async () => {
         const response = await fixture.runtime.request({
           kind: 'threads',
@@ -633,6 +639,73 @@ test(
       await report(fixture, { agents: [agent(quiet)] });
       expect(await active()).toStrictEqual([[quiet, 'idle', 1]]);
       expect((await listedCounts()).get(working)).toBe(0);
+    });
+  },
+);
+
+test(
+  'one poll shares its 67,108,864-byte read budget across the listed sessions, and a session it cut short reports 0 until a later poll finishes it',
+  // two separately released observer polls over 64 MiB of transcripts
+  { timeout: 40_000 },
+  async () => {
+    await withPollingRuntime(async (fixture) => {
+      await live(fixture);
+      const [large, cut] = [randomUUID(), randomUUID()];
+      const startedAt = Date.parse('2026-10-19T11:00:00.000Z');
+      const at = '2026-10-19T11:30:00.000Z';
+      // one transcript line of exactly `bytes` bytes: a long answer, which holds no task record
+      const answer = (sessionId: string, parentUuid: string, bytes: number) => {
+        const make = (text: string) =>
+          lines(
+            claudeRecord(fixture.workspaceRoot, sessionId, {
+              type: 'assistant',
+              parentUuid,
+              text,
+              timestamp: at,
+            }),
+          );
+        return make('a'.repeat(bytes - make('').length));
+      };
+      // the first listed transcript leaves 1,048,576 bytes of the budget, in answers under 32 MiB
+      const largePrompt = claudeRecord(fixture.workspaceRoot, large, { timestamp: at });
+      const largeHead = lines(
+        largePrompt,
+        backgroundStart(fixture.workspaceRoot, large, largePrompt.uuid, 'blarge01', at),
+      );
+      const rest = 67_108_864 - 1_048_576 - Buffer.byteLength(largeHead);
+      const half = Math.floor(rest / 2);
+      await writeFile(fixture.transcript(large), largeHead);
+      await appendFile(fixture.transcript(large), answer(large, largePrompt.uuid, half));
+      await appendFile(fixture.transcript(large), answer(large, largePrompt.uuid, rest - half));
+      expect((await stat(fixture.transcript(large))).size).toBe(67_108_864 - 1_048_576);
+      // the second holds 2,097,152 bytes before its start record, more than the first left
+      const cutPrompt = claudeRecord(fixture.workspaceRoot, cut, { timestamp: at });
+      await writeFile(
+        fixture.transcript(cut),
+        lines(cutPrompt) +
+          answer(cut, cutPrompt.uuid, 2_097_152) +
+          lines(backgroundStart(fixture.workspaceRoot, cut, cutPrompt.uuid, 'bcut0001', at)),
+      );
+      const agent = (sessionId: string, pid: number) => ({
+        pid,
+        cwd: fixture.workspaceRoot,
+        kind: 'interactive',
+        sessionId,
+        status: 'idle',
+        startedAt,
+      });
+      // a poll reads the transcripts in listing order, so the second one's read is cut short
+      const listing = { agents: [agent(large, 1), agent(cut, 2)] };
+      await report(fixture, listing);
+      expect(await activeCounts(fixture)).toStrictEqual([[large, 'idle', 1]]);
+      // the next poll finds nothing new in the first and reads the rest of the second
+      await report(fixture, listing);
+      expect((await activeCounts(fixture)).sort(byNativeId)).toStrictEqual(
+        [
+          [large, 'idle', 1],
+          [cut, 'idle', 1],
+        ].sort(byNativeId),
+      );
     });
   },
 );
