@@ -10,3 +10,6 @@ _backups/
 **/_backup/**
 **/_backups/**
 website/
+# local planning documents, which Git excludes and the package never ships
+coding-agent-planning/
+jg-plans/

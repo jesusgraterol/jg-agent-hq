@@ -1,5 +1,9 @@
 # Changelog
 
+## 10.9.1
+
+- Forget a terminal Claude session's background-command count when a `thread` read of it finishes after the `claude agents --json` poll stopped listing it. The read used to leave the session's transcript scan in memory, where nothing removed it.
+
 ## 10.9.0
 
 - Report on every session summary how many background commands the session runs, as `backgroundCommands`. A session HQ runs reports the count Claude last reported. A Claude session a terminal runs reports the commands and agents its transcript records as started since its Claude process started and not yet ended. The `claude agents --json` poll counts before it records states, within one 67,108,864-byte read budget per run, and a `thread` read reads the transcript again first. Codex sessions report 0.
