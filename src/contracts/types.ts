@@ -347,6 +347,8 @@ export const LiveItemsSchema = z.object({
   unchanged: z.boolean(),
   data: z.array(HistoryItemSchema.extend({ state: z.enum(['active', 'awaiting-flush']) })).max(128),
   hasGap: z.boolean(),
+  // the commands the session runs in the background, as its provider last reported, 0 for none
+  backgroundCommands: z.number().int().nonnegative(),
 });
 
 // exact native credit observations; balances have no assumed currency or arithmetic semantics

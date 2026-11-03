@@ -5,7 +5,12 @@ import type { IHistoryItem } from '../../contracts/index.js';
  * Codex steer cuts a message the provider never saves.
  */
 type ILiveEntry = { item: IHistoryItem; isComplete: boolean; isUnfinished: boolean; bytes: number };
-type ILiveThread = { items: Map<string, ILiveEntry>; hasGap: boolean; revision: number };
+type ILiveThread = {
+  items: Map<string, ILiveEntry>;
+  hasGap: boolean;
+  revision: number;
+  backgroundCommands: number;
+};
 // serialized accounting includes escaping/identifiers and leaves space inside the IPC frame
 const MAX_LIVE_BYTES = 4 * 1024 * 1024;
 
@@ -19,7 +24,12 @@ export class LiveItems {
   public open(nativeId: string): void {
     if (this.__threads.has(nativeId)) return;
     if (this.__threads.size >= 32) this.__remove(this.__threads.keys().next().value!);
-    this.__threads.set(nativeId, { items: new Map(), hasGap: false, revision: ++this.__revision });
+    this.__threads.set(nativeId, {
+      items: new Map(),
+      hasGap: false,
+      revision: ++this.__revision,
+      backgroundCommands: 0,
+    });
   }
 
   /** Replaces one native item without persisting token or tool-output bodies. */
@@ -27,7 +37,12 @@ export class LiveItems {
     let thread = this.__threads.get(nativeId);
     if (!thread) {
       if (this.__threads.size >= 32) this.__remove(this.__threads.keys().next().value!);
-      thread = { items: new Map(), hasGap: true, revision: ++this.__revision };
+      thread = {
+        items: new Map(),
+        hasGap: true,
+        revision: ++this.__revision,
+        backgroundCommands: 0,
+      };
       this.__threads.set(nativeId, thread);
     }
     thread.revision = ++this.__revision;
@@ -45,10 +60,22 @@ export class LiveItems {
     }
   }
 
+  /** Records how many commands a session runs in the background, a change of its window. */
+  public setBackgroundCommands(nativeId: string, count: number): void {
+    this.open(nativeId);
+    const thread = this.__threads.get(nativeId)!;
+    if (thread.backgroundCommands === count) return;
+    thread.backgroundCommands = count;
+    thread.revision = ++this.__revision;
+  }
+
   /** Clears a reverted presentation and requires a fresh native history read. */
   public reset(nativeId: string): void {
+    // the session's background commands outlive its reverted presentation
+    const backgroundCommands = this.__threads.get(nativeId)?.backgroundCommands ?? 0;
     this.__remove(nativeId);
     this.open(nativeId);
+    this.__threads.get(nativeId)!.backgroundCommands = backgroundCommands;
     this.markGap(nativeId);
   }
 
@@ -107,6 +134,7 @@ export class LiveItems {
     unchanged: boolean;
     data: (IHistoryItem & { state: 'active' | 'awaiting-flush' })[];
     hasGap: boolean;
+    backgroundCommands: number;
   } {
     const thread = this.__threads.get(nativeId);
     const revision = thread?.revision ?? this.__revision;
@@ -121,6 +149,7 @@ export class LiveItems {
             }))
           : [],
       hasGap: thread?.hasGap ?? true,
+      backgroundCommands: thread?.backgroundCommands ?? 0,
     };
   }
 

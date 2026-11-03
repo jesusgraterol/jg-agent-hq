@@ -150,6 +150,23 @@ const startNativeTurn = (
 };
 
 /**
+ * Records how many commands the session runs in the background and reports a change, which HQ
+ * shows while no turn runs, since Claude resumes the session itself once one finishes.
+ * @param session The session.
+ * @param count The commands Claude now reports, 0 once its process stopped with them.
+ * @param events Where the change goes.
+ */
+export const setBackgroundCommands = (
+  session: IClaudeSession,
+  count: number,
+  events: IClaudeControlEvents | undefined,
+): void => {
+  if (session.backgroundTaskCount === count) return;
+  session.backgroundTaskCount = count;
+  events?.background(session.id, count);
+};
+
+/**
  * Fails the steers Claude never replayed, as when its process stops, so no steer waits forever.
  * @param session The session.
  * @param turnId The turn whose steers fail, or every pending steer when omitted.
@@ -492,7 +509,7 @@ export const receiveClaudeMessage = (
   } else if (frame.type === 'system') {
     // a list in an unexpected shape leaves the count as it was, as parking only waits on it
     const background = BackgroundTasksSchema.safeParse(raw);
-    if (background.success) session.backgroundTaskCount = background.data.tasks.length;
+    if (background.success) setBackgroundCommands(session, background.data.tasks.length, events);
     observeFastMode(session, raw);
   }
 };

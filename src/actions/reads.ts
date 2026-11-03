@@ -176,6 +176,12 @@ export const readControl = async (
     kind: 'live-items',
     result: thread.nativeId
       ? actions.live.read(JSON.stringify([thread.provider, thread.nativeId]), command.afterRevision)
-      : { data: [], hasGap: false, revision: 0, unchanged: command.afterRevision === 0 },
+      : {
+          data: [],
+          hasGap: false,
+          revision: 0,
+          unchanged: command.afterRevision === 0,
+          backgroundCommands: 0,
+        },
   };
 };

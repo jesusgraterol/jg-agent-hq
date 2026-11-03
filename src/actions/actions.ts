@@ -680,6 +680,10 @@ export const createActions = (
     gap(provider, nativeId) {
       if (controlled.has(key(provider, nativeId))) live.markGap(key(provider, nativeId));
     },
+    background(provider, nativeId, count) {
+      if (controlled.has(key(provider, nativeId)))
+        live.setBackgroundCommands(key(provider, nativeId), count);
+    },
     session(provider, nativeId, state) {
       observingProviders.add(provider);
       const sessionKey = key(provider, nativeId);

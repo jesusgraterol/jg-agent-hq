@@ -1784,7 +1784,7 @@ test('a Claude session that starts a turn of its own while it is being parked ke
   });
 });
 
-test('a Claude session keeps its process while a background command it started runs, and parks once none runs', async () => {
+test('a Claude session keeps its process while a background command it started runs, shows it, and parks once none runs', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture),
       { thread } = await api.create();
@@ -1795,6 +1795,13 @@ test('a Claude session keeps its process while a background command it started r
       () => api.receipt(input.id),
       (entry) => entry.completion === 'completed',
     );
+    // the session's live window shows the command while no turn runs
+    const readBackground = async () => {
+      const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
+      if (live.kind !== 'live-items') throw new Error('Missing live items');
+      return live.result.backgroundCommands;
+    };
+    await expect.poll(readBackground).toBe(1);
     // the idle period that starts at the turn's end passes while the command still runs
     await expect.poll(() => countHeldDelays(3_600)).toBe(1);
     expect(releaseHeldDelays(3_600)).toBe(1);
@@ -1807,6 +1814,7 @@ test('a Claude session keeps its process while a background command it started r
       nativeHold: true,
     });
     await awaitNativeTurn(api, thread.id);
+    await expect.poll(readBackground).toBe(0);
     await fixture.control({ nativeRelease: true });
     await api.until(
       () => api.thread(thread.id),

@@ -19,7 +19,12 @@ import { createClaudeRpc } from '../rpc.js';
 import { ClaudeInitializeSchema } from '../types.js';
 
 import type { IClaudeControlEvents, IClaudeSession } from './types.js';
-import { failSteers, getActiveTurn, receiveClaudeMessage } from './stream.js';
+import {
+  failSteers,
+  getActiveTurn,
+  receiveClaudeMessage,
+  setBackgroundCommands,
+} from './stream.js';
 import { toClaudeSkills } from './skills.js';
 
 // a session idle this long since its last turn ended gives up its process until it is needed
@@ -261,11 +266,13 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     session.isResumed = isResume || forkSourceNativeId !== undefined;
     // a new process has no turn of its own and no background commands yet
     session.nativeTurn = undefined;
-    session.backgroundTaskCount = 0;
+    setBackgroundCommands(session, 0, events);
     const connection = await createClaudeRpc(
       (reason) => {
         if (reason !== 'unavailable' || session.isClosing || session.parked) return;
         failSteers(session);
+        // the commands stopped with the process
+        setBackgroundCommands(session, 0, events);
         if (session.input) {
           clearTimeout(session.input.timer);
           session.input.reject(
@@ -806,8 +813,9 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       if (!session) conflict();
       cancelIdleStop(session);
       session.isClosing = true;
-      // a stopped process replays nothing more
+      // a stopped process replays nothing more, and its background commands stop with it
       failSteers(session);
+      setBackgroundCommands(session, 0, events);
       // a parked session finishes without a process
       await session.transition?.catch(() => undefined);
       await session.opening.catch((cause: unknown) => {

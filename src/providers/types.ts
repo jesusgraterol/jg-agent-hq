@@ -91,6 +91,8 @@ export type IAgentProviderEvents = {
   observe(observation: INativeObservation): void;
   item(nativeId: string, item: IHistoryItem, isComplete: boolean, replacedIds?: string[]): void;
   gap(nativeId: string): void;
+  // how many commands a session now runs in the background, between or during its turns
+  background(nativeId: string, count: number): void;
   delta(nativeId: string, turnId: string, itemId: string, text: string): void;
   prompt(prompt: INativePrompt): void;
   // a request on a session that HQ can't present, which HQ refuses only on a session it controls

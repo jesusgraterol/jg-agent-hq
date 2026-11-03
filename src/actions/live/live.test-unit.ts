@@ -28,6 +28,7 @@ test('unchanged live reads avoid copying bodies; append, completion, reconciliat
     unchanged: true,
     data: [],
     hasGap: false,
+    backgroundCommands: 0,
   });
   live.append('thread', 'turn', 'item', ' world');
   const appended = live.read('thread', first.revision);
@@ -137,4 +138,23 @@ test('an unfinished message the provider finishes after its turn ended waits for
   expect(live.read('thread').data).toStrictEqual([
     { ...item, text: 'hello world', state: 'awaiting-flush' },
   ]);
+});
+
+test('the background command count is part of the window: a change invalidates the revision, and a reset keeps it', () => {
+  const live = new LiveItems();
+  expect(live.read('thread').backgroundCommands).toBe(0);
+  live.setBackgroundCommands('thread', 2);
+  const started = live.read('thread');
+  expect(started.backgroundCommands).toBe(2);
+  // the same count changes nothing
+  live.setBackgroundCommands('thread', 2);
+  expect(live.read('thread', started.revision).unchanged).toBe(true);
+  live.reset('thread');
+  const reset = live.read('thread', started.revision);
+  expect([reset.unchanged, reset.backgroundCommands, reset.hasGap]).toStrictEqual([false, 2, true]);
+  live.setBackgroundCommands('thread', 0);
+  expect(live.read('thread', reset.revision)).toMatchObject({
+    unchanged: false,
+    backgroundCommands: 0,
+  });
 });

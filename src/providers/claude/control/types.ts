@@ -7,6 +7,7 @@ export type IClaudeControlEvents = {
   observe(observation: INativeObservation): void;
   item(nativeId: string, item: IHistoryItem, isComplete: boolean, replacedIds?: string[]): void;
   gap(nativeId: string): void;
+  background(nativeId: string, count: number): void;
   delta(nativeId: string, turnId: string, itemId: string, text: string): void;
   prompt(prompt: INativePrompt): void;
   outcome(outcome: IAgentProviderOutcome): void;
