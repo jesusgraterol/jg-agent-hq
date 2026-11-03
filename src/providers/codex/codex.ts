@@ -1,4 +1,5 @@
 import { Exception, isException } from 'jg-exception';
+import { runInOrder } from 'jg-utilities';
 import { z } from 'zod';
 
 import {
@@ -14,6 +15,7 @@ import { decodeBase64Image, imageUnavailable, readImageFile } from '../../sessio
 import {
   LOADED_THREADS_PAGE_SIZE,
   MAX_TURN_TIME_PAGES,
+  SKILL_HINT_READ_CONCURRENCY,
   TURN_TIMES_PAGE_SIZE,
 } from './constants.js';
 import { createCodexRpc } from './rpc.js';
@@ -45,7 +47,12 @@ import {
 } from './transformers.js';
 import { parseNative } from './validations.js';
 import { toCodexModels } from './models/index.js';
-import { HOST_SKILL_SCOPE, readSkillRoots, toCapabilityRoots } from './skill-roots/index.js';
+import {
+  HOST_SKILL_SCOPE,
+  readSkillHint,
+  readSkillRoots,
+  toCapabilityRoots,
+} from './skill-roots/index.js';
 import {
   toCodexConfiguration,
   toCodexServiceTier,
@@ -518,6 +525,11 @@ export const createCodexProvider = async (
             kind: 'agent-unavailable',
           },
         });
+      // native discovery reports no argument hints, so HQ reads each listed skill file's own
+      const hints = await runInOrder(entry.skills, {
+        concurrency: SKILL_HINT_READ_CONCURRENCY,
+        execute: (skill) => readSkillHint(skill.path),
+      });
       // native discovery never lists a thread's capability roots, so HQ adds its own; native wins
       const roots = await readSkillRoots(extraSkillRoots);
       const nativeNames = new Set(entry.skills.map((skill) => skill.name));
@@ -526,10 +538,10 @@ export const createCodexProvider = async (
         unavailableCount: entry.errors.length + roots.unavailableCount,
         observedAt: Date.now(),
         skills: [
-          ...entry.skills.map((skill) => ({
+          ...entry.skills.map((skill, index) => ({
             name: skill.name,
             description: skill.description,
-            argumentHint: null,
+            argumentHint: hints[index] ?? null,
             kind: 'skill' as const,
             path: skill.path,
             scope: skill.scope,
@@ -546,7 +558,6 @@ export const createCodexProvider = async (
             .filter((skill) => !nativeNames.has(skill.name))
             .map((skill) => ({
               ...skill,
-              argumentHint: null,
               kind: 'skill' as const,
               scope: HOST_SKILL_SCOPE,
               isEnabled: true,

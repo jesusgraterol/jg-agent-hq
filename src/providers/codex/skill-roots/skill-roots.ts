@@ -1,18 +1,23 @@
 import { constants } from 'node:fs';
 import { open, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { hasErrorCode } from 'jg-exception';
 
-import { LOCAL_ENVIRONMENT_ID, MAX_ROOT_SKILLS, MAX_SKILL_FILE_BYTES } from './constants.js';
+import {
+  LOCAL_ENVIRONMENT_ID,
+  MAX_ARGUMENT_HINT_LENGTH,
+  MAX_ROOT_SKILLS,
+  MAX_SKILL_FILE_BYTES,
+} from './constants.js';
+import type { IRootSkill, ISkillFrontmatter } from './types.js';
 
 /**
- * Reads a skill's single-line `name` and `description` frontmatter, the only fields HQ takes from
- * skill files.
- * @returns The skill identity, or null when the frontmatter is missing or not plain single-line.
+ * Reads a skill's single-line `name`, `description` and `argument-hint` frontmatter, the only
+ * fields HQ takes from skill files. A hint that is missing, empty, a block scalar or over
+ * MAX_ARGUMENT_HINT_LENGTH characters reads as null and never rejects the skill's identity.
+ * @returns The skill's frontmatter, or null when its identity is missing or not plain single-line.
  */
-export const parseSkillFrontmatter = (
-  source: string,
-): { name: string; description: string } | null => {
+export const parseSkillFrontmatter = (source: string): ISkillFrontmatter | null => {
   const block = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(source)?.[1];
   if (block === undefined) return null;
   const read = (key: string): string | null => {
@@ -31,7 +36,10 @@ export const parseSkillFrontmatter = (
     /^[>|]/.test(description)
   )
     return null;
-  return { name, description };
+  const hint = read('argument-hint');
+  const argumentHint =
+    !hint || hint.length > MAX_ARGUMENT_HINT_LENGTH || /^[>|]/.test(hint) ? null : hint;
+  return { name, description, argumentHint };
 };
 
 /**
@@ -46,17 +54,48 @@ export const toCapabilityRoots = (roots: string[]) =>
   }));
 
 /**
+ * Reads a skill file without following a link at its path: a regular file of at most
+ * MAX_SKILL_FILE_BYTES. The native error of opening or reading it, such as ENOENT when nothing is
+ * at the path, propagates for the caller to classify.
+ * @returns The file's text, or null when it is not a regular file or is too large.
+ */
+const readSkillFile = async (path: string): Promise<string | null> => {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile() || stats.size > MAX_SKILL_FILE_BYTES) return null;
+    return await handle.readFile('utf8');
+  } finally {
+    await handle.close();
+  }
+};
+
+/**
+ * Reads the `argument-hint` of the skill file at an absolute path, such as one native discovery
+ * lists, as `readSkillRoots` reads its files. A file that can't be read leaves the skill without
+ * a hint, never without its listing.
+ * @returns A promise that resolves to the hint, or null when there is none or the file can't be
+ * read.
+ */
+export const readSkillHint = async (path: string): Promise<string | null> => {
+  if (!isAbsolute(path)) return null;
+  try {
+    const source = await readSkillFile(path);
+    return source === null ? null : (parseSkillFrontmatter(source)?.argumentHint ?? null);
+  } catch {
+    return null;
+  }
+};
+
+/**
  * Lists the skills in operator-supplied roots, one directory per skill holding a regular
  * `SKILL.md`. Linked directories and files are not followed.
  * @returns The readable skills and how many entries could not be read.
  */
 export const readSkillRoots = async (
   roots: string[],
-): Promise<{
-  skills: { name: string; description: string; path: string }[];
-  unavailableCount: number;
-}> => {
-  const skills: { name: string; description: string; path: string }[] = [];
+): Promise<{ skills: IRootSkill[]; unavailableCount: number }> => {
+  const skills: IRootSkill[] = [];
   let unavailableCount = 0;
   for (const root of roots) {
     let directories: string[];
@@ -72,25 +111,15 @@ export const readSkillRoots = async (
     unavailableCount += Math.max(0, directories.length - MAX_ROOT_SKILLS);
     for (const directory of directories.slice(0, MAX_ROOT_SKILLS)) {
       const path = join(root, directory, 'SKILL.md');
-      let source: string;
+      let source: string | null;
       try {
-        const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-        try {
-          const stats = await handle.stat();
-          if (!stats.isFile() || stats.size > MAX_SKILL_FILE_BYTES) {
-            unavailableCount += 1;
-            continue;
-          }
-          source = await handle.readFile('utf8');
-        } finally {
-          await handle.close();
-        }
+        source = await readSkillFile(path);
       } catch (error) {
         // a directory without SKILL.md is not a skill
         if (!hasErrorCode(error, 'ENOENT')) unavailableCount += 1;
         continue;
       }
-      const parsed = parseSkillFrontmatter(source);
+      const parsed = source === null ? null : parseSkillFrontmatter(source);
       if (parsed) skills.push({ ...parsed, path });
       else unavailableCount += 1;
     }

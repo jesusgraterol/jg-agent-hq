@@ -458,6 +458,53 @@ test('Codex disabled skills and partial discovery remain distinguishable from mi
   });
 });
 
+test("Codex reports each listed skill's argument hint from its file, and a file it can't read leaves only the hint out", async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await setup(fixture, 'codex');
+    // the fake lists each skill at <root>/skills/<name>/SKILL.md
+    const write = async (name: string, source: string) => {
+      await mkdir(join(fixture.root, 'skills', name), { recursive: true });
+      await writeFile(join(fixture.root, 'skills', name, 'SKILL.md'), source);
+    };
+    const frontmatter = (name: string, extra = '') =>
+      `---\nname: ${name}\ndescription: The ${name} skill\n${extra}---\n\nBody.\n`;
+    await write('hinted', frontmatter('hinted', "argument-hint: '[auto] [plan-path]'\n"));
+    await write('plain', frontmatter('plain'));
+    await write(
+      'oversized',
+      frontmatter('oversized', 'argument-hint: [task]\n') + 'x'.repeat(65_536),
+    );
+    await mkdir(join(fixture.root, 'skills', 'linked'), { recursive: true });
+    await writeFile(
+      join(fixture.root, 'outside.md'),
+      frontmatter('linked', 'argument-hint: [x]\n'),
+    );
+    await symlink(
+      join(fixture.root, 'outside.md'),
+      join(fixture.root, 'skills', 'linked', 'SKILL.md'),
+    );
+    await api.control({ skillNames: ['hinted', 'plain', 'oversized', 'linked', 'missing'] });
+
+    const page = await api.catalog();
+    expect(page).toMatchObject({ state: 'available', unavailableCount: 0 });
+    const hints = Object.fromEntries(
+      page.data.map(({ name, argumentHint }) => [name, argumentHint]),
+    );
+    expect(hints).toStrictEqual({
+      hinted: '[auto] [plan-path]',
+      plain: null,
+      oversized: null,
+      linked: null,
+      missing: null,
+    });
+    // a folder's catalog reads the same files, so it gives each skill the same hint
+    const folder = await folderCatalog(fixture, 'codex');
+    expect(
+      Object.fromEntries(folder.data.map(({ name, argumentHint }) => [name, argumentHint])),
+    ).toStrictEqual(hints);
+  });
+});
+
 test.each(['codex', 'claude'] as const)(
   '%s inventory pagination is bounded and revision/query guarded across 1,024 skills',
   async (provider) => {
@@ -507,7 +554,7 @@ test('trusted extra roots reach native loaders without becoming browser configur
     };
     await skill(
       'root-skill',
-      '---\nname: root-skill\ndescription: "Operator root skill"\n---\n\nBody.\n',
+      '---\nname: root-skill\ndescription: "Operator root skill"\nargument-hint: "[task]"\n---\n\nBody.\n',
     );
     await skill('explicit-skill', '---\nname: explicit-skill\ndescription: Shadowed copy\n---\n');
     await skill('broken', 'no frontmatter\n');
@@ -568,6 +615,7 @@ test('trusted extra roots reach native loaders without becoming browser configur
       const rooted = page.data.find((entry) => entry.name === 'root-skill')!;
       expect(rooted).toMatchObject({
         description: 'Operator root skill',
+        argumentHint: '[task]',
         kind: 'skill',
         path: join(extra, 'root-skill', 'SKILL.md'),
         scope: 'host',
