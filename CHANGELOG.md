@@ -1,5 +1,9 @@
 # Changelog
 
+## 11.0.1
+
+- Credit an explicit skill the operator sends from a browser to the operator. A browser submission recorded a fingerprint only for text, so a skill's message linked to its action as a programmatic `host-action` with an unknown origin, and a client showed the operator's own skill as sent by its host. The skill's prepared invocation, the `$name args` or `/name args` the session received, now becomes the submission's fingerprint once its action is admitted, so the message reads back as `authenticated-host-action` from the operator. Skills sent before this version keep their recorded provenance.
+
 ## 11.0.0
 
 - Read the skill catalog of a folder without a session. `skills` now takes `provider` and `workspaceRoot`, with `threadId` optional: with it, the request reads that controlled session's catalog as before, and refuses a session of another provider or folder with JG_AGENT_HQ_REQUEST_INVALID; without it, the request reads the catalog a session started in the folder would have. Codex lists the folder, and Claude reads the initialization command list of a session-less read process started there, without a user prompt or model turn. A skill has the same ID in both catalogs, so a folder's catalog can pick a skill for a session's first input.

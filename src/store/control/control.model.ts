@@ -407,10 +407,28 @@ export class ControlModel {
           .prepare('UPDATE hq_action SET thread_id = ?, provider = ? WHERE id = ?')
           .run(targetId, this.__thread(targetId)!.provider, action.id);
       const inputText = command.kind === 'steer' ? command.text : prepared.input?.text;
-      if (inputText !== undefined && ['message', 'queue', 'steer'].includes(command.kind))
+      if (inputText !== undefined && ['message', 'queue', 'steer'].includes(command.kind)) {
+        const inputSha256 = createHash('sha256').update(inputText).digest('hex');
         this.__database
           .prepare('UPDATE hq_action SET input_sha256 = ? WHERE id = ?')
-          .run(createHash('sha256').update(inputText).digest('hex'), action.id);
+          .run(inputSha256, action.id);
+        /*
+         * An explicit skill's text exists only once it's prepared, so a browser submission of one
+         * learns its fingerprint here. Its receipt's native action ID is a random UUID that browser
+         * admission hands only to its own dispatch, so the action holding it is the one the operator
+         * submitted, sent to the thread the browser selected.
+         */
+        if (
+          (command.kind === 'message' || command.kind === 'queue') &&
+          command.input.kind === 'skill'
+        )
+          this.__database
+            .prepare(
+              `UPDATE hq_browser_action SET native_input_sha256 = ?
+              WHERE json_extract(receipt, '$.nativeActionId') = ? AND native_thread_id = ? AND native_input_sha256 IS NULL`,
+            )
+            .run(inputSha256, action.id, command.threadId);
+      }
       this.__database.exec('SAVEPOINT admission');
       let dispatchActionId: string | null = action.id;
       try {
