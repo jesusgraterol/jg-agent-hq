@@ -1,5 +1,12 @@
 # Changelog
 
+## 10.9.0
+
+- Report on every session summary how many background commands the session runs, as `backgroundCommands`. A session HQ runs reports the count Claude last reported. A Claude session a terminal runs reports the commands and agents its transcript records as started since its Claude process started and not yet ended. The `claude agents --json` poll counts before it records states, within one 67,108,864-byte read budget per run, and a `thread` read reads the transcript again first. Codex sessions report 0.
+- List idle sessions that run background commands in `active-sessions`, beside the running and waiting ones.
+- Report on a Claude session's summary the session its chat continues in, as `continuedIn`, when Claude Code moved the chat into a new session and left a `continued-in` record at the old transcript's end with no message after it. Other summaries carry null.
+- Store nothing new: the counts and answers are kept in memory, so the schema and existing databases are unchanged.
+
 ## 10.8.0
 
 - Report how many commands a session runs in the background. The `live-items` window carries `backgroundCommands`, the count Claude last reported for a session HQ controls, 0 once its process stopped or when its provider reports none, and a change of it is a new revision, so a client that follows the window sees a command keep running after the turn that started it ended, until Claude resumes the session. Providers report it through a new `background` event.
