@@ -40,6 +40,7 @@ const createEvents = () => {
       items.push({ item, isComplete, replacedIds });
     },
     gap: () => undefined,
+    background: () => undefined,
     delta: () => undefined,
     prompt: () => undefined,
     outcome: () => undefined,
@@ -540,4 +541,28 @@ test('a steer Claude never replays fails 30 seconds after the turn it named ende
 
   expect(settled.error).toMatchObject({ code: 'JG_AGENT_HQ_CLAUDE_FAILED' });
   expect(session.steers.size).toBe(0);
+});
+
+test("Claude's background command reports set the session's count, and report each change once", () => {
+  const session = createSession();
+  const { events } = createEvents();
+  const counts: [string, number][] = [];
+  events.background = (nativeId, count) => counts.push([nativeId, count]);
+  const report = (tasks: unknown[]) =>
+    receiveClaudeMessage(
+      session,
+      { type: 'system', session_id: 'session', subtype: 'background_tasks_changed', tasks },
+      events,
+    );
+  const task = { task_id: 'task-1', run_id: 'run-1', description: 'e2e', task_type: 'local_bash' };
+
+  report([task]);
+  report([task]);
+  report([]);
+
+  expect(counts).toStrictEqual([
+    ['session', 1],
+    ['session', 0],
+  ]);
+  expect(session.backgroundTaskCount).toBe(0);
 });

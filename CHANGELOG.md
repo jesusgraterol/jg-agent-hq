@@ -1,5 +1,9 @@
 # Changelog
 
+## 10.8.0
+
+- Report how many commands a session runs in the background. The `live-items` window carries `backgroundCommands`, the count Claude last reported for a session HQ controls, 0 once its process stopped or when its provider reports none, and a change of it is a new revision, so a client that follows the window sees a command keep running after the turn that started it ended, until Claude resumes the session. Providers report it through a new `background` event.
+
 ## 10.7.0
 
 - Accept up to 16,777,216 bytes of files per input, each text file up to 262,144 bytes, up from 2,097,152 and 65,536. `capabilities.inputSchema` reports the new `maxFileBytes` and `maxTextFileBytes`.

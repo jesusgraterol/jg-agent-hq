@@ -49,6 +49,7 @@ import type {
   IProviderRegistration,
   IProviderRegistryEvents,
 } from './types.js';
+import { MAX_BACKGROUND_COMMANDS } from './constants.js';
 import { capabilityUnavailable, normalizeProviderError } from './utilities.js';
 import {
   parseProviderObservation,
@@ -221,6 +222,14 @@ export const createProviderRegistry = (
           );
         }),
       gap: (nativeId) => deliver(() => handlers?.gap(provider, NativeIdSchema.parse(nativeId))),
+      background: (nativeId, count) =>
+        deliver(() =>
+          handlers?.background(
+            provider,
+            NativeIdSchema.parse(nativeId),
+            z.number().int().nonnegative().max(MAX_BACKGROUND_COMMANDS).parse(count),
+          ),
+        ),
       session: (nativeId, state) =>
         deliver(() =>
           handlers?.session(
