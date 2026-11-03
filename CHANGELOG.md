@@ -1,5 +1,9 @@
 # Changelog
 
+## 10.9.2
+
+- Read a Claude transcript whose compaction names a record the transcript doesn't hold before the boundary. Such a transcript was refused whole, its history unavailable and its `thread` read failing: a chat Claude Code moved into a new session, whose boundary names the old session's record, and a transcript whose boundary named a record written after it. The chain now starts at that boundary. Every Claude history is indexed again once, so the transcripts refused before are read.
+
 ## 10.9.1
 
 - Forget a terminal Claude session's background-command count when a `thread` read of it finishes after the `claude agents --json` poll stopped listing it. The read used to leave the session's transcript scan in memory, where nothing removed it.

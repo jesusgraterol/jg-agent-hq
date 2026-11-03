@@ -52,7 +52,7 @@ import {
 } from './utilities.js';
 
 // identifies the path and record interpretation used by persisted projection entries
-const HISTORY_PROJECTION_VERSION = 9;
+const HISTORY_PROJECTION_VERSION = 10;
 // the transcripts whose continuing session is remembered, oldest dropped first
 const MAX_CONTINUED_ANSWERS = 1_024;
 // one record, such as a tool result holding images, and an indexing read, which fits the largest
@@ -950,7 +950,13 @@ export class ClaudeHistoryModel {
     if (nativeParentUuid === record.uuid) this.__unavailable();
     if (nativeParentUuid && !nativeParent) {
       if (visible) this.__unavailable();
-      if (!isOrphanAllowed) return nativeParentUuid;
+      /*
+       * A compaction's boundary has no parent and names the record before it, which is indexed
+       * by then when this transcript holds it. Otherwise it is the old session's, in the
+       * transcript a moved chat continues from, or one Claude Code wrote after the boundary, so
+       * the boundary starts its chain at once rather than holding back the summary that follows.
+       */
+      if (!isOrphanAllowed && record.parentUuid != null) return nativeParentUuid;
     }
     const previous = statements.recordedParent.get(root, nativeId, record.uuid);
     const isCallResult =
