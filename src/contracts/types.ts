@@ -128,9 +128,12 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
       .max(MAX_ITEM_IMAGES - 1),
   }),
   z.strictObject({ kind: z.literal('usage'), provider: TargetFields.provider }),
+  // a managed session's catalog with threadId, else the one a session started in the folder gets
   z.strictObject({
     kind: z.literal('skills'),
-    threadId: z.uuid(),
+    provider: TargetFields.provider,
+    workspaceRoot: TargetFields.workspaceRoot,
+    threadId: z.uuid().optional(),
     search: z.string().max(1024).optional(),
     ...PageFields,
   }),

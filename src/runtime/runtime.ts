@@ -295,8 +295,22 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           ).readConfiguration({ ...command, workspaceRoot }, thread?.nativeId ?? undefined),
         };
       }
-      case 'skills':
-        return { kind: command.kind, result: await skills.list(command) };
+      case 'skills': {
+        const workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, allowedRoots);
+        // a session's catalog answers only for the provider and folder the session runs in
+        const thread = command.threadId ? await projection.getThread(command.threadId) : null;
+        if (
+          command.threadId &&
+          (!thread ||
+            thread.provider !== command.provider ||
+            thread.workspaceRoot !== workspaceRoot)
+        )
+          throw new Exception('The HQ request is invalid', {
+            code: 'JG_AGENT_HQ_REQUEST_INVALID',
+            data: { kind: 'invalid-request' },
+          });
+        return { kind: command.kind, result: await skills.list({ ...command, workspaceRoot }) };
+      }
       case 'skill-preview':
         return {
           kind: command.kind,

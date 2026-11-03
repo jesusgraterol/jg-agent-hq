@@ -74,6 +74,8 @@ const setup = async (fixture: IClaudeFixture, provider: 'codex' | 'claude') => {
   const catalog = async (limit = 32, cursor?: string, search?: string) => {
     const response = await fixture.request({
       kind: 'skills',
+      provider,
+      workspaceRoot: fixture.workspaceRoot,
       threadId: managed.id,
       limit,
       cursor,
@@ -160,6 +162,23 @@ const setup = async (fixture: IClaudeFixture, provider: 'codex' | 'claude') => {
     inputs,
     control,
   };
+};
+
+// a folder's catalog, as `skills` answers it without a session
+const folderCatalog = async (
+  fixture: IClaudeFixture,
+  provider: 'codex' | 'claude',
+  options: { limit?: number; cursor?: string } = {},
+) => {
+  const response = await fixture.request({
+    kind: 'skills',
+    provider,
+    workspaceRoot: fixture.workspaceRoot,
+    limit: options.limit ?? 32,
+    cursor: options.cursor,
+  });
+  if (response.kind !== 'skills') throw new Error('Missing catalog');
+  return response.result;
 };
 
 test.each(['codex', 'claude'] as const)(
@@ -720,3 +739,103 @@ test.each(['codex', 'claude'] as const)(
     });
   },
 );
+
+test.each(['codex', 'claude'] as const)(
+  '%s folder catalog lists what a session started there lists, and its IDs send to that session',
+  async (provider) => {
+    await withClaudeRuntime(async (fixture) => {
+      const folder = await folderCatalog(fixture, provider);
+      expect(folder.state).toBe('available');
+      expect(folder.invocationPrefix).toBe(provider === 'codex' ? '$' : '/');
+      const api = await setup(fixture, provider);
+      expect(folder.data).toStrictEqual((await api.catalog()).data);
+      const skill = folder.data.find((entry) => entry.name === 'explicit-skill')!;
+      const action = api.envelope({
+        kind: 'message',
+        threadId: api.managed.id,
+        input: { kind: 'skill', skillId: skill.id, arguments: 'a folder pick' },
+      });
+      await api.submit(action);
+      await api.settled(action.id);
+      expect((await api.inputs()).at(-1)?.[0]).toStrictEqual({
+        type: 'text',
+        text: `${provider === 'codex' ? '$' : '/'}explicit-skill a folder pick`,
+      });
+    });
+  },
+);
+
+test('a session catalog answers only for its own provider and folder, inside the allowed roots', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await setup(fixture, 'claude');
+    const nested = join(fixture.workspaceRoot, 'nested');
+    await mkdir(nested);
+    for (const target of [
+      { provider: 'codex', workspaceRoot: fixture.workspaceRoot, threadId: api.managed.id },
+      { provider: 'claude', workspaceRoot: nested, threadId: api.managed.id },
+      { provider: 'claude', workspaceRoot: fixture.workspaceRoot, threadId: randomUUID() },
+    ])
+      await expectToRejectCode(
+        fixture.request({ kind: 'skills', ...target }),
+        'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
+      );
+    await expectToRejectCode(
+      fixture.request({ kind: 'skills', provider: 'claude', workspaceRoot: fixture.root }),
+      'JG_AGENT_HQ_CLIENT_ACCESS_DENIED',
+    );
+  });
+});
+
+test.each(['codex', 'claude'] as const)(
+  '%s folder catalog its CLI fails to list is unavailable, never empty',
+  async (provider) => {
+    await withClaudeRuntime(async (fixture) => {
+      if (provider === 'codex')
+        await writeFixtureControl(fixture.root, 'control.json', { skillsFailure: true });
+      else await fixture.control({ skillsFailure: true });
+      expect(await folderCatalog(fixture, provider)).toStrictEqual({
+        state: 'unavailable',
+        invocationPrefix: null,
+        observedAt: null,
+        data: [],
+        unavailableCount: 0,
+        nextCursor: null,
+      });
+    });
+  },
+);
+
+test('a folder catalog pages with its own cursor, which no session catalog takes', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const first = await folderCatalog(fixture, 'claude', { limit: 1 });
+    expect(first.data).toHaveLength(1);
+    expect(first.nextCursor).not.toBeNull();
+    const second = await folderCatalog(fixture, 'claude', { limit: 1, cursor: first.nextCursor! });
+    expect(second.data).toHaveLength(1);
+    expect(second.nextCursor).toBeNull();
+    expect(new Set([...first.data, ...second.data].map(({ name }) => name))).toStrictEqual(
+      new Set(['explicit-skill', 'implicit-skill']),
+    );
+    const api = await setup(fixture, 'claude');
+    await expectToRejectCode(
+      api.catalog(1, first.nextCursor!),
+      'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
+    );
+  });
+});
+
+test('concurrent reads of one Claude folder share one read process', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const [first, second] = await Promise.all([
+      folderCatalog(fixture, 'claude'),
+      folderCatalog(fixture, 'claude'),
+    ]);
+    expect(second).toStrictEqual(first);
+    const starts = (await readFile(join(fixture.root, 'claude-read-starts.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => z.object({ cwd: z.string() }).parse(JSON.parse(line)))
+      .filter(({ cwd }) => cwd === fixture.workspaceRoot);
+    expect(starts).toHaveLength(1);
+  });
+});

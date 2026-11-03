@@ -232,6 +232,7 @@ const main = async (): Promise<void> => {
           'capabilities',
           'models',
           'configuration',
+          'skills',
           'account',
           'provider-actions',
         ].includes(kind)

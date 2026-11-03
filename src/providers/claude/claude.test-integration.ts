@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { randomUUID } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { createAgentHq } from 'jg-agent-hq';
 import { HqResponseSchema } from 'jg-agent-hq/contracts';
 import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
@@ -405,5 +406,51 @@ test('history reads keep the first successful check instead of starting a claude
     // a read that uses the native connection still opens it
     await request({ kind: 'models', provider: 'claude' });
     expect(await readPids(root)).toHaveLength(2);
+  });
+});
+
+test('folder reads start in the folder with the directories sessions add, and end once they answer', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    await fixture.runtime.close();
+    const extra = join(fixture.root, 'extra');
+    await mkdir(extra);
+    const runtime = await createAgentHq({
+      stateRoot: fixture.stateRoot,
+      allowedRoots: [fixture.workspaceRoot],
+      claudeAdditionalDirectories: [extra],
+    });
+    try {
+      expect(
+        await runtime.request({
+          kind: 'skills',
+          provider: 'claude',
+          workspaceRoot: fixture.workspaceRoot,
+        }),
+      ).toMatchObject({ kind: 'skills', result: { state: 'available', invocationPrefix: '/' } });
+      expect(
+        await runtime.request({
+          kind: 'configuration',
+          provider: 'claude',
+          workspaceRoot: fixture.workspaceRoot,
+        }),
+      ).toMatchObject({ kind: 'configuration' });
+      const starts = z
+        .array(z.object({ args: z.array(z.string()), cwd: z.string(), pid: z.number() }))
+        .parse(
+          (await readFile(join(fixture.root, 'claude-read-starts.jsonl'), 'utf8'))
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line)),
+        )
+        .filter(({ cwd }) => cwd === fixture.workspaceRoot);
+      expect(starts).toHaveLength(2);
+      for (const start of starts) {
+        const flag = start.args.indexOf('--add-dir');
+        expect(start.args.slice(flag, flag + 2)).toStrictEqual(['--add-dir', extra]);
+        await expect.poll(() => isRunning(start.pid)).toBe(false);
+      }
+    } finally {
+      await runtime.close();
+    }
   });
 });

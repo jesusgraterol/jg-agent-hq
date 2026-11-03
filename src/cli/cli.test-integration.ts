@@ -471,3 +471,63 @@ test('the CLI has no storage upgrade command or backup flag', async () => {
     expect(JSON.parse(result.stderr)).toMatchObject({ schemaVersion: 1, success: false });
   }
 });
+
+test('skills reads a folder catalog, and a session catalog with its thread, through the installed command', async () => {
+  await withClaudeRuntime(async ({ stateRoot, workspaceRoot, request }) => {
+    const run = promisify(execFile);
+    const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
+    const folder = await run(
+      process.execPath,
+      [
+        cli,
+        'skills',
+        '--state-root',
+        stateRoot,
+        '--provider',
+        'claude',
+        '--workspace-root',
+        workspaceRoot,
+      ],
+      { timeout: 5000 },
+    );
+    expect(JSON.parse(folder.stdout)).toMatchObject({
+      schemaVersion: 1,
+      kind: 'skills',
+      result: { state: 'available', invocationPrefix: '/' },
+    });
+    const status = await request({ kind: 'status' });
+    if (status.kind !== 'status') throw new Error('Missing status');
+    const created = await request({
+      kind: 'action',
+      action: {
+        id: randomUUID(),
+        runtimeEpoch: status.result.runtimeEpoch,
+        command: { kind: 'thread-create', provider: 'codex', workspaceRoot, name: 'cli-skills' },
+      },
+    });
+    if (created.kind !== 'action') throw new Error('Missing action');
+    const threadId = created.result.threadId!;
+    await expect
+      .poll(() => request({ kind: 'managed-thread', threadId }))
+      .toMatchObject({ result: { state: 'idle' } });
+    // the provider defaults to codex, as for configuration
+    const session = await run(
+      process.execPath,
+      [
+        cli,
+        'skills',
+        '--state-root',
+        stateRoot,
+        '--workspace-root',
+        workspaceRoot,
+        '--thread-id',
+        threadId,
+      ],
+      { timeout: 5000 },
+    );
+    expect(JSON.parse(session.stdout)).toMatchObject({
+      kind: 'skills',
+      result: { state: 'available', invocationPrefix: '$' },
+    });
+  });
+});

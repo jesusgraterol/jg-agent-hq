@@ -1286,7 +1286,14 @@ test('an idle Claude session gives up its process after 60 minutes and answers r
     const { state } = await api.thread(thread.id);
     await parkIdleSessions(fixture);
     expect((await api.thread(thread.id)).state).toBe(state);
-    expect(await fixture.request({ kind: 'skills', threadId: thread.id })).toMatchObject({
+    expect(
+      await fixture.request({
+        kind: 'skills',
+        provider: 'claude',
+        workspaceRoot: fixture.workspaceRoot,
+        threadId: thread.id,
+      }),
+    ).toMatchObject({
       kind: 'skills',
       result: { state: 'available' },
     });
