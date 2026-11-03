@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-// reserve 128 KiB in the 8 MiB frame for action and transport metadata
+// a result keeps its 8 MiB less 128 KiB budget, which leaves room in the IPC frame for metadata
 export const MAX_RESULT_BYTES = 8_388_608 - 131_072;
 
 /** Rejects pathological schema depth and size before recursive library validation. */

@@ -97,5 +97,5 @@ test('documented file and result limits match the admitted capacities and frame 
   expect(api).toContain(`${MAX_INPUT_FILES} references`);
   for (const bytes of [MAX_RESULT_BYTES, MAX_INPUT_FILE_BYTES, MAX_TEXT_FILE_BYTES])
     expect(api).toContain(bytes.toLocaleString('en-US'));
-  expect(MAX_RESULT_BYTES + 131_072).toBe(MAX_FRAME_BYTES);
+  expect(MAX_RESULT_BYTES + 131_072).toBeLessThan(MAX_FRAME_BYTES);
 });

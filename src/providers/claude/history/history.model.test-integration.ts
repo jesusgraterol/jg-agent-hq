@@ -767,6 +767,49 @@ test('a record over a mebibyte, such as a tool result holding images, keeps its 
   });
 });
 
+test('a 12 MiB message, such as one carrying files, reads its page, and a record over 32 MiB makes its session unavailable', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'a'.repeat(12_582_912) });
+    const answer = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: prompt.uuid,
+      text: 'answer',
+    });
+    await writeFile(
+      transcript(nativeId),
+      [prompt, answer].map((record) => JSON.stringify(record)).join('\n') + '\n',
+    );
+    // the large record fills a page of its own, past the budget its neighbor leaves
+    const pages: unknown[][] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await request({
+        kind: 'items',
+        provider: 'claude',
+        workspaceRoot,
+        nativeId,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      if (page.kind !== 'items') throw new Error('wrong response');
+      pages.push(page.result.data.map((item) => [item.nativeId, item.kind, item.isTruncated]));
+      cursor = page.result.nextCursor ?? undefined;
+    } while (cursor !== undefined);
+    expect(pages).toStrictEqual([
+      [[answer.uuid, 'agent-message', false]],
+      [[prompt.uuid, 'user-message', true]],
+    ]);
+    const oversizedId = randomUUID();
+    const oversized = claudeRecord(workspaceRoot, oversizedId, {
+      text: 'a'.repeat(33_554_432),
+    });
+    await writeFile(transcript(oversizedId), JSON.stringify(oversized) + '\n');
+    await expect(
+      request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId: oversizedId }),
+    ).rejects.toThrow('Coding agent is unavailable');
+  });
+});
+
 // the indexed location of every entry of one session, in file order
 const readEntries = (stateRoot: string, nativeId: string) => {
   const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'), { readOnly: true });
@@ -868,9 +911,12 @@ test('a record unfinished at the end of one indexing read is indexed whole by th
     const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'prompt' });
     const toolResult = (parentUuid: string) => ({
       ...claudeRecord(workspaceRoot, nativeId, { parentUuid }),
-      message: { role: 'user', content: [{ type: 'tool_result', content: 'a'.repeat(6_000_000) }] },
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', content: 'a'.repeat(24_000_000) }],
+      },
     });
-    // three results of about 6 MB, so the third runs past the 16 MiB one read indexes
+    // three results of about 24 MB, so the third runs past the 64 MiB one read indexes
     const results: ReturnType<typeof toolResult>[] = [];
     for (let index = 0; index < 3; index += 1)
       results.push(toolResult(results.at(-1)?.uuid ?? prompt.uuid));
@@ -882,8 +928,8 @@ test('a record unfinished at the end of one indexing read is indexed whole by th
     const records = [prompt, ...results, answer];
     const lines = records.map((record) => JSON.stringify(record));
     const locations = locate(lines);
-    expect(locations[3]!.byte_offset).toBeLessThan(16_777_216);
-    expect(locations[3]!.byte_offset + locations[3]!.byte_length).toBeGreaterThan(16_777_216);
+    expect(locations[3]!.byte_offset).toBeLessThan(67_108_864);
+    expect(locations[3]!.byte_offset + locations[3]!.byte_length).toBeGreaterThan(67_108_864);
     await writeFile(transcript(nativeId), lines.join('\n') + '\n');
     // each large record fills a page of its own
     const pages: string[] = [];

@@ -6,7 +6,7 @@ import type { IHistoryItem } from '../../contracts/index.js';
  */
 type ILiveEntry = { item: IHistoryItem; isComplete: boolean; isUnfinished: boolean; bytes: number };
 type ILiveThread = { items: Map<string, ILiveEntry>; hasGap: boolean; revision: number };
-// serialized accounting includes escaping/identifiers and leaves space inside the 8 MiB IPC frame
+// serialized accounting includes escaping/identifiers and leaves space inside the IPC frame
 const MAX_LIVE_BYTES = 4 * 1024 * 1024;
 
 /** Keeps a bounded presentation window until matching native history has been flushed. */

@@ -51,11 +51,11 @@ import {
 } from './utilities.js';
 
 // identifies the path and record interpretation used by persisted projection entries
-const HISTORY_PROJECTION_VERSION = 8;
+const HISTORY_PROJECTION_VERSION = 9;
 // one record, such as a tool result holding images, and an indexing read, which fits the largest
-const MAX_RECORD_BYTES = 8_388_608;
-const MAX_REFRESH_BYTES = 16_777_216;
-// the record bytes and serialized items of one page, which stays inside the 8 MiB IPC frame
+const MAX_RECORD_BYTES = 33_554_432;
+const MAX_REFRESH_BYTES = 67_108_864;
+// the record bytes and serialized items of one page, which stays well inside the IPC frame
 const MAX_PAGE_BYTES = 4_194_304;
 // hidden records awaiting a parent later in the file; Claude Code writes them a few lines early
 const MAX_HELD_BACK_RECORDS = 64;

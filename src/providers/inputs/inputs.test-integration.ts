@@ -232,7 +232,7 @@ test.each(['codex', 'claude'] as const)(
           'JG_AGENT_HQ_CLIENT_ACCESS_DENIED',
         );
       await writeFile(join(fixture.workspaceRoot, 'invalid.png'), 'not an image');
-      await writeFile(join(fixture.workspaceRoot, 'large.txt'), 'x'.repeat(65_537));
+      await writeFile(join(fixture.workspaceRoot, 'large.txt'), 'x'.repeat(262_145));
       for (const [path, mediaType] of [
         ['invalid.png', 'image/png'],
         ['large.txt', 'text/plain'],
@@ -306,24 +306,52 @@ test.each(['codex', 'claude'] as const)(
 
 test.each(['codex', 'claude'] as const)(
   '%s accepted file maxima fit the native frame and excess aggregate data is rejected',
+  // the accepted input crosses the native frame as about 30 MB of escaped text and base64
+  { timeout: 15_000 },
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
+      expect(await fixture.request({ kind: 'capabilities', provider })).toMatchObject({
+        kind: 'capabilities',
+        result: {
+          inputSchema: { maxFiles: 8, maxFileBytes: 16_777_216, maxTextFileBytes: 262_144 },
+        },
+      });
       const api = await createClient(fixture, provider);
-      await writeFile(join(fixture.workspaceRoot, 'boundary.txt'), '\u0001'.repeat(65_536));
-      const files = Array.from({ length: 8 }, () => ({
-        path: 'boundary.txt',
-        mediaType: 'text/plain' as const,
-      }));
+      // the worst case: seven text files JSON escapes six times over, and base64 image bytes
+      await writeFile(join(fixture.workspaceRoot, 'boundary.txt'), '\u0001'.repeat(262_144));
+      const boundaryImage = Buffer.alloc(16_777_216 - 7 * 262_144);
+      image.copy(boundaryImage);
+      await writeFile(join(fixture.workspaceRoot, 'boundary.png'), boundaryImage);
+      const files = [
+        ...Array.from({ length: 7 }, () => ({
+          path: 'boundary.txt',
+          mediaType: 'text/plain' as const,
+        })),
+        { path: 'boundary.png', mediaType: 'image/png' as const },
+      ];
       const accepted = await api.send({
         kind: 'message',
         threadId: api.threadId,
         input: { kind: 'text', text: 'Bounded input', files },
       });
-      await expect.poll(() => api.receipt(accepted.id)).toMatchObject({ completion: 'completed' });
+      await expect
+        .poll(() => api.receipt(accepted.id), { timeout: 10_000 })
+        .toMatchObject({ completion: 'completed' });
       const records = await api.inputs();
-      expect(
-        Math.max(...records.map((record) => Buffer.byteLength(JSON.stringify(record)))),
-      ).toBeLessThan(8_388_608);
+      const largest = Math.max(
+        ...records.map((record) => Buffer.byteLength(JSON.stringify(record))),
+      );
+      expect(largest).toBeGreaterThan(16_777_216);
+      expect(largest).toBeLessThan(33_554_432);
+      if (provider === 'codex') {
+        // the fake daemon records each client frame it reassembled the message from
+        const frames = (await readFile(join(fixture.root, 'client-frames.jsonl'), 'utf8'))
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line) as { opcode: number; isFinal: boolean; length: number });
+        expect(frames.some((frame) => frame.opcode === 0)).toBe(true);
+        expect(Math.max(...frames.map((frame) => frame.length))).toBe(1_048_576);
+      }
       await expectToRejectCode(
         fixture.request(
           api.envelope({
@@ -334,7 +362,7 @@ test.each(['codex', 'claude'] as const)(
         ),
         'JG_AGENT_HQ_REQUEST_INVALID',
       );
-      const largeImage = Buffer.alloc(2_097_152);
+      const largeImage = Buffer.alloc(boundaryImage.length + 1);
       image.copy(largeImage);
       await writeFile(join(fixture.workspaceRoot, 'large.png'), largeImage);
       await expectToRejectCode(
@@ -345,10 +373,7 @@ test.each(['codex', 'claude'] as const)(
             input: {
               kind: 'text',
               text: 'Too many bytes',
-              files: [
-                { path: 'large.png', mediaType: 'image/png' },
-                { path: 'large.png', mediaType: 'image/png' },
-              ],
+              files: [...files.slice(0, 7), { path: 'large.png', mediaType: 'image/png' }],
             },
           }),
         ),

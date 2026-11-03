@@ -49,6 +49,8 @@ else {
   };
   let inbound = Buffer.alloc(0);
   let isOpen = false;
+  // a client message arrives as one text frame, or a text frame and continuation frames
+  let clientFragments = [];
   process.stdin.on('data',(chunk) => {
     inbound = Buffer.concat([inbound,chunk]);
     if (!isOpen) {
@@ -72,8 +74,14 @@ else {
       const mask = inbound.subarray(offset,offset+4);
       const payload = Buffer.from(inbound.subarray(offset+4,offset+4+length)).map((byte,index) => byte ^ mask[index & 3]);
       const opcode = inbound[0] & 15;
+      const isFinal = (inbound[0] & 128) !== 0;
       inbound = inbound.subarray(offset+4+length);
-      if (opcode === 1) handle(payload.toString('utf8'));
+      if (opcode === 1 || opcode === 0) {
+        if (opcode === 1) clientFragments = [];
+        clientFragments.push(payload);
+        appendFileSync(join(directory,'client-frames.jsonl'),JSON.stringify({ opcode,isFinal,length })+'\n');
+        if (isFinal) { const text = Buffer.concat(clientFragments).toString('utf8');clientFragments = [];handle(text); }
+      }
       else if (opcode === 9 && !controls().ignorePings) process.stdout.write(frame(payload.toString('utf8'),10));
       else if (opcode === 10) appendFileSync(join(directory,'pongs.jsonl'),payload.toString('utf8')+'\n');
     }
@@ -111,7 +119,7 @@ else {
     if (request.id === undefined) return;
     if (request.method === 'initialize') {
       if (control.mode === 'malformed') { send('invalid JSON');return; }
-      if (control.mode === 'oversized') { send('x'.repeat(8_388_609));return; }
+      if (control.mode === 'oversized') { send('x'.repeat(33_554_433));return; }
       if (control.mode === 'partial') { const partial = frame('{"id":1,"result":null}');process.stdout.end(partial.subarray(0,partial.length-5));return; }
       if (control.mode === 'empty') { process.stdout.end();return; }
       respond(request.id,{ ...(control.omitVersion?{}:{userAgent:control.version??'codex-cli/fixture'}), futureMetadata:control.futureMetadata });return;
@@ -125,10 +133,10 @@ else {
     if (control.emit) for (const event of control.emit) notify(event.method,event.params);
     // emitRequests sends server requests, such as another client's approvals, with their own IDs
     if (control.emitRequests) for (const native of control.emitRequests) send(JSON.stringify(native));
-    // emitOversized sends that many messages over the 8 MiB frame limit, in fragments with fragmentFrames
-    for (let index = 0; index < (control.emitOversized ?? 0); index += 1) send('"'+'x'.repeat(9_437_184)+'"');
+    // emitOversized sends that many messages over the 32 MiB frame limit, in fragments with fragmentFrames
+    for (let index = 0; index < (control.emitOversized ?? 0); index += 1) send('"'+'x'.repeat(34_603_008)+'"');
     // oversizeResponseTo answers that method with a response over the frame limit
-    if (control.oversizeResponseTo === method) { send(JSON.stringify({id:request.id,result:'x'.repeat(9_437_184)}));return; }
+    if (control.oversizeResponseTo === method) { send(JSON.stringify({id:request.id,result:'x'.repeat(34_603_008)}));return; }
     if (method === 'model/list') {
       const choices = Array.from({length:control.modelCount??4},(_,index)=>({id:'model-'+String(index).padStart(4,'0'),model:'model-'+String(index).padStart(4,'0'),displayName:'Native model '+index,description:control.modelRevision?'Updated choice':'Native model choice',supportedReasoningEfforts:[{reasoningEffort:control.modelEffort??'native-effort'}],defaultReasoningEffort:control.modelEffort??'native-effort',isDefault:index===0,serviceTiers:index%2===0?[{id:'priority',name:'Fast',description:'Faster responses'}]:[]}));
       if(control.modelsMalformed)choices[0].id='';

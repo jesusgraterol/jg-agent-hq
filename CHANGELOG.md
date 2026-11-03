@@ -1,5 +1,11 @@
 # Changelog
 
+## 10.7.0
+
+- Accept up to 16,777,216 bytes of files per input, each text file up to 262,144 bytes, up from 2,097,152 and 65,536. `capabilities.inputSchema` reports the new `maxFileBytes` and `maxTextFileBytes`.
+- Carry native and IPC frames and Claude transcript records of up to 33,554,432 bytes, up from 8,388,608, so a Claude session whose transcript holds a large message, such as one with attached files, keeps its history. Claude indexing reads up to 64 MiB per batch. Every Claude history is indexed again once.
+- Send a Codex message over 1,048,576 bytes as masked fragments of at most that size, so a large message never meets a WebSocket server's per-frame limit.
+
 ## 10.6.0
 
 - Steer a Claude session's active turn. Claude reports `steer` as supported and writes the text as a user message into the exact active turn, without interrupting it, and acknowledges the steer when Claude replays the message: at the turn's next tool boundary, where the turn takes it in and ends with one result, or, for text written while the turn's final answer streams, after the turn's result, where it runs as the session's next turn under the message's UUID. Either replay acknowledges the steer against the turn it named. A steer never replayed fails 30 seconds after that turn ends, and one pending when the process stops fails at once. Claude used to reject `steer` as unavailable.
