@@ -179,6 +179,11 @@ export const observeClaudeAgents = (
         session.startedAt,
         { remaining: READ_BUDGET_BYTES },
       );
+      // a poll that stopped listing the session while this read ran forgot it before the read ended
+      if (!listedSessions.has(nativeId)) {
+        background.forget(nativeId);
+        return 0;
+      }
       return session.backgroundCommands;
     },
     backgroundSessionIds: () =>
