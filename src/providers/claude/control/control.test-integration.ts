@@ -179,7 +179,19 @@ test('Claude creates and names an idle native session, deduplicates input and re
       ),
     ).toBe(false);
     expect((await api.calls()).filter((call) => call.type === 'user')).toHaveLength(0);
+    // the answer streams and is saved while its result waits, so the window holds the final items
+    await fixture.control({ holdResult: true });
     const input = await api.message(created.thread.id);
+    const live = await api.until(
+      () => fixture.request({ kind: 'live-items', threadId: created.thread.id }),
+      (response) =>
+        response.kind === 'live-items' &&
+        response.result.data.filter((item) => item.state === 'awaiting-flush').length === 2,
+    );
+    if (live.kind !== 'live-items') throw new Error('Missing live items');
+    expect(live.result.data).toHaveLength(2);
+    expect(live.result.data.every((item) => !item.nativeId.startsWith('live:'))).toBe(true);
+    await fixture.control({ holdResult: true, releaseResult: true });
     const done = await api.until(
       () => api.receipt(input.id),
       (entry) => entry.completion === 'completed',
@@ -187,20 +199,11 @@ test('Claude creates and names an idle native session, deduplicates input and re
     expect(done.delivery).toBe('acknowledged');
     await api.submit(input);
     expect((await api.calls()).filter((call) => call.type === 'user')).toHaveLength(1);
-    const live = await fixture.request({ kind: 'live-items', threadId: created.thread.id });
-    expect(live.kind).toBe('live-items');
-    if (live.kind !== 'live-items') throw new Error('Missing live items');
-    expect(live.result.data).toHaveLength(2);
-    expect(live.result.data.every((item) => !item.nativeId.startsWith('live:'))).toBe(true);
-    const history = await fixture.request({
-      kind: 'items',
-      provider: 'claude',
-      workspaceRoot: fixture.workspaceRoot,
-      nativeId: created.thread.nativeId!,
-    });
-    expect(history.kind).toBe('items');
-    const reconciled = await fixture.request({ kind: 'live-items', threadId: created.thread.id });
-    expect(reconciled).toMatchObject({ result: { data: [] } });
+    // once the turn ends, its history holds both, and they leave the window without a client read
+    await api.until(
+      () => fixture.request({ kind: 'live-items', threadId: created.thread.id }),
+      (response) => response.kind === 'live-items' && response.result.data.length === 0,
+    );
     const thread = await fixture.request({
       kind: 'thread',
       provider: 'claude',

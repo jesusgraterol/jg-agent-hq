@@ -205,6 +205,20 @@ export class LiveItems {
     }
   }
 
+  /**
+   * Says whether a turn's window still holds a finished item no native history page has held.
+   * @param nativeId The session's key.
+   * @param turnId The native turn.
+   * @returns Whether such an item remains.
+   */
+  public awaitsFlush(nativeId: string, turnId: string): boolean {
+    const thread = this.__threads.get(nativeId);
+    if (!thread) return false;
+    for (const entry of thread.items.values())
+      if (entry.isComplete && entry.item.turnId === turnId) return true;
+    return false;
+  }
+
   /** Keeps a turn's partial items available until native history holds the turn. */
   public completeTurn(nativeId: string, turnId: string): void {
     const thread = this.__threads.get(nativeId);
