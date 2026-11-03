@@ -1,5 +1,10 @@
 # Changelog
 
+## 11.1.0
+
+- Report each Codex skill's `argumentHint` from the `argument-hint` its `SKILL.md` declares. Codex's native skill list carries no hints, so a catalog read now reads the single-line frontmatter of the file at each listed skill's path, 8 files at a time, and of each skill in the operator's extra roots: a regular file of at most 65,536 bytes, without following a link at that path. A hint that is missing, empty, a block scalar or over 1,024 characters stays null, and a file that can't be read leaves only the hint null, without counting toward `unavailableCount`. Session and folder catalogs give a skill the same hint.
+- Store nothing new: the schema and existing databases are unchanged.
+
 ## 11.0.1
 
 - Credit an explicit skill the operator sends from a browser to the operator. A browser submission recorded a fingerprint only for text, so a skill's message linked to its action as a programmatic `host-action` with an unknown origin, and a client showed the operator's own skill as sent by its host. The skill's prepared invocation, the `$name args` or `/name args` the session received, now becomes the submission's fingerprint once its action is admitted, so the message reads back as `authenticated-host-action` from the operator. Skills sent before this version keep their recorded provenance.
