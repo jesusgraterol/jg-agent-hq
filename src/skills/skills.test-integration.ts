@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
@@ -268,6 +268,74 @@ test.each(['codex', 'claude'] as const)(
         ],
       ]);
       expect((await api.receipt(action.id)).kind).toBe('message');
+    });
+  },
+);
+
+test.each(['codex', 'claude'] as const)(
+  '%s skill an operator submits through the browser reads back as sent by the operator',
+  async (provider) => {
+    await withClaudeRuntime(async (fixture) => {
+      const api = await setup(fixture, provider);
+      const skill = (await api.catalog()).data.find((skill) => skill.name === 'explicit-skill')!;
+      const native = api.envelope({
+        kind: 'message',
+        threadId: api.managed.id,
+        input: { kind: 'skill', skillId: skill.id, arguments: 'a precise task' },
+      });
+      const result = await fixture.runtime.performBrowserAction(
+        {
+          id: randomUUID(),
+          runtimeEpoch: native.runtimeEpoch,
+          command: { kind: 'native', action: native },
+        },
+        'authenticated-operator',
+        async (_action, nativeActionId) => {
+          await api.submit({ ...native, id: nativeActionId });
+        },
+      );
+      const sent = await api.settled(result.nativeActionId);
+      // the prepared invocation is what the session received, so it's what the operator vouches for
+      const text = `${provider === 'codex' ? '$' : '/'}explicit-skill a precise task`;
+      // the fake Codex reads back only the history a test gives it, with the skill after the text
+      if (provider === 'codex')
+        await writeFixtureControl(fixture.root, 'control.json', {
+          items: [
+            {
+              turnId: sent.nativeTurnId,
+              item: {
+                id: 'operator-skill',
+                clientId: sent.nativeRequestId,
+                type: 'userMessage',
+                content: [
+                  { type: 'text', text },
+                  { type: 'skill', name: skill.name, path: skill.path },
+                ],
+              },
+            },
+          ],
+        });
+      const { nativeId } = await api.thread(api.managed.id);
+      const provenance = await api.until(
+        async () => {
+          const page = await fixture.request({
+            kind: 'items',
+            provider,
+            workspaceRoot: fixture.workspaceRoot,
+            nativeId: nativeId!,
+          });
+          return page.kind === 'items'
+            ? page.result.data.find((item) => item.kind === 'user-message')?.provenance
+            : undefined;
+        },
+        (provenance) => provenance?.actionId === result.nativeActionId,
+      );
+      expect(provenance).toMatchObject({
+        origin: 'operator',
+        source: 'authenticated-host-action',
+        actionId: result.nativeActionId,
+        nativeInputSha256: createHash('sha256').update(text).digest('hex'),
+      });
     });
   },
 );
