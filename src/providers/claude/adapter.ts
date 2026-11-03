@@ -33,7 +33,7 @@ export const createClaudeProviderFactory = (
 ): IAgentProviderFactory => ({
   id: 'claude',
   async create(context) {
-    const reader = createClaudeProvider(store);
+    const reader = createClaudeProvider(store, additionalDirectories);
     const authentication = createClaudeAuthentication();
     const control = createClaudeControl(additionalDirectories);
     control.setEvents(context.events);
@@ -265,7 +265,10 @@ export const createClaudeProviderFactory = (
       readMcpServers: (nativeId, limit, cursor) => control.readMcpServers(nativeId, limit, cursor),
       readMcpTools: (nativeId, serverName) => control.readMcpTools(nativeId, serverName),
       readMcpResources: (nativeId) => control.readMcpResources(nativeId),
-      readSkills: (nativeId) => control.readSkills(nativeId),
+      readSkills: (workspaceRoot, nativeId, call) =>
+        nativeId === undefined
+          ? reader.readWorkspaceSkills(workspaceRoot, call.signal)
+          : control.readSkills(nativeId),
       formatSkill: (skill, argumentsText) =>
         `/${skill.name}${argumentsText ? ` ${argumentsText}` : ''}`,
       async startThread(requestId, workspaceRoot, settings, call) {

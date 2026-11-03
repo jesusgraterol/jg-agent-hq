@@ -12,6 +12,7 @@ import type {
 } from '../../contracts/index.js';
 import type { IStore } from '../../store/index.js';
 import type { IHistoryRequest } from '../../sessions/index.js';
+import type { IProviderSkills } from '../types.js';
 
 import { createClaudeRpc } from './rpc.js';
 import { ClaudeUsageSchema } from './types.js';
@@ -19,6 +20,7 @@ import { toClaudeUsageSnapshot } from './transformers.js';
 import { readClaudeModels } from './models/index.js';
 import { toClaudeConfiguration } from './configuration/index.js';
 import { toClaudeAccount } from './accounts/index.js';
+import { toClaudeSkills } from './control/index.js';
 
 // the session-less read process closes after this long without a read, and reopens on the next one
 const METADATA_IDLE_SECONDS = 300;
@@ -26,10 +28,13 @@ const METADATA_IDLE_SECONDS = 300;
 const USAGE_KEPT_MS = 60_000;
 
 /**
- * Lazily connects read-only Claude capabilities; Codex needs no Claude installation.
+ * Lazily connects read-only Claude capabilities; Codex needs no Claude installation. A read in a
+ * folder starts with the additional directories sessions get.
+ * @param store The store transcript reads use.
+ * @param additionalDirectories The directories every session and folder read adds.
  * @returns The read adapter with independent usage and transcript availability.
  */
-export const createClaudeProvider = (store: IStore) => {
+export const createClaudeProvider = (store: IStore, additionalDirectories: string[]) => {
   let connection: Awaited<ReturnType<typeof createClaudeRpc>> | undefined;
   let opening: Promise<Awaited<ReturnType<typeof createClaudeRpc>>> | undefined;
   const metadataReads = new Set<Promise<Awaited<ReturnType<typeof createClaudeRpc>>>>();
@@ -152,7 +157,12 @@ export const createClaudeProvider = (store: IStore) => {
         code: 'JG_AGENT_HQ_CLAUDE_FAILED',
         data: { kind: 'agent-unavailable' },
       });
-    const starting = createClaudeRpc(() => {}, undefined, workspaceRoot, signal);
+    const starting = createClaudeRpc(
+      () => {},
+      undefined,
+      workspaceRoot === undefined ? undefined : { workspaceRoot, additionalDirectories },
+      signal,
+    );
     metadataReads.add(starting);
     let native: Awaited<ReturnType<typeof createClaudeRpc>> | undefined;
     let hasUnconfirmedStartup = false;
@@ -241,6 +251,24 @@ export const createClaudeProvider = (store: IStore) => {
           command,
         ),
       );
+    },
+    /**
+     * Reads the commands a session started in the folder would list, explicit-only skills
+     * included, from a read lane with no user prompt or model turn.
+     * @returns The native inventory with unavailable fields left explicit; the lane is closed
+     * before returning.
+     * @throws
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+     */
+    async readWorkspaceSkills(
+      workspaceRoot: string,
+      signal?: AbortSignal,
+    ): Promise<IProviderSkills> {
+      return withReadConnection(workspaceRoot, signal, async (native) => ({
+        ...toClaudeSkills({ skills: native.initialization.commands }),
+        observedAt: native.initializedAt,
+      }));
     },
     /**
      * Reads fresh native account metadata in a disposable read lane.

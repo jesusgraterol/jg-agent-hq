@@ -570,9 +570,9 @@ export const createProviderRegistry = (
               if (result.provider !== provider) rejectProviderResponse();
               return result;
             }),
-          readSkills: (nativeId, workspaceRoot) =>
+          readSkills: (workspaceRoot, nativeId) =>
             invoke(async (call) => {
-              const result = await adapter.readSkills(nativeId, workspaceRoot, call);
+              const result = await adapter.readSkills(workspaceRoot, nativeId, call);
               if (Buffer.byteLength(JSON.stringify(result)) > 1_048_576) capabilityUnavailable();
               return ProviderSkillsSchema.parse(result);
             }),

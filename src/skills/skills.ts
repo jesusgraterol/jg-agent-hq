@@ -24,6 +24,9 @@ const PositionSchema = z.strictObject({
 const digest = (input: object): string =>
   createHash('sha256').update(JSON.stringify(input)).digest('hex');
 
+// whose catalog a read takes: a managed session's, or the one a session started in a folder gets
+type ISkillTarget = { threadId: string } | { provider: IProviderId; workspaceRoot: string };
+
 /** Produces an exact invocation from native metadata without loading the skill content. */
 const toSkillPreview = (
   formatSkill: IBoundAgentProvider['formatSkill'],
@@ -41,7 +44,7 @@ const toSkillPreview = (
 
 /**
  * Reads bounded native inventories without interpreting skill files or installing workflows.
- * @returns Thread-scoped discovery, exact previews and explicit input preparation.
+ * @returns Session and folder discovery, exact previews and explicit input preparation.
  */
 export const createSkills = (
   registry: ReturnType<typeof createProviderRegistry>,
@@ -57,35 +60,52 @@ export const createSkills = (
     }>
   >();
   /**
-   * Coalesces a native metadata read and enforces the catalog budget before paging.
+   * Coalesces a native metadata read and enforces the catalog budget before paging. A session's
+   * catalog needs a managed session that isn't inactive; a folder's needs no session.
    * @returns Current metadata, or null when the native inventory cannot be used.
    * @throws
    * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
-  const scan = async (threadId: string) => {
-    const thread = await store.getThread(threadId);
-    if (!thread) return null;
-    await resolveWorkspaceTarget(thread.workspaceRoot, roots);
-    if (
-      thread.ownership !== 'managed' ||
-      !thread.runtimeEpoch ||
-      !thread.nativeId ||
-      thread.state === 'inactive'
-    )
-      return null;
-    let operation = pending.get(threadId);
+  const scan = async (target: ISkillTarget) => {
+    let source: { key: string; provider: IProviderId; workspaceRoot: string; nativeId?: string };
+    if ('threadId' in target) {
+      const thread = await store.getThread(target.threadId);
+      if (!thread) return null;
+      await resolveWorkspaceTarget(thread.workspaceRoot, roots);
+      if (
+        thread.ownership !== 'managed' ||
+        !thread.runtimeEpoch ||
+        !thread.nativeId ||
+        thread.state === 'inactive'
+      )
+        return null;
+      source = {
+        key: `thread:${target.threadId}`,
+        provider: thread.provider,
+        workspaceRoot: thread.workspaceRoot,
+        nativeId: thread.nativeId,
+      };
+    } else {
+      const workspaceRoot = await resolveWorkspaceTarget(target.workspaceRoot, roots);
+      source = {
+        key: `workspace:${target.provider}:${workspaceRoot}`,
+        provider: target.provider,
+        workspaceRoot,
+      };
+    }
+    let operation = pending.get(source.key);
     if (!operation) {
       if (pending.size >= 32) return null;
       operation = (async () => {
-        const adapter = await registry.get(thread.provider);
+        const adapter = await registry.get(source.provider);
         return {
-          provider: thread.provider,
-          inventory: await adapter.readSkills(thread.nativeId!, thread.workspaceRoot),
+          provider: source.provider,
+          inventory: await adapter.readSkills(source.workspaceRoot, source.nativeId),
           formatSkill: adapter.formatSkill,
         };
       })();
-      pending.set(threadId, operation);
+      pending.set(source.key, operation);
     }
     try {
       const { provider, inventory, formatSkill } = await operation;
@@ -109,7 +129,7 @@ export const createSkills = (
     } catch {
       return null;
     } finally {
-      if (pending.get(threadId) === operation) pending.delete(threadId);
+      if (pending.get(source.key) === operation) pending.delete(source.key);
     }
   };
   return {
@@ -130,7 +150,7 @@ export const createSkills = (
       name: string,
       skillArguments: string,
     ): Promise<ISkillPreview> {
-      const result = await scan(threadId);
+      const result = await scan({ threadId });
       if (!result) return { state: 'unavailable', skill: null, text: null };
       const matches = result.skills.filter((skill) => skill.name === name);
       if (matches.length > 1 || (!matches.length && result.unavailableCount))
@@ -138,7 +158,8 @@ export const createSkills = (
       return toSkillPreview(result.formatSkill, matches[0], skillArguments);
     },
     /**
-     * Pages the native inventory with a content revision guard; an inventory change invalidates continuation.
+     * Pages a managed session's native inventory, or with no session the one a session started in
+     * the folder gets, with a content revision guard; an inventory change invalidates continuation.
      * @returns One bounded page, or explicit unavailable state without a successful empty fallback.
      * @throws
      * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
@@ -146,7 +167,9 @@ export const createSkills = (
      * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
     async list(command: {
-      threadId: string;
+      provider: IProviderId;
+      workspaceRoot: string;
+      threadId?: string;
       limit: number;
       cursor?: string;
       search?: string;
@@ -165,7 +188,11 @@ export const createSkills = (
           });
         }
       }
-      const result = await scan(command.threadId);
+      const result = await scan(
+        command.threadId
+          ? { threadId: command.threadId }
+          : { provider: command.provider, workspaceRoot: command.workspaceRoot },
+      );
       if (!result)
         return {
           state: 'unavailable',
@@ -220,7 +247,7 @@ export const createSkills = (
       skillId: string,
       skillArguments: string,
     ): Promise<ISkillPreview> {
-      const result = await scan(threadId);
+      const result = await scan({ threadId });
       if (!result) return { state: 'unavailable', skill: null, text: null };
       const skill = result.skills.find((skill) => skill.id === skillId);
       return toSkillPreview(result.formatSkill, skill, skillArguments);

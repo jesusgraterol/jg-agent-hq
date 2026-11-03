@@ -419,7 +419,7 @@ export const createCodexProviderFactory = (
       readMcpServers: (nativeId, limit, cursor) => native.readMcpServers(nativeId, limit, cursor),
       readMcpTools: (nativeId, serverName) => native.readMcpTools(nativeId, serverName),
       readMcpResources: (nativeId, serverName) => native.readMcpResources(nativeId, serverName),
-      readSkills: (_nativeId, workspaceRoot) => native.readSkills(workspaceRoot),
+      readSkills: (workspaceRoot) => native.readSkills(workspaceRoot),
       formatSkill: (skill, argumentsText) =>
         `$${skill.name}${argumentsText ? ` ${argumentsText}` : ''}`,
       startThread: async (requestId, workspaceRoot, settings) =>

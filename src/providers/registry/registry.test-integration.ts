@@ -528,7 +528,12 @@ test('a third provider uses public creation, skill input, native completion, clo
           kind: 'managed-thread',
           result: { state: 'idle', provider: provider.factory.id },
         });
-      const catalog = await runtime.request({ kind: 'skills', threadId });
+      const catalog = await runtime.request({
+        kind: 'skills',
+        provider: provider.factory.id,
+        workspaceRoot,
+        threadId,
+      });
       if (catalog.kind !== 'skills') throw new Error('Missing skills');
       expect(catalog.result.invocationPrefix).toBe('!');
       const skillId = catalog.result.data[0]!.id;

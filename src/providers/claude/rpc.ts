@@ -21,7 +21,9 @@ const EnvelopeSchema = z.object({
 });
 
 /**
- * Opens an idle native structured lane without a user prompt or inference.
+ * Opens an idle native structured lane without a user prompt or inference: a session's, or a
+ * session-less read lane, which a folder-scoped read starts in its folder with the additional
+ * directories sessions get, so it sees the commands a session started there would.
  * @returns An owned control connection; normal CLI configuration remains enabled.
  * @throws
  * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
@@ -39,7 +41,7 @@ export const createClaudeRpc = async (
     receive(message: unknown): void;
     lateResponse(id: string, result: unknown, error: unknown): void;
   },
-  workspaceRoot?: string,
+  lane?: { workspaceRoot: string; additionalDirectories: string[] },
   signal?: AbortSignal,
 ) => {
   let sequence = 0;
@@ -92,7 +94,7 @@ export const createClaudeRpc = async (
             ...control.additionalDirectories.flatMap((directory) => ['--add-dir', directory]),
             ...toClaudeSessionFlags(control.settings ?? {}),
           ]
-        : []),
+        : (lane?.additionalDirectories.flatMap((directory) => ['--add-dir', directory]) ?? [])),
     ],
     (message) => {
       const parsed = EnvelopeSchema.safeParse(message);
@@ -155,7 +157,7 @@ export const createClaudeRpc = async (
       else if (envelope.type === 'rate_limit_event') invalidate('limits');
     },
     fail,
-    control?.workspaceRoot ?? workspaceRoot,
+    control?.workspaceRoot ?? lane?.workspaceRoot,
   );
   /**
    * Matches one native control acknowledgement and retains bounded late-response identity.

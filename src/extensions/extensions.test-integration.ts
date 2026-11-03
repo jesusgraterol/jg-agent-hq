@@ -166,7 +166,12 @@ test.each(['codex', 'claude'])(
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
       const threadId = await create(fixture, provider);
-      const before = await fixture.request({ kind: 'skills', threadId });
+      const before = await fixture.request({
+        kind: 'skills',
+        provider,
+        workspaceRoot: fixture.workspaceRoot,
+        threadId,
+      });
       if (before.kind !== 'skills') throw new Error('Missing skills');
       expect(before.result.state).toBe('available');
       expect(before.result.data.map((skill) => skill.name).sort()).toStrictEqual([
@@ -182,7 +187,12 @@ test.each(['codex', 'claude'])(
         controlState: 'applied',
         completion: 'completed',
       });
-      const after = await fixture.request({ kind: 'skills', threadId });
+      const after = await fixture.request({
+        kind: 'skills',
+        provider,
+        workspaceRoot: fixture.workspaceRoot,
+        threadId,
+      });
       if (after.kind !== 'skills') throw new Error('Missing skills');
       expect(after.result.state).toBe('available');
       expect(after.result.data.map((skill) => skill.name).sort()).toStrictEqual([

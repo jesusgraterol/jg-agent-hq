@@ -250,10 +250,13 @@ export type IAgentProvider = {
     serverName: string,
     call: IProviderCall,
   ): Promise<IProviderMcpResources>;
-  /** @returns The bounded native skill inventory for the selected session. */
+  /**
+   * @returns The bounded native skill inventory of the selected session, or without one the
+   * inventory a session started in the folder gets.
+   */
   readSkills(
-    nativeId: string,
     workspaceRoot: string,
+    nativeId: string | undefined,
     call: IProviderCall,
   ): Promise<IProviderSkills>;
   /** @returns The exact native invocation spelling from validated inventory metadata. */

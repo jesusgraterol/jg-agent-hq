@@ -1,4 +1,9 @@
-import { MAX_PAGE_SIZE, UsageSnapshotSchema, type IUsageSnapshot } from 'jg-agent-hq/contracts';
+import {
+  HqRequestSchema,
+  MAX_PAGE_SIZE,
+  UsageSnapshotSchema,
+  type IUsageSnapshot,
+} from 'jg-agent-hq/contracts';
 import { expect, test } from 'vitest';
 
 const minimal: IUsageSnapshot = {
@@ -68,4 +73,21 @@ test('credit inventories and new native strings retain explicit public bounds', 
       credits: [{ ...credit, balance: '1'.repeat(257) }],
     }).success,
   ).toBe(false);
+});
+
+test.each([
+  ['a folder', { provider: 'claude', workspaceRoot: '/work' }, true],
+  [
+    'a session',
+    { provider: 'codex', workspaceRoot: '/work', threadId: '0b5e2c4a-7b84-4d6c-9a52-3f1d6a8e9c10' },
+    true,
+  ],
+  [
+    'a session without its folder',
+    { provider: 'codex', threadId: '0b5e2c4a-7b84-4d6c-9a52-3f1d6a8e9c10' },
+    false,
+  ],
+  ['a folder without its provider', { workspaceRoot: '/work' }, false],
+])('skills request for %s -> %s', (_label, target, isAccepted) => {
+  expect(HqRequestSchema.safeParse({ kind: 'skills', ...target }).success).toBe(isAccepted);
 });
