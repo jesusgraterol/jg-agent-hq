@@ -99,6 +99,119 @@ test('compacted history reads on past the compaction, without native API diagnos
   });
 });
 
+// a compaction's boundary and the summary after it, as Claude Code 2.1.317 writes them
+const compaction = (
+  workspaceRoot: string,
+  nativeId: string,
+  logicalParentUuid: string,
+  text: string,
+) => {
+  const boundary = {
+    type: 'system',
+    subtype: 'compact_boundary',
+    uuid: randomUUID(),
+    parentUuid: null,
+    logicalParentUuid,
+    sessionId: nativeId,
+    cwd: workspaceRoot,
+    timestamp: '2026-11-03T11:25:00.000Z',
+    isMeta: false,
+  };
+  const attachment = {
+    type: 'attachment',
+    uuid: randomUUID(),
+    parentUuid: boundary.uuid,
+    sessionId: nativeId,
+    cwd: workspaceRoot,
+    timestamp: '2026-11-03T11:25:01.000Z',
+    attachment: { type: 'plan_mode_exit' },
+  };
+  const summary = {
+    ...claudeRecord(workspaceRoot, nativeId, { parentUuid: attachment.uuid, text }),
+    isCompactSummary: true,
+  };
+  return { boundary, attachment, summary };
+};
+const toLines = (records: object[]) => records.map((row) => JSON.stringify(row)).join('\n') + '\n';
+
+test("a chat Claude Code moved into a new session reads from its summary, though its compaction names a record of the old session's transcript", async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    // the record before the compaction is the old session's, in another transcript
+    const { boundary, attachment, summary } = compaction(
+      workspaceRoot,
+      nativeId,
+      randomUUID(),
+      'This session is being continued from a previous conversation.',
+    );
+    const answer = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: summary.uuid,
+      text: 'Continuing the cleanup',
+    });
+    await writeFile(transcript(nativeId), toLines([boundary, attachment, summary, answer]));
+    const thread = await request({ kind: 'thread', provider: 'claude', workspaceRoot, nativeId });
+    expect(thread.kind === 'thread' && thread.result.historyState).toBe('available');
+    const items = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
+    expect(
+      items.kind === 'items' &&
+        items.result.data.map((item) => [item.nativeId, item.kind, item.turnId]),
+    ).toStrictEqual([
+      [answer.uuid, 'agent-message', boundary.uuid],
+      [summary.uuid, 'notice', boundary.uuid],
+    ]);
+  });
+});
+
+test('a compaction whose boundary names a record written after it reads from the boundary on, without looping', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'Before compaction' });
+    const before = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: prompt.uuid,
+      text: 'Answered before compaction',
+    });
+    // Claude Code named, as the record before the boundary, a prompt that follows the summary
+    const later = randomUUID();
+    const { boundary, attachment, summary } = compaction(
+      workspaceRoot,
+      nativeId,
+      later,
+      'This session is being continued from a previous conversation.',
+    );
+    const resumed = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: summary.uuid,
+      text: 'Resumed after compaction',
+    });
+    const next = claudeRecord(workspaceRoot, nativeId, {
+      uuid: later,
+      parentUuid: resumed.uuid,
+      text: 'The next prompt',
+    });
+    const answer = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: next.uuid,
+      text: 'The next answer',
+    });
+    await writeFile(
+      transcript(nativeId),
+      toLines([prompt, before, boundary, attachment, summary, resumed, next, answer]),
+    );
+    const items = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
+    expect(
+      items.kind === 'items' &&
+        items.result.data.map((item) => [item.nativeId, item.kind, item.turnId]),
+    ).toStrictEqual([
+      [answer.uuid, 'agent-message', next.uuid],
+      [next.uuid, 'user-message', next.uuid],
+      [resumed.uuid, 'agent-message', boundary.uuid],
+      [summary.uuid, 'notice', boundary.uuid],
+    ]);
+  });
+});
+
 test('empty discovery and byte-limited indexing/pages return honest boundaries', async () => {
   await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
     const empty = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
