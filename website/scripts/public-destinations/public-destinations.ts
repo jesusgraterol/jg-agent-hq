@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import { setTimeout } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { Exception, extractMessage } from 'jg-exception';
 import { z } from 'zod';
@@ -32,7 +33,7 @@ export const readDestination = async (
     });
     if (response.status !== status || !response.body) {
       await response.body?.cancel();
-      throw new Exception('The HQ website destination check failed', {
+      throw new Exception(`${url} answered ${response.status} instead of ${status}`, {
         code: 'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED',
       });
     }
@@ -45,7 +46,7 @@ export const readDestination = async (
         if (done) break;
         size += value.byteLength;
         if (size > 1048576)
-          throw new Exception('The HQ website destination check failed', {
+          throw new Exception(`${url} answered more than 1 MiB`, {
             code: 'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED',
           });
         chunks.push(value);
@@ -126,9 +127,12 @@ export const verifyDeployment = async (fetcher: IDestinationFetch = fetch): Prom
       !html.includes(new URL(record.markdown, SITE_CONFIG.url).href) ||
       (!html.includes(`jg-agent-hq@${SITE_CONFIG.version}`) && record.id === 'home')
     )
-      throw new Exception('The HQ website destination check failed', {
-        code: 'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED',
-      });
+      throw new Exception(
+        `The HQ website destination check failed: unexpected page at ${record.path}`,
+        {
+          code: 'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED',
+        },
+      );
     const markdownResponse = await readDestination(
       new URL(record.markdown, SITE_CONFIG.url).href,
       200,
@@ -141,9 +145,10 @@ export const verifyDeployment = async (fetcher: IDestinationFetch = fetch): Prom
       markdown.includes('<!DOCTYPE') ||
       markdown.includes('<!doctype')
     )
-      throw new Exception('The HQ website destination check failed', {
-        code: 'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED',
-      });
+      throw new Exception(
+        `The HQ website destination check failed: unexpected Markdown at ${record.markdown}`,
+        { code: 'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED' },
+      );
   }
   const missing = await readDestination(`${SITE_CONFIG.url}/hq-missing-page-check/`, 404, fetcher);
   if (
@@ -151,7 +156,7 @@ export const verifyDeployment = async (fetcher: IDestinationFetch = fetch): Prom
     !missing.body.includes('noindex') ||
     missing.body.includes('rel="canonical"')
   )
-    throw new Exception('The HQ website destination check failed', {
+    throw new Exception('The HQ website destination check failed: unexpected missing page', {
       code: 'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED',
     });
   for (const [path, marker] of [
@@ -161,31 +166,56 @@ export const verifyDeployment = async (fetcher: IDestinationFetch = fetch): Prom
     ['llms.txt', `${SITE_CONFIG.url}/docs/`],
   ] as const) {
     if (!(await readDestination(`${SITE_CONFIG.url}/${path}`, 200, fetcher)).body.includes(marker))
-      throw new Exception('The HQ website destination check failed', {
+      throw new Exception(`The HQ website destination check failed: ${path} lacks ${marker}`, {
         code: 'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED',
       });
   }
   for (const path of ['/og/jg-agent-hq.png', '/favicons/192x192.png', '/favicon.ico']) {
+    let response: Response;
     try {
-      const response = await fetcher(`${SITE_CONFIG.url}${path}`, {
+      response = await fetcher(`${SITE_CONFIG.url}${path}`, {
         signal: AbortSignal.timeout(10000),
         redirect: 'error',
         method: 'HEAD',
       });
-      if (
-        response.status !== 200 ||
-        !response.headers
-          .get('content-type')
-          ?.startsWith(path.endsWith('.png') ? 'image/png' : 'image/')
-      )
-        throw new Exception('The HQ website destination check failed', {
-          code: 'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED',
-        });
     } catch (cause) {
       throw new Exception(`The HQ website destination check failed: ${extractMessage(cause)}`, {
         code: 'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED',
         cause,
       });
+    }
+    const contentType = response.headers.get('content-type') ?? '';
+    if (
+      response.status !== 200 ||
+      !contentType.startsWith(path.endsWith('.png') ? 'image/png' : 'image/')
+    )
+      throw new Exception(
+        `The HQ website destination check failed: ${path} answered ${response.status} ${contentType}`,
+        { code: 'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED' },
+      );
+  }
+};
+
+/**
+ * Verifies the deployment until one attempt passes or the attempts run out, because GitHub Pages
+ * can keep serving part of the previous deployment for a short while after the new one reports
+ * success. Each failed attempt waits before the next; the last attempt's failure is thrown.
+ * @param options How many attempts to make and how long to wait between them.
+ * @returns Completion once an attempt passes.
+ * @throws
+ * - JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED: The HQ website destination check failed
+ */
+export const verifyDeploymentWhenLive = async (
+  { attempts, delayMs }: { attempts: number; delayMs: number },
+  fetcher: IDestinationFetch = fetch,
+): Promise<void> => {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await verifyDeployment(fetcher);
+      return;
+    } catch (error) {
+      if (attempt >= attempts) throw error;
+      await setTimeout(delayMs);
     }
   }
 };

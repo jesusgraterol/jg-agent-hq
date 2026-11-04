@@ -8,7 +8,12 @@ import { test } from 'vitest';
 
 import { SITE_CONFIG } from '../../src/site.config.ts';
 
-import { readDestination, verifyDeployment, verifyPublicDestinations } from './index.ts';
+import {
+  readDestination,
+  verifyDeployment,
+  verifyDeploymentWhenLive,
+  verifyPublicDestinations,
+} from './index.ts';
 import type { IDestinationFetch } from './index.ts';
 
 test('uses bounded real HTTP reads and verifies exact release and deployment content', async () => {
@@ -19,7 +24,11 @@ test('uses bounded real HTTP reads and verifies exact release and deployment con
     | 'wrong-mime'
     | 'soft-404'
     | 'oversized'
-    | 'redirect' = 'valid';
+    | 'redirect'
+    | 'stale-image'
+    | 'missing-image' = 'valid';
+  // how many more requests for the social image a stale deployment still answers with 404
+  let staleImageRequests = 0;
   const server = createServer((request, response) => {
     const serve = async (): Promise<void> => {
       const target = new URL(decodeURIComponent((request.url ?? '/').slice(1)));
@@ -53,6 +62,13 @@ test('uses bounded real HTTP reads and verifies exact release and deployment con
             ? `Missing destination: ${title}`
             : `<html><head><title>${title}</title></head></html>`,
         );
+        return;
+      }
+      if (
+        target.pathname === '/og/jg-agent-hq.png' &&
+        (mode === 'missing-image' || (mode === 'stale-image' && staleImageRequests-- > 0))
+      ) {
+        response.writeHead(404).end();
         return;
       }
       const missing = target.pathname === '/hq-missing-page-check/';
@@ -124,6 +140,16 @@ test('uses bounded real HTTP reads and verifies exact release and deployment con
       readDestination('https://example.com', 200, fetcher),
       'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED',
       'The HQ website destination check failed',
+    );
+    // a deployment still serving an old image passes once the image is live
+    mode = 'stale-image';
+    staleImageRequests = 1;
+    await verifyDeploymentWhenLive({ attempts: 2, delayMs: 0 }, fetcher);
+    mode = 'missing-image';
+    await expectToRejectCode(
+      verifyDeploymentWhenLive({ attempts: 2, delayMs: 0 }, fetcher),
+      'JG_AGENT_HQ_WEBSITE_DESTINATION_FAILED',
+      '/og/jg-agent-hq.png answered 404',
     );
   } finally {
     server.closeAllConnections();
