@@ -510,6 +510,12 @@ test.each(['codex', 'claude'] as const)(
         'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
         'Request is invalid.',
       );
+      const next = page.nextCursor!;
+      await expectToRejectCode(
+        api.catalog(32, `${next.slice(0, 8)}${next[8] === 'A' ? 'B' : 'A'}${next.slice(9)}`),
+        'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
+        'Request is invalid.',
+      );
       await api.control({ skillCount: 1024, skillRevision: true });
       if (provider === 'codex')
         await expectToRejectCode(

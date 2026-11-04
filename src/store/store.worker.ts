@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { parentPort, workerData } from 'node:worker_threads';
-import { Exception, extractMessage, isException } from 'jg-exception';
+import { extractMessage, isException } from 'jg-exception';
 
-import { getErrorKind } from '../errors/index.js';
+import { HQ_ERRORS, getErrorKind } from '../errors/index.js';
 import { STORAGE_CONNECTION_SETTINGS } from '../storage/index.js';
 import { ClaudeHistoryModel } from '../providers/claude/history/index.js';
 
@@ -14,7 +14,7 @@ import { openDatabase } from './schema.js';
 import { backupForSnapshot } from './snapshot.js';
 
 const options = StoreWorkerSchema.parse(workerData);
-if (!parentPort) throw new Exception('The HQ store failed', { code: 'JG_AGENT_HQ_STORE_FAILED' });
+if (!parentPort) throw HQ_ERRORS.create('storeFailed');
 const port = parentPort;
 /** Starts the owned worker and reports typed startup failures before closing it. */
 const startWorker = async (): Promise<void> => {
@@ -36,11 +36,7 @@ const startWorker = async (): Promise<void> => {
     const claudeHistory = new ClaudeHistoryModel(database);
     port.on('message', async (message: unknown) => {
       const parsed = StoreRequestSchema.safeParse(message);
-      if (!parsed.success)
-        throw new Exception('The HQ store failed', {
-          code: 'JG_AGENT_HQ_STORE_FAILED',
-          cause: parsed.error,
-        });
+      if (!parsed.success) throw HQ_ERRORS.create('storeFailed', { cause: parsed.error });
       const { id, command } = parsed.data;
       try {
         if (command.kind === 'close') {

@@ -1,5 +1,3 @@
-import { Exception } from 'jg-exception';
-
 import {
   DEFAULT_PAGE_SIZE,
   HqResponseSchema,
@@ -17,6 +15,7 @@ import type { createProviderRegistry } from '../providers/registry/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 import type { IStore } from '../store/index.js';
 import type { IActiveSessionRecord } from '../store/sessions/index.js';
+import { HQ_ERRORS } from '../errors/index.js';
 
 import type { IClaudeSessions, IHistoryRequest } from './types.js';
 import { imageUnavailable } from './utilities.js';
@@ -82,10 +81,7 @@ export const readNativeHistory = async (
       resolvedRoots.set(thread.workspaceRoot, actualRoot);
     }
     if (actualRoot !== workspaceRoot)
-      throw new Exception('The HQ target is outside the allowed workspaces', {
-        code: 'JG_AGENT_HQ_TARGET_FORBIDDEN',
-        data: { kind: 'access-denied' },
-      });
+      throw HQ_ERRORS.create('targetForbidden', { data: { kind: 'access-denied' } });
     thread.workspaceRoot = actualRoot;
   }
   // one session's read counts its background commands from what its transcript holds now
@@ -146,10 +142,7 @@ export const readNativeHistory = async (
       if (origin && items[index]) items[index].provenance = origin;
   }
   if (response.kind === 'session-evidence' && Buffer.byteLength(JSON.stringify(response)) > 65_280)
-    throw new Exception('The HQ provider integration failed', {
-      code: 'JG_AGENT_HQ_PROVIDER_FAILED',
-      data: { kind: 'agent-unavailable' },
-    });
+    throw HQ_ERRORS.create('providerFailed', { data: { kind: 'agent-unavailable' } });
   return HqResponseSchema.parse(response);
 };
 

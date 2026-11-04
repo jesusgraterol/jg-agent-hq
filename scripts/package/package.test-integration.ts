@@ -130,8 +130,8 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
       ).toBe('');
       const script = `
       import * as packed from 'jg-agent-hq';
-      import { createAgentHq, requestAgentHq, withHqLock, readHqLockState } from 'jg-agent-hq';
-      for (const name of ['upgradeHqStorage', 'inspectHqSnapshot'])
+      import { createAgentHq, requestAgentHq } from 'jg-agent-hq';
+      for (const name of ['upgradeHqStorage', 'inspectHqSnapshot', 'acquireHqLock', 'withHqLock', 'releaseHqLock', 'readHqLockState', 'getOwnerLiveness', 'HQ_LOCK_FILE', 'RUNTIME_DIRECTORY'])
         if (name in packed) throw new Error('packed export remains: ' + name);
       import * as contracts from 'jg-agent-hq/contracts';
       import { HqResponseSchema, BrowserActionSchema, BrowserCommandSchema, UsageCreditsSchema, UsageResetCreditsSchema, UsageWindowScopeSchema } from 'jg-agent-hq/contracts';
@@ -145,10 +145,7 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
       import { controlSession } from './examples/control-session.ts';
       import { shareStorage } from './examples/shared-storage.ts';
       import { join } from 'node:path';
-      const stateRoot = join(process.cwd(), 'state');
-      const value = await withHqLock(stateRoot, 'smoke', async () => 42);
-      if (value !== 42 || (await readHqLockState(stateRoot)).kind !== 'free') throw new Error('consumer failed');
-      try { await import('jg-agent-hq/dist/locks/locks.js'); throw new Error('private path was exposed'); }
+      try { await import('jg-agent-hq/dist/runtime/state/state.js'); throw new Error('private path was exposed'); }
       catch (error) { if (error.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw error; }
       const runtime = await createAgentHq({ stateRoot: join(process.cwd(), 'controller'), allowedRoots: [process.cwd()] });
       try {
@@ -237,9 +234,9 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
         inspect(source);
       }
       expect(visited.size).toBeGreaterThan(1);
-      expect((await readdir(join(ROOT, 'dist/locks'))).some((name) => name.includes('test-'))).toBe(
-        false,
-      );
+      expect(
+        (await readdir(join(ROOT, 'dist/runtime/state'))).some((name) => name.includes('test-')),
+      ).toBe(false);
       const declarations = await readFile(join(ROOT, 'dist/index.d.ts'), 'utf8');
       expect(declarations).not.toContain(".ts'");
       // CI retains the exact consumer-tested archive for the separate trusted publisher.

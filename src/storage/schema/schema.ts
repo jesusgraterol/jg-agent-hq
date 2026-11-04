@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { Exception, isException, extractMessage } from 'jg-exception';
 
+import { HQ_ERRORS } from '../../errors/index.js';
 import { CURRENT_SCHEMA_HASH } from './constants.js';
 import { StorageStampSchema } from './types.js';
 
@@ -40,18 +41,14 @@ export const readStorageStamp = (
       .all();
     const parsed = StorageStampSchema.safeParse(rows.length === 1 ? rows[0] : null);
     if (!parsed.success)
-      throw new Exception('The HQ storage is invalid', {
-        code: 'JG_AGENT_HQ_STORAGE_INVALID',
+      throw HQ_ERRORS.create('storageInvalid', {
         data: { kind: 'state-conflict' },
         cause: parsed.error,
       });
     const stamp = parsed.data;
     if (stamp.schema_hash !== CURRENT_SCHEMA_HASH) rejectStorage(stamp.package_version);
     if (actionKeyHash !== undefined && stamp.action_key_hash !== actionKeyHash)
-      throw new Exception('The HQ action key is unavailable', {
-        code: 'JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE',
-        data: { kind: 'state-conflict' },
-      });
+      throw HQ_ERRORS.create('actionKeyUnavailable', { data: { kind: 'state-conflict' } });
     return { actionKeyHash: stamp.action_key_hash, packageVersion: stamp.package_version };
   } catch (cause) {
     if (isException(cause)) throw cause;

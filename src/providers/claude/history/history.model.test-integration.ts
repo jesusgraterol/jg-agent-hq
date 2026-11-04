@@ -425,6 +425,20 @@ test('sessions list by last activity, newest first, and their cursor continues i
     if (next.kind !== 'threads') throw new Error('wrong response');
     expect(next.result.data.map((thread) => thread.nativeId)).toStrictEqual([later]);
     expect(next.result.nextCursor).toBeNull();
+    // a thread cursor continues only its own list: not another search, an item page or a tampered copy
+    const cursor = first.result.nextCursor!;
+    for (const command of [
+      { kind: 'threads', provider: 'claude', workspaceRoot, limit: 1, search: 'other', cursor },
+      { kind: 'items', provider: 'claude', workspaceRoot, nativeId: earlier, limit: 1, cursor },
+      {
+        kind: 'threads',
+        provider: 'claude',
+        workspaceRoot,
+        limit: 1,
+        cursor: `${cursor.slice(0, 8)}${cursor[8] === 'A' ? 'B' : 'A'}${cursor.slice(9)}`,
+      },
+    ] as const)
+      await expect(request(command)).rejects.toThrow('Request is invalid');
   });
 });
 

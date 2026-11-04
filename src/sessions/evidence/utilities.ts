@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto';
-import { Exception } from 'jg-exception';
+import { hashValue } from 'jg-crypto';
 
 import type {
   IEvidencePage,
@@ -7,7 +6,8 @@ import type {
   IHistoryItem,
   IHistoryProvenance,
 } from '../../contracts/index.js';
-import { decodeHistoryCursor, encodeHistoryCursor } from '../utilities.js';
+import { createRequestCursors } from '../utilities.js';
+import { HQ_ERRORS } from '../../errors/index.js';
 
 import { EvidencePositionSchema, type IEvidencePosition } from './types.js';
 
@@ -15,6 +15,9 @@ import { EvidencePositionSchema, type IEvidencePosition } from './types.js';
 export const EVIDENCE_RESPONSE_BYTES = 65_536;
 export const EVIDENCE_SOURCE_PAGE_SIZE = 8;
 const PAYLOAD_BYTES = EVIDENCE_RESPONSE_BYTES - 4096 - 16_384;
+
+// an evidence page continues within one bounded native source page, or at the next one
+const positions = createRequestCursors(EvidencePositionSchema);
 
 /**
  * Returns native evidence of a kind, without inferring operator identity from a user role.
@@ -61,8 +64,7 @@ export const resetProvenance = (
 });
 
 /** Hashes exactly the normalized UTF-8 evidence content. */
-export const evidenceHash = (text: string): string =>
-  createHash('sha256').update(text).digest('hex');
+export const evidenceHash = (text: string): string => hashValue(text);
 
 /**
  * Rejects a continuation outside its exact query before any native read.
@@ -71,17 +73,9 @@ export const evidenceHash = (text: string): string =>
  */
 export const evidencePosition = (command: { cursor?: string }): IEvidencePosition => {
   const { cursor, ...filters } = command;
-  const decoded = decodeHistoryCursor(cursor, filters);
-  if (!decoded) return { index: 0, offset: 0, digest: null };
-  try {
-    return EvidencePositionSchema.parse(JSON.parse(decoded));
-  } catch (cause) {
-    throw new Exception('The HQ cursor does not match this request', {
-      code: 'JG_AGENT_HQ_CURSOR_INVALID',
-      data: { kind: 'invalid-request' },
-      cause,
-    });
-  }
+  return (
+    positions.decode(cursor, filters) ?? { sourceCursor: null, index: 0, offset: 0, digest: null }
+  );
 };
 
 /**
@@ -92,15 +86,9 @@ export const evidencePosition = (command: { cursor?: string }): IEvidencePositio
 const verifyEvidencePage = (position: IEvidencePosition, items: unknown[]): string => {
   const digest = evidenceHash(JSON.stringify(items));
   if (position.digest !== null && position.digest !== digest)
-    throw new Exception('The HQ cursor does not match this request', {
-      code: 'JG_AGENT_HQ_CURSOR_INVALID',
-      data: { kind: 'invalid-request' },
-    });
+    throw HQ_ERRORS.create('cursorInvalid', { data: { kind: 'invalid-request' } });
   if (position.index > items.length || (position.index === items.length && position.offset !== 0))
-    throw new Exception('The HQ cursor does not match this request', {
-      code: 'JG_AGENT_HQ_CURSOR_INVALID',
-      data: { kind: 'invalid-request' },
-    });
+    throw HQ_ERRORS.create('cursorInvalid', { data: { kind: 'invalid-request' } });
   return digest;
 };
 
@@ -115,13 +103,9 @@ const evidenceCursor = (
 ): string | null => {
   const { cursor: _cursor, ...filters } = command;
   try {
-    return encodeHistoryCursor(position === null ? null : JSON.stringify(position), filters);
+    return positions.encode(position, filters);
   } catch (cause) {
-    throw new Exception('The HQ provider integration failed', {
-      code: 'JG_AGENT_HQ_PROVIDER_FAILED',
-      data: { kind: 'agent-unavailable' },
-      cause,
-    });
+    throw HQ_ERRORS.create('providerFailed', { data: { kind: 'agent-unavailable' }, cause });
   }
 };
 
@@ -169,10 +153,7 @@ export const buildEvidencePage = (
     }
     const bytes = Buffer.from(item.text);
     if (offset > bytes.length || (offset < bytes.length && (bytes[offset]! & 0xc0) === 0x80))
-      throw new Exception('The HQ cursor does not match this request', {
-        code: 'JG_AGENT_HQ_CURSOR_INVALID',
-        data: { kind: 'invalid-request' },
-      });
+      throw HQ_ERRORS.create('cursorInvalid', { data: { kind: 'invalid-request' } });
     let chunkBytes = 32_768;
     let text = utf8Chunk(bytes, offset, chunkBytes);
     let nextOffset = offset + Buffer.byteLength(text);
@@ -216,10 +197,7 @@ export const buildEvidencePage = (
     }
     if (candidateSize() > PAYLOAD_BYTES) {
       if (result.data.length === 0)
-        throw new Exception('The HQ provider integration failed', {
-          code: 'JG_AGENT_HQ_PROVIDER_FAILED',
-          data: { kind: 'agent-unavailable' },
-        });
+        throw HQ_ERRORS.create('providerFailed', { data: { kind: 'agent-unavailable' } });
       break;
     }
     result.data.push(fragment);

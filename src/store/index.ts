@@ -1,3 +1,6 @@
 // dedicated SQLite owner
 export { createStore } from './store.js';
 export type { IStore } from './types.js';
+
+// worker threads
+export { toWorkerExecArgv } from './utilities.js';

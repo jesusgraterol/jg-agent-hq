@@ -1,13 +1,12 @@
 import { join } from 'node:path';
 import { hashValue } from 'jg-crypto';
-import { Exception, extractMessage, isException } from 'jg-exception';
+import { Exception, extractMessage } from 'jg-exception';
 import { listLocks } from 'jg-locks';
 import { z } from 'zod';
 
 import { HqRequestSchema, type IHqRequestInput, type IHqResponse } from '../contracts/index.js';
 import { createActions, readControl } from '../actions/index.js';
 import { CONTROL_SOCKET, createIpcServer, removeLeftoverSocket } from '../ipc/index.js';
-import { removeStaleHqLock } from '../locks/index.js';
 import {
   createCodexProviderFactory,
   createClaudeProviderFactory,
@@ -26,43 +25,45 @@ import { createSkills } from '../skills/index.js';
 import { createStore } from '../store/index.js';
 import { createStorage } from '../storage/index.js';
 import { registerSnapshotContext } from '../snapshots/index.js';
+import { HQ_ERRORS, isCleanupUnconfirmed } from '../errors/index.js';
 
 import {
   claimRuntimeOwner,
   prepareDatabase,
   prepareActionKey,
   prepareStateRoot,
+  recoverSnapshotLock,
   resolveAllowedRoots,
   resolveWorkspaceTarget,
 } from './state/index.js';
 import { createBrowserActions } from './browser/index.js';
 import { AgentHqOptionsSchema, type IAgentHq, type IAgentHqOptions } from './types.js';
 
-const UnconfirmedCleanupSchema = z.object({ cleanupUnconfirmed: z.literal(true) });
-
 /**
  * Starts one local controller with private IPC, a SQLite worker and lazy native providers.
  * @returns The owned runtime. Client disconnects do not close it.
  * @throws
  * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
- * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
- * - JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID: The HQ runtime directory must be a real directory
- * - JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS: The HQ runtime directory must be private and owned by the current user
  * - JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE: The HQ state directory is unsafe
  * - JG_AGENT_HQ_STATE_FILE_UNSAFE: The HQ state file is unsafe
  * - JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE: The HQ action key is unavailable
  * - JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE: The HQ runtime owner is unverifiable
  * - JG_AGENT_HQ_RUNTIME_ALREADY_OWNED: The HQ runtime is already owned
- * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
  * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
+ * - LOCK_BUSY: The lock '<path>' is busy.
+ * - LOCK_ACQUISITION_FAILED: The lock '<path>' could not be acquired.
+ * - LOCK_NOT_OWNED: The lock '<path>' is no longer owned by this process.
+ * - LOCK_RELEASE_FAILED: The lock '<path>' could not be released.
+ * - NOT_A_DIRECTORY: The path '<path>' is not a directory.
+ * - DIRECTORY_NOT_PRIVATE: The directory '<path>' can be accessed by other users.
+ * - PATH_NOT_CANONICAL: The path '<path>' goes through a symbolic link.
  */
 export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq> => {
   const parsed = AgentHqOptionsSchema.safeParse(options);
   if (!parsed.success)
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
+    throw HQ_ERRORS.create('requestInvalid', {
       data: { kind: 'invalid-request' },
       cause: parsed.error,
     });
@@ -74,27 +75,28 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     ? await resolveAllowedRoots(parsed.data.claudeAdditionalDirectories)
     : [];
   const stateRoot = await prepareStateRoot(parsed.data.stateRoot);
+  const startedAt = Date.now();
   const ownership = await claimRuntimeOwner(stateRoot, parsed.data.isPreviousRuntimeStopped);
   let store: Awaited<ReturnType<typeof createStore>> | undefined;
   let registry: ReturnType<typeof createProviderRegistry> | undefined;
   let ipc: Awaited<ReturnType<typeof createIpcServer>> | undefined;
   let actionKey: Uint8Array;
   try {
-    // a runtime that stopped without releasing the state root left its lock and socket behind
-    if (ownership.isReclaimed) {
-      await removeStaleHqLock(stateRoot);
+    // a runtime that stopped without releasing the state root left its snapshot lock and socket
+    if (ownership.previous) {
+      await recoverSnapshotLock(stateRoot, ownership.previous.pid);
       await removeLeftoverSocket(join(stateRoot, CONTROL_SOCKET));
     }
     const databasePath = await prepareDatabase(stateRoot);
     actionKey = await prepareActionKey(stateRoot, databasePath);
-    store = await createStore(databasePath, ownership.owner.nonce, actionKey);
+    store = await createStore(databasePath, ownership.epoch, actionKey);
     registry = createProviderRegistry(
       [
         createCodexProviderFactory(codexExtraSkillRoots, parsed.data.codexDaemonLauncher ?? []),
         createClaudeProviderFactory(store, claudeAdditionalDirectories),
       ],
       allowedRoots,
-      ownership.owner.nonce,
+      ownership.epoch,
     );
   } catch (error) {
     const cleanup = await Promise.allSettled([registry?.close(), store?.close()]);
@@ -105,8 +107,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
         data: { kind: 'operation-failed' },
         cause: error,
       });
-    if (!(isException(error) && UnconfirmedCleanupSchema.safeParse(error.data).success))
-      await ownership.release();
+    if (!isCleanupUnconfirmed(error)) await ownership.release();
     throw error;
   }
   const browser = createBrowserActions(store);
@@ -124,7 +125,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     providers,
     projection,
     allowedRoots,
-    ownership.owner.nonce,
+    ownership.epoch,
     actionKey,
     skills,
     storage.background,
@@ -194,25 +195,20 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const handleRequest = async (input: IHqRequestInput): Promise<IHqResponse> => {
     const result = HqRequestSchema.safeParse(input);
     if (!result.success)
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      throw HQ_ERRORS.create('requestInvalid', {
         data: { kind: 'invalid-request' },
         cause: result.error,
       });
-    if (closing)
-      throw new Exception('The HQ runtime is not running', {
-        code: 'JG_AGENT_HQ_RUNTIME_NOT_RUNNING',
-        data: { kind: 'state-conflict' },
-      });
+    if (closing) throw HQ_ERRORS.create('runtimeNotRunning', { data: { kind: 'state-conflict' } });
     const command = result.data;
     switch (command.kind) {
       case 'status':
         return {
           kind: 'status',
           result: {
-            runtimeEpoch: ownership.owner.nonce,
+            runtimeEpoch: ownership.epoch,
             pid: process.pid,
-            startedAt: Date.parse(ownership.owner.createdAt),
+            startedAt,
             store: projection.isAvailable ? 'ready' : 'unavailable',
             providers: providers.statuses(),
           },
@@ -221,15 +217,12 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
         setImmediate(() => {
           void storage.background(close).catch(() => undefined);
         });
-        return { kind: 'stop', result: { accepted: true, runtimeEpoch: ownership.owner.nonce } };
+        return { kind: 'stop', result: { accepted: true, runtimeEpoch: ownership.epoch } };
       }
       case 'capabilities': {
         const thread = command.threadId ? await projection.getThread(command.threadId) : undefined;
         if (command.threadId && (!thread || thread.provider !== command.provider))
-          throw new Exception('The HQ request is invalid', {
-            code: 'JG_AGENT_HQ_REQUEST_INVALID',
-            data: { kind: 'invalid-request' },
-          });
+          throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
         if (thread) await resolveWorkspaceTarget(thread.workspaceRoot, allowedRoots);
         return {
           kind: 'capabilities',
@@ -256,10 +249,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
             thread.workspaceRoot !== workspaceRoot ||
             !thread.nativeId)
         )
-          throw new Exception('The HQ request is invalid', {
-            code: 'JG_AGENT_HQ_REQUEST_INVALID',
-            data: { kind: 'invalid-request' },
-          });
+          throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
         return {
           kind: 'configuration',
           result: await (
@@ -277,10 +267,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
             thread.provider !== command.provider ||
             thread.workspaceRoot !== workspaceRoot)
         )
-          throw new Exception('The HQ request is invalid', {
-            code: 'JG_AGENT_HQ_REQUEST_INVALID',
-            data: { kind: 'invalid-request' },
-          });
+          throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
         return { kind: command.kind, result: await skills.list({ ...command, workspaceRoot }) };
       }
       case 'action':
@@ -348,7 +335,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const request = (input: IHqRequestInput): Promise<IHqResponse> =>
     storage.run(() => handleRequest(input));
   try {
-    ipc = await createIpcServer(join(stateRoot, CONTROL_SOCKET), ownership.owner.nonce, request);
+    ipc = await createIpcServer(join(stateRoot, CONTROL_SOCKET), ownership.epoch, request);
   } catch (error) {
     await close();
     throw error;
@@ -362,10 +349,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     },
     withStorageMaintenance: async (operation) => {
       if (closing)
-        throw new Exception('The HQ runtime is not running', {
-          code: 'JG_AGENT_HQ_RUNTIME_NOT_RUNNING',
-          data: { kind: 'state-conflict' },
-        });
+        throw HQ_ERRORS.create('runtimeNotRunning', { data: { kind: 'state-conflict' } });
       return storage.withStorageMaintenance(operation);
     },
     close: () => storage.run(close),

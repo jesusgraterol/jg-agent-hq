@@ -8,8 +8,9 @@ import {
   realpathSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { Exception, hasErrorCode } from 'jg-exception';
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { hasErrorCode } from 'jg-exception';
+import { isPathWithin } from 'jg-fs';
 import { z } from 'zod';
 
 import {
@@ -25,6 +26,7 @@ import {
   toWholeFileDiff,
 } from '../../../sessions/index.js';
 import { nativeProvenance } from '../../../sessions/evidence/index.js';
+import { HQ_ERRORS } from '../../../errors/index.js';
 
 import { FilePatchSchema, type IFilePatch, type IRecord } from './types.js';
 
@@ -42,39 +44,26 @@ const hasExcludedSegment = (path: string): boolean =>
 export const projectDirectory = (workspaceRoot: string): string => {
   const root = resolve(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'));
   if ([...root.split(sep), ...workspaceRoot.split(sep)].some((part) => EXCLUDED.has(part)))
-    throw new Exception('The Claude history is unavailable', {
-      code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
-      data: {
-        kind: 'agent-unavailable',
-      },
+    throw HQ_ERRORS.create('claudeHistoryUnavailable', {
+      data: { kind: 'agent-unavailable' },
     });
   // longer native project keys use another format; this reader does not guess that format
   const key = workspaceRoot.replace(/[^a-zA-Z0-9]/g, '-');
   if (key.length > 200)
-    throw new Exception('The Claude history is unavailable', {
-      code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
-      data: {
-        kind: 'agent-unavailable',
-      },
+    throw HQ_ERRORS.create('claudeHistoryUnavailable', {
+      data: { kind: 'agent-unavailable' },
     });
   const directory = join(root, 'projects', key);
   for (const path of [root, join(root, 'projects'), directory]) {
     const entry = lstatSync(path);
     if (!entry.isDirectory() || entry.isSymbolicLink() || realpathSync(path) !== path)
-      throw new Exception('The Claude history is unavailable', {
-        code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
-        data: {
-          kind: 'agent-unavailable',
-        },
+      throw HQ_ERRORS.create('claudeHistoryUnavailable', {
+        data: { kind: 'agent-unavailable' },
       });
   }
-  const child = relative(root, directory);
-  if (isAbsolute(child) || child === '..' || child.startsWith(`..${sep}`))
-    throw new Exception('The Claude history is unavailable', {
-      code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
-      data: {
-        kind: 'agent-unavailable',
-      },
+  if (!isPathWithin(root, directory))
+    throw HQ_ERRORS.create('claudeHistoryUnavailable', {
+      data: { kind: 'agent-unavailable' },
     });
   return directory;
 };
@@ -109,15 +98,13 @@ export const isClaudeWorkspaceCwd = (cwd: string | undefined, workspaceRoot: str
     hasExcludedSegment(cwd)
   )
     return false;
-  const child = relative(workspaceRoot, cwd);
-  if (isAbsolute(child) || child === '..' || child.startsWith(`..${sep}`)) return false;
+  if (!isPathWithin(workspaceRoot, cwd)) return false;
   let ancestor = cwd;
   while (ancestor !== workspaceRoot) {
     try {
       const canonical = realpathSync(ancestor);
       if (hasExcludedSegment(canonical)) return false;
-      const resolved = relative(workspaceRoot, canonical);
-      return !isAbsolute(resolved) && resolved !== '..' && !resolved.startsWith(`..${sep}`);
+      return isPathWithin(workspaceRoot, canonical);
     } catch (cause) {
       if (!hasErrorCode(cause, 'ENOENT') && !hasErrorCode(cause, 'ENOTDIR')) throw cause;
       ancestor = dirname(ancestor);
@@ -154,11 +141,8 @@ export const isClaudeRecordCwd = (cwd: string | undefined, workspaceRoot: string
  */
 export const openTranscript = (directory: string, nativeId: string): number => {
   if (!z.uuid().safeParse(nativeId).success)
-    throw new Exception('The Claude history is unavailable', {
-      code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
-      data: {
-        kind: 'agent-unavailable',
-      },
+    throw HQ_ERRORS.create('claudeHistoryUnavailable', {
+      data: { kind: 'agent-unavailable' },
     });
   return openSync(join(directory, `${nativeId}.jsonl`), constants.O_RDONLY | constants.O_NOFOLLOW);
 };
@@ -412,11 +396,8 @@ export const toClaudeItem = (
   fullBody = false,
 ): IHistoryItem | null => {
   if (!record.uuid)
-    throw new Exception('The Claude history is unavailable', {
-      code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
-      data: {
-        kind: 'agent-unavailable',
-      },
+    throw HQ_ERRORS.create('claudeHistoryUnavailable', {
+      data: { kind: 'agent-unavailable' },
     });
   const presentation = toPresentation(record);
   if (!presentation) return null;

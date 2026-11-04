@@ -17,6 +17,7 @@ import type {
   INativePrompt,
   IProviderCall,
 } from '../index.js';
+import { isCleanupUnconfirmed } from '../../errors/index.js';
 
 import type { IBoundAgentProvider, IProviderRegistryEvents } from './types.js';
 import { capabilityUnavailable, normalizeProviderError } from './utilities.js';
@@ -30,8 +31,6 @@ type IProviderEntry = {
   failure?: unknown;
   stopping: Map<string | undefined, Promise<void>>;
 };
-
-const CleanupSchema = z.object({ cleanupUnconfirmed: z.literal(true) });
 
 /** Returns an explicit observation when no usable capability descriptor could be obtained. */
 const unavailableCapabilities = (): IProviderCapabilitySet => {
@@ -430,8 +429,7 @@ export const createProviderRegistry = (
                 try {
                   entry.adapter = await entry.opening;
                 } catch (cause) {
-                  if (isException(cause) && CleanupSchema.safeParse(cause.data).success)
-                    throw cause;
+                  if (isCleanupUnconfirmed(cause)) throw cause;
                 }
               });
             }

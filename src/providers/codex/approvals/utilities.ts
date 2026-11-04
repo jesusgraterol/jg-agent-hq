@@ -1,7 +1,6 @@
-import { Exception } from 'jg-exception';
-
 import type { IActionCommand, IApprovalPresentation } from '../../../contracts/index.js';
 import { presentElicitation, validateElicitation } from '../../elicitation/index.js';
+import { HQ_ERRORS } from '../../../errors/index.js';
 
 import {
   CommandApprovalSchema,
@@ -114,10 +113,7 @@ export const buildCodexReply = (prompt: ICodexPrompt, response: IReply): unknown
       _meta: null,
     };
   const invalid = (): never => {
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
-      data: { kind: 'invalid-request' },
-    });
+    throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
   };
   if (prompt.kind === 'question') {
     if (response.kind !== 'answers') return invalid();

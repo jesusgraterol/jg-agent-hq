@@ -11,14 +11,16 @@ import { z } from 'zod';
 // a child runner deliberately times out; its next test must see completed fixture teardown
 const TIMEOUT_SCENARIO = `
 import { lstat, rm } from 'node:fs/promises';
+import { inspectLock } from 'jg-locks';
 import { afterAll, expect, test, vi } from 'vitest';
 import { withClaudeRuntime, type IClaudeFixture } from './claude-runtime.js';
+import { stateLocks } from './locks.js';
 const path = process.env.PATH;
 let first: IClaudeFixture | undefined;
 afterAll(async () => {
   if (first) {
     await first.runtime.close();
-    await expect(lstat(first.stateRoot + '/hq-owner.json')).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await inspectLock('runtime', stateLocks(first.stateRoot))).state).toBe('free');
     await rm(first.root, { recursive: true, force: true });
   }
   vi.unstubAllEnvs();

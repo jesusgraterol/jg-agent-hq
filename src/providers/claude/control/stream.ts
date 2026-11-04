@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { Exception } from 'jg-exception';
+
 import { z } from 'zod';
 
 import { RecordSchema, toClaudeItem } from '../history/index.js';
 import { MAX_RESULT_BYTES, type ITurnUsage } from '../../../contracts/index.js';
 import { toTurnResult } from '../../results/index.js';
+import { HQ_ERRORS } from '../../../errors/index.js';
 
 import type {
   IClaudeControlEvents,
@@ -96,10 +97,7 @@ const observeFastMode = (session: IClaudeSession, raw: unknown): void => {
 };
 
 const unavailable: () => never = () => {
-  throw new Exception('The Claude integration failed', {
-    code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-    data: { kind: 'agent-unavailable' },
-  });
+  throw HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } });
 };
 
 /**
@@ -171,12 +169,7 @@ export const failSteers = (session: IClaudeSession, turnId?: string): void => {
     if (turnId !== undefined && steer.turnId !== turnId) continue;
     clearTimeout(steer.timer);
     session.steers.delete(steer.id);
-    steer.reject(
-      new Exception('The Claude integration failed', {
-        code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-        data: { kind: 'agent-unavailable' },
-      }),
-    );
+    steer.reject(HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } }));
   }
 };
 

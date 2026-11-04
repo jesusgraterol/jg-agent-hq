@@ -2,12 +2,13 @@
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { setTimeout as wait } from 'node:timers/promises';
-import { Exception, hasErrorCode, isException } from 'jg-exception';
+import { hasErrorCode } from 'jg-exception';
 
 import { HqRequestSchema } from '../contracts/index.js';
 import { requestAgentHq } from '../ipc/index.js';
 import { createAgentHq } from '../runtime/index.js';
 import { readRuntimeOwner } from '../runtime/state/index.js';
+import { HQ_ERRORS } from '../errors/index.js';
 
 import { toCliError } from './utilities.js';
 
@@ -45,32 +46,20 @@ const main = async (): Promise<void> => {
     return;
   }
   if (positionals.length !== 1 || !values['state-root'])
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
-      data: { kind: 'invalid-request' },
-    });
+    throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
   const stateRoot = resolve(values['state-root']);
   const roots = (values['workspace-root'] ?? []).map((root) => resolve(root));
   if (kind === 'request') {
     if (Object.keys(values).some((key) => key !== 'state-root'))
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
-        data: { kind: 'invalid-request' },
-      });
+      throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
     const chunks: Buffer[] = [];
     let bytes = 0;
     for await (const chunk of process.stdin) {
       if (!Buffer.isBuffer(chunk))
-        throw new Exception('The HQ request is invalid', {
-          code: 'JG_AGENT_HQ_REQUEST_INVALID',
-          data: { kind: 'invalid-request' },
-        });
+        throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
       bytes += chunk.length;
       if (bytes > 65_536)
-        throw new Exception('The HQ request is invalid', {
-          code: 'JG_AGENT_HQ_REQUEST_INVALID',
-          data: { kind: 'invalid-request' },
-        });
+        throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
       chunks.push(chunk);
     }
     let input: unknown;
@@ -79,16 +68,11 @@ const main = async (): Promise<void> => {
         new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, bytes)),
       );
     } catch (cause) {
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
-        data: { kind: 'invalid-request' },
-        cause,
-      });
+      throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' }, cause });
     }
     const parsed = HqRequestSchema.safeParse(input);
     if (!parsed.success)
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      throw HQ_ERRORS.create('requestInvalid', {
         data: { kind: 'invalid-request' },
         cause: parsed.error,
       });
@@ -113,10 +97,7 @@ const main = async (): Promise<void> => {
       values.provider ||
       values['after-sequence']
     )
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
-        data: { kind: 'invalid-request' },
-      });
+      throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
     const runtime = await createAgentHq({
       stateRoot,
       allowedRoots: roots,
@@ -148,30 +129,20 @@ const main = async (): Promise<void> => {
     return;
   }
   if (values['codex-extra-skill-root'] || values['claude-additional-directory'])
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
-      data: { kind: 'invalid-request' },
-    });
+    throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
   if (roots.length > 1)
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
-      data: { kind: 'invalid-request' },
-    });
+    throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
   if (kind === 'session-states') {
     const allowed = new Set(['state-root', 'after-sequence', 'limit']);
     if (Object.keys(values).some((key) => !allowed.has(key)))
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
-        data: { kind: 'invalid-request' },
-      });
+      throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
     const parsed = HqRequestSchema.safeParse({
       kind: 'session-states',
       afterSequence: values['after-sequence'] === undefined ? 0 : Number(values['after-sequence']),
       limit: values.limit === undefined ? 32 : Number(values.limit),
     });
     if (!parsed.success)
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      throw HQ_ERRORS.create('requestInvalid', {
         data: { kind: 'invalid-request' },
         cause: parsed.error,
       });
@@ -183,16 +154,12 @@ const main = async (): Promise<void> => {
   if (kind === 'active-sessions' || kind === 'observation-pace' || kind === 'locks') {
     const allowed = new Set(kind === 'observation-pace' ? ['state-root', 'pace'] : ['state-root']);
     if (Object.keys(values).some((key) => !allowed.has(key)))
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
-        data: { kind: 'invalid-request' },
-      });
+      throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
     const parsed = HqRequestSchema.safeParse(
       kind === 'observation-pace' ? { kind, pace: values.pace } : { kind },
     );
     if (!parsed.success)
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      throw HQ_ERRORS.create('requestInvalid', {
         data: { kind: 'invalid-request' },
         cause: parsed.error,
       });
@@ -202,10 +169,7 @@ const main = async (): Promise<void> => {
     return;
   }
   if (values['after-sequence'] || values.pace)
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
-      data: { kind: 'invalid-request' },
-    });
+    throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
   const payload = Object.fromEntries(
     [
       ['kind', kind],
@@ -244,8 +208,7 @@ const main = async (): Promise<void> => {
   );
   const parsed = HqRequestSchema.safeParse(payload);
   if (!parsed.success)
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
+    throw HQ_ERRORS.create('requestInvalid', {
       data: { kind: 'invalid-request' },
       cause: parsed.error,
     });
@@ -256,16 +219,13 @@ const main = async (): Promise<void> => {
     let stopped = false;
     while (Date.now() < deadline) {
       try {
-        const { owner } = await readRuntimeOwner(stateRoot);
+        const owner = await readRuntimeOwner(stateRoot);
         if (owner.nonce !== response.result.runtimeEpoch)
-          throw new Exception('The HQ runtime owner is unverifiable', {
-            code: 'JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE',
-            data: {
-              kind: 'state-conflict',
-            },
+          throw HQ_ERRORS.create('runtimeOwnerUnverifiable', {
+            data: { kind: 'state-conflict' },
           });
       } catch (error) {
-        if (isException(error) && hasErrorCode(error.cause, 'ENOENT')) {
+        if (hasErrorCode(error, 'JG_AGENT_HQ_RUNTIME_NOT_RUNNING')) {
           stopped = true;
           break;
         }
@@ -273,11 +233,7 @@ const main = async (): Promise<void> => {
       }
       await wait(100);
     }
-    if (!stopped)
-      throw new Exception('The HQ transport failed', {
-        code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
-        data: { kind: 'state-conflict' },
-      });
+    if (!stopped) throw HQ_ERRORS.create('transportFailed', { data: { kind: 'state-conflict' } });
     process.stdout.write(
       `${JSON.stringify({ schemaVersion: 1, kind: 'stop', result: { state: 'stopped', runtimeEpoch: response.result.runtimeEpoch } })}\n`,
     );

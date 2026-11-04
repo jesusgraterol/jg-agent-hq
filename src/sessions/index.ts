@@ -1,5 +1,6 @@
 // native history continuations, item text limits, line counts, diffs and images
 export {
+  createRequestCursors,
   decodeHistoryCursor,
   encodeHistoryCursor,
   limitItemText,

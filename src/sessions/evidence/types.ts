@@ -22,7 +22,7 @@ export type IEvidenceOriginsRequest = z.infer<typeof EvidenceOriginsRequestSchem
 
 // a continuation re-reads one bounded native page and verifies its content before advancing
 export const EvidencePositionSchema = z.strictObject({
-  sourceCursor: z.string().max(12000).optional(),
+  sourceCursor: z.string().max(12000).nullable(),
   index: z.number().int().min(0).max(8),
   offset: z.number().int().nonnegative(),
   digest: z

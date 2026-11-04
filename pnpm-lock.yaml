@@ -179,8 +179,8 @@ importers:
         specifier: ^1.0.0
         version: 1.0.0
       jg-utilities:
-        specifier: 1.7.0
-        version: 1.7.0
+        specifier: 1.8.0
+        version: 1.8.0
       zod:
         specifier: ^4.3.6
         version: 4.6.7
@@ -1722,12 +1722,8 @@ packages:
     resolution: {integrity: sha512-wHL9HvqU+mzECiqKwVB0iiln5C/mP3EdIW43KfFFFf/Kk4zWSIEfXg6W0Iq6VjRFMfRFAOaFr4unSbf2/X/Nig==}
     engines: {node: '>=22.17.0'}
 
-  jg-utilities@1.7.0:
-    resolution: {integrity: sha512-Cdec4v/QW7TPaY68/McjGxLCvrwH7aKI9H0DsXoo3qi27R81DTbxVZpsg7/LVZ3Ah3Kai1OHiUgpju2rmF2VEA==}
-    engines: {node: '>=22.17.0'}
-
-  jg-utilities@1.7.2:
-    resolution: {integrity: sha512-m6/RDkjBPufPbIAcIG6i9+17iorPhtnIeIPxiD+ISHq9nAc/D12AMcONWhu5yjl1Ppn9CEBm73tFy/2rffVNmQ==}
+  jg-utilities@1.8.0:
+    resolution: {integrity: sha512-808zXcTf7x4peGNHz/q2/25p41BtTI5RrpNm1syH9itQbYej9m88/PdO4VG+YW2pKBSOIfEAWAsAoRU5QL2AOw==}
     engines: {node: '>=22.17.0'}
 
   jiti@2.7.0:
@@ -4231,7 +4227,7 @@ snapshots:
   jg-fs@1.7.0:
     dependencies:
       jg-exception: 1.7.0
-      jg-utilities: 1.7.0
+      jg-utilities: 1.8.0
 
   jg-locks@1.0.0:
     dependencies:
@@ -4262,16 +4258,11 @@ snapshots:
   jg-process@1.6.2:
     dependencies:
       jg-exception: 1.7.1
-      jg-utilities: 1.7.2
+      jg-utilities: 1.8.0
 
   jg-site@0.1.0: {}
 
-  jg-utilities@1.7.0:
-    dependencies:
-      jg-exception: 1.7.0
-      uuid: 14.0.3
-
-  jg-utilities@1.7.2:
+  jg-utilities@1.8.0:
     dependencies:
       jg-exception: 1.7.1
       uuid: 14.0.3

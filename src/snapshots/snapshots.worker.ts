@@ -1,12 +1,12 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { Exception, extractMessage, isException } from 'jg-exception';
 
+import { HQ_ERRORS } from '../errors/index.js';
 import { verifySnapshot, restoreSnapshot } from './database.js';
 import { SnapshotWorkerInputSchema } from './types.js';
 
 const port = parentPort;
-if (!port)
-  throw new Exception('The HQ snapshot operation failed', { code: 'JG_AGENT_HQ_SNAPSHOT_FAILED' });
+if (!port) throw HQ_ERRORS.create('snapshotFailed');
 try {
   const input = SnapshotWorkerInputSchema.parse(workerData);
   const result =

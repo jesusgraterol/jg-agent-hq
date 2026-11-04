@@ -1,4 +1,3 @@
-import { Exception } from 'jg-exception';
 import { runInOrder } from 'jg-utilities';
 import { z } from 'zod';
 
@@ -10,6 +9,7 @@ import {
 } from '../../contracts/index.js';
 import { NativeIdSchema } from '../../contracts/identities/index.js';
 import { decodeBase64Image, imageUnavailable, readImageFile } from '../../sessions/index.js';
+import { HQ_ERRORS } from '../../errors/index.js';
 
 import {
   LOADED_THREADS_PAGE_SIZE,
@@ -92,10 +92,7 @@ export const createCodexProvider = async (
   >();
   const assertActive = (signal?: AbortSignal): void => {
     if (signal?.aborted)
-      throw new Exception('The Codex integration failed', {
-        code: 'JG_AGENT_HQ_CODEX_FAILED',
-        data: { kind: 'agent-unavailable' },
-      });
+      throw HQ_ERRORS.create('codexFailed', { data: { kind: 'agent-unavailable' } });
   };
   // an uncertain idle-control release requires recovery before further input
   const releaseControlState = (nativeId: string): void => {
@@ -201,11 +198,8 @@ export const createCodexProvider = async (
       }),
     );
     if (page.data.length > limit)
-      throw new Exception('The Codex integration failed', {
-        code: 'JG_AGENT_HQ_CODEX_FAILED',
-        data: {
-          kind: 'agent-unavailable',
-        },
+      throw HQ_ERRORS.create('codexFailed', {
+        data: { kind: 'agent-unavailable' },
       });
     return { data: page.data.map(toTurnSummary), nextCursor: page.nextCursor };
   };
@@ -279,11 +273,8 @@ export const createCodexProvider = async (
         }),
       );
       if (page.data.length > limit)
-        throw new Exception('The Codex integration failed', {
-          code: 'JG_AGENT_HQ_CODEX_FAILED',
-          data: {
-            kind: 'agent-unavailable',
-          },
+        throw HQ_ERRORS.create('codexFailed', {
+          data: { kind: 'agent-unavailable' },
         });
       return { data: page.data.map(toThreadSummary), nextCursor: page.nextCursor };
     },
@@ -359,11 +350,8 @@ export const createCodexProvider = async (
         }),
       );
       if (page.data.length > limit)
-        throw new Exception('The Codex integration failed', {
-          code: 'JG_AGENT_HQ_CODEX_FAILED',
-          data: {
-            kind: 'agent-unavailable',
-          },
+        throw HQ_ERRORS.create('codexFailed', {
+          data: { kind: 'agent-unavailable' },
         });
       const turns = await readItemTurns(nativeId, new Set(page.data.map((item) => item.turnId)));
       return {
@@ -396,11 +384,8 @@ export const createCodexProvider = async (
       );
       const entry = result.data[0]!;
       if (entry.cwd !== workspaceRoot)
-        throw new Exception('The Codex integration failed', {
-          code: 'JG_AGENT_HQ_CODEX_FAILED',
-          data: {
-            kind: 'agent-unavailable',
-          },
+        throw HQ_ERRORS.create('codexFailed', {
+          data: { kind: 'agent-unavailable' },
         });
       // native discovery reports no argument hints, so HQ reads each listed skill file's own
       const hints = await runInOrder(entry.skills, {
@@ -479,10 +464,7 @@ export const createCodexProvider = async (
           parseNative(z.object({ thread: NativeThreadSchema }), current).thread.status.type !==
           'notLoaded'
         )
-          throw new Exception('The HQ capability is unavailable', {
-            code: 'JG_AGENT_HQ_CAPABILITY_UNAVAILABLE',
-            data: { kind: 'agent-unavailable' },
-          });
+          throw HQ_ERRORS.create('capabilityUnavailable', { data: { kind: 'agent-unavailable' } });
       }
       assertActive(signal);
       const response = await connection.request(
@@ -588,11 +570,8 @@ export const createCodexProvider = async (
         }),
       );
       if (page.data.length || page.nextCursor)
-        throw new Exception('The Codex integration failed', {
-          code: 'JG_AGENT_HQ_CODEX_FAILED',
-          data: {
-            kind: 'agent-unavailable',
-          },
+        throw HQ_ERRORS.create('codexFailed', {
+          data: { kind: 'agent-unavailable' },
         });
     },
     async unsubscribe(requestId, nativeId) {
@@ -602,11 +581,8 @@ export const createCodexProvider = async (
           await connection.request('thread/unsubscribe', { threadId: nativeId }, requestId),
         );
         if (!['unsubscribed', 'notSubscribed', 'notLoaded'].includes(result.status))
-          throw new Exception('The Codex integration failed', {
-            code: 'JG_AGENT_HQ_CODEX_FAILED',
-            data: {
-              kind: 'agent-unavailable',
-            },
+          throw HQ_ERRORS.create('codexFailed', {
+            data: { kind: 'agent-unavailable' },
           });
       } finally {
         releaseControlState(nativeId);

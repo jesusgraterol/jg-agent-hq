@@ -1,6 +1,7 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { closeSync, fstatSync, opendirSync, readSync, type Dir } from 'node:fs';
 import type { DatabaseSync, SQLOutputValue, StatementSync } from 'node:sqlite';
+import { hashValue } from 'jg-crypto';
 import { Exception, extractMessage, hasErrorCode, isException } from 'jg-exception';
 import { z } from 'zod';
 
@@ -14,9 +15,8 @@ import {
   type IEvidencePage,
 } from '../../../contracts/index.js';
 import {
+  createRequestCursors,
   decodeBase64Image,
-  decodeHistoryCursor,
-  encodeHistoryCursor,
   imageUnavailable,
   type IHistoryRequest,
 } from '../../../sessions/index.js';
@@ -25,6 +25,7 @@ import {
   buildEvidencePage,
   EVIDENCE_SOURCE_PAGE_SIZE,
 } from '../../../sessions/evidence/index.js';
+import { HQ_ERRORS } from '../../../errors/index.js';
 
 import {
   EntryRowSchema,
@@ -50,6 +51,10 @@ import {
   toClaudeImageData,
   toClaudeItem,
 } from './utilities.js';
+
+// a thread page continues after its final transcript, an item page before its oldest record
+const threadCursors = createRequestCursors(SeekSchema);
+const itemCursors = createRequestCursors(EntrySeekSchema);
 
 // identifies the path and record interpretation used by persisted projection entries
 const HISTORY_PROJECTION_VERSION = 10;
@@ -148,11 +153,8 @@ export class ClaudeHistoryModel {
         command.kind !== 'session-evidence') ||
       command.provider !== 'claude'
     )
-      throw new Exception('The Claude history is unavailable', {
-        code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
-        data: {
-          kind: 'agent-unavailable',
-        },
+      throw HQ_ERRORS.create('claudeHistoryUnavailable', {
+        data: { kind: 'agent-unavailable' },
       });
     try {
       return this.__read(command);
@@ -178,8 +180,10 @@ export class ClaudeHistoryModel {
       command.kind === 'thread' || command.kind === 'item-detail' || command.kind === 'item-image'
         ? { ...command, cursor: undefined }
         : command;
-    const continuation =
-      command.kind === 'session-evidence' ? undefined : decodeHistoryCursor(cursor, filters);
+    // a cursor that doesn't continue this request fails before any transcript is read
+    const threadSeek =
+      command.kind === 'threads' ? threadCursors.decode(cursor, filters) : undefined;
+    const itemSeek = command.kind === 'items' ? itemCursors.decode(cursor, filters) : undefined;
     if (command.kind === 'session-evidence') evidencePosition(command);
     let directory: string;
     try {
@@ -190,7 +194,7 @@ export class ClaudeHistoryModel {
       throw cause;
     }
     if (command.kind === 'threads') {
-      const seek = continuation ? this.__parseCursor(SeekSchema, continuation) : undefined;
+      const seek = threadSeek;
       if (!seek && !this.__refresh(directory, root)) return { kind: 'indexing' };
       // a row-value seek, so a continuation starts in the index rather than scanning earlier pages
       const after = seek ? 'AND (updated_at, native_id) < (?, ?)' : '';
@@ -217,9 +221,9 @@ export class ClaudeHistoryModel {
         result: {
           data: page.map((row) => this.__summary(row, directory)),
           source: 'native',
-          nextCursor: encodeHistoryCursor(
+          nextCursor: threadCursors.encode(
             rows.length > command.limit && last
-              ? JSON.stringify({ updatedAt: last.updated_at, nativeId: last.native_id })
+              ? { updatedAt: last.updated_at, nativeId: last.native_id }
               : null,
             filters,
           ),
@@ -255,13 +259,10 @@ export class ClaudeHistoryModel {
         kind: 'item-image',
         result: this.__itemImage(command, row, directory),
       });
-    const seek = continuation ? this.__parseCursor(EntrySeekSchema, continuation) : undefined;
+    const seek = itemSeek;
     if (seek && seek.revision !== row.revision)
-      throw new Exception('The HQ cursor does not match this request', {
-        code: 'JG_AGENT_HQ_CURSOR_INVALID',
-        data: {
-          kind: 'invalid-request',
-        },
+      throw HQ_ERRORS.create('cursorInvalid', {
+        data: { kind: 'invalid-request' },
       });
     // items read newest first, the cursor holding the oldest offset read; one item is read by its UUID
     const before = seek?.offset ?? Number.MAX_SAFE_INTEGER;
@@ -324,10 +325,8 @@ export class ClaudeHistoryModel {
           data: items,
           history: 'persisted',
           source: 'native',
-          nextCursor: encodeHistoryCursor(
-            entries.length > items.length
-              ? JSON.stringify({ revision: row.revision, offset: lastOffset })
-              : null,
+          nextCursor: itemCursors.encode(
+            entries.length > items.length ? { revision: row.revision, offset: lastOffset } : null,
             filters,
           ),
         },
@@ -477,10 +476,7 @@ export class ClaudeHistoryModel {
       ? this.__parseCursor(EntrySeekSchema, position.sourceCursor)
       : undefined;
     if (seek && seek.revision !== row.revision)
-      throw new Exception('The HQ cursor does not match this request', {
-        code: 'JG_AGENT_HQ_CURSOR_INVALID',
-        data: { kind: 'invalid-request' },
-      });
+      throw HQ_ERRORS.create('cursorInvalid', { data: { kind: 'invalid-request' } });
     const kinds = command.kinds === undefined ? [undefined] : [...new Set(command.kinds)];
     const entries = kinds
       .flatMap((kind) =>
@@ -549,11 +545,7 @@ export class ClaudeHistoryModel {
     try {
       return schema.parse(JSON.parse(text));
     } catch (cause) {
-      throw new Exception('The HQ cursor does not match this request', {
-        code: 'JG_AGENT_HQ_CURSOR_INVALID',
-        data: { kind: 'invalid-request' },
-        cause,
-      });
+      throw HQ_ERRORS.create('cursorInvalid', { data: { kind: 'invalid-request' }, cause });
     }
   }
 
@@ -572,7 +564,7 @@ export class ClaudeHistoryModel {
     if (!stat.isFile()) this.__unavailable();
     const bytes = Buffer.alloc(Math.min(stat.size, 256));
     readSync(fd, bytes, 0, bytes.length, 0);
-    return `${HISTORY_PROJECTION_VERSION}:${stat.dev}:${stat.ino}:${stat.birthtimeMs}:${createHash('sha256').update(bytes).digest('hex')}`;
+    return `${HISTORY_PROJECTION_VERSION}:${stat.dev}:${stat.ino}:${stat.birthtimeMs}:${hashValue(bytes)}`;
   }
 
   private __refresh(directory: string, root: string): boolean {
@@ -1018,11 +1010,8 @@ export class ClaudeHistoryModel {
   }
 
   private __unavailable(): never {
-    throw new Exception('The Claude history is unavailable', {
-      code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
-      data: {
-        kind: 'agent-unavailable',
-      },
+    throw HQ_ERRORS.create('claudeHistoryUnavailable', {
+      data: { kind: 'agent-unavailable' },
     });
   }
 }

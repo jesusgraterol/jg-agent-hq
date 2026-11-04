@@ -1,7 +1,5 @@
-import { Exception, isException } from 'jg-exception';
 import { delay } from 'jg-utilities';
 import { scheduler } from 'node:timers/promises';
-import { z } from 'zod';
 
 import type {
   IHqResponse,
@@ -13,6 +11,7 @@ import type {
 import type { IStore } from '../../store/index.js';
 import type { IHistoryRequest } from '../../sessions/index.js';
 import type { IProviderSkills } from '../types.js';
+import { HQ_ERRORS, isCleanupUnconfirmed } from '../../errors/index.js';
 
 import { createClaudeRpc } from './rpc.js';
 import { ClaudeUsageSchema } from './types.js';
@@ -90,10 +89,7 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
   const open = () => {
     if (isClosing)
       return Promise.reject(
-        new Exception('The Claude integration failed', {
-          code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-          data: { kind: 'agent-unavailable' },
-        }),
+        HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } }),
       );
     return (opening ??= connect());
   };
@@ -152,10 +148,7 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
     read: (native: Awaited<ReturnType<typeof createClaudeRpc>>) => Promise<T>,
   ): Promise<T> => {
     if (isClosing || metadataReads.size >= 4)
-      throw new Exception('The Claude integration failed', {
-        code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-        data: { kind: 'agent-unavailable' },
-      });
+      throw HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } });
     const starting = createClaudeRpc(
       () => {},
       undefined,
@@ -168,16 +161,10 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
     try {
       native = await starting;
       if (isClosing)
-        throw new Exception('The Claude integration failed', {
-          code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-          data: { kind: 'agent-unavailable' },
-        });
+        throw HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } });
       return await read(native);
     } catch (cause) {
-      hasUnconfirmedStartup =
-        !native &&
-        isException(cause) &&
-        z.object({ cleanupUnconfirmed: z.literal(true) }).safeParse(cause.data).success;
+      hasUnconfirmedStartup = !native && isCleanupUnconfirmed(cause);
       throw cause;
     } finally {
       if (native) await native.close();
@@ -279,11 +266,8 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
         if (result.kind !== 'indexing') return result;
         await scheduler.yield();
       }
-      throw new Exception('The Claude history is unavailable', {
-        code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
-        data: {
-          kind: 'agent-unavailable',
-        },
+      throw HQ_ERRORS.create('claudeHistoryUnavailable', {
+        data: { kind: 'agent-unavailable' },
       });
     },
     /**
@@ -303,8 +287,7 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
             const epoch = generation;
             const parsed = ClaudeUsageSchema.safeParse(await native.requestUsage());
             if (!parsed.success)
-              throw new Exception('The Claude integration failed', {
-                code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+              throw HQ_ERRORS.create('claudeFailed', {
                 data: { kind: 'agent-unavailable' },
                 cause: parsed.error,
               });
@@ -338,11 +321,7 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
           try {
             native = await starting;
           } catch (cause) {
-            if (
-              isException(cause) &&
-              z.object({ cleanupUnconfirmed: z.literal(true) }).safeParse(cause.data).success
-            )
-              throw cause;
+            if (isCleanupUnconfirmed(cause)) throw cause;
             return;
           }
           await native.close();

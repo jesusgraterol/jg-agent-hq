@@ -3,6 +3,7 @@ import { Exception } from 'jg-exception';
 
 import { MAX_FRAME_BYTES } from '../../../ipc/index.js';
 import type { IProviderFraming } from '../../index.js';
+import { HQ_ERRORS } from '../../../errors/index.js';
 
 import {
   KEEPALIVE_INTERVAL_MS,
@@ -18,11 +19,7 @@ import {
  * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
  */
 const invalid = (cause?: unknown): never => {
-  throw new Exception('The HQ transport failed', {
-    code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
-    data: { kind: 'invalid-request' },
-    cause,
-  });
+  throw HQ_ERRORS.create('transportFailed', { data: { kind: 'invalid-request' }, cause });
 };
 
 /**

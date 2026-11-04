@@ -1,6 +1,5 @@
-import { Exception } from 'jg-exception';
-
 import type { IUsageSnapshot } from '../../contracts/index.js';
+import { HQ_ERRORS } from '../../errors/index.js';
 
 import type { IClaudeUsage } from './types.js';
 
@@ -17,11 +16,8 @@ export const toClaudeUsageSnapshot = (result: IClaudeUsage, observedAt: number):
     if (row.percent === null) continue;
     const bucket = JSON.stringify([row.kind, row.group, row.scope]);
     if (seen.has(bucket))
-      throw new Exception('The Claude integration failed', {
-        code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-        data: {
-          kind: 'agent-unavailable',
-        },
+      throw HQ_ERRORS.create('claudeFailed', {
+        data: { kind: 'agent-unavailable' },
       });
     seen.add(bucket);
     windows.push({

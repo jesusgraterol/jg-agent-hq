@@ -1,4 +1,4 @@
-import { Exception } from 'jg-exception';
+import { HQ_ERRORS } from '../errors/index.js';
 
 /**
  * Decodes bounded JSON lines with amortized linear copying across fragmented input.
@@ -20,10 +20,7 @@ export const createLineDecoder = (maxBytes: number, receive: (message: unknown) 
         const end = newline < 0 ? chunk.length : newline;
         const length = end - offset;
         if (used + length > maxBytes)
-          throw new Exception('The HQ transport failed', {
-            code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
-            data: { kind: 'invalid-request' },
-          });
+          throw HQ_ERRORS.create('transportFailed', { data: { kind: 'invalid-request' } });
         if (used + length > buffer.length) {
           const expanded = Buffer.alloc(
             Math.min(maxBytes, Math.max(buffer.length * 2, used + length)),
@@ -38,11 +35,7 @@ export const createLineDecoder = (maxBytes: number, receive: (message: unknown) 
           try {
             message = JSON.parse(decoder.decode(buffer.subarray(0, used)));
           } catch (cause) {
-            throw new Exception('The HQ transport failed', {
-              code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
-              data: { kind: 'invalid-request' },
-              cause,
-            });
+            throw HQ_ERRORS.create('transportFailed', { data: { kind: 'invalid-request' }, cause });
           }
           used = 0;
           receive(message);
@@ -51,11 +44,7 @@ export const createLineDecoder = (maxBytes: number, receive: (message: unknown) 
       }
     },
     end(): void {
-      if (used)
-        throw new Exception('The HQ transport failed', {
-          code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
-          data: { kind: 'invalid-request' },
-        });
+      if (used) throw HQ_ERRORS.create('transportFailed', { data: { kind: 'invalid-request' } });
     },
   };
 };

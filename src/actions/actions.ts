@@ -1,6 +1,7 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { signHmac } from 'jg-crypto';
 import { Exception, extractMessage, isException } from 'jg-exception';
-import { delay } from 'jg-utilities';
+import { createTaskRunner, delay } from 'jg-utilities';
 import { z } from 'zod';
 
 import {
@@ -14,7 +15,7 @@ import {
   type IPreparedInput,
   type ISessionTerminal,
 } from '../contracts/index.js';
-import { getErrorKind } from '../errors/index.js';
+import { HQ_ERRORS, getErrorKind, toActionFailure } from '../errors/index.js';
 import type { INativePrompt, IProviderReattachment, IProviderThread } from '../providers/index.js';
 import { retainNativeLineage, readInputFiles } from '../providers/index.js';
 import { capabilityUnavailable, type createProviderRegistry } from '../providers/registry/index.js';
@@ -73,7 +74,6 @@ export const createActions = (
   };
   const live = new LiveItems();
   const waits = new ActionWaits((actionId) => store.getAction(actionId));
-  const tasks = new Set<Promise<void>>();
   const admissions = new Set<Promise<IActionReceipt>>();
   let lane = Promise.resolve();
   const eventCounts = new Map<IManagedThread['provider'], number>();
@@ -85,18 +85,12 @@ export const createActions = (
   let eventFailure: unknown;
 
   const conflict: () => never = () => {
-    throw new Exception('The HQ action conflicts with its recorded state', {
-      code: 'JG_AGENT_HQ_ACTION_CONFLICT',
-      data: {
-        kind: 'state-conflict',
-      },
+    throw HQ_ERRORS.create('actionConflict', {
+      data: { kind: 'state-conflict' },
     });
   };
   const agentUnavailable: () => never = () => {
-    throw new Exception('The HQ provider integration failed', {
-      code: 'JG_AGENT_HQ_PROVIDER_FAILED',
-      data: { kind: 'agent-unavailable' },
-    });
+    throw HQ_ERRORS.create('providerFailed', { data: { kind: 'agent-unavailable' } });
   };
 
   /**
@@ -149,21 +143,19 @@ export const createActions = (
     registry.quarantine(provider, cause);
   };
 
+  // native work the runtime owns, which close stops admitting and drains
+  const owned = createTaskRunner({ onError: failEvents });
+  let ownedCount = 0;
   /** Keeps native work owned by the runtime when a requesting client disconnects. */
   const runOwned = (operation: () => Promise<void>): void => {
-    const task = (async () => {
+    void owned.trigger(async () => {
+      ownedCount += 1;
       try {
         await runBackground(operation);
-      } catch (error) {
-        failEvents(error);
+      } finally {
+        ownedCount -= 1;
       }
-    })();
-    tasks.add(task);
-    void task
-      .finally(() => {
-        tasks.delete(task);
-      })
-      .catch(failEvents);
+    });
   };
   /** Contains native protocol failures to the affected controller before releasing its transport. */
   const runNativeOwned = (
@@ -194,10 +186,7 @@ export const createActions = (
     if ((eventCounts.get(provider) ?? 0) >= 128) {
       failProvider(
         provider,
-        new Exception('The HQ provider integration failed', {
-          code: 'JG_AGENT_HQ_PROVIDER_FAILED',
-          data: { kind: 'agent-unavailable' },
-        }),
+        HQ_ERRORS.create('providerFailed', { data: { kind: 'agent-unavailable' } }),
       );
       return;
     }
@@ -456,18 +445,13 @@ export const createActions = (
         isException(error) &&
         (NativeRejectionSchema.safeParse(error.data).success ||
           error.code === 'JG_AGENT_HQ_CAPABILITY_UNAVAILABLE');
-      const kind = getErrorKind(error);
-      const failure =
-        kind === 'state-conflict' || kind === 'access-denied' || kind === 'agent-unavailable'
-          ? kind
-          : 'operation-failed';
       await apply(
         !hasDispatched || explicit
           ? {
               kind: 'failed',
               actionId: receipt.id,
               requestId: receipt.nativeRequestId!,
-              failure: explicit ? 'agent-unavailable' : failure,
+              failure: explicit ? 'agent-unavailable' : toActionFailure(error),
             }
           : { kind: 'uncertain', actionId: receipt.id, requestId: receipt.nativeRequestId! },
       );
@@ -717,7 +701,7 @@ export const createActions = (
           requestId: prompt.requestId,
           kind: prompt.presentation.kind,
           isBlocking: prompt.presentation.isBlocking,
-          digest: createHmac('sha256', actionKey).update(prompt.fingerprint).digest('hex'),
+          digest: signHmac(prompt.fingerprint, actionKey),
         });
         if (!recorded) {
           await prompt.reject();
@@ -815,7 +799,7 @@ export const createActions = (
       }
       return (await store.admit({ action, prepared: {} })).receipt;
     }
-    if (closing || unavailable || tasks.size >= 64) agentUnavailable();
+    if (closing || unavailable || ownedCount >= 64) agentUnavailable();
     const command = action.command;
     let provider: IManagedThread['provider'] | undefined =
       'provider' in command ? command.provider : undefined;
@@ -1081,7 +1065,7 @@ export const createActions = (
             }
           }),
         );
-        await Promise.allSettled([...tasks]);
+        await owned.close();
         await lane.catch(() => undefined);
         const providerStates = new Map(
           registry.statuses().map((status) => [status.provider, status.state]),
@@ -1095,7 +1079,7 @@ export const createActions = (
         cleanupFailure = error;
       } finally {
         const nativeExit = await Promise.allSettled([registry.close()]);
-        await Promise.allSettled([...tasks]);
+        await owned.close();
         await lane.catch(() => undefined);
         const failedExit = nativeExit.find((result) => result.status === 'rejected');
         if (failedExit?.status === 'rejected')

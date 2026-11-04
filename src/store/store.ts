@@ -10,8 +10,10 @@ import {
   SessionStateSchema,
   SessionTransitionPageSchema,
 } from '../contracts/index.js';
+import { createPendingRequests } from '../pending/index.js';
 import { ClaudeHistoryReadSchema } from '../providers/claude/history/index.js';
 import type { IStorageDescriptor } from '../storage/index.js';
+import { HQ_ERRORS } from '../errors/index.js';
 
 import {
   AdmissionResultSchema,
@@ -30,6 +32,7 @@ import {
   type IStore,
   type IStoreCommand,
 } from './types.js';
+import { toWorkerExecArgv } from './utilities.js';
 
 /**
  * Owns SQLite in one dedicated worker; requests and queued payloads are bounded.
@@ -45,13 +48,7 @@ export const createStore = async (
   actionKey: Uint8Array,
 ): Promise<IStore> => {
   const worker = new Worker(new URL('./store.worker.js', import.meta.url), {
-    // the worker loads a file, even when its caller used Node's string-input mode
-    execArgv: process.execArgv.filter(
-      (argument, index, arguments_) =>
-        argument !== '--input-type' &&
-        !argument.startsWith('--input-type=') &&
-        arguments_[index - 1] !== '--input-type',
-    ),
+    execArgv: toWorkerExecArgv(),
     // indexing a large transcript otherwise grows the young generation to V8's default maximum
     resourceLimits: { maxYoungGenerationSizeMb: 16 },
     workerData: { databasePath, runtimeEpoch, actionKey },
@@ -63,14 +60,7 @@ export const createStore = async (
       resolve();
     }),
   );
-  const pending = new Map<
-    number,
-    {
-      resolve: (result: unknown) => void;
-      reject: (error: unknown) => void;
-      timer: ReturnType<typeof setTimeout> | undefined;
-    }
-  >();
+  const pending = createPendingRequests<number>();
   let sequence = 0;
   let isAvailable = true;
   let closing: Promise<void> | undefined;
@@ -89,11 +79,7 @@ export const createStore = async (
       cause,
     });
     readyReject(error);
-    for (const entry of pending.values()) {
-      clearTimeout(entry.timer);
-      entry.reject(error);
-    }
-    pending.clear();
+    pending.rejectAll(error);
   };
   worker.on('message', (message: unknown) => {
     const result = StoreResponseSchema.safeParse(message);
@@ -117,12 +103,9 @@ export const createStore = async (
       );
       return;
     }
-    const entry = pending.get(response.id);
-    if (!entry) return;
-    clearTimeout(entry.timer);
-    pending.delete(response.id);
     if (response.error)
-      entry.reject(
+      pending.reject(
+        response.id,
         new Exception(response.error.message, {
           code: response.error.code,
           data: {
@@ -130,7 +113,7 @@ export const createStore = async (
           },
         }),
       );
-    else entry.resolve(response.result);
+    else pending.resolve(response.id, response.result);
   });
   worker.once('error', fail);
   worker.once('exit', (code) =>
@@ -167,58 +150,39 @@ export const createStore = async (
     clearTimeout(timer);
   }
 
-  const request = <T>(command: IStoreCommand, schema: z.ZodType<T>): Promise<T> => {
+  const request = async <T>(command: IStoreCommand, schema: z.ZodType<T>): Promise<T> => {
     // IPC, native callbacks and queue dispatch share the one worker, with bounded headroom.
     if (!isAvailable || pending.size >= 128)
-      return Promise.reject(
-        new Exception('The HQ store failed', {
-          code: 'JG_AGENT_HQ_STORE_FAILED',
-          data: { kind: 'operation-failed' },
-        }),
-      );
+      throw HQ_ERRORS.create('storeFailed', { data: { kind: 'operation-failed' } });
     const id = ++sequence;
     const parsed = StoreRequestSchema.safeParse({ id, command });
     if (!parsed.success)
-      return Promise.reject(
-        new Exception('The HQ store failed', {
+      throw HQ_ERRORS.create('storeFailed', {
+        data: { kind: 'operation-failed' },
+        cause: parsed.error,
+      });
+    // a backup steps through the whole database, so it has no deadline
+    const response = pending.add(
+      id,
+      command.kind === 'snapshot-backup' ? undefined : 5000,
+      () =>
+        new Exception('The HQ store failed: request deadline exceeded', {
           code: 'JG_AGENT_HQ_STORE_FAILED',
           data: { kind: 'operation-failed' },
-          cause: parsed.error,
         }),
-      );
-    return new Promise((resolve, reject) => {
-      const timer =
-        command.kind === 'snapshot-backup'
-          ? undefined
-          : setTimeout(() => {
-              pending.delete(id);
-              reject(
-                new Exception('The HQ store failed: request deadline exceeded', {
-                  code: 'JG_AGENT_HQ_STORE_FAILED',
-                  data: {
-                    kind: 'operation-failed',
-                  },
-                }),
-              );
-            }, 5000);
-      pending.set(id, {
-        resolve: (result) => {
-          const checked = schema.safeParse(result);
-          if (checked.success) resolve(checked.data);
-          else
-            reject(
-              new Exception('The HQ store failed', {
-                code: 'JG_AGENT_HQ_STORE_FAILED',
-                data: { kind: 'operation-failed' },
-                cause: checked.error,
-              }),
-            );
-        },
-        reject,
-        timer,
-      });
+    );
+    try {
       worker.postMessage(parsed.data);
-    });
+    } catch (cause) {
+      pending.reject(id, cause);
+    }
+    const checked = schema.safeParse(await response);
+    if (!checked.success)
+      throw HQ_ERRORS.create('storeFailed', {
+        data: { kind: 'operation-failed' },
+        cause: checked.error,
+      });
+    return checked.data;
   };
   return {
     storage: storage!,

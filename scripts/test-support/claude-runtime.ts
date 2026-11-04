@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hasErrorCode } from 'jg-exception';
+import { inspectLock } from 'jg-locks';
 import { createAgentHq, requestAgentHq, type IAgentHq } from 'jg-agent-hq';
 import type { IHqRequestInput } from 'jg-agent-hq/contracts';
 import { expect, onTestFinished, vi } from 'vitest';
@@ -11,6 +12,7 @@ import { z } from 'zod';
 import { installClaudeFixture } from './claude.js';
 import { installCodexFixture } from './codex.js';
 import { writeFixtureControl } from './controls.js';
+import { stateLocks } from './locks.js';
 
 // owned filesystem/native setup shared by Claude usage and history integration tests
 export type IClaudeFixture = {
@@ -41,12 +43,8 @@ export const withClaudeRuntime = async (
     (teardown ??= (async () => {
       try {
         await runtime?.close();
-        try {
-          await lstat(join(stateRoot, 'hq-owner.json'));
+        if ((await inspectLock('runtime', stateLocks(stateRoot))).state !== 'free')
           throw new Error(`Fixture ownership requires inspection at ${stateRoot}`);
-        } catch (cause) {
-          if (!hasErrorCode(cause, 'ENOENT')) throw cause;
-        }
         let children: string[] = [];
         for (const filename of ['claude-pids.jsonl', 'claude-read-pids.jsonl']) {
           try {

@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as wait } from 'node:timers/promises';
 import { expectToRejectCode } from 'jg-exception/testing';
 import { hasErrorCode } from 'jg-exception';
+import { inspectLock } from 'jg-locks';
 import { createAgentHq, requestAgentHq, type IAgentHq } from 'jg-agent-hq';
 import type {
   IActionCommand,
@@ -23,6 +24,7 @@ import {
   installCodexFixture,
   releaseHeldDelays,
   startHoldingDelays,
+  stateLocks,
   stopHoldingDelays,
   writeFixtureControl,
   withClaudeRuntime,
@@ -552,6 +554,11 @@ test('approval history uses indexed, query-bound seek pages and expires requests
     expect((await read(undefined, 'expired')).data).toHaveLength(2);
     await expectToRejectCode(read(first.nextCursor!, 'answered'), 'JG_AGENT_HQ_CURSOR_INVALID');
     await expectToRejectCode(read('invalid-cursor'), 'JG_AGENT_HQ_CURSOR_INVALID');
+    const cursor = first.nextCursor!;
+    await expectToRejectCode(
+      read(`${cursor.slice(0, 8)}${cursor[8] === 'A' ? 'B' : 'A'}${cursor.slice(9)}`),
+      'JG_AGENT_HQ_CURSOR_INVALID',
+    );
     const status = await restarted.request({ kind: 'status' });
     if (status.kind !== 'status') throw new Error('Wrong response');
     await expectToRejectCode(
@@ -2229,7 +2236,7 @@ test('overflowing native events stop control and preserve explicit uncertain own
       'Coding agent is unavailable.',
     );
     await fixture.runtime.close();
-    await expect(readFile(join(fixture.stateRoot, 'hq-owner.json'))).rejects.toThrow('ENOENT');
+    expect((await inspectLock('runtime', stateLocks(fixture.stateRoot))).state).toBe('free');
   } finally {
     // remove only the disposable fixture after proving native exit, including after a failed assertion
     await fixture.runtime.close().catch(() => undefined);
@@ -2253,6 +2260,70 @@ test('overflowing native events stop control and preserve explicit uncertain own
   }
 });
 
+test('admission records a coded failure as a failed action, and rethrows a defect without recording it', async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('admission-failures');
+    // a coded failure of a known kind: the interrupt names a turn the idle session isn't running
+    const interrupt = fixture.envelope({
+      kind: 'interrupt',
+      threadId: thread.id,
+      expectedTurnId: 'turn-that-never-ran',
+    });
+    expect(await fixture.submit(interrupt)).toMatchObject({
+      id: interrupt.id,
+      delivery: 'failed',
+      failure: 'state-conflict',
+    });
+    // a defect: SQLite itself refuses the rename's write, which no HQ error describes
+    const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
+    try {
+      database.exec(
+        "CREATE TRIGGER app_injected_defect BEFORE UPDATE OF pending_action_id ON hq_thread BEGIN SELECT RAISE(ABORT, 'injected admission defect'); END",
+      );
+    } finally {
+      database.close();
+    }
+    const rename = fixture.envelope({
+      kind: 'thread-rename',
+      threadId: thread.id,
+      name: 'renamed-after-defect',
+    });
+    try {
+      await expectToRejectCode(
+        fixture.runtime.request({ kind: 'action', action: rename }),
+        'JG_AGENT_HQ_STORE_FAILED',
+        'The HQ store failed: injected admission defect',
+      );
+    } finally {
+      const cleanup = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
+      try {
+        cleanup.exec('DROP TRIGGER app_injected_defect');
+      } finally {
+        cleanup.close();
+      }
+    }
+    expect(await fixture.request({ kind: 'receipt', actionId: rename.id })).toStrictEqual({
+      kind: 'receipt',
+      result: null,
+    });
+    // the rolled-back admission left the thread free for the next rename
+    expect(await fixture.thread(thread.id)).toMatchObject({ name: 'admission-failures' });
+    const retry = fixture.envelope({
+      kind: 'thread-rename',
+      threadId: thread.id,
+      name: 'renamed-after-defect',
+    });
+    expect((await fixture.submit(retry)).delivery).not.toBe('failed');
+    await fixture.until(
+      () => fixture.thread(thread.id),
+      (current) => current.name === 'renamed-after-defect',
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('a ledger read failure during shutdown still stops the owned native process group', async () => {
   const fixture = await setup();
   try {
@@ -2271,7 +2342,10 @@ test('a ledger read failure during shutdown still stops the owned native process
       'JG_AGENT_HQ_TRANSPORT_FAILED',
       'The HQ store failed',
     );
-    expect(await readFile(join(fixture.stateRoot, 'hq-owner.json'), 'utf8')).toContain('serve');
+    expect(await inspectLock('runtime', stateLocks(fixture.stateRoot))).toMatchObject({
+      state: 'held',
+      owner: { pid: process.pid },
+    });
   } finally {
     await fixture.runtime.close().catch(() => undefined);
     try {

@@ -12,8 +12,8 @@ import {
   type IHqRequestInput,
   type IHqResponse,
 } from '../contracts/index.js';
-import { isPrivateOwner } from '../locks/index.js';
-import { readRuntimeOwner } from '../runtime/state/index.js';
+import { isPrivateOwner, readRuntimeOwner } from '../runtime/state/index.js';
+import { HQ_ERRORS } from '../errors/index.js';
 
 import { CONTROL_SOCKET, IPC_TIMEOUT_MS, MAX_FRAME_BYTES, MAX_REQUEST_BYTES } from './constants.js';
 import { createLineDecoder } from './framing.js';
@@ -44,37 +44,23 @@ export const requestAgentHq = async (
 ): Promise<IHqResponse> => {
   const input = HqRequestSchema.safeParse(command);
   if (!input.success || !isAbsolute(stateRoot))
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
-      data: { kind: 'invalid-request' },
-    });
-  const { owner } = await readRuntimeOwner(stateRoot);
+    throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
+  const owner = await readRuntimeOwner(stateRoot);
   const path = join(stateRoot, CONTROL_SOCKET);
   const socketDetails = await lstat(path);
   if (!socketDetails.isSocket() || socketDetails.isSymbolicLink() || !isPrivateOwner(socketDetails))
-    throw new Exception('The HQ state file is unsafe', {
-      code: 'JG_AGENT_HQ_STATE_FILE_UNSAFE',
-      data: { kind: 'state-conflict' },
-    });
+    throw HQ_ERRORS.create('stateFileUnsafe', { data: { kind: 'state-conflict' } });
   const id = randomUUID();
-  const content = `${JSON.stringify({ schemaVersion: 1, id, runtimeEpoch: owner.nonce, command: input.data })}\n`;
+  const content = `${JSON.stringify({ id, runtimeEpoch: owner.nonce, command: input.data })}\n`;
   if (Buffer.byteLength(content) > MAX_REQUEST_BYTES)
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
-      data: { kind: 'invalid-request' },
-    });
+    throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
   const socket = createConnection(path);
   let onAbort: (() => void) | undefined;
   try {
     return await new Promise<IHqResponse>((resolve, reject) => {
       onAbort = () => {
         socket.destroy();
-        reject(
-          new Exception('The HQ transport failed', {
-            code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
-            data: { kind: 'agent-unavailable' },
-          }),
-        );
+        reject(HQ_ERRORS.create('transportFailed', { data: { kind: 'agent-unavailable' } }));
       };
       signal?.addEventListener('abort', onAbort, { once: true });
       if (signal?.aborted) {
@@ -82,12 +68,7 @@ export const requestAgentHq = async (
         return;
       }
       socket.setTimeout(IPC_TIMEOUT_MS, () =>
-        reject(
-          new Exception('The HQ transport failed', {
-            code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
-            data: { kind: 'agent-unavailable' },
-          }),
-        ),
+        reject(HQ_ERRORS.create('transportFailed', { data: { kind: 'agent-unavailable' } })),
       );
       socket.once('error', (cause) =>
         reject(
@@ -102,10 +83,7 @@ export const requestAgentHq = async (
       const decoder = createLineDecoder(MAX_FRAME_BYTES, (message) => {
         const parsed = IpcResponseSchema.safeParse(message);
         if (!parsed.success || parsed.data.id !== id)
-          throw new Exception('The HQ transport failed', {
-            code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
-            data: { kind: 'agent-unavailable' },
-          });
+          throw HQ_ERRORS.create('transportFailed', { data: { kind: 'agent-unavailable' } });
         received = true;
         const response = parsed.data;
         if (!response.success) {
@@ -120,10 +98,7 @@ export const requestAgentHq = async (
           return;
         }
         if (response.response.kind !== input.data.kind)
-          throw new Exception('The HQ transport failed', {
-            code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
-            data: { kind: 'agent-unavailable' },
-          });
+          throw HQ_ERRORS.create('transportFailed', { data: { kind: 'agent-unavailable' } });
         resolve(response.response);
       });
       socket.on('data', (chunk: Buffer) => {
@@ -137,12 +112,7 @@ export const requestAgentHq = async (
         try {
           decoder.end();
           if (!received)
-            reject(
-              new Exception('The HQ transport failed', {
-                code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
-                data: { kind: 'agent-unavailable' },
-              }),
-            );
+            reject(HQ_ERRORS.create('transportFailed', { data: { kind: 'agent-unavailable' } }));
         } catch (error) {
           reject(error);
         }

@@ -450,20 +450,17 @@ export const ErrorKindSchema = z.enum(
 );
 export type IErrorKind = z.infer<typeof ErrorKindSchema>;
 export const IpcRequestSchema = z.strictObject({
-  schemaVersion: z.literal(1),
   id: z.uuid(),
   runtimeEpoch: z.uuid(),
   command: HqRequestSchema,
 });
 export const IpcResponseSchema = z.discriminatedUnion('success', [
   z.object({
-    schemaVersion: z.literal(1),
     id: z.uuid(),
     success: z.literal(true),
     response: HqResponseSchema,
   }),
   z.object({
-    schemaVersion: z.literal(1),
     id: z.uuid(),
     success: z.literal(false),
     error: z.object({ kind: ErrorKindSchema, message: z.string() }),

@@ -1,6 +1,7 @@
-import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { Exception } from 'jg-exception';
+import { hashValue, signHmac } from 'jg-crypto';
+
 import { z } from 'zod';
 
 import {
@@ -8,6 +9,7 @@ import {
   type IBrowserAction,
   type IBrowserReceipt,
 } from '../../contracts/index.js';
+import { HQ_ERRORS } from '../../errors/index.js';
 
 const RecordSchema = z.object({ digest: z.string(), operator_id: z.string(), receipt: z.string() });
 
@@ -47,7 +49,7 @@ export class BrowserModel {
     action: IBrowserAction,
     operatorId: string,
   ): { receipt: IBrowserReceipt; isNew: boolean } {
-    const digest = createHmac('sha256', this.__key).update(JSON.stringify(action)).digest('hex');
+    const digest = signHmac(JSON.stringify(action), this.__key);
     const previous = this.__database
       .prepare('SELECT digest, operator_id, receipt FROM hq_browser_action WHERE id = ?')
       .get(action.id);
@@ -87,7 +89,7 @@ export class BrowserModel {
         digest,
         JSON.stringify(receipt),
         native && 'threadId' in native ? native.threadId : null,
-        nativeText === null ? null : createHash('sha256').update(nativeText).digest('hex'),
+        nativeText === null ? null : hashValue(nativeText),
       );
     return { receipt, isNew: true };
   }
@@ -108,11 +110,8 @@ export class BrowserModel {
   }
 
   private __conflict(): never {
-    throw new Exception('The HQ action conflicts with its recorded state', {
-      code: 'JG_AGENT_HQ_ACTION_CONFLICT',
-      data: {
-        kind: 'state-conflict',
-      },
+    throw HQ_ERRORS.create('actionConflict', {
+      data: { kind: 'state-conflict' },
     });
   }
 }

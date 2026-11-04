@@ -1,14 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { Exception } from 'jg-exception';
+
 import { z } from 'zod';
 
 import {
   SessionSettingsSchema,
   MAX_PAGE_SIZE,
-  MAX_INPUT_FILES,
-  MAX_INPUT_FILE_BYTES,
-  MAX_TEXT_FILE_BYTES,
   TurnSettingsSchema,
+  type IProviderCapability,
   type IProviderCapabilitySet,
   type ISessionState,
 } from '../../contracts/index.js';
@@ -22,7 +20,8 @@ import {
 } from '../../sessions/evidence/index.js';
 
 import {
-  PROVIDER_INPUT_SCHEMA,
+  buildProviderCapabilities,
+  MODEL_CATALOG_UNAVAILABLE,
   SUPPORTED_PROVIDER_OPERATION,
   type IAgentProviderFactory,
   type IProviderReattachment,
@@ -30,6 +29,7 @@ import {
 } from '../index.js';
 
 import { capabilityUnavailable } from '../registry/index.js';
+import { HQ_ERRORS } from '../../errors/index.js';
 
 import { createCodexProvider } from './codex.js';
 import { MAX_LOADED_THREAD_PAGES } from './constants.js';
@@ -96,10 +96,7 @@ export const createCodexProviderFactory = (
     observeLoaded();
     const verifyRoot = async (workspaceRoot: string, expectedRoot: string): Promise<void> => {
       if ((await resolveWorkspaceTarget(workspaceRoot, context.allowedRoots)) !== expectedRoot)
-        throw new Exception('The HQ target is outside the allowed workspaces', {
-          code: 'JG_AGENT_HQ_TARGET_FORBIDDEN',
-          data: { kind: 'access-denied' },
-        });
+        throw HQ_ERRORS.create('targetForbidden', { data: { kind: 'access-denied' } });
     };
     // a session's latest turn, which runs only while the daemon reports the session active
     const readLatestTurn = async (
@@ -176,7 +173,7 @@ export const createCodexProviderFactory = (
         const page = await native.listItems(
           command.nativeId,
           EVIDENCE_SOURCE_PAGE_SIZE,
-          position!.sourceCursor,
+          position!.sourceCursor ?? undefined,
           command.turnId,
           true,
         );
@@ -247,46 +244,16 @@ export const createCodexProviderFactory = (
       },
       async readCapabilities(): Promise<IProviderCapabilitySet> {
         if (!native.isAvailable)
-          throw new Exception('The Codex integration failed', {
-            code: 'JG_AGENT_HQ_CODEX_FAILED',
-            data: { kind: 'agent-unavailable' },
-          });
-        let models: IProviderCapabilitySet['operations']['models'] = SUPPORTED_PROVIDER_OPERATION;
+          throw HQ_ERRORS.create('codexFailed', { data: { kind: 'agent-unavailable' } });
+        let models: IProviderCapability = SUPPORTED_PROVIDER_OPERATION;
         try {
           await native.readModels(1);
         } catch {
-          models = {
-            state: 'unavailable',
-            changeMode: null,
-            reason: {
-              code: 'native-model-catalog-unavailable',
-              message: 'The native model catalog is unavailable.',
-            },
-          };
+          models = MODEL_CATALOG_UNAVAILABLE;
         }
-        return {
-          operations: {
-            create: SUPPORTED_PROVIDER_OPERATION,
-            adopt: SUPPORTED_PROVIDER_OPERATION,
-            resume: SUPPORTED_PROVIDER_OPERATION,
-            rename: SUPPORTED_PROVIDER_OPERATION,
-            close: SUPPORTED_PROVIDER_OPERATION,
-            interrupt: SUPPORTED_PROVIDER_OPERATION,
-            recover: SUPPORTED_PROVIDER_OPERATION,
-            steer: SUPPORTED_PROVIDER_OPERATION,
-            history: SUPPORTED_PROVIDER_OPERATION,
-            usage: SUPPORTED_PROVIDER_OPERATION,
-            skills: SUPPORTED_PROVIDER_OPERATION,
-            models,
-            configuration: SUPPORTED_PROVIDER_OPERATION,
-          },
-          inputSchema: {
-            ...PROVIDER_INPUT_SCHEMA,
-            supportedMediaTypes: ['image/png', 'image/jpeg', 'image/webp', 'text/plain'],
-            maxFiles: MAX_INPUT_FILES,
-            maxFileBytes: MAX_INPUT_FILE_BYTES,
-            maxTextFileBytes: MAX_TEXT_FILE_BYTES,
-          },
+        return buildProviderCapabilities({
+          operations: { models },
+          supportedMediaTypes: ['image/png', 'image/jpeg', 'image/webp', 'text/plain'],
           configurationSchema: {
             session: z
               .json()
@@ -297,7 +264,7 @@ export const createCodexProviderFactory = (
             permissionModes: ['untrusted', 'on-request', 'never'],
             sandboxModes: ['read-only', 'workspace-write', 'danger-full-access'],
           },
-        };
+        });
       },
       readHistory,
       readObservedThread: async (nativeId) => (await native.readObservedThread(nativeId)).thread,

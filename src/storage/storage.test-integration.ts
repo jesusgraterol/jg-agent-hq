@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { expectToRejectCode } from 'jg-exception/testing';
 import { hasErrorCode } from 'jg-exception';
 import { hashValue } from 'jg-crypto';
+import { inspectLock } from 'jg-locks';
 import { createAgentHq, type IStorageDescriptor } from 'jg-agent-hq';
 import type { IBrowserAction } from 'jg-agent-hq/contracts';
 import { expect, test, vi } from 'vitest';
@@ -14,6 +15,7 @@ import { z } from 'zod';
 
 import {
   claudeRecord,
+  stateLocks,
   withClaudeRuntime,
   writeFixtureControl,
 } from '../../scripts/test-support/index.js';
@@ -175,9 +177,7 @@ test.each(['mismatched', 'missing', 'malformed'])(
       );
       expect(await readFile(storage.databasePath)).toStrictEqual(before);
       expect(await readFile(join(stateRoot, 'action.key'))).toStrictEqual(key);
-      await expect(readFile(join(stateRoot, 'hq-owner.json'))).rejects.toMatchObject({
-        code: 'ENOENT',
-      });
+      expect((await inspectLock('runtime', stateLocks(stateRoot))).state).toBe('free');
     });
   },
 );
@@ -219,9 +219,7 @@ test('initialization rolls back all HQ objects when its schema execution fails',
     } finally {
       database.close();
     }
-    await expect(readFile(join(stateRoot, 'hq-owner.json'))).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
+    expect((await inspectLock('runtime', stateLocks(stateRoot))).state).toBe('free');
   });
 });
 

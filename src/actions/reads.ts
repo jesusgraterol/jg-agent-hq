@@ -1,10 +1,10 @@
-import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import type { IHqRequest, IHqResponse, IManagedThread } from '../contracts/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
-import { decodeHistoryCursor, encodeHistoryCursor } from '../sessions/index.js';
+import { createRequestCursors } from '../sessions/index.js';
 import type { IStore } from '../store/index.js';
+import { HQ_ERRORS } from '../errors/index.js';
 
 import type { createActions } from './actions.js';
 
@@ -21,29 +21,10 @@ type IControlRead = Extract<
       | 'live-items';
   }
 >;
-const PositionSchema = z.strictObject({ createdAt: z.number().int(), id: z.uuid() });
-
-/**
- * Validates the application-owned seek position after the shared query-binding check.
- * @throws
- * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
- */
-const readPosition = (
-  cursor: string | undefined,
-  filters: object,
-): z.infer<typeof PositionSchema> | null => {
-  const decoded = decodeHistoryCursor(cursor, filters);
-  if (!decoded) return null;
-  try {
-    return PositionSchema.parse(JSON.parse(decoded));
-  } catch (cause) {
-    throw new Exception('The HQ cursor does not match this request', {
-      code: 'JG_AGENT_HQ_CURSOR_INVALID',
-      data: { kind: 'invalid-request' },
-      cause,
-    });
-  }
-};
+// a control page continues after its final row's complete ordering tuple
+const positions = createRequestCursors(
+  z.strictObject({ createdAt: z.number().int(), id: z.uuid() }),
+);
 
 /** Encodes the final row's complete ordering tuple only when another page exists. */
 const nextPageCursor = (
@@ -51,8 +32,8 @@ const nextPageCursor = (
   filters: object,
 ): string | null => {
   const last = page.data.at(-1);
-  return encodeHistoryCursor(
-    page.hasMore && last ? JSON.stringify({ createdAt: last.createdAt, id: last.id }) : null,
+  return positions.encode(
+    page.hasMore && last ? { createdAt: last.createdAt, id: last.id } : null,
     filters,
   );
 };
@@ -92,7 +73,7 @@ export const readControl = async (
     filters.workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, roots);
     const page = await store.listThreads(filters.workspaceRoot, {
       limit: command.limit,
-      position: readPosition(cursor, filters),
+      position: positions.decode(cursor, filters) ?? null,
     });
     return {
       kind: 'managed-threads',
@@ -104,7 +85,7 @@ export const readControl = async (
     await authorize(await store.getThread(command.threadId));
     const page = await store.listActions(command.threadId, {
       limit: command.limit,
-      position: readPosition(cursor, filters),
+      position: positions.decode(cursor, filters) ?? null,
     });
     return {
       kind: 'actions',
@@ -115,17 +96,14 @@ export const readControl = async (
   await authorize(thread);
   if (command.kind === 'managed-thread') return { kind: command.kind, result: thread };
   if (!thread)
-    throw new Exception('The HQ action conflicts with its recorded state', {
-      code: 'JG_AGENT_HQ_ACTION_CONFLICT',
-      data: {
-        kind: 'state-conflict',
-      },
+    throw HQ_ERRORS.create('actionConflict', {
+      data: { kind: 'state-conflict' },
     });
   if (command.kind === 'approvals') {
     const { cursor, ...filters } = command;
     const page = await store.listApprovals(thread.id, {
       limit: command.limit,
-      position: readPosition(cursor, filters),
+      position: positions.decode(cursor, filters) ?? null,
       ...(command.state ? { state: command.state } : {}),
     });
     return {

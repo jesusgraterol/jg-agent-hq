@@ -1,6 +1,5 @@
-import { Exception } from 'jg-exception';
-
 import type { IActionReceipt, IActionWait, IHqRequest } from '../../contracts/index.js';
+import { HQ_ERRORS } from '../../errors/index.js';
 
 type IActionWaitUntil = Extract<IHqRequest, { kind: 'action-wait' }>['until'];
 
@@ -109,10 +108,7 @@ export class ActionWaits {
             resume = resolve;
           });
         if (this.__isClosed)
-          throw new Exception('The HQ runtime is not running', {
-            code: 'JG_AGENT_HQ_RUNTIME_NOT_RUNNING',
-            data: { kind: 'state-conflict' },
-          });
+          throw HQ_ERRORS.create('runtimeNotRunning', { data: { kind: 'state-conflict' } });
         waiter.isWoken = false;
         waiter.isReading = true;
         const receipt = await this.__read(actionId);

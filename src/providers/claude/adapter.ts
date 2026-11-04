@@ -1,22 +1,22 @@
 import { randomUUID } from 'node:crypto';
-import { Exception } from 'jg-exception';
+
 import { z } from 'zod';
 
 import {
   SessionSettingsSchema,
-  MAX_INPUT_FILES,
-  MAX_INPUT_FILE_BYTES,
-  MAX_TEXT_FILE_BYTES,
   TurnSettingsSchema,
+  type IProviderCapability,
   type IProviderCapabilitySet,
 } from '../../contracts/index.js';
 import type { IStore } from '../../store/index.js';
 
 import {
-  PROVIDER_INPUT_SCHEMA,
+  buildProviderCapabilities,
+  MODEL_CATALOG_UNAVAILABLE,
   SUPPORTED_PROVIDER_OPERATION,
   type IAgentProviderFactory,
 } from '../index.js';
+import { HQ_ERRORS } from '../../errors/index.js';
 import { createClaudeProvider } from './claude.js';
 import { createClaudeControl } from './control/index.js';
 
@@ -49,20 +49,13 @@ export const createClaudeProviderFactory = (
       },
       async readCapabilities(nativeId): Promise<IProviderCapabilitySet> {
         await reader.ensureReady();
-        let models: IProviderCapabilitySet['operations']['models'] = SUPPORTED_PROVIDER_OPERATION;
+        let models: IProviderCapability = SUPPORTED_PROVIDER_OPERATION;
         try {
           await reader.readModels({ kind: 'models', provider: 'claude', limit: 1 });
         } catch {
-          models = {
-            state: 'unavailable',
-            changeMode: null,
-            reason: {
-              code: 'native-model-catalog-unavailable',
-              message: 'The native model catalog is unavailable.',
-            },
-          };
+          models = MODEL_CATALOG_UNAVAILABLE;
         }
-        let skills: IProviderCapabilitySet['operations']['skills'] = SUPPORTED_PROVIDER_OPERATION;
+        let skills: IProviderCapability = SUPPORTED_PROVIDER_OPERATION;
         if (nativeId) {
           try {
             await control.readSkills(nativeId);
@@ -77,36 +70,16 @@ export const createClaudeProviderFactory = (
             };
           }
         }
-        return {
-          operations: {
-            create: SUPPORTED_PROVIDER_OPERATION,
-            adopt: SUPPORTED_PROVIDER_OPERATION,
-            resume: SUPPORTED_PROVIDER_OPERATION,
-            rename: SUPPORTED_PROVIDER_OPERATION,
-            close: SUPPORTED_PROVIDER_OPERATION,
-            interrupt: SUPPORTED_PROVIDER_OPERATION,
-            recover: SUPPORTED_PROVIDER_OPERATION,
-            steer: SUPPORTED_PROVIDER_OPERATION,
-            history: SUPPORTED_PROVIDER_OPERATION,
-            usage: SUPPORTED_PROVIDER_OPERATION,
-            models,
-            configuration: SUPPORTED_PROVIDER_OPERATION,
-            skills,
-          },
-          inputSchema: {
-            ...PROVIDER_INPUT_SCHEMA,
-            supportedMediaTypes: [
-              'image/png',
-              'image/jpeg',
-              'image/webp',
-              'image/gif',
-              'application/pdf',
-              'text/plain',
-            ],
-            maxFiles: MAX_INPUT_FILES,
-            maxFileBytes: MAX_INPUT_FILE_BYTES,
-            maxTextFileBytes: MAX_TEXT_FILE_BYTES,
-          },
+        return buildProviderCapabilities({
+          operations: { models, skills },
+          supportedMediaTypes: [
+            'image/png',
+            'image/jpeg',
+            'image/webp',
+            'image/gif',
+            'application/pdf',
+            'text/plain',
+          ],
           configurationSchema: {
             session: z.json().parse(z.toJSONSchema(SessionSettingsSchema.omit({ sandbox: true }))),
             turn: z.json().parse(z.toJSONSchema(TurnSettingsSchema.omit({ outputSchema: true }))),
@@ -122,7 +95,7 @@ export const createClaudeProviderFactory = (
               'plan',
             ],
           },
-        };
+        });
       },
       readHistory: (command) => reader.readHistory(command),
       readModels: (command) => reader.readModels(command),
@@ -138,10 +111,7 @@ export const createClaudeProviderFactory = (
           workspaceRoot,
         });
         if (response.kind !== 'thread')
-          throw new Exception('The Claude integration failed', {
-            code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-            data: { kind: 'agent-unavailable' },
-          });
+          throw HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } });
         const available = response.result.historyState === 'available';
         return { thread: response.result, canAdopt: available, canResume: available };
       },

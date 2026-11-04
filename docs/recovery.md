@@ -4,7 +4,7 @@ HQ supplies local capture, encrypted packing and offline restore primitives, eac
 
 ## Capture
 
-Capture runs while agents keep working, under the HQ lock in the state root. Keep the host's own connections from writing host tables until capture resolves. Capture includes committed WAL data, application tables and action.key.
+Capture runs while agents keep working, under the state root's `snapshot` lock. Keep the host's own connections from writing host tables until capture resolves. Capture includes committed WAL data, application tables and action.key.
 
 Capture leaves out the index HQ keeps of Claude transcripts, the `hq_claude_file` and `hq_claude_entry` rows, which make up most of a database that has read Claude sessions, and compacts the copy with `VACUUM INTO`, which keeps the rowids of every table, including application tables. The snapshot of such a database is a small fraction of its size.
 

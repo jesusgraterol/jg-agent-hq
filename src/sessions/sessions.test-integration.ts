@@ -37,9 +37,7 @@ const evidence = async (
 ): Promise<IEvidencePage> => {
   const response = await fixture.request(command);
   expect(
-    Buffer.byteLength(
-      JSON.stringify({ schemaVersion: 1, id: randomUUID(), success: true, response }),
-    ),
+    Buffer.byteLength(JSON.stringify({ id: randomUUID(), success: true, response })),
   ).toBeLessThanOrEqual(65_536);
   if (response.kind !== 'session-evidence') throw new Error('Missing evidence');
   return response.result;

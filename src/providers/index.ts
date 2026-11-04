@@ -16,7 +16,8 @@ export type {
   IAgentProviderEvents,
   IAgentProviderOutcome,
 } from './types.js';
-export { PROVIDER_INPUT_SCHEMA, SUPPORTED_PROVIDER_OPERATION } from './constants.js';
+export { MODEL_CATALOG_UNAVAILABLE, SUPPORTED_PROVIDER_OPERATION } from './constants.js';
+export { buildProviderCapabilities } from './utilities.js';
 export { createProviderProcess, isOwnedProcess } from './process.js';
 
 // Codex

@@ -4,6 +4,9 @@ export { installClaudeFixture } from './claude.js';
 export { withClaudeRuntime, claudeRecord } from './claude-runtime.js';
 export type { IClaudeFixture } from './claude-runtime.js';
 
+// locks a crashed holder leaves in a state root
+export { stateLocks, leaveLock } from './locks.js';
+
 // live fixture configuration
 export { writeFixtureControl } from './controls.js';
 

@@ -9,11 +9,14 @@ import { DatabaseSync } from 'node:sqlite';
 import { createAgentHq, createHqSnapshot, restoreHqSnapshot } from 'jg-agent-hq';
 import { hashValue } from 'jg-crypto';
 import { expectToRejectCode } from 'jg-exception/testing';
+import { acquireLock, inspectLock } from 'jg-locks';
 import { afterEach, expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
   claudeRecord,
+  leaveLock,
+  stateLocks,
   withClaudeRuntime,
   writeFixtureControl,
 } from '../../scripts/test-support/index.js';
@@ -81,7 +84,7 @@ test('WAL-aware capture includes host tables and key but no plan files; offline 
       expect(await readFile(join(snapshot.directory, 'action.key'))).toStrictEqual(
         await readFile(join(stateRoot, 'action.key')),
       );
-      for (const name of ['hq-owner.json', 'control.sock', 'hq.lock'])
+      for (const name of ['.runtime', 'hq.sock'])
         await expect(lstat(join(snapshot.directory, name))).rejects.toMatchObject({
           code: 'ENOENT',
         });
@@ -263,9 +266,7 @@ test('startup rejects a different valid-length action key before changing the da
       })();
       await expectToRejectCode(opening, 'JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE');
       expect(hashValue(await readFile(join(stateRoot, 'hq.sqlite')))).toBe(databaseHash);
-      await expect(lstat(join(stateRoot, 'hq-owner.json'))).rejects.toMatchObject({
-        code: 'ENOENT',
-      });
+      expect((await inspectLock('runtime', stateLocks(stateRoot))).state).toBe('free');
     } finally {
       await unexpected?.close();
       await writeFile(filename, original, { mode: 0o600 });
@@ -370,28 +371,56 @@ test('host maintenance excludes capture, while capture proceeds through a native
   });
 });
 
-test('capture takes the HQ lock in the state root and leaves a dead holder for explicit recovery', async () => {
+test('capture takes the snapshot lock in the state root and leaves a dead holder for explicit recovery', async () => {
   await withClaudeRuntime(async ({ runtime, root, stateRoot }) => {
-    const child = spawn(process.execPath, ['-e', '']);
-    await once(child, 'close');
-    if (!child.pid) throw new Error('test process did not start');
-    const lock = join(stateRoot, '.runtime', 'hq.lock');
-    const owner = JSON.stringify({
-      pid: child.pid,
-      nonce: randomUUID(),
-      command: 'holder',
-      createdAt: new Date().toISOString(),
-    });
-    await mkdir(join(stateRoot, '.runtime'), { recursive: true, mode: 0o700 });
-    await writeFile(lock, owner, { mode: 0o600 });
+    const owner = await leaveLock(stateLocks(stateRoot).root, 'snapshot');
     await expectToRejectCode(
       createHqSnapshot(runtime, join(root, 'snapshot')),
       'JG_AGENT_HQ_SNAPSHOT_FAILED',
-      'The HQ lock has an inactive owner',
+      'is busy',
     );
     await expect(lstat(join(root, 'snapshot'))).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(await readFile(lock, 'utf8')).toBe(owner);
-    await rm(lock);
+    expect(await inspectLock('snapshot', stateLocks(stateRoot))).toMatchObject({
+      state: 'owner-gone',
+      owner,
+    });
+    await (
+      await acquireLock('snapshot', { ...stateLocks(stateRoot), recoverFrom: owner })
+    ).release();
+    expect((await createHqSnapshot(runtime, join(root, 'snapshot'))).header.sourceStateRoot).toBe(
+      stateRoot,
+    );
+    expect((await inspectLock('snapshot', stateLocks(stateRoot))).state).toBe('free');
+  });
+});
+
+test('a live holder of the snapshot lock blocks capture, which conflicts once its 120-second wait expires', async () => {
+  await withClaudeRuntime(async ({ runtime, root, stateRoot }) => {
+    const holder = await acquireLock('snapshot', stateLocks(stateRoot));
+    // jg-locks reads its wait's deadline from this clock, which the test moves instead of waiting
+    vi.useFakeTimers({ toFake: ['performance'] });
+    try {
+      let isSettled = false;
+      const capture = createHqSnapshot(runtime, join(root, 'snapshot'));
+      void capture.then(
+        () => (isSettled = true),
+        () => (isSettled = true),
+      );
+      await expect
+        .poll(
+          () => {
+            vi.advanceTimersByTime(30_000);
+            return isSettled;
+          },
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+      await expectToRejectCode(capture, 'JG_AGENT_HQ_ACTION_CONFLICT');
+    } finally {
+      vi.useRealTimers();
+      await holder.release();
+    }
+    await expect(lstat(join(root, 'snapshot'))).rejects.toMatchObject({ code: 'ENOENT' });
     expect((await createHqSnapshot(runtime, join(root, 'snapshot'))).header.sourceStateRoot).toBe(
       stateRoot,
     );

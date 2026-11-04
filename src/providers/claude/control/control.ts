@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Exception, isException } from 'jg-exception';
+import { Exception } from 'jg-exception';
 import { delay, isEqual } from 'jg-utilities';
 import { z } from 'zod';
 
@@ -13,6 +13,7 @@ import { capabilityUnavailable } from '../../registry/index.js';
 import { toClaudeConfiguration } from '../configuration/index.js';
 
 import { createClaudeRpc } from '../rpc.js';
+import { HQ_ERRORS, isCleanupUnconfirmed } from '../../../errors/index.js';
 
 import type { IClaudeControlEvents, IClaudeSession } from './types.js';
 import {
@@ -37,17 +38,11 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
   let events: IClaudeControlEvents | undefined;
   let isClosing = false;
   const unavailable: () => never = () => {
-    throw new Exception('The Claude integration failed', {
-      code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-      data: { kind: 'agent-unavailable' },
-    });
+    throw HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } });
   };
   const conflict: () => never = () => {
-    throw new Exception('The HQ action conflicts with its recorded state', {
-      code: 'JG_AGENT_HQ_ACTION_CONFLICT',
-      data: {
-        kind: 'state-conflict',
-      },
+    throw HQ_ERRORS.create('actionConflict', {
+      data: { kind: 'state-conflict' },
     });
   };
   const get = (id: string, isParkedAllowed = false): IClaudeSession => {
@@ -224,11 +219,8 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
         if (session.input) {
           clearTimeout(session.input.timer);
           session.input.reject(
-            new Exception('The Claude integration failed', {
-              code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-              data: {
-                kind: 'agent-unavailable',
-              },
+            HQ_ERRORS.create('claudeFailed', {
+              data: { kind: 'agent-unavailable' },
             }),
           );
         }
@@ -639,11 +631,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       // a parked session finishes without a process
       await session.transition?.catch(() => undefined);
       await session.opening.catch((cause: unknown) => {
-        if (
-          isException(cause) &&
-          z.object({ cleanupUnconfirmed: z.literal(true) }).safeParse(cause.data).success
-        )
-          throw cause;
+        if (isCleanupUnconfirmed(cause)) throw cause;
       });
       await session.connection?.close();
     },
@@ -677,20 +665,13 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
           if (session.input) {
             clearTimeout(session.input.timer);
             session.input.reject(
-              new Exception('The Claude integration failed', {
-                code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-                data: {
-                  kind: 'agent-unavailable',
-                },
+              HQ_ERRORS.create('claudeFailed', {
+                data: { kind: 'agent-unavailable' },
               }),
             );
           }
           await session.opening.catch((cause: unknown) => {
-            if (
-              isException(cause) &&
-              z.object({ cleanupUnconfirmed: z.literal(true) }).safeParse(cause.data).success
-            )
-              throw cause;
+            if (isCleanupUnconfirmed(cause)) throw cause;
           });
           await session.transition?.catch(() => undefined);
           await session.connection?.close();

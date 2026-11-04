@@ -19,8 +19,7 @@ export const AgentHqOptionsSchema = z.strictObject({
   claudeAdditionalDirectories: z.array(z.string().min(1).refine(isAbsolute)).max(128).optional(),
   /*
    * Proves no process of a runtime that stopped without releasing the state root remains, which
-   * lets startup replace its owner record and clear its leftover lock and socket. The host
-   * guarantees that at most one caller reclaims a given state root at a time.
+   * lets startup take its runtime lock over and clear the snapshot lock and socket it left.
    */
   isPreviousRuntimeStopped: z
     .custom<IPreviousRuntimeCheck>((input) => typeof input === 'function')
@@ -28,7 +27,7 @@ export const AgentHqOptionsSchema = z.strictObject({
 });
 export type IAgentHqOptions = z.infer<typeof AgentHqOptionsSchema>;
 
-// the recorded owner of a state root whose process no longer exists
+// the runtime lock's owner whose process no longer exists, and when it took the lock
 export type IPreviousRuntimeOwner = { pid: number; createdAt: string };
 // a host check that resolves true only when no process of that runtime remains
 export type IPreviousRuntimeCheck = (owner: IPreviousRuntimeOwner) => Promise<boolean>;
@@ -95,15 +94,12 @@ export type IAgentHq = {
    */
   request(command: IHqRequestInput): Promise<IHqResponse>;
   /**
-   * Closes owned resources before removing the exact lifetime record.
-   * @returns A promise resolved after confirmed resource shutdown and owner release.
+   * Closes owned resources before releasing the runtime lock.
+   * @returns A promise resolved after confirmed resource shutdown and lock release.
    * @throws
    * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-   * - JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE: The HQ state directory is unsafe
-   * - JG_AGENT_HQ_STATE_FILE_UNSAFE: The HQ state file is unsafe
    * - JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE: The HQ runtime owner is unverifiable
-   * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
    */
   close(): Promise<void>;
 };

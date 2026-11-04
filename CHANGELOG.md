@@ -12,6 +12,18 @@
 - `inspectHqSnapshot`. Capture, `packHqSnapshot`, `unpackHqSnapshot` and `restoreHqSnapshot` still inspect the complete snapshot.
 - The provider-wide admission fence, which held new execution while an account change or a Codex MCP reload was pending, and the receipt field `controlState`.
 - Storage: the `hq_thread` columns `fork_source_thread_id` and `is_archived`, the `hq_action` column `control_state`, the `hq_event` columns `thread_id`, `action_id`, `native_turn_id`, `native_item_id`, `kind` and `created_at`, which kept the lifecycle replay, and the indexes `hq_idx_a__provider_created_at_id_desc`, `hq_idx_a__provider_epoch_pending_control`, `hq_idx_e__thread_id_sequence` and `hq_idx_ce__workspace_native_turn_start_current`. `hq_event` keeps only what recognizes a repeated native observation. The schema stamp changes with it, so startup refuses storage an earlier version wrote, naming that version; HQ never migrates storage.
+- The HQ lock: `acquireHqLock`, `withHqLock`, `readHqLockState`, `releaseHqLock`, `getOwnerLiveness`, `RUNTIME_DIRECTORY`, `HQ_LOCK_FILE` and the types `IHqLockOwner`, `IOwnerLiveness`, `IHqLockOptions` and `IHqLockState`, with the lock file they kept in the state root's `.runtime` folder and the runtime owner record `hq-owner.json`. Use [jg-locks](https://jg-packages.jesusgraterol.dev/packages/jg-locks/) for locks of your own.
+- The error codes `JG_AGENT_HQ_LOCK_INVALID_ARGUMENTS`, `JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM`, `JG_AGENT_HQ_LOCK_FILE_INVALID`, `JG_AGENT_HQ_LOCK_FILE_PERMISSIONS`, `JG_AGENT_HQ_LOCK_OWNER_OVERSIZED`, `JG_AGENT_HQ_LOCK_OWNER_UNREADABLE`, `JG_AGENT_HQ_LOCK_OWNER_INCOMPLETE`, `JG_AGENT_HQ_LOCK_OWNER_INACTIVE`, `JG_AGENT_HQ_LOCK_OWNER_UNVERIFIABLE`, `JG_AGENT_HQ_LOCK_TIMEOUT`, `JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED`, `JG_AGENT_HQ_LOCK_NOT_HELD`, `JG_AGENT_HQ_LOCK_NONCE_MISMATCH`, `JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID` and `JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS`. A state root that can't be created as a private directory now fails with `JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE`.
+- The IPC envelope's `schemaVersion`: requests carry `id`, `runtimeEpoch` and `command`, and responses `id`, `success` and their `response` or `error`. The CLI's JSON output keeps its `schemaVersion: 1`.
+- The `version` field of cursors. Cursors stay opaque, and every cursor an earlier version issued is refused with `JG_AGENT_HQ_CURSOR_INVALID`.
+
+### Changed
+
+- Locks live under `<stateRoot>/.runtime/locks` and are taken through jg-locks: the runtime holds the `runtime` lock for its lifetime, whose owner nonce is the runtime epoch, and capture holds the `snapshot` lock. A runtime that stopped without releasing the state root is taken over with jg-locks' `recoverFrom` only when its process is gone and the host's `isPreviousRuntimeStopped` resolves true, which now receives the `runtime` lock owner's process ID and start time; a `snapshot` lock the same process left is recovered with it. Any other dead holder stays until it is recovered with jg-locks. `createAgentHq` passes jg-locks' and jg-fs' errors for an unusable locks folder through unchanged, as the error reference lists them.
+
+### Fixed
+
+- Action admission records only a coded failure of a known kind as a failed action. Any other error during admission, such as a SQLite failure, rolls the admission back without recording the action and propagates as `JG_AGENT_HQ_STORE_FAILED`, its message carrying the cause, instead of recording an `operation-failed` action.
 
 ## 11.1.1
 

@@ -1,9 +1,11 @@
-import { createHash, createHmac, createSecretKey, randomUUID, type KeyObject } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { Exception } from 'jg-exception';
+import { hashValue, signHmac } from 'jg-crypto';
+import { isException } from 'jg-exception';
 import { z } from 'zod';
 
 import {
+  ErrorKindSchema,
   PreparedInputSchema,
   NativeApprovalSummarySchema,
   type INativeApprovalSummary,
@@ -13,7 +15,7 @@ import {
   type IHistoryProvenance,
 } from '../../contracts/index.js';
 import type { IEvidenceOriginsRequest } from '../../sessions/evidence/index.js';
-import { getErrorKind } from '../../errors/index.js';
+import { HQ_ERRORS, toActionFailure } from '../../errors/index.js';
 import { suffixThreadName } from '../../sessions/names/index.js';
 
 import {
@@ -46,16 +48,15 @@ import {
   type ITurnRecord,
 } from './types.js';
 
-const FailureSchema = z.object({
-  kind: z.enum(['state-conflict', 'access-denied', 'agent-unavailable', 'operation-failed']),
-});
+// a coded failure carries one of HQ's error kinds, unlike a defect such as a SQLite error
+const KnownFailureSchema = z.object({ kind: ErrorKindSchema });
 const ActionMetadataSchema = ActionRowSchema.omit({ queued_input: true, result: true });
 
 /** Owns synchronous control-ledger transactions inside the dedicated SQLite worker. */
 export class ControlModel {
   private readonly __database: DatabaseSync;
   private readonly __epoch: string;
-  private readonly __digestKey: KeyObject;
+  private readonly __digestKey: Uint8Array;
 
   /**
    * Quarantines unsettled controls from another runtime before accepting new actions, except the
@@ -64,7 +65,7 @@ export class ControlModel {
   public constructor(database: DatabaseSync, runtimeEpoch: string, digestKey: Uint8Array) {
     this.__database = database;
     this.__epoch = runtimeEpoch;
-    this.__digestKey = createSecretKey(digestKey);
+    this.__digestKey = digestKey;
     const now = Date.now();
     this.__transaction(() => {
       database
@@ -306,7 +307,9 @@ export class ControlModel {
   }
 
   /**
-   * Admits a command exactly once before any native write, with all ownership checks atomic.
+   * Admits a command exactly once before any native write, with all ownership checks atomic. A
+   * check that fails with a coded HQ error records the action as failed; any other error, such as
+   * a SQLite one, rolls the whole admission back and propagates, so the action isn't recorded.
    * @returns The durable receipt and the one action permitted to dispatch.
    * @throws
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
@@ -314,9 +317,7 @@ export class ControlModel {
   public admit(input: IAdmission): IAdmissionResult {
     return this.__transaction(() => {
       const { action, prepared } = input;
-      const digest = createHmac('sha256', this.__digestKey)
-        .update(JSON.stringify(action))
-        .digest('hex');
+      const digest = signHmac(JSON.stringify(action), this.__digestKey);
       const existing = this.__action(action.id);
       if (existing) {
         if (existing.digest !== digest) this.__conflict();
@@ -364,7 +365,7 @@ export class ControlModel {
           .run(targetId, this.__thread(targetId)!.provider, action.id);
       const inputText = command.kind === 'steer' ? command.text : prepared.input?.text;
       if (inputText !== undefined && ['message', 'queue', 'steer'].includes(command.kind)) {
-        const inputSha256 = createHash('sha256').update(inputText).digest('hex');
+        const inputSha256 = hashValue(inputText);
         this.__database
           .prepare('UPDATE hq_action SET input_sha256 = ? WHERE id = ?')
           .run(inputSha256, action.id);
@@ -596,14 +597,15 @@ export class ControlModel {
         }
         this.__database.exec('RELEASE admission');
       } catch (error) {
+        // only a coded failure fails the action; anything else rolls the whole admission back
+        if (!isException(error) || !KnownFailureSchema.safeParse(error.data).success) throw error;
         this.__database.exec('ROLLBACK TO admission');
         this.__database.exec('RELEASE admission');
-        const metadata = FailureSchema.safeParse({ kind: getErrorKind(error) });
         this.__database
           .prepare(
             "UPDATE hq_action SET delivery = 'failed', failure = ?, updated_at = ? WHERE id = ?",
           )
-          .run(metadata.success ? metadata.data.kind : 'operation-failed', now, action.id);
+          .run(toActionFailure(error), now, action.id);
         dispatchActionId = null;
       }
       const saved = this.__action(action.id)!;
@@ -908,12 +910,8 @@ export class ControlModel {
         'requestId' in observation ? observation.requestId : null,
         'name' in observation ? observation.name : null,
       ];
-      const key = createHmac('sha256', this.__digestKey)
-        .update(JSON.stringify(tuple))
-        .digest('hex');
-      const digest = createHmac('sha256', this.__digestKey)
-        .update(JSON.stringify(observation))
-        .digest('hex');
+      const key = signHmac(JSON.stringify(tuple), this.__digestKey);
+      const digest = signHmac(JSON.stringify(observation), this.__digestKey);
       const prior = this.__database
         .prepare('SELECT digest FROM hq_event WHERE runtime_epoch = ? AND event_key = ?')
         .get(this.__epoch, key);
@@ -1304,11 +1302,8 @@ export class ControlModel {
   }
 
   private __conflict(): never {
-    throw new Exception('The HQ action conflicts with its recorded state', {
-      code: 'JG_AGENT_HQ_ACTION_CONFLICT',
-      data: {
-        kind: 'state-conflict',
-      },
+    throw HQ_ERRORS.create('actionConflict', {
+      data: { kind: 'state-conflict' },
     });
   }
 
