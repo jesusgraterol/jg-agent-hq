@@ -137,7 +137,8 @@ export const createProviderRegistry = (
       gap: (nativeId) => deliver(() => handlers?.gap(provider, nativeId)),
       background: (nativeId, count) =>
         deliver(() => handlers?.background(provider, nativeId, count)),
-      session: (nativeId, state) => deliver(() => handlers?.session(provider, nativeId, state)),
+      session: (nativeId, state, thread) =>
+        deliver(() => handlers?.session(provider, nativeId, state, thread)),
       delta: (nativeId, turnId, itemId, text) =>
         deliver(() => handlers?.delta(provider, nativeId, turnId, itemId, text)),
       prompt: (prompt) =>
@@ -267,12 +268,6 @@ export const createProviderRegistry = (
           readCapabilities: (nativeId) =>
             invoke((call) => adapter.readCapabilities(nativeId, call)),
           readHistory: (command) => invoke((call) => adapter.readHistory(command, call)),
-          ...(adapter.readObservedThread
-            ? {
-                readObservedThread: (nativeId: string) =>
-                  invoke((call) => adapter.readObservedThread!(nativeId, call)),
-              }
-            : {}),
           readModels: (command) => invoke((call) => adapter.readModels(command, call)),
           inspectThread: (nativeId, workspaceRoot) =>
             invokeControl((call) => adapter.inspectThread(nativeId, workspaceRoot, call)),

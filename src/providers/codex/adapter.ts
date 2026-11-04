@@ -13,6 +13,7 @@ import {
 import { resolveWorkspaceTarget } from '../../runtime/state/index.js';
 import { decodeHistoryCursor, encodeHistoryCursor } from '../../sessions/index.js';
 import type { IHistoryRequest } from '../../sessions/index.js';
+import type { IObservedThread } from '../../store/sessions/index.js';
 import {
   buildEvidencePage,
   evidencePosition,
@@ -48,26 +49,32 @@ export const createCodexProviderFactory = (
   id: 'codex',
   async create(context) {
     const native = await createCodexProvider(extraSkillRoots, daemonLauncher);
-    // whether each session is observed, read once: Codex saves it and it's inside an allowed workspace
-    const allowedSessions = new Map<string, boolean>();
+    /*
+     * Each session's workspace, name and creation time, read once, or null for one that isn't
+     * observed: Codex doesn't save it, or it runs outside the allowed workspaces.
+     */
+    const observedThreads = new Map<string, IObservedThread | null>();
     let observations = Promise.resolve();
     // records a session's state, read from Codex when no status change reported it
     const record = async (nativeId: string, reported: ISessionState | null): Promise<void> => {
-      let isAllowed = allowedSessions.get(nativeId);
+      let thread = observedThreads.get(nativeId);
       let state = reported;
-      if (isAllowed === undefined || state === null) {
+      if (thread === undefined || state === null) {
         const observed = await native.readObservedThread(nativeId);
+        const { workspaceRoot, name, createdAt } = observed.thread;
         state ??= observed.thread.state;
-        isAllowed =
+        thread =
           !observed.isEphemeral &&
-          (await resolveWorkspaceTarget(observed.thread.workspaceRoot, context.allowedRoots)
+          (await resolveWorkspaceTarget(workspaceRoot, context.allowedRoots)
             .then(() => true)
-            .catch(() => false));
-        if (allowedSessions.size >= 1024)
-          allowedSessions.delete(allowedSessions.keys().next().value!);
-        allowedSessions.set(nativeId, isAllowed);
+            .catch(() => false))
+            ? { workspaceRoot, name, createdAt }
+            : null;
+        if (observedThreads.size >= 1024)
+          observedThreads.delete(observedThreads.keys().next().value!);
+        observedThreads.set(nativeId, thread);
       }
-      if (isAllowed) context.events.session(nativeId, state);
+      if (thread) context.events.session(nativeId, state, thread);
     };
     const observeSession = (nativeId: string, state: ISessionState): void => {
       observations = observations
@@ -252,6 +259,7 @@ export const createCodexProviderFactory = (
           models = MODEL_CATALOG_UNAVAILABLE;
         }
         return buildProviderCapabilities({
+          provider: 'codex',
           operations: { models },
           supportedMediaTypes: ['image/png', 'image/jpeg', 'image/webp', 'text/plain'],
           configurationSchema: {
@@ -267,7 +275,6 @@ export const createCodexProviderFactory = (
         });
       },
       readHistory,
-      readObservedThread: async (nativeId) => (await native.readObservedThread(nativeId)).thread,
       readConfiguration: (command, nativeId, call) =>
         native.readConfiguration(command, nativeId, call.signal),
       async readModels(command) {

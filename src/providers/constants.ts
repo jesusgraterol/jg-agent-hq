@@ -5,6 +5,7 @@ import {
   ProviderCapabilitySetSchema,
   type IProviderCapability,
   type IProviderCapabilitySet,
+  type IProviderId,
 } from '../contracts/index.js';
 
 // current input support is described by the same schema that admits HQ commands
@@ -17,8 +18,8 @@ export const SUPPORTED_PROVIDER_OPERATION = {
   reason: null,
 } as const;
 
-// the operations both providers support, which an adapter overrides where it differs
-export const DEFAULT_PROVIDER_OPERATIONS: IProviderCapabilitySet['operations'] = {
+// the operations both providers support, which a provider overrides where it differs
+const DEFAULT_PROVIDER_OPERATIONS: IProviderCapabilitySet['operations'] = {
   create: SUPPORTED_PROVIDER_OPERATION,
   adopt: SUPPORTED_PROVIDER_OPERATION,
   resume: SUPPORTED_PROVIDER_OPERATION,
@@ -32,6 +33,16 @@ export const DEFAULT_PROVIDER_OPERATIONS: IProviderCapabilitySet['operations'] =
   skills: SUPPORTED_PROVIDER_OPERATION,
   models: SUPPORTED_PROVIDER_OPERATION,
   configuration: SUPPORTED_PROVIDER_OPERATION,
+};
+
+/*
+ * Each provider's operation support, which never changes while it runs, so admission reads it here
+ * instead of asking the native CLI. A capabilities read reports what the CLI says of the model
+ * catalog and Claude's session skills in their place.
+ */
+export const PROVIDER_OPERATIONS: Record<IProviderId, IProviderCapabilitySet['operations']> = {
+  codex: DEFAULT_PROVIDER_OPERATIONS,
+  claude: DEFAULT_PROVIDER_OPERATIONS,
 };
 
 // the model operation of a provider whose native model catalog can't be read

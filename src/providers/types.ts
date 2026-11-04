@@ -21,11 +21,11 @@ import type {
   ISessionConfiguration,
   IPreparedInput,
   ISessionState,
-  IThreadSummary,
 } from '../contracts/index.js';
 import type { IProviderInputFile } from './inputs/index.js';
 import type { IHistoryRequest } from '../sessions/index.js';
 import type { INativeObservation, INativeOutcome } from '../store/control/index.js';
+import type { IObservedThread } from '../store/sessions/index.js';
 
 // control acknowledgements retain exact identities without interpreting unknown execution states
 export const ProviderThreadSchema = ThreadSummarySchema.pick({
@@ -93,8 +93,9 @@ export type IAgentProviderEvents = {
    */
   resync(nativeId: string | undefined, lost: IResyncLoss): void;
   outcome(outcome: IAgentProviderOutcome, thread?: IProviderThread): void;
-  // the live state of a session another client drives, inside the allowed workspaces
-  session(nativeId: string, state: ISessionState): void;
+  // the live state of a session another client drives, inside the allowed workspaces, with what
+  // the adapter's first read of it found
+  session(nativeId: string, state: ISessionState, thread: IObservedThread): void;
   unavailable(nativeId?: string): void;
 };
 
@@ -138,12 +139,6 @@ export type IAgentProvider = {
   ): Promise<ISessionConfiguration>;
   /** @returns One authorized, bounded native history response with query-bound continuation. */
   readHistory(command: IHistoryRequest, call: IProviderCall): Promise<IHqResponse>;
-  /**
-   * Reads a session another client drives by its identity alone, for active-session reads; a
-   * provider without it has its observed sessions left out of them.
-   * @returns The session's summary, whose workspace is where it runs.
-   */
-  readObservedThread?(nativeId: string, call: IProviderCall): Promise<IThreadSummary>;
   /** @returns Verified native metadata and explicit eligibility for adoption or reattachment. */
   inspectThread(
     nativeId: string,

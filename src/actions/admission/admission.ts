@@ -4,7 +4,7 @@ import type {
   IManagedThread,
   IPreparedInput,
 } from '../../contracts/index.js';
-import { readInputFiles } from '../../providers/index.js';
+import { PROVIDER_OPERATIONS, readInputFiles } from '../../providers/index.js';
 import { capabilityUnavailable } from '../../providers/registry/index.js';
 import { resolveWorkspaceTarget } from '../../runtime/state/index.js';
 import type { IAdmission } from '../../store/control/index.js';
@@ -74,12 +74,9 @@ export const createAdmission = (
     if (!provider) return (await store.call('admission', 'admit', { action, prepared })).receipt;
     const control = await registry.get(provider);
     if (!control.isAvailable) agentUnavailable();
-    if (command.kind === 'steer') {
-      const capabilities = await control.readCapabilities(
-        (await store.call('reads', 'getThread', command.threadId))?.nativeId ?? undefined,
-      );
-      if (capabilities.operations.steer.state !== 'supported') capabilityUnavailable();
-    }
+    // operation support never changes while a provider runs, so it is read without the native CLI
+    if (command.kind === 'steer' && PROVIDER_OPERATIONS[provider].steer.state !== 'supported')
+      capabilityUnavailable();
     if (command.kind === 'thread-create' || command.kind === 'thread-adopt')
       prepared.workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, roots);
     if (command.kind === 'thread-adopt') {

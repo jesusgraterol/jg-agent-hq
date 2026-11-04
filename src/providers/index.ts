@@ -16,7 +16,11 @@ export type {
   IAgentProviderEvents,
   IAgentProviderOutcome,
 } from './types.js';
-export { MODEL_CATALOG_UNAVAILABLE, SUPPORTED_PROVIDER_OPERATION } from './constants.js';
+export {
+  MODEL_CATALOG_UNAVAILABLE,
+  PROVIDER_OPERATIONS,
+  SUPPORTED_PROVIDER_OPERATION,
+} from './constants.js';
 export { buildProviderCapabilities, parseActionRequest, toActionRequestId } from './utilities.js';
 export { createProviderProcess, isOwnedProcess } from './process.js';
 

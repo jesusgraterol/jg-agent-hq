@@ -71,6 +71,7 @@ export const createClaudeProviderFactory = (
           }
         }
         return buildProviderCapabilities({
+          provider: 'claude',
           operations: { models, skills },
           supportedMediaTypes: [
             'image/png',

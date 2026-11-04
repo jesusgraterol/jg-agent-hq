@@ -4,54 +4,17 @@ import type { IProviderId, ISessionState, ISessionTransition } from '../../contr
 
 import type { IStatements } from '../utilities.js';
 
-import type { IActiveSessionRecord } from './types.js';
+import { ACTIVE_SESSIONS, RETENTION_MS } from './constants.js';
+import type { IActiveSessionRecord, IObservedSession } from './types.js';
 
-// closed observed sessions are forgotten after the same seven days that transitions are kept
-const RETENTION_MS = 604_800_000;
-
-/*
- * Running and waiting sessions by their latest state change, with the idle ones among the included
- * sessions, which run background commands. A stopping managed thread reports the state it stops,
- * from its last transition, and an observed Claude session joins its indexed transcript, if any,
- * by session ID. The included sessions are one JSON array of [provider, native ID] pairs.
- */
-const ACTIVE_SESSIONS = `WITH included(provider, native_id) AS (
-  SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?)
-)
-SELECT provider, native_id, state, changed_at, thread, history FROM (
-  SELECT agent_hq_thread.provider, agent_hq_thread.native_id,
-    EXISTS (SELECT 1 FROM included WHERE included.provider = agent_hq_thread.provider AND included.native_id = agent_hq_thread.native_id) AS is_included,
-    coalesce(map.session_state, (SELECT state FROM agent_hq_session_transition WHERE thread_id = agent_hq_thread.id ORDER BY sequence DESC LIMIT 1), 'unknown') AS state,
-    coalesce((SELECT recorded_at FROM agent_hq_session_transition WHERE thread_id = agent_hq_thread.id ORDER BY sequence DESC LIMIT 1), agent_hq_thread.updated_at) AS changed_at,
-    json_object('id', agent_hq_thread.id, 'ownership', agent_hq_thread.ownership, 'name', agent_hq_thread.name,
-      'workspaceRoot', agent_hq_thread.workspace_root, 'nativeLineage', json(agent_hq_thread.native_lineage),
-      'createdAt', agent_hq_thread.created_at, 'updatedAt', agent_hq_thread.updated_at) AS thread,
-    NULL AS history
-  FROM agent_hq_thread INNER JOIN agent_hq_session_state_map AS map ON map.thread_state = agent_hq_thread.state
-  WHERE agent_hq_thread.native_id IS NOT NULL AND (map.session_state IS NULL OR map.session_state IN ('running', 'waiting')
-    OR EXISTS (SELECT 1 FROM included WHERE included.provider = agent_hq_thread.provider AND included.native_id = agent_hq_thread.native_id))
-  UNION ALL
-  SELECT observed.provider, observed.native_id,
-    EXISTS (SELECT 1 FROM included WHERE included.provider = observed.provider AND included.native_id = observed.native_id),
-    observed.state, observed.observed_at, NULL,
-    CASE WHEN observed.provider = 'claude' THEN (
-      SELECT json_object('name', name, 'createdAt', created_at, 'updatedAt', updated_at,
-        'isSupported', json(CASE WHEN supported = 1 THEN 'true' ELSE 'false' END))
-      FROM agent_hq_claude_file WHERE native_id = observed.native_id AND workspace_state = 'matching'
-      ORDER BY updated_at DESC LIMIT 1
-    ) END
-  FROM agent_hq_observed_session AS observed WHERE observed.state IN ('running', 'waiting')
-    OR EXISTS (SELECT 1 FROM included WHERE included.provider = observed.provider AND included.native_id = observed.native_id)
-) WHERE state IN ('running', 'waiting') OR (is_included AND state = 'idle')
-ORDER BY changed_at DESC, native_id DESC LIMIT ?`;
-
-// one active session row, whose thread and history are JSON objects SQLite built from HQ's columns
+// one active session row, whose thread, observed thread and history are JSON objects SQLite built
 type IActiveRow = {
   provider: IActiveSessionRecord['provider'];
   native_id: string;
   state: IActiveSessionRecord['state'];
   changed_at: number;
   thread: string | null;
+  observed_thread: string | null;
   history: string | null;
 };
 type ITransitionRow = {
@@ -78,14 +41,11 @@ export class SessionsModel {
   }
 
   /**
-   * Records the states of sessions HQ doesn't manage; the schema's triggers append the
-   * transitions. A complete observation also closes every open session of that provider it omits.
+   * Records the states of sessions HQ doesn't manage, and on a session's first record what its
+   * provider's first read of it found; the schema's triggers append the transitions. A complete
+   * observation also closes every open session of that provider it omits.
    */
-  public observe(
-    provider: IProviderId,
-    sessions: { nativeId: string; state: ISessionState }[],
-    isComplete: boolean,
-  ): void {
+  public observe(provider: IProviderId, sessions: IObservedSession[], isComplete: boolean): void {
     const now = Date.now();
     this.__database.exec('BEGIN IMMEDIATE');
     try {
@@ -119,11 +79,14 @@ export class SessionsModel {
         )
           continue;
         this.__statements.run(
-          'INSERT INTO agent_hq_observed_session (provider, native_id, state, observed_at) VALUES (?, ?, ?, ?) ON CONFLICT (provider, native_id) DO UPDATE SET state = excluded.state, observed_at = excluded.observed_at WHERE agent_hq_observed_session.state != excluded.state',
+          'INSERT INTO agent_hq_observed_session (provider, native_id, state, observed_at, workspace_root, name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (provider, native_id) DO UPDATE SET state = excluded.state, observed_at = excluded.observed_at WHERE agent_hq_observed_session.state != excluded.state',
           provider,
           session.nativeId,
           session.state,
           now,
+          session.thread?.workspaceRoot ?? null,
+          session.thread?.name ?? null,
+          session.thread?.createdAt ?? null,
         );
       }
       if (isComplete) {
@@ -205,6 +168,7 @@ export class SessionsModel {
         state: row.state,
         changedAt: row.changed_at,
         thread: row.thread === null ? null : JSON.parse(row.thread),
+        observed: row.observed_thread === null ? null : JSON.parse(row.observed_thread),
         history: row.history === null ? null : JSON.parse(row.history),
       })),
       isTruncated: rows.length > limit,

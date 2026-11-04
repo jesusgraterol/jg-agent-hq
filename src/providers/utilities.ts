@@ -5,9 +5,10 @@ import {
   MAX_TEXT_FILE_BYTES,
   type IActionPhase,
   type IProviderCapabilitySet,
+  type IProviderId,
 } from '../contracts/index.js';
 
-import { DEFAULT_PROVIDER_OPERATIONS, PROVIDER_INPUT_SCHEMA } from './constants.js';
+import { PROVIDER_INPUT_SCHEMA, PROVIDER_OPERATIONS } from './constants.js';
 
 // the request ID HQ sends a native CLI for an action's phase, `<action ID>:<phase>`
 const ACTION_REQUEST_ID = new RegExp(`^([a-f0-9-]{36}):(${ACTION_PHASES.join('|')})$`);
@@ -35,21 +36,24 @@ export const parseActionRequest = (
 };
 
 /**
- * Builds a provider's capabilities from the operations and input limits both providers share.
- * @param overrides The operations that differ from the shared ones, the media types the provider
+ * Builds a provider's capabilities from its operation support and the input limits both providers
+ * share.
+ * @param overrides The provider, the operations its native CLI reports now, the media types it
  * accepts, and its configuration schema.
  * @returns The provider's capability set.
  */
 export const buildProviderCapabilities = ({
+  provider,
   operations,
   supportedMediaTypes,
   configurationSchema,
 }: {
+  provider: IProviderId;
   operations: Partial<IProviderCapabilitySet['operations']>;
   supportedMediaTypes: string[];
   configurationSchema: IProviderCapabilitySet['configurationSchema'];
 }): IProviderCapabilitySet => ({
-  operations: { ...DEFAULT_PROVIDER_OPERATIONS, ...operations },
+  operations: { ...PROVIDER_OPERATIONS[provider], ...operations },
   inputSchema: {
     ...PROVIDER_INPUT_SCHEMA,
     supportedMediaTypes,

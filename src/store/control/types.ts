@@ -78,6 +78,7 @@ export type INativeOutcome = IOutcomeFields &
   );
 
 type INativeTurnFields = { provider: IProviderId; nativeThreadId: string; nativeTurnId: string };
+// native evidence that changes durable state; live items stay in the runtime's memory
 export type INativeObservation =
   | ({ kind: 'turn-started' } & INativeTurnFields)
   | ({
@@ -85,9 +86,6 @@ export type INativeObservation =
       state: NonNullable<IActionReceipt['completion']>;
       result?: ITurnResult;
     } & INativeTurnFields)
-  | ({ kind: 'item-started'; nativeItemId: string } & INativeTurnFields)
-  | ({ kind: 'item-completed'; nativeItemId: string } & INativeTurnFields)
-  | { kind: 'name-updated'; provider: IProviderId; nativeThreadId: string; name: string | null }
   | {
       kind: 'request-resolved' | 'request-canceled';
       provider: IProviderId;

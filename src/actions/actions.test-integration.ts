@@ -1767,29 +1767,27 @@ test('large live windows bound serialized output, expose gaps and truncate text 
       () => fixture.thread(thread.id),
       (entry) => entry.state === 'running',
     );
-    const emit = async (events: { method: string; params: object }[]) => {
-      await fixture.control({ holdTurn: true, emit: events });
-      await fixture.request({ kind: 'usage', provider: 'codex' });
-      await fixture.control({ holdTurn: true });
-      await wait(10);
-    };
-    for (let offset = 0; offset < 130; offset += 16) {
-      await emit(
-        Array.from({ length: Math.min(16, 130 - offset) }, (_, index) => ({
-          method: 'item/completed',
-          params: {
-            threadId: thread.nativeId,
-            turnId: active.activeTurnId,
-            item: { id: `bounded-${offset + index}`, type: 'agentMessage', text: 'Small item' },
-          },
-        })),
-      );
-    }
+    /*
+     * The daemon sends the notifications before its answer to the request, and live items never
+     * wait in the event lane, so the window holds them once the request returns.
+     */
+    const send = (events: { method: string; params: object }[]) =>
+      emit(fixture, { holdTurn: true }, events);
+    await send(
+      Array.from({ length: 130 }, (_, index) => ({
+        method: 'item/completed',
+        params: {
+          threadId: thread.nativeId,
+          turnId: active.activeTurnId,
+          item: { id: `bounded-${index}`, type: 'agentMessage', text: 'Small item' },
+        },
+      })),
+    );
     const bounded = await fixture.request({ kind: 'live-items', threadId: thread.id });
     if (bounded.kind !== 'live-items') throw new Error('wrong response');
     expect(bounded.result.data).toHaveLength(128);
     expect(bounded.result.hasGap).toBe(true);
-    await emit(
+    await send(
       Array.from({ length: 16 }, (_, index) => ({
         method: 'item/completed',
         params: {
@@ -1804,7 +1802,7 @@ test('large live windows bound serialized output, expose gaps and truncate text 
     expect(large.result.data.length).toBeLessThan(16);
     expect(Buffer.byteLength(JSON.stringify(large))).toBeLessThan(4 * 1024 * 1024 + 1024);
     expect(large.result.hasGap).toBe(true);
-    await emit([
+    await send([
       {
         method: 'item/started',
         params: {
@@ -2207,15 +2205,12 @@ test('overflowing native events stop control and preserve explicit uncertain own
       () => fixture.thread(thread.id),
       (entry) => entry.state === 'running',
     );
+    // request resolutions are lifecycle evidence, which the provider's lane of 128 persists in order
     await fixture.control({
       holdTurn: true,
       emit: Array.from({ length: 2048 }, (_, index) => ({
-        method: 'item/completed',
-        params: {
-          threadId: thread.nativeId,
-          turnId: active.activeTurnId,
-          item: { id: `overflow-${index}`, type: 'agentMessage', text: 'item' },
-        },
+        method: 'serverRequest/resolved',
+        params: { threadId: thread.nativeId, requestId: `overflow-${index}` },
       })),
     });
     await fixture.request({ kind: 'usage', provider: 'codex' });
@@ -3182,3 +3177,148 @@ test('a response over the frame limit is discarded, leaving its request to fail 
   }
   // the request waits out the native connection's 30-second response deadline on purpose
 }, 45_000);
+
+// the durable native observations the runtime recorded, by which it recognizes a repeated one
+const countEvents = (stateRoot: string): number => {
+  const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'), { readOnly: true });
+  try {
+    return z
+      .object({ count: z.number() })
+      .parse(database.prepare('SELECT count(*) AS count FROM agent_hq_event').get()).count;
+  } finally {
+    database.close();
+  }
+};
+
+test('live items stay in memory: a burst of them records nothing and leaves control running, while a repeated turn start is still recognized', async () => {
+  const fixture = await setup();
+  try {
+    const { thread, nativeId, turnId } = await startHeldTurn(fixture, 'items-in-memory');
+    const recorded = countEvents(fixture.stateRoot);
+    const startedAt = 1_800_000_000 + Number(/^native-turn-(\d+)$/.exec(turnId)![1]);
+    /*
+     * More items than a provider's lane holds, the turn's start again, and the resolution of a
+     * request no approval waits on, the one new observation, which the lane persists last.
+     */
+    await emit(fixture, { holdTurn: true }, [
+      ...Array.from({ length: 2048 }, (_, index) => ({
+        method: 'item/completed',
+        params: {
+          threadId: nativeId,
+          turnId,
+          item: { id: `burst-${index}`, type: 'agentMessage', text: 'Streamed' },
+        },
+      })),
+      {
+        method: 'turn/started',
+        params: { threadId: nativeId, turn: { id: turnId, status: 'inProgress', startedAt } },
+      },
+      { method: 'serverRequest/resolved', params: { threadId: nativeId, requestId: 'marker' } },
+    ]);
+    await expect.poll(() => countEvents(fixture.stateRoot), { timeout: 5_000 }).toBe(recorded + 1);
+    expect(await fixture.thread(thread.id)).toMatchObject({
+      state: 'running',
+      ownership: 'managed',
+      activeTurnId: turnId,
+    });
+    // the window holds the newest 128 items of the burst
+    const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
+    if (live.kind !== 'live-items') throw new Error('wrong response');
+    expect(live.result.data).toHaveLength(128);
+    expect(live.result.data.at(-1)?.nativeId).toBe('burst-2047');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test.each(['codex', 'claude'] as const)(
+  'admitting a %s steer or thread-close asks the native CLI nothing about operation support',
+  async (provider) => {
+    await withClaudeRuntime(async (fixture) => {
+      const status = await fixture.request({ kind: 'status' });
+      if (status.kind !== 'status') throw new Error('Missing runtime status');
+      const submit = async (command: IActionCommand): Promise<IActionReceipt> => {
+        const action = { id: randomUUID(), runtimeEpoch: status.result.runtimeEpoch, command };
+        const response = await fixture.request({ kind: 'action', action });
+        if (response.kind !== 'action') throw new Error('Missing action receipt');
+        return response.result;
+      };
+      const receipt = async (id: string) => {
+        const response = await fixture.request({ kind: 'receipt', actionId: id });
+        return response.kind === 'receipt' ? response.result : null;
+      };
+      const thread = async (id: string) => {
+        const response = await fixture.request({ kind: 'managed-thread', threadId: id });
+        return response.kind === 'managed-thread' ? response.result : null;
+      };
+      // starting a native process can take seconds while other files run
+      const settle = (id: string) =>
+        expect
+          .poll(async () => (await receipt(id))?.delivery, { timeout: 5_000 })
+          .toBe('acknowledged');
+      const lines = async (filename: string) =>
+        (await readFile(join(fixture.root, filename), 'utf8')).trim().split('\n').filter(Boolean);
+      /*
+       * What the provider's CLI received, in order: Codex's methods, or the type or control subtype
+       * of each message Claude's session and read processes read.
+       */
+      const nativeCalls = async (): Promise<string[]> =>
+        provider === 'codex'
+          ? (await lines('calls.jsonl')).map(
+              (line) => z.object({ method: z.string() }).parse(JSON.parse(line)).method,
+            )
+          : (await lines('claude-calls.jsonl')).map((line) => {
+              const message = z
+                .object({ type: z.string(), request: z.object({ subtype: z.string() }).optional() })
+                .parse(JSON.parse(line));
+              return message.request?.subtype ?? message.type;
+            });
+      // the calls a support check makes, which list the models and Codex's skills
+      const supportChecks = ['model/list', 'skills/list', 'list_models'];
+      const created = await submit({
+        kind: 'thread-create',
+        provider,
+        workspaceRoot: fixture.workspaceRoot,
+        name: `${provider}-support`,
+      });
+      await settle(created.id);
+      const threadId = created.threadId!;
+      if (provider === 'codex')
+        await writeFixtureControl(fixture.root, 'control.json', { holdTurn: true });
+      else await fixture.control({ holdTurn: true, steer: 'join' });
+      const message = await submit({
+        kind: 'message',
+        threadId,
+        input: { kind: 'text', text: 'Keep working' },
+      });
+      await settle(message.id);
+      const turnId = (await receipt(message.id))!.nativeTurnId!;
+
+      const beforeSteer = await nativeCalls();
+      const steer = await submit({
+        kind: 'steer',
+        threadId,
+        expectedTurnId: turnId,
+        text: 'Also check the logout path',
+      });
+      await settle(steer.id);
+      // the steer itself is the one native call
+      expect((await nativeCalls()).slice(beforeSteer.length)).toStrictEqual([
+        provider === 'codex' ? 'turn/steer' : 'user',
+      ]);
+
+      const stop = await submit({ kind: 'interrupt', threadId, expectedTurnId: turnId });
+      await settle(stop.id);
+      await expect
+        .poll(async () => (await thread(threadId))?.activeTurnId, { timeout: 5_000 })
+        .toBeNull();
+      const beforeClose = await nativeCalls();
+      const close = await submit({ kind: 'thread-close', threadId });
+      await settle(close.id);
+      const closeCalls = (await nativeCalls()).slice(beforeClose.length);
+      // the interrupted turn's own history read may start Claude's read process meanwhile
+      expect(closeCalls.filter((call) => supportChecks.includes(call))).toStrictEqual([]);
+      expect(await thread(threadId)).toMatchObject({ state: 'inactive' });
+    });
+  },
+);

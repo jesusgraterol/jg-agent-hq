@@ -891,6 +891,15 @@ const readActive = async (fixture: IClaudeFixture) => {
   if (response.kind !== 'active-sessions') throw new Error('Missing active sessions');
   return response.result;
 };
+// the sessions the Codex fixture was asked to read, in order
+const readCodexThreadReads = async (fixture: IClaudeFixture): Promise<string[]> =>
+  (await readFile(join(fixture.root, 'calls.jsonl'), 'utf8'))
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { method: string; params?: { threadId?: string } })
+    .filter((call) => call.method === 'thread/read')
+    .map((call) => call.params?.threadId ?? '');
 
 test('active sessions list managed sessions that run or wait, newest state change first', async () => {
   await withClaudeRuntime(async (fixture) => {
@@ -944,7 +953,7 @@ test('active sessions list managed sessions that run or wait, newest state chang
   });
 });
 
-test('active observed sessions take their workspace from the Claude poll and from Codex', async () => {
+test("active observed sessions take their workspace from the Claude poll and from Codex's first read", async () => {
   await withClaudeRuntime(async (fixture) => {
     await fixture.request({ kind: 'observation-pace', pace: 'live' });
     // a terminal Claude session working in a subdirectory whose history was never read
@@ -978,14 +987,18 @@ test('active observed sessions take their workspace from the Claude poll and fro
       .poll(async () => (await readActive(fixture)).data.map((session) => session.nativeId))
       .toStrictEqual(['thread-1023', busy]);
     const [codex, claude] = (await readActive(fixture)).data;
+    // the fake's session 1023 was created at 1,700,000,511 seconds
     expect(codex).toMatchObject({
       provider: 'codex',
       workspaceRoot: fixture.workspaceRoot,
       name: 'Task 1023',
+      createdAt: 1_700_000_511_000,
       state: 'waiting',
       ownership: 'external',
       managedId: null,
     });
+    // Codex read the session once, when its status first reported it, and active reads never did
+    expect(await readCodexThreadReads(fixture)).toStrictEqual(['thread-1023']);
     expect(claude).toMatchObject({
       provider: 'claude',
       nativeLineage: { sessionId: busy, parentThreadId: null, forkedFromId: null },
@@ -1007,8 +1020,9 @@ test('active sessions return the newest 128 of more, in running and waiting stat
       await expect.poll(() => countHeldDelays(30)).toBe(1);
       const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { timeout: 5_000 });
       try {
+        // each Codex session with the workspace, name and creation time its first read found
         const insert = database.prepare(
-          'INSERT INTO agent_hq_observed_session (provider, native_id, state, observed_at) VALUES (?, ?, ?, ?)',
+          'INSERT INTO agent_hq_observed_session (provider, native_id, state, observed_at, workspace_root, name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
         );
         for (let index = 0; index < 130; index += 1)
           insert.run(
@@ -1016,11 +1030,22 @@ test('active sessions return the newest 128 of more, in running and waiting stat
             `active-${String(index).padStart(4, '0')}`,
             index % 2 ? 'running' : 'waiting',
             1_700_000_000_000 + index,
+            fixture.workspaceRoot,
+            `Task ${index}`,
+            1_600_000_000_000,
           );
         for (const state of ['idle', 'closed', 'failed', 'unknown'])
-          insert.run('codex', `inactive-${state}`, state, 1_800_000_000_000);
+          insert.run(
+            'codex',
+            `inactive-${state}`,
+            state,
+            1_800_000_000_000,
+            fixture.workspaceRoot,
+            null,
+            1_600_000_000_000,
+          );
         // a Claude session no poll of this runtime has listed has no known workspace yet
-        insert.run('claude', randomUUID(), 'running', 1_800_000_000_000);
+        insert.run('claude', randomUUID(), 'running', 1_800_000_000_000, null, null, null);
       } finally {
         database.close();
       }
@@ -1033,6 +1058,8 @@ test('active sessions return the newest 128 of more, in running and waiting stat
       expect(active.data.every((session) => session.workspaceRoot === fixture.workspaceRoot)).toBe(
         true,
       );
+      // the summaries come from the records, without reading one session from Codex
+      expect(await readCodexThreadReads(fixture)).toStrictEqual([]);
     });
   } finally {
     stopHoldingDelays();

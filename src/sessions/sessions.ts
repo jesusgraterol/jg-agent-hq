@@ -237,12 +237,10 @@ export const readUnstartedThreads = async (
 
 /**
  * Summarizes one active session, or returns null for one left out: outside the allowed workspaces,
- * an observed Claude session the latest `claude agents --json` run didn't list, and an observed
- * session its provider can't read, as observation itself leaves such a session out.
+ * or an observed Claude session the latest `claude agents --json` run didn't list.
  */
 const toActiveSummary = async (
   record: IActiveSessionRecord,
-  registry: ReturnType<typeof createProviderRegistry>,
   resolveRoot: (directory: string) => Promise<string | null>,
   claude: IClaudeSessions,
 ): Promise<IThreadSummary | null> => {
@@ -286,30 +284,37 @@ const toActiveSummary = async (
       continuedIn: null,
     };
   }
-  let thread: IThreadSummary;
-  try {
-    const adapter = await registry.get(record.provider);
-    if (!adapter.readObservedThread) return null;
-    thread = await adapter.readObservedThread(record.nativeId);
-  } catch {
-    return null;
-  }
-  const workspaceRoot = await resolveRoot(thread.workspaceRoot);
+  // an observed Codex session keeps what the first read of it found
+  if (!record.observed) return null;
+  const workspaceRoot = await resolveRoot(record.observed.workspaceRoot);
   if (workspaceRoot === null) return null;
-  return { ...thread, ...base, workspaceRoot, ownership: 'external', managedId: null };
+  return {
+    ...base,
+    nativeLineage: { sessionId: null, parentThreadId: null, forkedFromId: null },
+    workspaceRoot,
+    name: record.observed.name,
+    createdAt: record.observed.createdAt,
+    updatedAt: record.changedAt,
+    nativeState: 'unknown',
+    ownership: 'external',
+    managedId: null,
+    historyState: 'available',
+    terminal: null,
+    backgroundCommands: 0,
+    continuedIn: null,
+  };
 };
 
 /**
  * Reads every running and waiting session, managed and observed, and every idle one that runs
- * background commands, newest state change first, each as the summary `threads` returns. An
- * observed Claude session's workspace is the `cwd` the latest `claude agents --json` run
- * reported, and other observed sessions' come from their provider's `readObservedThread`.
+ * background commands, newest state change first, each as the summary `threads` returns, without
+ * a native read. An observed Claude session's workspace is the `cwd` the latest
+ * `claude agents --json` run reported, and an observed Codex session's comes from its record.
  * @returns At most 128 summaries and whether more sessions are active.
  * @throws
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
  */
 export const readActiveSessions = async (
-  registry: ReturnType<typeof createProviderRegistry>,
   projection: IStore,
   allowedRoots: string[],
   claude: IClaudeSessions,
@@ -332,7 +337,7 @@ export const readActiveSessions = async (
   };
   const data: IThreadSummary[] = [];
   for (const record of records.data) {
-    const summary = await toActiveSummary(record, registry, resolveRoot, claude);
+    const summary = await toActiveSummary(record, resolveRoot, claude);
     if (summary) data.push(withListing(summary, claude));
   }
   return { data, isTruncated: records.isTruncated };

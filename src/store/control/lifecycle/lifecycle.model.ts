@@ -20,7 +20,8 @@ import type { IObservationResult, IReattachment, IThreadRow } from '../types.js'
 export class ControlLifecycle extends ControlModel {
   /**
    * Quarantines unsettled controls from another runtime before accepting new actions, except the
-   * sessions Codex's shared daemon still runs, which the runtime rejoins.
+   * sessions Codex's shared daemon still runs, which the runtime rejoins, and deletes the
+   * observations earlier runtimes recorded.
    */
   public constructor(
     database: DatabaseSync,
@@ -50,6 +51,8 @@ export class ControlLifecycle extends ControlModel {
         now,
         runtimeEpoch,
       );
+      // a repeated observation is recognized within one runtime, so earlier runtimes' rows go
+      statements.run('DELETE FROM agent_hq_event WHERE runtime_epoch != ?', runtimeEpoch);
     });
   }
 

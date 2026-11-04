@@ -132,9 +132,7 @@ export class ControlObservations extends ControlModel {
         observation.kind,
         observation.nativeThreadId,
         'nativeTurnId' in observation ? observation.nativeTurnId : null,
-        'nativeItemId' in observation ? observation.nativeItemId : null,
         'requestId' in observation ? observation.requestId : null,
-        'name' in observation ? observation.name : null,
       ];
       const key = signHmac(JSON.stringify(tuple), this._digestKey);
       const digest = signHmac(JSON.stringify(observation), this._digestKey);

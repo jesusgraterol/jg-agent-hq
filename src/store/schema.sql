@@ -32,7 +32,8 @@ CREATE TABLE agent_hq_thread (
 ) STRICT;
 
 CREATE INDEX agent_hq_idx_t__workspace_root_created_at_id_desc ON agent_hq_thread (workspace_root, created_at DESC, id DESC);
-CREATE INDEX agent_hq_idx_t__runtime_epoch_ownership ON agent_hq_thread (runtime_epoch, ownership);
+-- the threads a runtime binds, which a released thread leaves
+CREATE INDEX agent_hq_idx_t__runtime_epoch_ownership_bound ON agent_hq_thread (runtime_epoch, ownership) WHERE runtime_epoch IS NOT NULL;
 
 CREATE TABLE agent_hq_action (
   id TEXT NOT NULL,
@@ -95,7 +96,8 @@ CREATE INDEX agent_hq_idx_na__thread_id_state_created_at_id_desc ON agent_hq_nat
 CREATE INDEX agent_hq_idx_na__thread_id_created_at_id_desc ON agent_hq_native_approval (thread_id, created_at DESC, id DESC);
 CREATE INDEX agent_hq_idx_na__runtime_epoch_pending ON agent_hq_native_approval (runtime_epoch) WHERE state = 'pending';
 
--- each native observation a runtime applied, by its identity, so a repeated one is recognized
+-- each durable native observation this runtime applied, by its identity, so a repeated one is
+-- recognized; startup deletes earlier runtimes' rows
 CREATE TABLE agent_hq_event (
   sequence INTEGER CONSTRAINT agent_hq_pk_e__sequence PRIMARY KEY AUTOINCREMENT,
   runtime_epoch TEXT NOT NULL,
@@ -156,12 +158,16 @@ CREATE INDEX agent_hq_idx_ce__workspace_native_turn_kind_offset_current
 ON agent_hq_claude_entry(workspace_root, native_id, turn_id, item_kind, byte_offset)
 WHERE is_current = 1 AND is_visible = 1;
 
--- sessions another client drives, with the live state HQ last observed
+-- sessions another client drives, with the live state HQ last observed and what its first read of
+-- a Codex session found; Claude's poll reports a session's workspace instead
 CREATE TABLE agent_hq_observed_session (
   provider TEXT NOT NULL CHECK (length(provider) BETWEEN 1 AND 64),
   native_id TEXT NOT NULL CHECK (length(native_id) > 0),
   state TEXT NOT NULL CHECK (state IN ('running', 'waiting', 'idle', 'closed', 'failed', 'unknown')),
   observed_at INTEGER NOT NULL,
+  workspace_root TEXT,
+  name TEXT,
+  created_at INTEGER,
   CONSTRAINT agent_hq_pk_os__provider_native_id PRIMARY KEY (provider, native_id)
 ) STRICT;
 

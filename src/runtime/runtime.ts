@@ -307,7 +307,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       case 'active-sessions':
         return {
           kind: 'active-sessions',
-          result: await readActiveSessions(providers, projection, allowedRoots, claudeSessions),
+          result: await readActiveSessions(projection, allowedRoots, claudeSessions),
         };
       case 'unstarted-threads':
         return {

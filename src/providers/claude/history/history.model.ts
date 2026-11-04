@@ -35,6 +35,7 @@ import {
   type IEntryRow,
   type IFileRow,
   type IClaudeHistoryRead,
+  type IIndexingBudget,
   type IRecord,
 } from './types.js';
 import {
@@ -59,9 +60,17 @@ const itemCursors = createRequestCursors(EntrySeekSchema);
 const HISTORY_PROJECTION_VERSION = 10;
 // the transcripts whose continuing session is remembered, oldest dropped first
 const MAX_CONTINUED_ANSWERS = 1_024;
-// one record, such as a tool result holding images, and an indexing read, which fits the largest
+// one record, such as a tool result holding images
 const MAX_RECORD_BYTES = 33_554_432;
-const MAX_REFRESH_BYTES = 67_108_864;
+/*
+ * The new transcript bytes one worker call indexes, half of what a second indexes at the slowest
+ * measured rate, so a call stays well under a second; docs/architecture.md records the measurement.
+ * A call whose first record is larger reads that record whole.
+ */
+const INDEXING_BUDGET_BYTES = 8_388_608;
+// the ancestor record bytes an item detail reads in one call while it looks for a result's call,
+// which stays well under a second; docs/architecture.md records the measurement
+const MAX_CALL_SEARCH_BYTES = 67_108_864;
 // the record bytes and serialized items of one page, which stays well inside the IPC frame
 const MAX_PAGE_BYTES = 4_194_304;
 // hidden records awaiting a parent later in the file; Claude Code writes them a few lines early
@@ -218,16 +227,10 @@ export class ClaudeHistoryModel {
         },
       };
     }
-    let budget = MAX_REFRESH_BYTES;
-    const isIndexed = this.__inspect(
-      directory,
-      root,
-      command.nativeId,
-      () => budget,
-      (used) => {
-        budget -= used;
-      },
-    );
+    const isIndexed = this.__inspect(directory, root, command.nativeId, {
+      bytes: INDEXING_BUDGET_BYTES,
+      hasIndexed: false,
+    });
     // a scan still running counts this transcript as seen, so its completion keeps it
     this.__scans.get(root)?.seen.add(command.nativeId);
     if (!isIndexed) return { kind: 'indexing' };
@@ -344,7 +347,7 @@ export class ClaudeHistoryModel {
       let call: IRecord | null = null;
       if (isClaudeAnswer(record, item)) {
         let parent = entry.parent_uuid;
-        let budget = MAX_REFRESH_BYTES;
+        let budget = MAX_CALL_SEARCH_BYTES;
         for (let step = 0; parent !== null && step < MAX_CALL_DISTANCE; step += 1) {
           const ancestor = this.__entry(root, command.nativeId, parent);
           if (!ancestor || ancestor.turn_id !== entry.turn_id || ancestor.byte_length > budget)
@@ -558,10 +561,11 @@ export class ClaudeHistoryModel {
       this.__scans.set(root, scan);
     }
     const { seen } = scan;
-    let budget = MAX_REFRESH_BYTES;
+    const budget: IIndexingBudget = { bytes: INDEXING_BUDGET_BYTES, hasIndexed: false };
     let isComplete = false;
     try {
-      for (let inspected = 0; inspected < 128; inspected += 1) {
+      // a spent budget leaves the next transcript to the next call
+      for (let inspected = 0; inspected < 128 && budget.bytes > 0; inspected += 1) {
         let nativeId = scan.pending;
         if (!nativeId) {
           const entry = scan.entries.readSync();
@@ -576,17 +580,7 @@ export class ClaudeHistoryModel {
         // an inspected transcript stays in the index, even one whose records are unsupported
         seen.add(nativeId);
         try {
-          if (
-            !this.__inspect(
-              directory,
-              root,
-              nativeId,
-              () => budget,
-              (used) => {
-                budget -= used;
-              },
-            )
-          ) {
+          if (!this.__inspect(directory, root, nativeId, budget)) {
             scan.pending = nativeId;
             break;
           }
@@ -640,9 +634,10 @@ export class ClaudeHistoryModel {
   }
 
   /**
-   * Indexes a transcript's records past the position the index reached, within the read budget.
-   * A transcript whose identity, size and modification time match an index that reached its end
-   * is left as it is, without a write.
+   * Indexes a transcript's records past the position the index reached, within the call's budget,
+   * which it spends; the call's first record is read whole, whatever its size. A transcript whose
+   * identity, size and modification time match an index that reached its end is left as it is,
+   * without a write.
    * @returns Whether the index reached the transcript's end.
    * @throws
    * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
@@ -651,8 +646,7 @@ export class ClaudeHistoryModel {
     directory: string,
     root: string,
     nativeId: string,
-    remaining: () => number,
-    consume: (used: number) => void,
+    budget: IIndexingBudget,
   ): boolean {
     const fd = openTranscript(directory, nativeId);
     try {
@@ -707,10 +701,24 @@ export class ClaudeHistoryModel {
       };
       const isReleasable = ({ parentUuid }: { parentUuid: string }): boolean =>
         this.__hasEntry(root, nativeId, parentUuid);
+      // where this call started in the transcript, and whether it had the call's whole budget
+      const start = position;
+      const hasWholeBudget = !budget.hasIndexed;
+      /*
+       * The location of the first record held back now and the index's fields before it, with a
+       * savepoint there: a budgeted stop returns to it, so the next call indexes the hidden
+       * record together with the parent that follows it.
+       */
+      let beforeHeld = null as { offset: number; row: IFileRow } | null;
       const indexRecord = (bytes: Buffer, offset: number): void => {
+        const workspaceState = row.workspace_state;
         const parentUuid = this.__record(root, nativeId, row, bytes, offset, false);
         if (parentUuid !== null) {
           if (heldBack.length >= MAX_HELD_BACK_RECORDS) this.__unavailable();
+          if (!heldBack.length) {
+            this.__database.exec('SAVEPOINT agent_hq_held_back');
+            beforeHeld = { offset, row: { ...row, workspace_state: workspaceState } };
+          }
           heldBack.push({ offset, length: bytes.length, parentUuid });
           return;
         }
@@ -728,21 +736,30 @@ export class ClaudeHistoryModel {
             );
           held = heldBack.findIndex(isReleasable);
         }
+        if (beforeHeld && !heldBack.length) {
+          this.__database.exec('RELEASE agent_hq_held_back');
+          beforeHeld = null;
+        }
       };
       this.__database.exec('BEGIN IMMEDIATE');
       try {
-        while (position < stat.size && remaining() > 0) {
+        // a call that hasn't indexed a record yet reads on past its budget to the first record's end
+        while (position < stat.size && (budget.bytes > 0 || !budget.hasIndexed)) {
           const count = readSync(
             fd,
             chunk,
             0,
-            Math.min(chunk.length, stat.size - position, remaining()),
+            Math.min(
+              chunk.length,
+              stat.size - position,
+              budget.bytes > 0 ? budget.bytes : Infinity,
+            ),
             position,
           );
           if (count === 0) break;
           const chunkStart = position;
           position += count;
-          consume(count);
+          budget.bytes -= count;
           // a record that started in an earlier chunk is read again whole, not joined from chunks
           const read = chunk.subarray(0, count);
           for (let end = read.indexOf(10); end !== -1; end = read.indexOf(10, end + 1)) {
@@ -756,13 +773,25 @@ export class ClaudeHistoryModel {
                 lineStart,
               );
             lineStart = chunkStart + end + 1;
+            budget.hasIndexed = true;
           }
           if (position - lineStart > MAX_RECORD_BYTES) this.__unavailable();
         }
         /*
-         * A parent this read didn't reach is indexed as the root of its own turn: the projection
-         * keeps no position before byte_offset to retry from, and a hidden record only groups
-         * the records that follow it.
+         * A budgeted stop returns to before the records held back, unless this call held them
+         * from where it started through its whole budget, so their parent isn't coming soon.
+         */
+        if (position < stat.size && beforeHeld && (beforeHeld.offset > start || !hasWholeBudget)) {
+          this.__database.exec('ROLLBACK TO agent_hq_held_back');
+          Object.assign(row, beforeHeld.row);
+          lineStart = beforeHeld.offset;
+          heldBack.length = 0;
+        }
+        /*
+         * Otherwise a parent this read didn't reach is indexed as the root of its own turn: the
+         * projection keeps no position before byte_offset to retry from, and a hidden record only
+         * groups the records that follow it. At the transcript's end the parent may never come,
+         * and returning there would hide the records after the hidden one from this read.
          */
         for (const record of heldBack)
           this.__record(

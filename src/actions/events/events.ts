@@ -19,7 +19,7 @@ import {
 import type { IActionsContext } from '../types.js';
 import { agentUnavailable, keepsSessions } from '../utilities.js';
 
-import { ITEM_OBSERVATIONS, TURN_FLUSH_PAGES } from './constants.js';
+import { TURN_FLUSH_PAGES } from './constants.js';
 
 /**
  * Receives native evidence from the providers and persists it in order, one bounded lane per
@@ -49,8 +49,7 @@ export const createEvents = (
   const recordObservation = async (observation: INativeObservation) => {
     const result = await store.call('observations', 'observe', observation);
     if (observation.kind === 'native-unavailable') waits.notifyAll();
-    else if (result.thread && !ITEM_OBSERVATIONS.has(observation.kind))
-      waits.notifyThread(result.thread.id);
+    else if (result.thread) waits.notifyThread(result.thread.id);
     return result;
   };
 
@@ -320,20 +319,12 @@ export const createEvents = (
       } else if (controlled.has(key(provider, nativeId)))
         resyncs.request(provider, nativeId, request);
     },
+    // a live item stays in the window, which keeps one entry per item, and never reaches the store
     item(provider, nativeId, item, isComplete, replacedIds) {
       if (!controlled.has(key(provider, nativeId))) return;
       for (const replacedId of replacedIds ?? [])
         live.replace(key(provider, nativeId), item.turnId, replacedId);
       live.put(key(provider, nativeId), item, isComplete);
-      enqueue(provider, () =>
-        observe({
-          kind: isComplete ? 'item-completed' : 'item-started',
-          provider,
-          nativeThreadId: nativeId,
-          nativeTurnId: item.turnId,
-          nativeItemId: item.nativeId,
-        }),
-      );
     },
     gap(provider, nativeId) {
       if (controlled.has(key(provider, nativeId))) live.markGap(key(provider, nativeId));
@@ -342,7 +333,7 @@ export const createEvents = (
       if (controlled.has(key(provider, nativeId)))
         live.setBackgroundCommands(key(provider, nativeId), count);
     },
-    session(provider, nativeId, sessionState) {
+    session(provider, nativeId, sessionState, thread) {
       observingProviders.add(provider);
       const sessionKey = key(provider, nativeId);
       // a session this runtime controls reports its transitions through its own thread state
@@ -358,7 +349,13 @@ export const createEvents = (
         return;
       }
       enqueue(provider, () =>
-        store.call('sessions', 'observe', provider, [{ nativeId, state: sessionState }], false),
+        store.call(
+          'sessions',
+          'observe',
+          provider,
+          [{ nativeId, state: sessionState, thread }],
+          false,
+        ),
       );
     },
     delta(provider, nativeId, turnId, itemId, text) {

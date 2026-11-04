@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   appendFile,
   mkdir,
+  mkdtemp,
   readFile,
   rename,
   rm,
@@ -11,14 +12,18 @@ import {
   utimes,
   writeFile,
 } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { expectToRejectCode } from 'jg-exception/testing';
 import { createAgentHq } from 'jg-agent-hq';
 import { HqResponseSchema } from 'jg-agent-hq/contracts';
-import { expect, test } from 'vitest';
+import { expect, onTestFinished, test, vi } from 'vitest';
 
 import { claudeRecord, withClaudeRuntime } from '../../../../scripts/test-support/index.js';
+import { createStatements } from '../../../store/utilities.js';
+
+import { ClaudeHistoryModel } from './history.model.js';
 
 test('compacted history reads on past the compaction, without native API diagnostics, and keeps resume eligibility', async () => {
   await withClaudeRuntime(async ({ workspaceRoot, transcript, request, runtime }) => {
@@ -1019,7 +1024,7 @@ test('records that end at, just past or across 64 KiB read chunks are indexed wh
   });
 });
 
-test('a record unfinished at the end of one indexing read is indexed whole by the next', async () => {
+test('a record unfinished at the end of one indexing call is indexed whole by the next, though larger than its budget', async () => {
   await withClaudeRuntime(async ({ workspaceRoot, transcript, stateRoot, request }) => {
     const nativeId = randomUUID();
     const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'prompt' });
@@ -1030,7 +1035,7 @@ test('a record unfinished at the end of one indexing read is indexed whole by th
         content: [{ type: 'tool_result', content: 'a'.repeat(24_000_000) }],
       },
     });
-    // three results of about 24 MB, so the third runs past the 64 MiB one read indexes
+    // three results of about 24 MB, each larger than the 8 MiB one call indexes
     const results: ReturnType<typeof toolResult>[] = [];
     for (let index = 0; index < 3; index += 1)
       results.push(toolResult(results.at(-1)?.uuid ?? prompt.uuid));
@@ -1042,8 +1047,10 @@ test('a record unfinished at the end of one indexing read is indexed whole by th
     const records = [prompt, ...results, answer];
     const lines = records.map((record) => JSON.stringify(record));
     const locations = locate(lines);
-    expect(locations[3]!.byte_offset).toBeLessThan(67_108_864);
-    expect(locations[3]!.byte_offset + locations[3]!.byte_length).toBeGreaterThan(67_108_864);
+    // the first result runs past the budget of the call that starts with the prompt
+    expect(locations[1]!.byte_offset).toBeLessThan(8_388_608);
+    expect(locations[1]!.byte_offset + locations[1]!.byte_length).toBeGreaterThan(8_388_608);
+    expect(locations.slice(1, 4).every(({ byte_length }) => byte_length > 8_388_608)).toBe(true);
     await writeFile(transcript(nativeId), lines.join('\n') + '\n');
     // each large record fills a page of its own
     const pages: string[] = [];
@@ -1065,6 +1072,202 @@ test('a record unfinished at the end of one indexing read is indexed whole by th
       records.map((record, index) => ({ uuid: record.uuid, ...locations[index] })),
     );
   });
+});
+
+// the new transcript bytes one store worker call indexes
+const INDEXING_BUDGET_BYTES = 8_388_608;
+
+/*
+ * The worker's history model on its own SQLite database and a Claude configuration folder, both
+ * removed when the test finishes, so each call's progress shows between calls.
+ */
+const withHistoryModel = async () => {
+  const root = await mkdtemp(join(tmpdir(), 'jg-hq-indexing-'));
+  const database = new DatabaseSync(join(root, 'hq.sqlite'));
+  const model = new ClaudeHistoryModel(database, createStatements(database));
+  onTestFinished(async () => {
+    model.close();
+    database.close();
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
+  });
+  database.exec(await readFile(new URL('../../../store/schema.sql', import.meta.url), 'utf8'));
+  vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, 'claude'));
+  const workspaceRoot = join(root, 'workspace');
+  const projectRoot = join(root, 'claude', 'projects', workspaceRoot.replace(/[^a-zA-Z0-9]/g, '-'));
+  await mkdir(workspaceRoot);
+  await mkdir(projectRoot, { recursive: true });
+  // a chain of messages of about 64 KiB each, written as one transcript
+  const writeTranscript = async (count: number) => {
+    const nativeId = randomUUID();
+    const records: ReturnType<typeof claudeRecord>[] = [];
+    for (let index = 0; index < count; index += 1)
+      records.push(
+        claudeRecord(workspaceRoot, nativeId, {
+          parentUuid: records.at(-1)?.uuid ?? null,
+          type: index % 2 ? 'assistant' : 'user',
+          text: `${index} ${'x'.repeat(65_536)}`,
+        }),
+      );
+    await writeFile(
+      join(projectRoot, `${nativeId}.jsonl`),
+      records.map((record) => JSON.stringify(record)).join('\n') + '\n',
+    );
+    return { nativeId, records };
+  };
+  // the transcript bytes the index holds, across every transcript
+  const indexedBytes = (): number =>
+    (
+      database
+        .prepare('SELECT coalesce(sum(byte_offset), 0) AS bytes FROM agent_hq_claude_file')
+        .get() as { bytes: number }
+    ).bytes;
+  // reads until a call answers, recording each call's answer and the bytes it indexed
+  const readIndexing = (command: Parameters<ClaudeHistoryModel['read']>[0]) => {
+    const calls: { kind: string; bytes: number }[] = [];
+    for (;;) {
+      const before = indexedBytes();
+      const result = model.read(command);
+      calls.push({ kind: result.kind, bytes: indexedBytes() - before });
+      if (result.kind !== 'indexing') return { calls, result };
+    }
+  };
+  // writes the records as one transcript, in order
+  const writeRecords = (nativeId: string, records: object[]) =>
+    writeFile(
+      join(projectRoot, `${nativeId}.jsonl`),
+      records.map((record) => JSON.stringify(record)).join('\n') + '\n',
+    );
+  return { model, workspaceRoot, writeTranscript, writeRecords, readIndexing };
+};
+
+test('a large transcript is indexed one budget per worker call, each earlier call reporting indexing', async () => {
+  const { model, workspaceRoot, writeTranscript, readIndexing } = await withHistoryModel();
+  // about 2.5 budgets of records
+  const { nativeId, records } = await writeTranscript(320);
+  const command = {
+    kind: 'items',
+    provider: 'claude',
+    workspaceRoot,
+    nativeId,
+    limit: 128,
+    textLimit: 65_536,
+  } as const;
+  const { calls, result } = readIndexing(command);
+  expect(calls.length).toBeGreaterThanOrEqual(3);
+  expect(calls.slice(0, -1).every((call) => call.kind === 'indexing')).toBe(true);
+  expect(calls.at(-1)!.kind).toBe('items');
+  for (const call of calls) {
+    expect(call.bytes).toBeGreaterThan(0);
+    expect(call.bytes).toBeLessThanOrEqual(INDEXING_BUDGET_BYTES);
+  }
+  // the history is complete and in order, newest first, once the last call indexed its end
+  const items: [string, string, boolean][] = [];
+  let page: ReturnType<ClaudeHistoryModel['read']> = result;
+  for (;;) {
+    if (page.kind !== 'items') throw new Error('wrong response');
+    items.push(
+      ...page.result.data.map((item): [string, string, boolean] => [
+        item.nativeId,
+        item.kind,
+        item.isTruncated,
+      ]),
+    );
+    if (page.result.nextCursor === null) break;
+    page = model.read({ ...command, cursor: page.result.nextCursor });
+  }
+  expect(items).toStrictEqual(
+    records
+      .map((record): [string, string, boolean] => [
+        record.uuid,
+        record.type === 'user' ? 'user-message' : 'agent-message',
+        true,
+      ])
+      .reverse(),
+  );
+  // a later read finds the index complete and indexes nothing
+  expect(readIndexing(command).calls).toStrictEqual([{ kind: 'items', bytes: 0 }]);
+});
+
+test('a directory scan indexes its transcripts one budget per worker call before listing them', async () => {
+  const { workspaceRoot, writeTranscript, readIndexing } = await withHistoryModel();
+  // four transcripts of about 3 MiB, so a call's budget ends inside a transcript
+  const transcripts = [];
+  for (let index = 0; index < 4; index += 1) transcripts.push(await writeTranscript(48));
+  const { calls, result } = readIndexing({
+    kind: 'threads',
+    provider: 'claude',
+    workspaceRoot,
+    limit: 128,
+  });
+  expect(calls.length).toBeGreaterThanOrEqual(2);
+  expect(calls.slice(0, -1).every((call) => call.kind === 'indexing')).toBe(true);
+  for (const call of calls) expect(call.bytes).toBeLessThanOrEqual(INDEXING_BUDGET_BYTES);
+  if (result.kind !== 'threads') throw new Error('wrong response');
+  expect(result.result.data.map((thread) => thread.nativeId).sort()).toStrictEqual(
+    transcripts.map((transcript) => transcript.nativeId).sort(),
+  );
+});
+
+test('a hidden record and the parent that follows it across a call budget stay in one turn', async () => {
+  const { workspaceRoot, writeRecords, readIndexing } = await withHistoryModel();
+  const nativeId = randomUUID();
+  const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'prompt' });
+  // a turn of 64 KiB answers that runs up to just before the first call's budget
+  const records: ReturnType<typeof claudeRecord>[] = [prompt];
+  const answer = (text: string) =>
+    claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: records.at(-1)!.uuid,
+      text,
+    });
+  for (let index = 0; index < 120; index += 1) records.push(answer('x'.repeat(65_536)));
+  const parentUuid = randomUUID();
+  // a hidden record Claude Code writes a line before the record it follows
+  const hidden = {
+    ...claudeRecord(workspaceRoot, nativeId, { parentUuid }),
+    type: 'attachment',
+    message: undefined,
+  };
+  const used = records.reduce((bytes, record) => bytes + JSON.stringify(record).length + 1, 0);
+  // the last answer's length puts the end of the hidden record's line 8 bytes before the budget
+  const padding = INDEXING_BUDGET_BYTES - 8 - used - (JSON.stringify(hidden).length + 1);
+  records.push(answer('x'.repeat(padding - JSON.stringify(answer('')).length - 1)));
+  const parent = {
+    ...claudeRecord(workspaceRoot, nativeId, {
+      uuid: parentUuid,
+      type: 'assistant',
+      parentUuid: records.at(-1)!.uuid,
+      text: 'the record the hidden one follows',
+    }),
+  };
+  const reply = claudeRecord(workspaceRoot, nativeId, {
+    type: 'assistant',
+    parentUuid: hidden.uuid,
+    text: 'reply',
+  });
+  const lines = [...records, hidden, parent, reply].map((record) => JSON.stringify(record));
+  await writeRecords(nativeId, [...records, hidden, parent, reply]);
+  // the hidden record's line, with its line end, ends 8 bytes before the budget, and its parent's
+  // runs past it
+  const hiddenEnd = lines.slice(0, -2).reduce((bytes, line) => bytes + line.length + 1, 0);
+  expect(hiddenEnd).toBe(INDEXING_BUDGET_BYTES - 8);
+  expect(hiddenEnd + lines.at(-2)!.length).toBeGreaterThan(INDEXING_BUDGET_BYTES);
+  const command = {
+    kind: 'items',
+    provider: 'claude',
+    workspaceRoot,
+    nativeId,
+    limit: 2,
+    textLimit: 65_536,
+  } as const;
+  const { calls, result } = readIndexing(command);
+  expect(calls.map((call) => call.kind)).toStrictEqual(['indexing', 'items']);
+  if (result.kind !== 'items') throw new Error('wrong response');
+  expect(result.result.data.map((item) => [item.nativeId, item.turnId])).toStrictEqual([
+    [reply.uuid, prompt.uuid],
+    [parent.uuid, prompt.uuid],
+  ]);
 });
 
 test.each(['truncate', 'replace'])(
