@@ -114,7 +114,11 @@ test('owner-only IPC survives abandoned clients; shutdown releases SQLite and th
     await expect(createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] })).rejects.toThrow(
       'already owned',
     );
-    const reply = await request({ kind: 'threads', provider: 'codex', workspaceRoot });
+    const reply = await request({
+      kind: 'threads',
+      providers: ['codex'],
+      workspaceRoots: [workspaceRoot],
+    });
     if (reply.kind !== 'threads') throw new Error('wrong response');
     expect(reply.result.data).toHaveLength(32);
     expect(reply.result.data[0]).toMatchObject({
@@ -156,15 +160,15 @@ test('owner-only IPC survives abandoned clients; shutdown releases SQLite and th
   });
 });
 
-test('native seek pages cover 1024 sessions with stable ties and filter-bound continuation', async () => {
+test('native continuation pages cover 1024 sessions in order with filter-bound continuation', async () => {
   await withRuntime(async ({ workspaceRoot, request }) => {
     const identities: string[] = [];
     let cursor: string | undefined;
     do {
       const page = await request({
         kind: 'threads',
-        provider: 'codex',
-        workspaceRoot,
+        providers: ['codex'],
+        workspaceRoots: [workspaceRoot],
         limit: 128,
         cursor,
       });
@@ -175,8 +179,8 @@ test('native seek pages cover 1024 sessions with stable ties and filter-bound co
         await expectToRejectCode(
           request({
             kind: 'threads',
-            provider: 'codex',
-            workspaceRoot,
+            providers: ['codex'],
+            workspaceRoots: [workspaceRoot],
             limit: 128,
             search: 'Task',
             cursor: page.result.nextCursor!,
@@ -193,21 +197,31 @@ test('native seek pages cover 1024 sessions with stable ties and filter-bound co
     );
     const empty = await request({
       kind: 'threads',
-      provider: 'codex',
-      workspaceRoot,
+      providers: ['codex'],
+      workspaceRoots: [workspaceRoot],
       search: 'No matching task',
     });
     expect(empty).toStrictEqual({
       kind: 'threads',
-      result: { data: [], nextCursor: null, source: 'native' },
+      result: { data: [], nextCursor: null, unavailable: [] },
     });
     await expectToRejectCode(
-      request({ kind: 'threads', provider: 'codex', workspaceRoot, limit: 129 }),
+      request({
+        kind: 'threads',
+        providers: ['codex'],
+        workspaceRoots: [workspaceRoot],
+        limit: 129,
+      }),
       'JG_AGENT_HQ_REQUEST_INVALID',
       'The HQ request is invalid',
     );
     await expectToRejectCode(
-      request({ kind: 'threads', provider: 'codex', workspaceRoot, cursor: 'invalid' }),
+      request({
+        kind: 'threads',
+        providers: ['codex'],
+        workspaceRoots: [workspaceRoot],
+        cursor: 'invalid',
+      }),
       'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
       'Request is invalid.',
     );
@@ -785,7 +799,7 @@ test('workspace authorization precedes native access and rejects symlink escapes
     const escaped = join(workspaceRoot, 'escape');
     await symlink(outside, escaped);
     await expectToRejectCode(
-      request({ kind: 'threads', provider: 'codex', workspaceRoot: escaped }),
+      request({ kind: 'threads', providers: ['codex'], workspaceRoots: [escaped] }),
       'JG_AGENT_HQ_CLIENT_ACCESS_DENIED',
       'Access is denied.',
     );
@@ -796,7 +810,7 @@ test('workspace authorization precedes native access and rejects symlink escapes
       'Access is denied.',
     );
     await expectToRejectCode(
-      request({ kind: 'threads', provider: 'codex', workspaceRoot }),
+      request({ kind: 'threads', providers: ['codex'], workspaceRoots: [workspaceRoot] }),
       'JG_AGENT_HQ_CLIENT_ACCESS_DENIED',
       'Access is denied.',
     );
@@ -1046,7 +1060,12 @@ test('native quota events coalesce refreshes and an account change discards the 
       credits: { hasCredits: true, unlimited: false, balance: '1.25000000000000001' },
       resetCredits: { availableCount: 2 },
     });
-    await request({ kind: 'threads', provider: 'codex', workspaceRoot, limit: 1 });
+    await request({
+      kind: 'threads',
+      providers: ['codex'],
+      workspaceRoots: [workspaceRoot],
+      limit: 1,
+    });
     const deadline = Date.now() + 2000;
     let count = 0;
     do {
@@ -1077,7 +1096,12 @@ test('native quota events coalesce refreshes and an account change discards the 
       },
     });
     await control({ accountChanged: true, quotaFailure: true });
-    await request({ kind: 'threads', provider: 'codex', workspaceRoot, limit: 1 });
+    await request({
+      kind: 'threads',
+      providers: ['codex'],
+      workspaceRoots: [workspaceRoot],
+      limit: 1,
+    });
     expect(await request({ kind: 'usage', provider: 'codex' })).toStrictEqual({
       kind: 'usage',
       result: {
@@ -1110,12 +1134,14 @@ test('malformed native items and cursors return a safe integration failure witho
       'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
       'Coding agent is unavailable.',
     );
+    // a native list whose continuation is malformed leaves Codex out of the page
     await control({ invalidCursor: true });
-    await expectToRejectCode(
-      request({ kind: 'threads', provider: 'codex', workspaceRoot }),
-      'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
-      'Coding agent is unavailable.',
-    );
+    expect(
+      await request({ kind: 'threads', providers: ['codex'], workspaceRoots: [workspaceRoot] }),
+    ).toStrictEqual({
+      kind: 'threads',
+      result: { data: [], nextCursor: null, unavailable: [{ provider: 'codex', workspaceRoot }] },
+    });
     await control({
       items: [
         {
@@ -1178,7 +1204,12 @@ const expectFailedInitialization = async (
     vi.stubEnv('JG_HQ_FIXTURE_WORKSPACE', root);
     runtime = await createAgentHq({ stateRoot, allowedRoots: [root] });
     await expect(
-      runtime.request({ kind: 'threads', provider: 'codex', workspaceRoot: root }),
+      runtime.request({
+        kind: 'items',
+        provider: 'codex',
+        workspaceRoot: root,
+        nativeId: 'thread-1023',
+      }),
     ).rejects.toThrow(failure);
     const pids = PidsSchema.parse(JSON.parse(await readFile(join(root, 'pids.json'), 'utf8')));
     // the native connection's own deadline, just after the provider's, closes a held initialization
@@ -1312,11 +1343,12 @@ test.each(['missing', 'truncated', 'oversized', 'linked'])(
 test('lost native output makes the provider unavailable while the independent host and store remain usable', async () => {
   await withRuntime(async ({ workspaceRoot, control, request }) => {
     await control({ mode: 'exit-on-list' });
-    await expectToRejectCode(
-      request({ kind: 'threads', provider: 'codex', workspaceRoot }),
-      'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
-      'Coding agent is unavailable.',
-    );
+    expect(
+      await request({ kind: 'threads', providers: ['codex'], workspaceRoots: [workspaceRoot] }),
+    ).toStrictEqual({
+      kind: 'threads',
+      result: { data: [], nextCursor: null, unavailable: [{ provider: 'codex', workspaceRoot }] },
+    });
     expect(await request({ kind: 'status' })).toMatchObject({
       kind: 'status',
       result: {
@@ -1337,7 +1369,11 @@ test('Codex connects through the shared daemon proxy, and a failed daemon start 
       .map((line) => JSON.parse(line));
   await withRuntime(async ({ root, workspaceRoot, control, request }) => {
     await control({ ping: true, fragmentFrames: true });
-    const reply = await request({ kind: 'threads', provider: 'codex', workspaceRoot });
+    const reply = await request({
+      kind: 'threads',
+      providers: ['codex'],
+      workspaceRoots: [workspaceRoot],
+    });
     if (reply.kind !== 'threads') throw new Error('wrong response');
     expect(reply.result.data[0]).toMatchObject({ nativeId: 'thread-1023' });
     expect(await readCommands(root)).toStrictEqual([
@@ -1348,19 +1384,15 @@ test('Codex connects through the shared daemon proxy, and a failed daemon start 
   });
   await withRuntime(async ({ workspaceRoot, control, request }) => {
     await control({ wrongAccept: true });
-    await expectToRejectCode(
-      request({ kind: 'threads', provider: 'codex', workspaceRoot }),
-      'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
-      'Coding agent is unavailable.',
-    );
+    expect(
+      await request({ kind: 'threads', providers: ['codex'], workspaceRoots: [workspaceRoot] }),
+    ).toMatchObject({ result: { data: [], unavailable: [{ provider: 'codex', workspaceRoot }] } });
   });
   await withRuntime(async ({ root, workspaceRoot, control, request }) => {
     await control({ daemonFailure: true });
-    await expectToRejectCode(
-      request({ kind: 'threads', provider: 'codex', workspaceRoot }),
-      'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
-      'Coding agent is unavailable.',
-    );
+    expect(
+      await request({ kind: 'threads', providers: ['codex'], workspaceRoots: [workspaceRoot] }),
+    ).toMatchObject({ result: { data: [], unavailable: [{ provider: 'codex', workspaceRoot }] } });
     const commands = await readCommands(root);
     expect(commands).toContainEqual(['app-server', 'daemon', 'start']);
     expect(commands).not.toContainEqual(['app-server', 'proxy']);
@@ -1400,7 +1432,11 @@ process.exitCode = spawnSync(command,args,{ stdio: 'inherit' }).status ?? 1;
       );
     await withRuntime(
       async ({ root, workspaceRoot, request }) => {
-        const reply = await request({ kind: 'threads', provider: 'codex', workspaceRoot });
+        const reply = await request({
+          kind: 'threads',
+          providers: ['codex'],
+          workspaceRoots: [workspaceRoot],
+        });
         if (reply.kind !== 'threads') throw new Error('wrong response');
         expect(reply.result.data[0]).toMatchObject({ nativeId: 'thread-1023' });
         expect(await readLines(join(root, 'launcher.jsonl'))).toStrictEqual([
@@ -1487,7 +1523,12 @@ test(
         );
       try {
         await expectToRejectCode(
-          runtime.request({ kind: 'threads', provider: 'codex', workspaceRoot: root }),
+          runtime.request({
+            kind: 'items',
+            provider: 'codex',
+            workspaceRoot: root,
+            nativeId: 'thread-1023',
+          }),
           'JG_AGENT_HQ_CODEX_FAILED',
           'The Codex integration failed',
         );
@@ -1549,7 +1590,18 @@ test(
       });
       const listing = await execute(
         process.execPath,
-        [cli, 'threads', '--state-root', stateRoot, '--workspace-root', root, '--limit', '2'],
+        [
+          cli,
+          'threads',
+          '--state-root',
+          stateRoot,
+          '--workspace-root',
+          root,
+          '--provider',
+          'codex',
+          '--limit',
+          '2',
+        ],
         { env },
       );
       expect(HqResponseSchema.parse(JSON.parse(listing.stdout))).toMatchObject({

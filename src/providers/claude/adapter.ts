@@ -98,6 +98,8 @@ export const createClaudeProviderFactory = (
           },
         });
       },
+      listThreads: (workspaceRoot, page, call) =>
+        reader.listThreads(workspaceRoot, page, call.signal),
       readHistory: (command) => reader.readHistory(command),
       readModels: (command) => reader.readModels(command),
       readConfiguration: (command, nativeId, call) =>

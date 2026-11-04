@@ -129,30 +129,6 @@ export const createCodexProviderFactory = (
         ...command,
         cursor: 'cursor' in command ? command.cursor : undefined,
       };
-      if (command.kind === 'threads') {
-        const page = await native.listThreads(
-          command.workspaceRoot,
-          command.limit,
-          decodeHistoryCursor(cursor, filters),
-          command.search,
-        );
-        const checkedRoots = new Set<string>();
-        for (const thread of page.data) {
-          if (!checkedRoots.has(thread.workspaceRoot)) {
-            await verifyRoot(thread.workspaceRoot, command.workspaceRoot);
-            checkedRoots.add(thread.workspaceRoot);
-          }
-          thread.workspaceRoot = command.workspaceRoot;
-        }
-        return {
-          kind: 'threads' as const,
-          result: {
-            data: page.data,
-            nextCursor: encodeHistoryCursor(page.nextCursor, filters),
-            source: 'native' as const,
-          },
-        };
-      }
       const thread = await native.readThread(command.nativeId);
       await verifyRoot(thread.workspaceRoot, command.workspaceRoot);
       thread.workspaceRoot = command.workspaceRoot;
@@ -273,6 +249,23 @@ export const createCodexProviderFactory = (
             sandboxModes: ['read-only', 'workspace-write', 'danger-full-access'],
           },
         });
+      },
+      async listThreads(workspaceRoot, page) {
+        const listed = await native.listThreads(
+          workspaceRoot,
+          page.limit,
+          page.cursor ?? undefined,
+          page.search,
+        );
+        const checkedRoots = new Set<string>();
+        for (const thread of listed.data) {
+          if (!checkedRoots.has(thread.workspaceRoot)) {
+            await verifyRoot(thread.workspaceRoot, workspaceRoot);
+            checkedRoots.add(thread.workspaceRoot);
+          }
+          thread.workspaceRoot = workspaceRoot;
+        }
+        return listed;
       },
       readHistory,
       readConfiguration: (command, nativeId, call) =>

@@ -86,7 +86,7 @@ else {
       else if (opcode === 10) appendFileSync(join(directory,'pongs.jsonl'),payload.toString('utf8')+'\n');
     }
   });
-  const threads = Array.from({ length: 1024 },(_,index) => ({ id: 'thread-'+String(index).padStart(4,'0'), cwd: workspaceRoot, name: 'Task '+index, createdAt: 1_700_000_000 + Math.floor(index/2), updatedAt: 1_700_000_100, ephemeral: false, status: { type: 'notLoaded' } })).reverse();
+  const threads = Array.from({ length: 1024 },(_,index) => ({ id: 'thread-'+String(index).padStart(4,'0'), cwd: workspaceRoot, name: 'Task '+index, createdAt: 1_700_000_000 + Math.floor(index/2), updatedAt: 1_700_000_100 + index, ephemeral: false, status: { type: 'notLoaded' } })).reverse();
   const respond = (id,result) => send(JSON.stringify({ id,result }));
   const notify = (method,params) => send(JSON.stringify({ method,params }));
   const managed = new Map();
@@ -227,10 +227,17 @@ else {
         send(JSON.stringify({ method: 'account/rateLimits/updated', params }));
       }
       if (control.accountChanged) send(JSON.stringify({ method: 'account/updated', params: {} }));
-      const selected = params.searchTerm ? threads.filter((thread) => thread.name.includes(params.searchTerm)) : threads;
-      const after = params.cursor ? selected.findIndex((thread) => thread.id === params.cursor) + 1 : 0;
-      const batch = selected.slice(after,after+params.limit).map((thread) => ({ ...thread,status: statusOf(thread) }));
-      respond(request.id,{ data: control.wrongRoot ? batch.map((thread) => ({ ...thread,cwd: control.wrongRoot })) : batch, nextCursor: control.invalidCursor ? 'x'.repeat(8193) : after+batch.length < selected.length ? batch.at(-1).id : null });return;
+      // listedThreads replaces the sessions with ones per folder, as { id, cwd, name, updatedAt }
+      const listed = control.listedThreads ? control.listedThreads.filter((thread) => thread.cwd === params.cwd).map((thread) => ({ ...threads[0],createdAt: thread.updatedAt,...thread })) : threads;
+      const named = params.searchTerm ? listed.filter((thread) => thread.name.includes(params.searchTerm)) : listed;
+      // last activity first, ties by ascending ID unlike HQ's list, continuing after the last session's "updatedAt|id"
+      const isBefore = (left,right) => left.updatedAt > right.updatedAt || (left.updatedAt === right.updatedAt && left.id < right.id);
+      const selected = [...named].sort((left,right) => isBefore(left,right) ? -1 : isBefore(right,left) ? 1 : 0);
+      const [updatedAt,id] = params.cursor ? [Number(params.cursor.split('|')[0]),params.cursor.split('|').slice(1).join('|')] : [];
+      const rest = params.cursor ? selected.filter((thread) => isBefore({ updatedAt,id },thread)) : selected;
+      const batch = rest.slice(0,params.limit).map((thread) => ({ ...thread,status: statusOf(thread) }));
+      const last = batch.at(-1);
+      respond(request.id,{ data: control.wrongRoot ? batch.map((thread) => ({ ...thread,cwd: control.wrongRoot })) : batch, nextCursor: control.invalidCursor ? 'x'.repeat(8193) : batch.length < rest.length ? last.updatedAt+'|'+last.id : null });return;
     }
     if (method === 'config/read') {
       const profiles=Object.fromEntries(Array.from({length:control.profileCount??4},(_,index)=>['profile-'+String(index).padStart(4,'0'),{description:control.configRevision?'Updated profile':'Native profile',model:'model-0000'}]));

@@ -26,6 +26,7 @@ import {
 } from '../../../sessions/evidence/index.js';
 import { HQ_ERRORS } from '../../../errors/index.js';
 import type { IStatements } from '../../../store/index.js';
+import type { IThreadList, IThreadListRequest } from '../../types.js';
 
 import {
   EntrySeekSchema,
@@ -52,9 +53,10 @@ import {
   toClaudeItem,
 } from './utilities.js';
 
-// a thread page continues after its final transcript, an item page before its oldest record
-const threadCursors = createRequestCursors(SeekSchema);
+// an item page continues before its oldest record
 const itemCursors = createRequestCursors(EntrySeekSchema);
+// a thread page's continuation: the activity time and session ID of the last transcript listed
+const THREAD_CURSOR = /^(\d{1,16}):(.+)$/;
 
 // identifies the path and record interpretation used by persisted projection entries
 const HISTORY_PROJECTION_VERSION = 10;
@@ -146,8 +148,7 @@ export class ClaudeHistoryModel {
    */
   public read(command: IHqRequest): IClaudeHistoryRead {
     if (
-      (command.kind !== 'threads' &&
-        command.kind !== 'thread' &&
+      (command.kind !== 'thread' &&
         command.kind !== 'items' &&
         command.kind !== 'item-detail' &&
         command.kind !== 'item-image' &&
@@ -157,8 +158,65 @@ export class ClaudeHistoryModel {
       throw HQ_ERRORS.create('claudeHistoryUnavailable', {
         data: { kind: 'agent-unavailable' },
       });
+    return this.__guard(() => this.__read(command));
+  }
+
+  /**
+   * Lists one page of a workspace's transcripts, last activity first, then session ID descending.
+   * A first page refreshes the index first; a continuation seeks the index without a refresh.
+   * @param workspaceRoot The canonical workspace.
+   * @param page The name search, page size and continuation.
+   * @returns The page, or `indexing` while the first page's refresh has more to index.
+   * @throws
+   * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+   * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+   */
+  public list(workspaceRoot: string, page: IThreadListRequest): IThreadList | 'indexing' {
+    // a continuation that isn't this reader's fails before any transcript is read
+    const seek = page.cursor === null ? undefined : this.__threadSeek(page.cursor);
+    return this.__guard(() => {
+      let directory: string;
+      try {
+        directory = projectDirectory(workspaceRoot);
+      } catch (cause) {
+        if (hasErrorCode(cause, 'ENOENT')) return { data: [], nextCursor: null };
+        throw cause;
+      }
+      if (!seek && !this.__refresh(directory, workspaceRoot)) return 'indexing';
+      // a row-value seek, so a continuation starts in the index rather than scanning earlier pages
+      const after = seek ? 'AND (updated_at, native_id) < (?, ?)' : '';
+      const rows = this.__statements.all<IFileRow>(
+        `SELECT native_id, workspace_root, identity, file_size, modified_at, byte_offset, revision,
+        leaf_id, name, created_at, updated_at, supported, workspace_state FROM agent_hq_claude_file
+        WHERE workspace_root = ? AND workspace_state = 'matching' ${after}
+        AND (? IS NULL OR instr(lower(coalesce(name, '')), lower(?)) > 0)
+        ORDER BY updated_at DESC, native_id DESC LIMIT ?`,
+        workspaceRoot,
+        ...(seek ? [seek.updatedAt, seek.nativeId] : []),
+        page.search ?? null,
+        page.search ?? null,
+        page.limit + 1,
+      );
+      const listed = rows.slice(0, page.limit);
+      const last = listed.at(-1);
+      return {
+        data: listed.map((row) => this.__summary(row, directory)),
+        nextCursor:
+          rows.length > page.limit && last ? `${last.updated_at}:${last.native_id}` : null,
+      };
+    });
+  }
+
+  /** Releases incomplete discovery iterators before the worker closes SQLite. */
+  public close(): void {
+    for (const scan of this.__scans.values()) scan.entries.closeSync();
+    this.__scans.clear();
+  }
+
+  // classifies a failure that isn't one of HQ's own exceptions as unavailable history
+  private __guard<T>(read: () => T): T {
     try {
-      return this.__read(command);
+      return read();
     } catch (cause) {
       if (isException(cause)) throw cause;
       throw new Exception(`The Claude history is unavailable: ${extractMessage(cause)}`, {
@@ -169,12 +227,6 @@ export class ClaudeHistoryModel {
     }
   }
 
-  /** Releases incomplete discovery iterators before the worker closes SQLite. */
-  public close(): void {
-    for (const scan of this.__scans.values()) scan.entries.closeSync();
-    this.__scans.clear();
-  }
-
   private __read(command: IHistoryRequest): IClaudeHistoryRead {
     const root = command.workspaceRoot;
     const { cursor, ...filters } =
@@ -182,62 +234,31 @@ export class ClaudeHistoryModel {
         ? { ...command, cursor: undefined }
         : command;
     // a cursor that doesn't continue this request fails before any transcript is read
-    const threadSeek =
-      command.kind === 'threads' ? threadCursors.decode(cursor, filters) : undefined;
     const itemSeek = command.kind === 'items' ? itemCursors.decode(cursor, filters) : undefined;
     if (command.kind === 'session-evidence') evidencePosition(command);
-    let directory: string;
+    const directory = projectDirectory(root);
+    let isIndexed: boolean;
     try {
-      directory = projectDirectory(root);
+      isIndexed = this.__inspect(directory, root, command.nativeId, {
+        bytes: INDEXING_BUDGET_BYTES,
+        hasIndexed: false,
+      });
     } catch (cause) {
-      if (hasErrorCode(cause, 'ENOENT') && command.kind === 'threads')
-        return { kind: 'threads', result: { data: [], nextCursor: null, source: 'native' } };
-      throw cause;
+      // as a scan does, a summary keeps a transcript the index marked unsupported
+      if (command.kind !== 'thread' || this.__file(root, command.nativeId)?.supported !== -1)
+        throw cause;
+      isIndexed = true;
     }
-    if (command.kind === 'threads') {
-      const seek = threadSeek;
-      if (!seek && !this.__refresh(directory, root)) return { kind: 'indexing' };
-      // a row-value seek, so a continuation starts in the index rather than scanning earlier pages
-      const after = seek ? 'AND (updated_at, native_id) < (?, ?)' : '';
-      const rows = this.__statements.all<IFileRow>(
-        `SELECT native_id, workspace_root, identity, file_size, modified_at, byte_offset, revision,
-        leaf_id, name, created_at, updated_at, supported, workspace_state FROM agent_hq_claude_file
-        WHERE workspace_root = ? AND workspace_state = 'matching' ${after}
-        AND (? IS NULL OR instr(lower(coalesce(name, '')), lower(?)) > 0)
-        ORDER BY updated_at DESC, native_id DESC LIMIT ?`,
-        root,
-        ...(seek ? [seek.updatedAt, seek.nativeId] : []),
-        command.search ?? null,
-        command.search ?? null,
-        command.limit + 1,
-      );
-      const page = rows.slice(0, command.limit);
-      const last = page.at(-1);
-      return {
-        kind: 'threads',
-        result: {
-          data: page.map((row) => this.__summary(row, directory)),
-          source: 'native',
-          nextCursor: threadCursors.encode(
-            rows.length > command.limit && last
-              ? { updatedAt: last.updated_at, nativeId: last.native_id }
-              : null,
-            filters,
-          ),
-        },
-      };
-    }
-    const isIndexed = this.__inspect(directory, root, command.nativeId, {
-      bytes: INDEXING_BUDGET_BYTES,
-      hasIndexed: false,
-    });
     // a scan still running counts this transcript as seen, so its completion keeps it
     this.__scans.get(root)?.seen.add(command.nativeId);
     if (!isIndexed) return { kind: 'indexing' };
     const row = this.__file(root, command.nativeId);
-    if (!row || row.supported !== 1 || row.workspace_state !== 'matching') this.__unavailable();
-    if (command.kind === 'thread')
+    // a transcript whose records aren't supported still has a summary, its history unavailable
+    if (command.kind === 'thread') {
+      if (row?.workspace_state !== 'matching') this.__unavailable();
       return { kind: 'thread', result: this.__summary(row, directory) };
+    }
+    if (!row || row.supported !== 1 || row.workspace_state !== 'matching') this.__unavailable();
     if (command.kind === 'session-evidence')
       return { kind: 'session-evidence', result: this.__evidence(command, row, directory) };
     if (command.kind === 'item-detail')
@@ -521,6 +542,19 @@ export class ClaudeHistoryModel {
     } finally {
       closeSync(fd);
     }
+  }
+
+  /**
+   * Reads a thread page's continuation, `<updatedAt>:<nativeId>` of the last transcript listed.
+   * @throws
+   * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+   */
+  private __threadSeek(cursor: string): z.infer<typeof SeekSchema> {
+    const [, updatedAt, nativeId] = THREAD_CURSOR.exec(cursor) ?? [];
+    const seek = SeekSchema.safeParse({ updatedAt: Number(updatedAt), nativeId });
+    if (!seek.success)
+      throw HQ_ERRORS.create('cursorInvalid', { data: { kind: 'invalid-request' } });
+    return seek.data;
   }
 
   private __parseCursor<T>(schema: z.ZodType<T>, text: string): T {

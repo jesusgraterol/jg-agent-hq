@@ -149,7 +149,7 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
       catch (error) { if (error.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw error; }
       const runtime = await createAgentHq({ stateRoot: join(process.cwd(), 'controller'), allowedRoots: [process.cwd()] });
       try {
-        const response = HqResponseSchema.parse(await requestAgentHq(runtime.stateRoot, { kind: 'threads', provider: 'codex', workspaceRoot: process.cwd(), limit: 1 }));
+        const response = HqResponseSchema.parse(await requestAgentHq(runtime.stateRoot, { kind: 'threads', providers: ['codex'], workspaceRoots: [process.cwd()], limit: 1 }));
         if (response.kind !== 'threads' || response.result.data.length !== 1) throw new Error('packed runtime failed');
         const status = await runtime.request({kind:'status'});
         const input = BrowserActionSchema.parse({id:crypto.randomUUID(),runtimeEpoch:status.result.runtimeEpoch,command:{kind:'native',action:{id:crypto.randomUUID(),runtimeEpoch:status.result.runtimeEpoch,command:{kind:'thread-create',provider:'codex',workspaceRoot:process.cwd(),name:'packed-request'}}}});

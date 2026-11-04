@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { expectToRejectCode } from 'jg-exception/testing';
 import { createAgentHq } from 'jg-agent-hq';
-import { HqResponseSchema } from 'jg-agent-hq/contracts';
+import { HqResponseSchema, type IHqRequestInput } from 'jg-agent-hq/contracts';
 import { expect, onTestFinished, test, vi } from 'vitest';
 
 import { claudeRecord, withClaudeRuntime } from '../../../../scripts/test-support/index.js';
@@ -219,11 +219,15 @@ test('a compaction whose boundary names a record written after it reads from the
 
 test('empty discovery and byte-limited indexing/pages return honest boundaries', async () => {
   await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
-    const empty = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+    const empty = await request({
+      kind: 'threads',
+      providers: ['claude'],
+      workspaceRoots: [workspaceRoot],
+    });
     expect(empty.kind === 'threads' && empty.result).toStrictEqual({
       data: [],
       nextCursor: null,
-      source: 'native',
+      unavailable: [],
     });
     const nativeId = randomUUID();
     let parentUuid: string | null = null;
@@ -325,8 +329,8 @@ test('native files are paged by chain position with truthful unknown execution s
     );
     const threads = await request({
       kind: 'threads',
-      provider: 'claude',
-      workspaceRoot,
+      providers: ['claude'],
+      workspaceRoots: [workspaceRoot],
       search: 'cache',
     });
     expect(
@@ -415,15 +419,20 @@ test('sessions list by last activity, newest first, and their cursor continues i
       const at = new Date(active[nativeId]!);
       await utimes(transcript(nativeId), at, at);
     }
-    const first = await request({ kind: 'threads', provider: 'claude', workspaceRoot, limit: 1 });
+    const first = await request({
+      kind: 'threads',
+      providers: ['claude'],
+      workspaceRoots: [workspaceRoot],
+      limit: 1,
+    });
     if (first.kind !== 'threads') throw new Error('wrong response');
     expect(first.result.data.map((thread) => [thread.nativeId, thread.updatedAt])).toStrictEqual([
       [earlier, Date.parse(active[earlier]!)],
     ]);
     const next = await request({
       kind: 'threads',
-      provider: 'claude',
-      workspaceRoot,
+      providers: ['claude'],
+      workspaceRoots: [workspaceRoot],
       limit: 1,
       cursor: first.result.nextCursor!,
     });
@@ -433,16 +442,23 @@ test('sessions list by last activity, newest first, and their cursor continues i
     // a thread cursor continues only its own list: not another search, an item page or a tampered copy
     const cursor = first.result.nextCursor!;
     for (const command of [
-      { kind: 'threads', provider: 'claude', workspaceRoot, limit: 1, search: 'other', cursor },
+      {
+        kind: 'threads',
+        providers: ['claude'],
+        workspaceRoots: [workspaceRoot],
+        limit: 1,
+        search: 'other',
+        cursor,
+      },
       { kind: 'items', provider: 'claude', workspaceRoot, nativeId: earlier, limit: 1, cursor },
       {
         kind: 'threads',
-        provider: 'claude',
-        workspaceRoot,
+        providers: ['claude'],
+        workspaceRoots: [workspaceRoot],
         limit: 1,
         cursor: `${cursor.slice(0, 8)}${cursor[8] === 'A' ? 'B' : 'A'}${cursor.slice(9)}`,
       },
-    ] as const)
+    ] satisfies IHqRequestInput[])
       await expect(request(command)).rejects.toThrow('Request is invalid');
   });
 });
@@ -468,8 +484,8 @@ test('sessions last active at the same moment continue by native ID, each listed
     for (let index = 0; index < 3; index += 1) {
       const page = await request({
         kind: 'threads',
-        provider: 'claude',
-        workspaceRoot,
+        providers: ['claude'],
+        workspaceRoots: [workspaceRoot],
         limit: 1,
         ...(cursor ? { cursor } : {}),
       });
@@ -667,7 +683,11 @@ test('reads over unchanged transcripts write nothing to SQLite, while an append 
         `${JSON.stringify(question)}\n${JSON.stringify(answer)}\n`,
       );
     const listed = async () => {
-      const threads = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+      const threads = await request({
+        kind: 'threads',
+        providers: ['claude'],
+        workspaceRoots: [workspaceRoot],
+      });
       if (threads.kind !== 'threads') throw new Error('wrong response');
       return threads.result.data.map((thread) => thread.nativeId).sort();
     };
@@ -1132,13 +1152,26 @@ const withHistoryModel = async () => {
       if (result.kind !== 'indexing') return { calls, result };
     }
   };
+  // lists the workspace's first page until a call answers, recording each call likewise
+  const listIndexing = () => {
+    const calls: { kind: string; bytes: number }[] = [];
+    for (;;) {
+      const before = indexedBytes();
+      const result = model.list(workspaceRoot, { search: undefined, limit: 128, cursor: null });
+      calls.push({
+        kind: result === 'indexing' ? 'indexing' : 'threads',
+        bytes: indexedBytes() - before,
+      });
+      if (result !== 'indexing') return { calls, result };
+    }
+  };
   // writes the records as one transcript, in order
   const writeRecords = (nativeId: string, records: object[]) =>
     writeFile(
       join(projectRoot, `${nativeId}.jsonl`),
       records.map((record) => JSON.stringify(record)).join('\n') + '\n',
     );
-  return { model, workspaceRoot, writeTranscript, writeRecords, readIndexing };
+  return { model, workspaceRoot, writeTranscript, writeRecords, readIndexing, listIndexing };
 };
 
 test('a large transcript is indexed one budget per worker call, each earlier call reporting indexing', async () => {
@@ -1190,21 +1223,15 @@ test('a large transcript is indexed one budget per worker call, each earlier cal
 });
 
 test('a directory scan indexes its transcripts one budget per worker call before listing them', async () => {
-  const { workspaceRoot, writeTranscript, readIndexing } = await withHistoryModel();
+  const { writeTranscript, listIndexing } = await withHistoryModel();
   // four transcripts of about 3 MiB, so a call's budget ends inside a transcript
   const transcripts = [];
   for (let index = 0; index < 4; index += 1) transcripts.push(await writeTranscript(48));
-  const { calls, result } = readIndexing({
-    kind: 'threads',
-    provider: 'claude',
-    workspaceRoot,
-    limit: 128,
-  });
+  const { calls, result } = listIndexing();
   expect(calls.length).toBeGreaterThanOrEqual(2);
   expect(calls.slice(0, -1).every((call) => call.kind === 'indexing')).toBe(true);
   for (const call of calls) expect(call.bytes).toBeLessThanOrEqual(INDEXING_BUDGET_BYTES);
-  if (result.kind !== 'threads') throw new Error('wrong response');
-  expect(result.result.data.map((thread) => thread.nativeId).sort()).toStrictEqual(
+  expect(result.data.map((thread) => thread.nativeId).sort()).toStrictEqual(
     transcripts.map((transcript) => transcript.nativeId).sort(),
   );
 });
@@ -1346,7 +1373,11 @@ test.each([
       transcript(nativeId),
       [question, answer].map((record) => JSON.stringify(record)).join('\n') + '\n',
     );
-    const threads = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+    const threads = await request({
+      kind: 'threads',
+      providers: ['claude'],
+      workspaceRoots: [workspaceRoot],
+    });
     expect(
       threads.kind === 'threads' &&
         threads.result.data.map((thread) => [thread.nativeId, thread.historyState]),
@@ -1429,7 +1460,11 @@ test.each(['2.1.305', '9.0.0'])(
         transcript(anotherId),
         JSON.stringify({ ...claudeRecord(workspaceRoot, anotherId), version }) + '\n',
       );
-      const threads = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+      const threads = await request({
+        kind: 'threads',
+        providers: ['claude'],
+        workspaceRoots: [workspaceRoot],
+      });
       expect(
         threads.kind === 'threads' &&
           threads.result.data.find((thread) => thread.nativeId === anotherId)?.historyState,
@@ -1452,7 +1487,9 @@ test.each(['2.1.305', '9.0.0'])(
     });
     await withClaudeRuntime(async ({ workspaceRoot, request, control }) => {
       await control({ version });
-      expect(await request({ kind: 'threads', provider: 'claude', workspaceRoot })).toMatchObject({
+      expect(
+        await request({ kind: 'threads', providers: ['claude'], workspaceRoots: [workspaceRoot] }),
+      ).toMatchObject({
         kind: 'threads',
         result: { data: [], nextCursor: null },
       });
@@ -1581,7 +1618,11 @@ test.each(['sibling', 'symlink', 'excluded', 'symlink-excluded'])(
         cwd = join(link, 'removed');
       } else if (state === 'excluded') cwd = join(workspaceRoot, '_archive');
       await writeFile(transcript(nativeId), JSON.stringify(claudeRecord(cwd, nativeId)) + '\n');
-      const threads = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+      const threads = await request({
+        kind: 'threads',
+        providers: ['claude'],
+        workspaceRoots: [workspaceRoot],
+      });
       expect(threads.kind === 'threads' && threads.result.data).toStrictEqual([]);
       await expect(
         request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId }),
@@ -1607,7 +1648,11 @@ test('a session that moves into a sibling folder and back is listed and read who
       transcript(nativeId),
       [prompt, moved, back].map((record) => JSON.stringify(record)).join('\n') + '\n',
     );
-    const threads = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+    const threads = await request({
+      kind: 'threads',
+      providers: ['claude'],
+      workspaceRoots: [workspaceRoot],
+    });
     expect(
       threads.kind === 'threads' &&
         threads.result.data.map((thread) => [thread.nativeId, thread.historyState]),
@@ -1650,7 +1695,11 @@ test('a session that starts in a sibling folder is listed and read once a record
       text: 'Start in the task worktree',
     });
     await writeFile(transcript(nativeId), JSON.stringify(first) + '\n');
-    const before = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+    const before = await request({
+      kind: 'threads',
+      providers: ['claude'],
+      workspaceRoots: [workspaceRoot],
+    });
     expect(before.kind === 'threads' && before.result.data).toStrictEqual([]);
     await expect(
       request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId }),
@@ -1661,7 +1710,11 @@ test('a session that starts in a sibling folder is listed and read once a record
       timestamp: '2026-10-19T12:01:00.000Z',
     });
     await appendFile(transcript(nativeId), JSON.stringify(next) + '\n');
-    const after = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+    const after = await request({
+      kind: 'threads',
+      providers: ['claude'],
+      workspaceRoots: [workspaceRoot],
+    });
     expect(
       after.kind === 'threads' && after.result.data.map((thread) => thread.nativeId),
     ).toStrictEqual([nativeId]);
@@ -1690,7 +1743,11 @@ test.each(['another session', 'an excluded folder'])(
         transcript(nativeId),
         [first, intruder].map((record) => JSON.stringify(record)).join('\n') + '\n',
       );
-      const threads = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+      const threads = await request({
+        kind: 'threads',
+        providers: ['claude'],
+        workspaceRoots: [workspaceRoot],
+      });
       expect(threads.kind === 'threads' && threads.result.data).toStrictEqual([]);
       await expect(
         request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId }),
@@ -1770,7 +1827,11 @@ test('workspace authorization, excluded subtrees, links and malformed native ide
       await mkdir(excluded);
       await writeFile(join(excluded, `${randomUUID()}.jsonl`), 'unsupported content\n');
     }
-    const threads = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+    const threads = await request({
+      kind: 'threads',
+      providers: ['claude'],
+      workspaceRoots: [workspaceRoot],
+    });
     expect(
       threads.kind === 'threads' && threads.result.data.map((thread) => thread.nativeId).sort(),
     ).toStrictEqual([supportedId]);
@@ -1809,8 +1870,8 @@ test(
       do {
         const page = await request({
           kind: 'threads',
-          provider: 'claude',
-          workspaceRoot,
+          providers: ['claude'],
+          workspaceRoots: [workspaceRoot],
           limit: 128,
           cursor,
         });
@@ -2463,7 +2524,11 @@ test('a transcript Claude Code moved into a new session names it in its summary,
       `${JSON.stringify(claudeRecord(workspaceRoot, next, { text: 'After the move' }))}\n`,
     );
     const listed = async () => {
-      const response = await request({ kind: 'threads', provider: 'claude', workspaceRoot });
+      const response = await request({
+        kind: 'threads',
+        providers: ['claude'],
+        workspaceRoots: [workspaceRoot],
+      });
       if (response.kind !== 'threads') throw new Error('Missing Claude sessions');
       return new Map(response.result.data.map((thread) => [thread.nativeId, thread.continuedIn]));
     };

@@ -1065,3 +1065,84 @@ test('active sessions return the newest 128 of more, in running and waiting stat
     stopHoldingDelays();
   }
 });
+
+test('a thread whose history its provider cannot read answers from what HQ knows of it, its history unavailable', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const { workspaceRoot } = fixture;
+    // a transcript that ran in the workspace, though one of its records has no identity
+    const unreadable = randomUUID();
+    const first = claudeRecord(workspaceRoot, unreadable);
+    await writeFile(
+      fixture.transcript(unreadable),
+      [
+        first,
+        { ...claudeRecord(workspaceRoot, unreadable, { parentUuid: first.uuid }), uuid: undefined },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join('\n') + '\n',
+    );
+    const target = { provider: 'claude' as const, workspaceRoot, nativeId: unreadable };
+    expect(await fixture.request({ kind: 'thread', ...target })).toMatchObject({
+      kind: 'thread',
+      result: {
+        nativeId: unreadable,
+        workspaceRoot,
+        ownership: 'external',
+        historyState: 'unavailable',
+      },
+    });
+    await expect(fixture.request({ kind: 'items', ...target })).rejects.toThrow(
+      'Coding agent is unavailable',
+    );
+    // a managed Codex session whose native read fails reads from its HQ record
+    const created = await submit(fixture, {
+      kind: 'thread-create',
+      provider: 'codex',
+      workspaceRoot,
+      name: 'unreadable-session',
+    });
+    const threadId = created.threadId!;
+    const managed = async () => {
+      const response = await fixture.request({ kind: 'managed-thread', threadId });
+      return response.kind === 'managed-thread' ? response.result : null;
+    };
+    await expect.poll(async () => (await managed())?.state).toBe('idle');
+    await submit(fixture, { kind: 'message', threadId, input: { kind: 'text', text: 'Start' } });
+    await expect.poll(async () => (await managed())?.state).toBe('completed');
+    const nativeId = (await managed())!.nativeId!;
+    await writeFixtureControl(fixture.root, 'control.json', { failRead: true });
+    expect(
+      await fixture.request({ kind: 'thread', provider: 'codex', workspaceRoot, nativeId }),
+    ).toMatchObject({
+      kind: 'thread',
+      result: {
+        nativeId,
+        name: 'unreadable-session',
+        ownership: 'managed',
+        managedId: threadId,
+        historyState: 'unavailable',
+      },
+    });
+    // a session HQ has no record of still fails as its provider did, and authorization comes first
+    await expectToRejectCode(
+      fixture.runtime.request({
+        kind: 'thread',
+        provider: 'codex',
+        workspaceRoot,
+        nativeId: 'unknown-session',
+      }),
+      'JG_AGENT_HQ_CODEX_FAILED',
+      'The Codex integration failed',
+    );
+    await expectToRejectCode(
+      fixture.runtime.request({
+        kind: 'thread',
+        provider: 'codex',
+        workspaceRoot: fixture.root,
+        nativeId,
+      }),
+      'JG_AGENT_HQ_TARGET_FORBIDDEN',
+      'The HQ target is outside the allowed workspaces',
+    );
+  });
+});

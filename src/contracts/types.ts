@@ -19,6 +19,7 @@ import {
   MAX_ITEM_IMAGES,
   MAX_ITEM_TEXT_LENGTH,
   MAX_PAGE_SIZE,
+  MAX_WORKSPACE_ROOTS,
   PUBLIC_ERROR_MESSAGES,
 } from './constants.js';
 import { SkillPageSchema } from './skills/index.js';
@@ -64,11 +65,29 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     threadId: z.uuid().optional(),
   }),
   z.strictObject({ kind: z.literal('stop') }),
+  /*
+   * Sessions across folders and providers, last activity first, with the managed sessions no turn
+   * has started; `excludeContinued` leaves out those whose chat continues in another session.
+   */
   z.strictObject({
     kind: z.literal('threads'),
-    provider: TargetFields.provider,
-    workspaceRoot: TargetFields.workspaceRoot,
+    workspaceRoots: z
+      .array(TargetFields.workspaceRoot)
+      .min(1)
+      .max(MAX_WORKSPACE_ROOTS)
+      .refine((roots) => new Set(roots).size === roots.length, {
+        message: 'Each workspace root is listed once',
+      }),
+    providers: z
+      .array(ProviderIdSchema)
+      .min(1)
+      .max(ProviderIdSchema.options.length)
+      .refine((providers) => new Set(providers).size === providers.length, {
+        message: 'Each provider is listed once',
+      })
+      .default([...ProviderIdSchema.options]),
     search: z.string().max(1024).optional(),
+    excludeContinued: z.boolean().default(false),
     ...PageFields,
   }),
   z.strictObject({ kind: z.literal('thread'), ...TargetFields }),
@@ -151,11 +170,6 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     limit: z.number().int().min(1).max(128).default(32),
   }),
   z.strictObject({ kind: z.literal('active-sessions') }),
-  z.strictObject({
-    kind: z.literal('unstarted-threads'),
-    provider: TargetFields.provider,
-    workspaceRoot: TargetFields.workspaceRoot,
-  }),
   z.strictObject({ kind: z.literal('observation-pace'), pace: ObservationPaceSchema }),
   // the machine's jg-locks locks; HQ only reads them
   z.strictObject({ kind: z.literal('locks') }),
@@ -203,12 +217,18 @@ export const ActiveSessionsSchema = z.object({
 });
 export type IActiveSessions = z.infer<typeof ActiveSessionsSchema>;
 
-// one workspace's managed threads that no turn has started yet, newest first, with whether more exist
-export const UnstartedThreadsSchema = z.object({
-  data: z.array(ThreadSummarySchema).max(DEFAULT_PAGE_SIZE),
-  isTruncated: z.boolean(),
+/*
+ * One page of sessions, last activity first, and the folders and providers left out of it because
+ * their provider couldn't be read; a page that names one may miss its sessions.
+ */
+export const ThreadsPageSchema = z.object({
+  data: z.array(ThreadSummarySchema).max(MAX_PAGE_SIZE),
+  nextCursor: CursorSchema.nullable(),
+  unavailable: z
+    .array(z.object({ provider: ProviderIdSchema, workspaceRoot: z.string() }))
+    .max(MAX_WORKSPACE_ROOTS * ProviderIdSchema.options.length),
 });
-export type IUnstartedThreads = z.infer<typeof UnstartedThreadsSchema>;
+export type IThreadsPage = z.infer<typeof ThreadsPageSchema>;
 
 // one file a file change touched, with the lines it added and removed
 export const HistoryFileSchema = z.object({
@@ -380,13 +400,7 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
     kind: z.literal('stop'),
     result: z.object({ accepted: z.literal(true), runtimeEpoch: z.uuid() }),
   }),
-  z.object({
-    kind: z.literal('threads'),
-    result: z.object({
-      data: z.array(ThreadSummarySchema).max(MAX_PAGE_SIZE),
-      ...PageResultFields,
-    }),
-  }),
+  z.object({ kind: z.literal('threads'), result: ThreadsPageSchema }),
   z.object({ kind: z.literal('thread'), result: ThreadSummarySchema }),
   z.object({
     kind: z.literal('items'),
@@ -433,7 +447,6 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('live-items'), result: LiveItemsSchema }),
   z.object({ kind: z.literal('session-states'), result: SessionTransitionPageSchema }),
   z.object({ kind: z.literal('active-sessions'), result: ActiveSessionsSchema }),
-  z.object({ kind: z.literal('unstarted-threads'), result: UnstartedThreadsSchema }),
   z.object({
     kind: z.literal('observation-pace'),
     result: z.object({ pace: ObservationPaceSchema }),

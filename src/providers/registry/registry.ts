@@ -267,6 +267,8 @@ export const createProviderRegistry = (
           },
           readCapabilities: (nativeId) =>
             invoke((call) => adapter.readCapabilities(nativeId, call)),
+          listThreads: (workspaceRoot, page) =>
+            invoke((call) => adapter.listThreads(workspaceRoot, page, call)),
           readHistory: (command) => invoke((call) => adapter.readHistory(command, call)),
           readModels: (command) => invoke((call) => adapter.readModels(command, call)),
           inspectThread: (nativeId, workspaceRoot) =>

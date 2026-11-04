@@ -143,7 +143,9 @@ test("HQ's connection shrinks a WAL file a host grew back to the 16 MiB journal 
         transcript(nativeId),
         `${JSON.stringify(claudeRecord(workspaceRoot, nativeId))}\n`,
       );
-    expect(await request({ kind: 'threads', provider: 'claude', workspaceRoot })).toMatchObject({
+    expect(
+      await request({ kind: 'threads', providers: ['claude'], workspaceRoots: [workspaceRoot] }),
+    ).toMatchObject({
       kind: 'threads',
       result: { data: [{}, {}] },
     });

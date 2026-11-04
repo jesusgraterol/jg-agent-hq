@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createAgentHq } from 'jg-agent-hq';
-import { HqResponseSchema } from 'jg-agent-hq/contracts';
+import { HqResponseSchema, type IHqRequestInput } from 'jg-agent-hq/contracts';
 import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -384,7 +384,9 @@ test('history reads keep the first successful check instead of starting a claude
       transcript(nativeId),
       `${JSON.stringify(claudeRecord(workspaceRoot, nativeId))}\n`,
     );
-    expect(await request({ kind: 'threads', provider: 'claude', workspaceRoot })).toMatchObject({
+    expect(
+      await request({ kind: 'threads', providers: ['claude'], workspaceRoots: [workspaceRoot] }),
+    ).toMatchObject({
       kind: 'threads',
       result: { data: [{ nativeId }] },
     });
@@ -395,11 +397,11 @@ test('history reads keep the first successful check instead of starting a claude
     expect(releaseHeldDelays(300)).toBe(1);
     await expect.poll(() => isRunning(pid!)).toBe(false);
     for (const command of [
-      { kind: 'threads', provider: 'claude', workspaceRoot },
+      { kind: 'threads', providers: ['claude'], workspaceRoots: [workspaceRoot] },
       { kind: 'thread', provider: 'claude', workspaceRoot, nativeId },
       { kind: 'items', provider: 'claude', workspaceRoot, nativeId },
       { kind: 'session-evidence', provider: 'claude', workspaceRoot, nativeId },
-    ] as const)
+    ] satisfies IHqRequestInput[])
       expect(await request(command)).toMatchObject({ kind: command.kind });
     expect(await readPids(root)).toHaveLength(1);
     // a read that uses the native connection still opens it

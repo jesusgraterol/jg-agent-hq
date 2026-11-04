@@ -1,27 +1,26 @@
 import {
-  DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
   type IActiveSessions,
   type IHqResponse,
-  type IHqRequest,
-  type IManagedThread,
-  type ISessionState,
+  type IProviderId,
   type IThreadSummary,
-  type IUnstartedThreads,
 } from '../contracts/index.js';
-import { parseActionRequest, retainNativeLineage } from '../providers/index.js';
+import { parseActionRequest } from '../providers/index.js';
 import type { createProviderRegistry } from '../providers/registry/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 import type { IStore } from '../store/index.js';
 import type { IActiveSessionRecord } from '../store/sessions/index.js';
-import { HQ_ERRORS } from '../errors/index.js';
+import { getErrorKind, HQ_ERRORS } from '../errors/index.js';
 
 import type { IClaudeSessions, IHistoryRequest } from './types.js';
 import { imageUnavailable } from './utilities.js';
+import { joinRecords, toManagedSummaries, withListing } from './summaries.js';
 import { resetProvenance } from './evidence/index.js';
 
 /**
- * Authorizes native history before loading content and records only its discovery projection.
+ * Authorizes native history before loading content. A `thread` read whose history its provider
+ * can't read answers from HQ's records of the session, with its history unavailable, and fails
+ * as the provider did only when HQ records no such session in that workspace.
  * @returns One provider-paged read result, never a complete transcript scan.
  * @throws
  * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
@@ -68,60 +67,35 @@ export const readNativeHistory = async (
       return { kind: 'thread', result: withListing(summary!, claude) };
     }
   }
-  const adapter = await registry.get(command.provider);
-  const response = await adapter.readHistory({ ...command, workspaceRoot });
-  const threads =
-    response.kind === 'threads'
-      ? response.result.data
-      : response.kind === 'thread'
-        ? [response.result]
-        : [];
-  const resolvedRoots = new Map<string, string>();
-  for (const thread of threads) {
-    let actualRoot = resolvedRoots.get(thread.workspaceRoot);
-    if (!actualRoot) {
-      actualRoot = await resolveWorkspaceTarget(thread.workspaceRoot, allowedRoots);
-      resolvedRoots.set(thread.workspaceRoot, actualRoot);
-    }
-    if (actualRoot !== workspaceRoot)
-      throw HQ_ERRORS.create('targetForbidden', { data: { kind: 'access-denied' } });
-    thread.workspaceRoot = actualRoot;
+  let response: IHqResponse;
+  try {
+    response = await (
+      await registry.get(command.provider)
+    ).readHistory({ ...command, workspaceRoot });
+  } catch (error) {
+    // a session whose history can't be read still has the summary HQ's records give it
+    if (command.kind !== 'thread' || getErrorKind(error) !== 'agent-unavailable') throw error;
+    const recorded = await readRecordedThread(
+      command.provider,
+      command.nativeId,
+      workspaceRoot,
+      projection,
+      allowedRoots,
+      claude,
+    );
+    if (!recorded) throw error;
+    return { kind: 'thread', result: recorded };
   }
-  // one session's read counts its background commands from what its transcript holds now
-  if (response.kind === 'thread' && command.provider === 'claude')
-    await claude.refreshBackgroundCommands(response.result.nativeId);
-  if (threads.length) {
-    const managed = new Map(
-      (
-        await projection.call(
-          'reads',
-          'getNativeThreads',
-          command.provider,
-          threads.map((thread) => thread.nativeId),
-        )
-      ).map((thread) => [thread.nativeId, thread]),
-    );
-    const states = new Map(
-      (
-        await projection.call(
-          'sessions',
-          'states',
-          command.provider,
-          threads.map((thread) => thread.nativeId),
-        )
-      ).map((session) => [session.nativeId, session.state]),
-    );
-    for (const thread of threads) {
-      const control = managed.get(thread.nativeId);
-      if (control) {
-        thread.ownership = control.ownership;
-        thread.managedId = control.id;
-        thread.name = control.name;
-        thread.nativeLineage = retainNativeLineage(control.nativeLineage, thread.nativeLineage);
-      }
-      thread.state = states.get(thread.nativeId) ?? thread.state;
-      Object.assign(thread, withListing(thread, claude));
-    }
+  if (response.kind === 'thread') {
+    if (
+      (await resolveWorkspaceTarget(response.result.workspaceRoot, allowedRoots)) !== workspaceRoot
+    )
+      throw HQ_ERRORS.create('targetForbidden', { data: { kind: 'access-denied' } });
+    response.result.workspaceRoot = workspaceRoot;
+    // one session's read counts its background commands from what its transcript holds now
+    if (command.provider === 'claude')
+      await claude.refreshBackgroundCommands(response.result.nativeId);
+    await joinRecords(projection, claude, command.provider, [response.result]);
   }
   const items =
     response.kind === 'session-evidence' || response.kind === 'items'
@@ -157,82 +131,31 @@ export const readNativeHistory = async (
   return response;
 };
 
-// a summary with the terminal that runs it and its background commands, which only Claude reports
-const withListing = (summary: IThreadSummary, claude: IClaudeSessions): IThreadSummary => ({
-  ...summary,
-  terminal: summary.provider === 'claude' ? claude.terminalOf(summary.nativeId) : null,
-  backgroundCommands:
-    summary.provider === 'claude' ? claude.backgroundCommandsOf(summary.nativeId) : 0,
-});
-
 /**
- * Summarizes managed threads as `threads` does, each in the state its record maps to.
- * @returns One summary per thread, in order.
+ * Summarizes a session whose history can't be read from HQ's records: its managed thread, or else
+ * the active session HQ observes, in the same workspace.
+ * @returns The summary with its history unavailable, or null when HQ records no such session.
  * @throws
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
  */
-const toManagedSummaries = async (
-  projection: IStore,
-  threads: IManagedThread[],
-): Promise<IThreadSummary[]> => {
-  const states = new Map<string, ISessionState>();
-  for (const provider of new Set(threads.map((thread) => thread.provider)))
-    for (const session of await projection.call(
-      'sessions',
-      'states',
-      provider,
-      threads.flatMap((thread) =>
-        thread.provider === provider && thread.nativeId ? [thread.nativeId] : [],
-      ),
-    ))
-      states.set(JSON.stringify([provider, session.nativeId]), session.state);
-  return threads.map((thread) => ({
-    provider: thread.provider,
-    nativeId: thread.nativeId!,
-    nativeLineage: thread.nativeLineage,
-    workspaceRoot: thread.workspaceRoot,
-    name: thread.name,
-    createdAt: thread.createdAt,
-    updatedAt: thread.updatedAt,
-    nativeState: 'unknown',
-    state: states.get(JSON.stringify([thread.provider, thread.nativeId])) ?? 'unknown',
-    ownership: thread.ownership,
-    managedId: thread.id,
-    historyState: 'available',
-    terminal: null,
-    backgroundCommands: 0,
-    continuedIn: null,
-  }));
-};
-
-/**
- * Reads one workspace's managed threads that no turn has started, newest first, so a session HQ
- * created shows before Claude or Codex has written any history.
- * @returns At most 32 summaries and whether more such threads exist.
- * @throws
- * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
- * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
- */
-export const readUnstartedThreads = async (
-  command: Extract<IHqRequest, { kind: 'unstarted-threads' }>,
+const readRecordedThread = async (
+  provider: IProviderId,
+  nativeId: string,
+  workspaceRoot: string,
   projection: IStore,
   allowedRoots: string[],
   claude: IClaudeSessions,
-): Promise<IUnstartedThreads> => {
-  const workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, allowedRoots);
-  const page = await projection.call(
-    'reads',
-    'listUnstartedThreads',
-    command.provider,
-    workspaceRoot,
-    DEFAULT_PAGE_SIZE,
-  );
-  return {
-    data: (await toManagedSummaries(projection, page.data)).map((summary) =>
-      withListing(summary, claude),
-    ),
-    isTruncated: page.isTruncated,
-  };
+): Promise<IThreadSummary | null> => {
+  const [managed] = await projection.call('reads', 'getNativeThreads', provider, [nativeId]);
+  const [summary] = managed ? await toManagedSummaries(projection, [managed]) : [];
+  const recorded =
+    summary ??
+    (await readActiveSessions(projection, allowedRoots, claude)).data.find(
+      (session) => session.provider === provider && session.nativeId === nativeId,
+    );
+  return recorded?.workspaceRoot === workspaceRoot
+    ? { ...withListing(recorded, claude), historyState: 'unavailable' }
+    : null;
 };
 
 /**

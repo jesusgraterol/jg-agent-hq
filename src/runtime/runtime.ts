@@ -17,7 +17,7 @@ import {
   limitItemText,
   readActiveSessions,
   readNativeHistory,
-  readUnstartedThreads,
+  readThreads,
   type IClaudeSessions,
 } from '../sessions/index.js';
 import { suggestThreadName } from '../sessions/names/index.js';
@@ -309,10 +309,10 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           kind: 'active-sessions',
           result: await readActiveSessions(projection, allowedRoots, claudeSessions),
         };
-      case 'unstarted-threads':
+      case 'threads':
         return {
-          kind: 'unstarted-threads',
-          result: await readUnstartedThreads(command, projection, allowedRoots, claudeSessions),
+          kind: 'threads',
+          result: await readThreads(command, providers, projection, allowedRoots, claudeSessions),
         };
       case 'observation-pace':
         claudeAgents.setPace(command.pace);

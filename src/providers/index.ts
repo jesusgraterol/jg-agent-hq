@@ -6,6 +6,8 @@ export type {
   INativePrompt,
   IProviderSkills,
   IProviderCall,
+  IThreadListRequest,
+  IThreadList,
   IProviderThread,
   IProviderInspection,
   IProviderReattachment,

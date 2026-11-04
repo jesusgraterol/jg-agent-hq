@@ -143,27 +143,41 @@ export class ControlReads extends ControlModel {
   }
 
   /**
-   * Reads one provider's managed threads in a workspace that no turn has started, newest first:
-   * each was created empty with `thread-create`, has a native ID and no active or last turn, and
-   * is not closed.
-   * @returns At most `limit` threads and whether more exist.
+   * Reads the selected workspaces' and providers' managed threads that no turn has started, in a
+   * session list's order after one session: last update, then provider, then native ID, each
+   * descending. Each
+   * was created empty with `thread-create`, has a native ID and no active or last turn, and is not
+   * closed; a search keeps the names that contain it, ignoring ASCII case.
+   * @returns At most `limit` threads and whether more follow.
    */
-  public listUnstartedThreads(
-    provider: IManagedThread['provider'],
-    workspaceRoot: string,
-    limit: number,
-  ): { data: IManagedThread[]; isTruncated: boolean } {
+  public listUnstartedThreads(page: {
+    workspaceRoots: string[];
+    providers: IManagedThread['provider'][];
+    search: string | null;
+    after: { updatedAt: number; provider: string; nativeId: string } | null;
+    limit: number;
+  }): { data: IManagedThread[]; hasMore: boolean } {
+    const { after } = page;
     const rows = this._statements.all<IThreadRow>(
       `SELECT ${THREAD_COLUMNS} FROM agent_hq_thread
-      WHERE workspace_root = ? AND provider = ? AND native_id IS NOT NULL AND ${UNSTARTED_CONDITION}
-      ORDER BY agent_hq_thread.created_at DESC, agent_hq_thread.id DESC LIMIT ?`,
-      workspaceRoot,
-      provider,
-      limit + 1,
+      WHERE workspace_root IN (SELECT value FROM json_each(?)) AND provider IN (SELECT value FROM json_each(?))
+      AND native_id IS NOT NULL AND ${UNSTARTED_CONDITION}
+      AND (? IS NULL OR instr(lower(name), lower(?)) > 0)
+      AND (? IS NULL OR (updated_at, provider, native_id) < (?, ?, ?))
+      ORDER BY updated_at DESC, provider DESC, native_id DESC LIMIT ?`,
+      JSON.stringify(page.workspaceRoots),
+      JSON.stringify(page.providers),
+      page.search,
+      page.search,
+      after?.updatedAt ?? null,
+      after?.updatedAt ?? null,
+      after?.provider ?? null,
+      after?.nativeId ?? null,
+      page.limit + 1,
     );
     return {
-      data: rows.slice(0, limit).map(toManagedThread),
-      isTruncated: rows.length > limit,
+      data: rows.slice(0, page.limit).map(toManagedThread),
+      hasMore: rows.length > page.limit,
     };
   }
 

@@ -34,14 +34,15 @@ const main = async (): Promise<void> => {
       'after-sequence': { type: 'string' },
       pace: { type: 'string' },
       search: { type: 'string' },
-      provider: { type: 'string' },
+      'exclude-continued': { type: 'boolean' },
+      provider: { type: 'string', multiple: true },
       help: { type: 'boolean', short: 'h' },
     },
   });
   const [kind] = positionals;
   if (values.help || !kind || kind === 'help') {
     process.stdout.write(
-      'jg-agent-hq serve|status|stop|capabilities|threads|thread|items|item-detail|item-image|session-evidence|usage|models|configuration|suggest-thread-name|skills|session-states|active-sessions|unstarted-threads|observation-pace|locks|request --state-root <path> [--provider <codex|claude>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--topic <topic>] [--thread-id <id>] [--after-sequence <sequence>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nsession-evidence accepts --native-item-id and repeated --evidence-kind.\nitems reads newest first and accepts --text-limit <1..65536>, and --native-item-id with --turn-id for one item.\nitem-detail reads the detail of one item and takes --native-item-id and --turn-id.\nitem-image reads one image of an item and also takes --index <0..63>.\nobservation-pace takes --pace <live|background>.\nlocks lists the jg-locks locks on this machine with their holders; HQ never takes them.\nrequest reads one validated HQ command as JSON from stdin, such as action-wait.\n',
+      'jg-agent-hq serve|status|stop|capabilities|threads|thread|items|item-detail|item-image|session-evidence|usage|models|configuration|suggest-thread-name|skills|session-states|active-sessions|observation-pace|locks|request --state-root <path> [--provider <codex|claude>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--topic <topic>] [--thread-id <id>] [--after-sequence <sequence>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nthreads lists sessions across repeated --workspace-root and --provider, both providers by default, and accepts --search and --exclude-continued.\nsession-evidence accepts --native-item-id and repeated --evidence-kind.\nitems reads newest first and accepts --text-limit <1..65536>, and --native-item-id with --turn-id for one item.\nitem-detail reads the detail of one item and takes --native-item-id and --turn-id.\nitem-image reads one image of an item and also takes --index <0..63>.\nobservation-pace takes --pace <live|background>.\nlocks lists the jg-locks locks on this machine with their holders; HQ never takes them.\nrequest reads one validated HQ command as JSON from stdin, such as action-wait.\n',
     );
     return;
   }
@@ -94,6 +95,7 @@ const main = async (): Promise<void> => {
       values.cursor ||
       values.limit ||
       values.search ||
+      values['exclude-continued'] ||
       values.provider ||
       values['after-sequence']
     )
@@ -130,7 +132,38 @@ const main = async (): Promise<void> => {
   }
   if (values['codex-extra-skill-root'] || values['claude-additional-directory'])
     throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
-  if (roots.length > 1)
+  if (kind === 'threads') {
+    const allowed = new Set([
+      'state-root',
+      'workspace-root',
+      'provider',
+      'search',
+      'exclude-continued',
+      'limit',
+      'cursor',
+    ]);
+    if (Object.keys(values).some((key) => !allowed.has(key)))
+      throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
+    const parsed = HqRequestSchema.safeParse({
+      kind,
+      workspaceRoots: roots,
+      providers: values.provider,
+      search: values.search,
+      excludeContinued: values['exclude-continued'],
+      limit: values.limit === undefined ? undefined : Number(values.limit),
+      cursor: values.cursor,
+    });
+    if (!parsed.success)
+      throw HQ_ERRORS.create('requestInvalid', {
+        data: { kind: 'invalid-request' },
+        cause: parsed.error,
+      });
+    process.stdout.write(
+      `${JSON.stringify({ schemaVersion: 1, ...(await requestAgentHq(stateRoot, parsed.data)) })}\n`,
+    );
+    return;
+  }
+  if (roots.length > 1 || (values.provider?.length ?? 0) > 1)
     throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
   if (kind === 'session-states') {
     const allowed = new Set(['state-root', 'after-sequence', 'limit']);
@@ -168,16 +201,15 @@ const main = async (): Promise<void> => {
     );
     return;
   }
-  if (values['after-sequence'] || values.pace)
+  if (values['after-sequence'] || values.pace || values['exclude-continued'])
     throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
+  const provider = values.provider?.[0];
   const payload = Object.fromEntries(
     [
       ['kind', kind],
       [
         'provider',
         [
-          'threads',
-          'unstarted-threads',
           'thread',
           'items',
           'item-detail',
@@ -189,8 +221,8 @@ const main = async (): Promise<void> => {
           'configuration',
           'skills',
         ].includes(kind)
-          ? (values.provider ?? 'codex')
-          : values.provider,
+          ? (provider ?? 'codex')
+          : provider,
       ],
       ['workspaceRoot', roots[0]],
       ['nativeId', values['native-id']],

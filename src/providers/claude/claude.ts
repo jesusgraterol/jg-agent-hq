@@ -10,7 +10,7 @@ import type {
 } from '../../contracts/index.js';
 import type { IStore } from '../../store/index.js';
 import type { IHistoryRequest } from '../../sessions/index.js';
-import type { IProviderSkills } from '../types.js';
+import type { IProviderSkills, IThreadList, IThreadListRequest } from '../types.js';
 import { HQ_ERRORS, isCleanupUnconfirmed } from '../../errors/index.js';
 
 import { createClaudeRpc } from './rpc.js';
@@ -264,6 +264,33 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
       while (!isClosing && Date.now() < deadline) {
         const result = await store.call('claudeHistory', 'read', command);
         if (result.kind !== 'indexing') return result;
+        await scheduler.yield();
+      }
+      throw HQ_ERRORS.create('claudeHistoryUnavailable', {
+        data: { kind: 'agent-unavailable' },
+      });
+    },
+    /**
+     * Lists one page of a workspace's transcripts, indexing new transcript bytes first on a first
+     * page, within the same 30-second budget and its caller's signal.
+     * @returns The page, with the continuation its next page seeks from.
+     * @throws
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+     * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+     * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+     */
+    async listThreads(
+      workspaceRoot: string,
+      page: IThreadListRequest,
+      signal: AbortSignal,
+    ): Promise<IThreadList> {
+      const deadline = Date.now() + 30_000;
+      await verify();
+      while (!isClosing && !signal.aborted && Date.now() < deadline) {
+        const result = await store.call('claudeHistory', 'list', workspaceRoot, page);
+        if (result !== 'indexing') return result;
         await scheduler.yield();
       }
       throw HQ_ERRORS.create('claudeHistoryUnavailable', {

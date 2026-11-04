@@ -137,7 +137,9 @@ test('a snapshot leaves out the Claude history index and keeps host rowids; a re
     const nativeId = randomUUID();
     const question = claudeRecord(workspaceRoot, nativeId, { text: 'Kept in the transcript' });
     await writeFile(transcript(nativeId), `${JSON.stringify(question)}\n`);
-    expect(await request({ kind: 'threads', provider: 'claude', workspaceRoot })).toMatchObject({
+    expect(
+      await request({ kind: 'threads', providers: ['claude'], workspaceRoots: [workspaceRoot] }),
+    ).toMatchObject({
       kind: 'threads',
       result: { data: [{ nativeId }] },
     });
@@ -196,7 +198,11 @@ test('a snapshot leaves out the Claude history index and keeps host rowids; a re
     });
     try {
       expect(
-        await reopened.request({ kind: 'threads', provider: 'claude', workspaceRoot }),
+        await reopened.request({
+          kind: 'threads',
+          providers: ['claude'],
+          workspaceRoots: [workspaceRoot],
+        }),
       ).toMatchObject({ kind: 'threads', result: { data: [{ nativeId }] } });
       const items = await reopened.request({
         kind: 'items',

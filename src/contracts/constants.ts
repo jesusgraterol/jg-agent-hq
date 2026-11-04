@@ -2,6 +2,9 @@
 export const DEFAULT_PAGE_SIZE = 32;
 export const MAX_PAGE_SIZE = 128;
 
+// the most folders one `threads` read lists, so its cursor carries every source's continuation
+export const MAX_WORKSPACE_ROOTS = 64;
+
 /*
  * The native steps an action takes, one at a time: a create continues with name, a clean with
  * close, and every other step is the action's only one.

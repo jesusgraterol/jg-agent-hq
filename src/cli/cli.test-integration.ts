@@ -505,3 +505,58 @@ test('skills reads a folder catalog, and a session catalog with its thread, thro
     });
   });
 });
+
+test('threads lists sessions across repeated folders and providers through the installed command', async () => {
+  await withClaudeRuntime(async ({ root, stateRoot, workspaceRoot, configRoot }) => {
+    const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
+    const run = promisify(execFile);
+    const read = async (...args: string[]) =>
+      JSON.parse(
+        (await run(process.execPath, [cli, 'threads', ...args, '--state-root', stateRoot])).stdout,
+      );
+    const [a, b] = [join(workspaceRoot, 'a'), join(workspaceRoot, 'b')];
+    for (const folder of [a, b]) {
+      await mkdir(folder);
+      await mkdir(join(configRoot, 'projects', folder.replace(/[^a-zA-Z0-9]/g, '-')));
+    }
+    const claudeId = randomUUID();
+    await writeFile(
+      join(configRoot, 'projects', a.replace(/[^a-zA-Z0-9]/g, '-'), `${claudeId}.jsonl`),
+      [
+        claudeRecord(a, claudeId, { timestamp: '2026-10-21T10:00:00.000Z' }),
+        { type: 'custom-title', sessionId: claudeId, customTitle: 'Match in a' },
+      ]
+        .map((record) => `${JSON.stringify(record)}\n`)
+        .join(''),
+    );
+    await writeFile(
+      join(root, 'control.json'),
+      JSON.stringify({
+        listedThreads: [
+          { id: 'codex-match', cwd: b, name: 'Match in b', updatedAt: 1_700_000_000 },
+          { id: 'codex-other', cwd: b, name: 'Other', updatedAt: 1_700_000_001 },
+        ],
+      }),
+    );
+    const flags = [
+      ...['--workspace-root', a, '--workspace-root', b],
+      ...['--provider', 'codex', '--provider', 'claude'],
+      ...['--search', 'Match', '--exclude-continued', '--limit', '1'],
+    ];
+    const first = await read(...flags);
+    expect(first).toMatchObject({
+      schemaVersion: 1,
+      kind: 'threads',
+      result: { data: [{ nativeId: claudeId, name: 'Match in a' }], unavailable: [] },
+    });
+    expect(await read(...flags, '--cursor', first.result.nextCursor)).toMatchObject({
+      result: { data: [{ nativeId: 'codex-match' }], nextCursor: null },
+    });
+    for (const args of [
+      ['--workspace-root', a, '--native-id', claudeId],
+      ['--workspace-root', a, '--provider', 'gemini'],
+      ['--workspace-root', a, '--workspace-root', a],
+    ])
+      await expect(read(...args)).rejects.toThrow();
+  });
+});

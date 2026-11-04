@@ -5,6 +5,7 @@ import { NativeIdSchema } from '../contracts/identities/index.js';
 import type {
   IActionCommand,
   IManagedThread,
+  IThreadSummary,
   IApprovalPresentation,
   ISkill,
   IHqResponse,
@@ -68,6 +69,18 @@ export type IResyncLoss = z.infer<typeof ResyncLossSchema>;
 
 // adapters must honor cancellation and keep delivery uncertain when native consumption is unproven
 export type IProviderCall = { signal: AbortSignal };
+
+/*
+ * One page of a workspace's sessions, last activity first: its `cursor` is the continuation an
+ * earlier page returned, or null for the first page, and its `nextCursor` the provider's own
+ * continuation, or null after its last session.
+ */
+export type IThreadListRequest = {
+  search: string | undefined;
+  limit: number;
+  cursor: string | null;
+};
+export type IThreadList = { data: IThreadSummary[]; nextCursor: string | null };
 
 // adapters name the action and phase the native request answers; the registry adds the lineage
 export type IAgentProviderOutcome = INativeOutcome extends infer TOutcome
@@ -137,6 +150,12 @@ export type IAgentProvider = {
     nativeId: string | undefined,
     call: IProviderCall,
   ): Promise<ISessionConfiguration>;
+  /** @returns One page of the workspace's native sessions, each checked against the workspace. */
+  listThreads(
+    workspaceRoot: string,
+    page: IThreadListRequest,
+    call: IProviderCall,
+  ): Promise<IThreadList>;
   /** @returns One authorized, bounded native history response with query-bound continuation. */
   readHistory(command: IHistoryRequest, call: IProviderCall): Promise<IHqResponse>;
   /** @returns Verified native metadata and explicit eligibility for adoption or reattachment. */
