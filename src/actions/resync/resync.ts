@@ -1,3 +1,5 @@
+import type { IProviderId } from '../../contracts/index.js';
+
 import type { IResyncRequest } from './types.js';
 import { mergeResync } from './utilities.js';
 
@@ -17,9 +19,9 @@ type IProviderResyncs = {
  * running.
  */
 export class Resyncs {
-  private readonly __providers = new Map<string, IProviderResyncs>();
+  private readonly __providers = new Map<IProviderId, IProviderResyncs>();
   private readonly __recheck: (
-    provider: string,
+    provider: IProviderId,
     nativeId: string,
     request: IResyncRequest,
   ) => Promise<void>;
@@ -30,7 +32,7 @@ export class Resyncs {
    * @param runOwned Runs a provider's re-checks in the background the runtime owns.
    */
   public constructor(
-    recheck: (provider: string, nativeId: string, request: IResyncRequest) => Promise<void>,
+    recheck: (provider: IProviderId, nativeId: string, request: IResyncRequest) => Promise<void>,
     runOwned: (operation: () => Promise<void>) => void,
   ) {
     this.__recheck = recheck;
@@ -38,7 +40,7 @@ export class Resyncs {
   }
 
   /** Asks for a re-check of one session and starts its provider's re-checks when none run. */
-  public request(provider: string, nativeId: string, request: IResyncRequest): void {
+  public request(provider: IProviderId, nativeId: string, request: IResyncRequest): void {
     let queue = this.__providers.get(provider);
     if (!queue) {
       queue = { waiting: new Map(), running: null, followUps: new Map(), isDraining: false };
@@ -57,7 +59,7 @@ export class Resyncs {
    * Runs a provider's waiting re-checks in order until none is left.
    * @returns A promise resolved once the provider has no waiting re-check.
    */
-  private async __drain(provider: string, queue: IProviderResyncs): Promise<void> {
+  private async __drain(provider: IProviderId, queue: IProviderResyncs): Promise<void> {
     try {
       for (const [nativeId, request] of queue.waiting) {
         queue.waiting.delete(nativeId);

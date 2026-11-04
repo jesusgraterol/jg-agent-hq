@@ -1,2 +1,2 @@
-// receipt waits woken by the actions module's own changes
-export { ActionWaits } from './waits.js';
+// waits woken by the runtime's own changes: receipts and long-polls
+export { ActionWaits, ChangeWaits } from './waits.js';

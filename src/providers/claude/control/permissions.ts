@@ -1,9 +1,9 @@
-import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import { NativeElicitationSchema, OutputSchemaSchema } from '../../../contracts/index.js';
 import { presentElicitation, validateElicitation } from '../../elicitation/index.js';
 import type { INativePrompt } from '../../types.js';
+import { HQ_ERRORS } from '../../../errors/index.js';
 
 const QuestionSchema = z.object({
   question: z.string().min(1).max(4096),
@@ -136,10 +136,7 @@ export const createClaudePrompt = (
       response: { subtype: 'success', request_id: requestId, response },
     });
   const invalid: () => never = () => {
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
-      data: { kind: 'invalid-request' },
-    });
+    throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
   };
   return {
     toolId: request.tool_use_id,
@@ -190,7 +187,8 @@ export const createClaudePrompt = (
           : { behavior: 'deny', message: 'The operator declined this request' };
       },
       reply: respond,
-      reject: () => respond({ behavior: 'deny', message: 'HQ cannot answer this request' }),
+      reject: () =>
+        respond({ behavior: 'deny', message: 'jg-agent-hq cannot answer this request' }),
     },
   };
 };

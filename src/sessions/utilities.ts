@@ -1,24 +1,78 @@
-import { createHash } from 'node:crypto';
-import { Exception, extractMessage } from 'jg-exception';
+import { hashValue } from 'jg-crypto';
+import { Exception, extractMessage, type IJsonValue } from 'jg-exception';
+import { createCursorCodec, detectMediaType } from 'jg-utilities';
 import { z } from 'zod';
 
 import {
+  ItemImageMediaTypeSchema,
   MAX_ITEM_IMAGE_BYTES,
   MAX_ITEM_TEXT_LENGTH,
   type IHistoryItem,
   type IItemImage,
   type IItemImageMediaType,
 } from '../contracts/index.js';
+import { HQ_ERRORS } from '../errors/index.js';
 
-const ContinuationSchema = z.strictObject({
-  version: z.literal(1),
-  filterHash: z.string().regex(/^[a-f0-9]{64}$/),
-  nativeCursor: z.string().min(1).max(12_000),
-});
+// the longest cursor a request accepts, as its CursorSchema bounds it
+const MAX_CURSOR_LENGTH = 16_384;
 
 // request schemas produce deterministic key ordering before filters are hashed
-const hashFilters = (filters: object): string =>
-  createHash('sha256').update(JSON.stringify(filters)).digest('hex');
+const hashFilters = (filters: object): string => hashValue(JSON.stringify(filters));
+
+/**
+ * Creates the cursors of one paged read. Each cursor carries a position, such as the last row's
+ * ordering keys, bound to the hash of the request's filters, so it continues only the request it
+ * came from. Authorization is checked separately.
+ * @param position The schema of the read's position.
+ * @returns The read's cursor codec.
+ */
+export const createRequestCursors = <TPosition extends { [key: string]: IJsonValue }>(
+  position: z.ZodType<TPosition>,
+) => {
+  const codec = createCursorCodec<
+    { filterHash: string; position: TPosition },
+    { filterHash: string }
+  >({
+    schema: z.strictObject({ filterHash: z.string().regex(/^[a-f0-9]{64}$/), position }),
+    maxLength: MAX_CURSOR_LENGTH,
+  });
+  return {
+    /**
+     * Encodes the position the next page starts at, bound to the request's filters.
+     * @param next The position, or null when no page follows.
+     * @param filters The request without its cursor.
+     * @returns The cursor, or null for the last page.
+     * @throws
+     * - CURSOR_TOO_LONG: The cursor is longer than the codec's maximum length.
+     */
+    encode: (next: TPosition | null, filters: object): string | null =>
+      next === null ? null : codec.encode({ filterHash: hashFilters(filters), position: next }),
+    /**
+     * Decodes a client's cursor for the request it must continue.
+     * @param cursor The cursor, if any.
+     * @param filters The request without its cursor.
+     * @returns The position, or undefined for the first page.
+     * @throws
+     * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+     */
+    decode: (cursor: string | undefined, filters: object): TPosition | undefined => {
+      try {
+        return codec.decode(cursor, { filterHash: hashFilters(filters) })?.position;
+      } catch (cause) {
+        throw new Exception(`The HQ cursor does not match this request: ${extractMessage(cause)}`, {
+          code: 'JG_AGENT_HQ_CURSOR_INVALID',
+          data: { kind: 'invalid-request' },
+          cause,
+        });
+      }
+    },
+  };
+};
+
+// a provider's own continuation, which HQ passes back without interpreting it
+const nativeCursors = createRequestCursors(
+  z.strictObject({ nativeCursor: z.string().min(1).max(12_000) }),
+);
 
 /**
  * Checks query binding before a native continuation is used. Authorization is checked separately.
@@ -29,53 +83,28 @@ const hashFilters = (filters: object): string =>
 export const decodeHistoryCursor = (
   cursor: string | undefined,
   filters: object,
-): string | undefined => {
-  if (!cursor) return undefined;
-  try {
-    if (!/^[A-Za-z0-9_-]+$/.test(cursor))
-      throw new Exception('The HQ cursor does not match this request', {
-        code: 'JG_AGENT_HQ_CURSOR_INVALID',
-      });
-    const bytes = Buffer.from(cursor, 'base64url');
-    if (bytes.toString('base64url') !== cursor)
-      throw new Exception('The HQ cursor does not match this request', {
-        code: 'JG_AGENT_HQ_CURSOR_INVALID',
-      });
-    const parsed = ContinuationSchema.parse(
-      JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
-    );
-    if (parsed.filterHash !== hashFilters(filters))
-      throw new Exception('The HQ cursor does not match this request', {
-        code: 'JG_AGENT_HQ_CURSOR_INVALID',
-      });
-    return parsed.nativeCursor;
-  } catch (cause) {
-    throw new Exception(`The HQ cursor does not match this request: ${extractMessage(cause)}`, {
-      code: 'JG_AGENT_HQ_CURSOR_INVALID',
-      data: { kind: 'invalid-request' },
-      cause,
-    });
-  }
-};
+): string | undefined => nativeCursors.decode(cursor, filters)?.nativeCursor;
 
-/** Encodes a validated native continuation with the exact request filters. */
+/**
+ * Encodes a validated native continuation with the exact request filters.
+ * @throws
+ * - CURSOR_TOO_LONG: The cursor is longer than the codec's maximum length.
+ */
 export const encodeHistoryCursor = (nativeCursor: string | null, filters: object): string | null =>
-  nativeCursor === null
-    ? null
-    : Buffer.from(
-        JSON.stringify(
-          ContinuationSchema.parse({ version: 1, filterHash: hashFilters(filters), nativeCursor }),
-        ),
-      ).toString('base64url');
+  nativeCursors.encode(nativeCursor === null ? null : { nativeCursor }, filters);
 
 /**
  * Cuts each item's text to a limit on a code-point boundary, marking the items it cut, after
  * everything that compares the persisted text, such as live-item reconciliation, has read it.
+ * Live items and queued input text are cut the same way.
  * @param items The items as their provider presents them.
  * @param textLimit The most UTF-16 code units of text an item keeps.
  * @returns The items with their text cut.
  */
-export const limitItemText = (items: IHistoryItem[], textLimit: number): IHistoryItem[] =>
+export const limitItemText = <TItem extends Pick<IHistoryItem, 'text' | 'isTruncated'>>(
+  items: TItem[],
+  textLimit: number,
+): TItem[] =>
   items.map((item) => {
     if (item.text.length <= textLimit) return item;
     const end = /[\uD800-\uDBFF]/.test(item.text.charAt(textLimit - 1)) ? textLimit - 1 : textLimit;
@@ -124,16 +153,8 @@ export const toWholeFileDiff = (content: string, sign: '+' | '-'): string => {
  * @param head At least the image's first 12 bytes.
  * @returns The image's format, or null for anything else.
  */
-export const toImageMediaType = (head: Uint8Array): IItemImageMediaType | null => {
-  const ascii = (start: number, end: number) => String.fromCharCode(...head.subarray(start, end));
-  if (head.length >= 8 && head[0] === 0x89 && ascii(1, 8) === 'PNG\r\n\u001a\n') return 'image/png';
-  if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff)
-    return 'image/jpeg';
-  if (head.length >= 6 && (ascii(0, 6) === 'GIF87a' || ascii(0, 6) === 'GIF89a'))
-    return 'image/gif';
-  if (head.length >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return 'image/webp';
-  return null;
-};
+export const toImageMediaType = (head: Uint8Array): IItemImageMediaType | null =>
+  detectMediaType(head, ItemImageMediaTypeSchema.options);
 
 /**
  * Describes an image an item holds as base64, decoding only its first bytes.
@@ -155,8 +176,7 @@ export const describeBase64Image = (
  * - JG_AGENT_HQ_IMAGE_UNAVAILABLE: The HQ image is unavailable
  */
 export const imageUnavailable = (cause?: unknown): never => {
-  throw new Exception('The HQ image is unavailable', {
-    code: 'JG_AGENT_HQ_IMAGE_UNAVAILABLE',
+  throw HQ_ERRORS.create('imageUnavailable', {
     data: { kind: 'image-unavailable' },
     ...(cause === undefined ? {} : { cause }),
   });

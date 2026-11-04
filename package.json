@@ -1,6 +1,6 @@
 {
   "name": "jg-agent-hq",
-  "version": "11.1.1",
+  "version": "12.0.0",
   "description": "Native Claude Code and Codex session control, history, usage and recoverable local storage for Node.js apps.",
   "type": "module",
   "license": "MIT",
@@ -50,15 +50,15 @@
     "check:full": "pnpm check:package:full && pnpm --dir website check:full"
   },
   "dependencies": {
-    "jg-crypto": "0.3.0",
-    "jg-exception": "^1.7.0",
-    "jg-fs": "1.7.0",
+    "jg-crypto": "^0.3.0",
+    "jg-exception": "^1.7.1",
+    "jg-fs": "^1.7.0",
     "jg-locks": "^1.0.0",
-    "jg-utilities": "1.7.0",
-    "zod": "^4.3.6"
+    "jg-utilities": "^1.8.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/node": "24.0.0",
+    "@types/node": "24.19.2",
     "prettier": "3.4.2",
     "typescript": "6.0.3",
     "vitest": "5.0.3"

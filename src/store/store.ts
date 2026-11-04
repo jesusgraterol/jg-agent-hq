@@ -1,39 +1,22 @@
 import { Worker } from 'node:worker_threads';
 import { Exception, extractMessage } from 'jg-exception';
-import { z } from 'zod';
 
-import {
-  BrowserReceiptSchema,
-  ActionReceiptSchema,
-  ManagedThreadSchema,
-  HistoryProvenanceSchema,
-  SessionStateSchema,
-  SessionTransitionPageSchema,
-} from '../contracts/index.js';
-import { ClaudeHistoryReadSchema } from '../providers/claude/history/index.js';
+import { createPendingRequests } from '../pending/index.js';
 import type { IStorageDescriptor } from '../storage/index.js';
+import { HQ_ERRORS } from '../errors/index.js';
 
-import {
-  AdmissionResultSchema,
-  ObservationResultSchema,
-  DispatchSchema,
-  ManagedThreadPageSchema,
-  ActionPageSchema,
-  LifecyclePageSchema,
-  ApprovalIdentitySchema,
-  ApprovalPageSchema,
-  TurnRecordSchema,
-} from './control/index.js';
-import { ActiveSessionRecordsSchema } from './sessions/index.js';
-import {
-  StoreRequestSchema,
-  StoreResponseSchema,
-  type IStore,
-  type IStoreCommand,
+import type {
+  IStore,
+  IStoreRequest,
+  IStoreResponse,
+  IStoreResult,
+  IStoreWorkerData,
 } from './types.js';
+import { toWorkerExecArgv } from './utilities.js';
 
 /**
- * Owns SQLite in one dedicated worker; requests and queued payloads are bounded.
+ * Owns SQLite in one dedicated worker; requests and queued payloads are bounded. Messages between
+ * the two threads are built by HQ's own code on both sides, so neither side parses them again.
  * @returns A store whose close waits for worker exit.
  * @throws
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
@@ -44,19 +27,13 @@ export const createStore = async (
   databasePath: string,
   runtimeEpoch: string,
   actionKey: Uint8Array,
-  keepingProviders: string[],
 ): Promise<IStore> => {
+  const workerData: IStoreWorkerData = { databasePath, runtimeEpoch, actionKey };
   const worker = new Worker(new URL('./store.worker.js', import.meta.url), {
-    // the worker loads a file, even when its caller used Node's string-input mode
-    execArgv: process.execArgv.filter(
-      (argument, index, arguments_) =>
-        argument !== '--input-type' &&
-        !argument.startsWith('--input-type=') &&
-        arguments_[index - 1] !== '--input-type',
-    ),
+    execArgv: toWorkerExecArgv(),
     // indexing a large transcript otherwise grows the young generation to V8's default maximum
     resourceLimits: { maxYoungGenerationSizeMb: 16 },
-    workerData: { databasePath, runtimeEpoch, actionKey, keepingProviders },
+    workerData,
   });
   let hasExited = false;
   const exited = new Promise<void>((resolve) =>
@@ -65,20 +42,16 @@ export const createStore = async (
       resolve();
     }),
   );
-  const pending = new Map<
-    number,
-    {
-      resolve: (result: unknown) => void;
-      reject: (error: unknown) => void;
-      timer: ReturnType<typeof setTimeout> | undefined;
-    }
-  >();
+  const pending = createPendingRequests<number>();
   let sequence = 0;
   let isAvailable = true;
   let closing: Promise<void> | undefined;
   let readyResolve: () => void = () => undefined;
   let readyReject: (error: unknown) => void = () => undefined;
   let storage: IStorageDescriptor | undefined;
+  // the highest session transition sequence the worker reported, and who hears of a new one
+  let transitionSequence = 0;
+  let onTransition: (() => void) | undefined;
   const ready = new Promise<void>((resolve, reject) => {
     readyResolve = resolve;
     readyReject = reject;
@@ -91,21 +64,12 @@ export const createStore = async (
       cause,
     });
     readyReject(error);
-    for (const entry of pending.values()) {
-      clearTimeout(entry.timer);
-      entry.reject(error);
-    }
-    pending.clear();
+    pending.rejectAll(error);
   };
-  worker.on('message', (message: unknown) => {
-    const result = StoreResponseSchema.safeParse(message);
-    if (!result.success) {
-      fail(result.error);
-      return;
-    }
-    const response = result.data;
+  worker.on('message', (response: IStoreResponse) => {
     if (response.kind === 'ready') {
       storage = response.storage;
+      transitionSequence = response.transitionSequence;
       readyResolve();
       return;
     }
@@ -119,12 +83,13 @@ export const createStore = async (
       );
       return;
     }
-    const entry = pending.get(response.id);
-    if (!entry) return;
-    clearTimeout(entry.timer);
-    pending.delete(response.id);
+    if (response.transitionSequence !== transitionSequence) {
+      transitionSequence = response.transitionSequence;
+      onTransition?.();
+    }
     if (response.error)
-      entry.reject(
+      pending.reject(
+        response.id,
         new Exception(response.error.message, {
           code: response.error.code,
           data: {
@@ -132,7 +97,7 @@ export const createStore = async (
           },
         }),
       );
-    else entry.resolve(response.result);
+    else pending.resolve(response.id, response.result);
   });
   worker.once('error', fail);
   worker.once('exit', (code) =>
@@ -169,150 +134,59 @@ export const createStore = async (
     clearTimeout(timer);
   }
 
-  const request = <T>(command: IStoreCommand, schema: z.ZodType<T>): Promise<T> => {
-    // IPC, native callbacks and queue dispatch share the one worker, with bounded headroom.
+  /**
+   * Sends one request and waits for its response, within a deadline unless it has none.
+   * @returns The worker's result.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  const send = (request: IStoreRequest, timeoutMs: number | undefined): Promise<unknown> => {
+    const response = pending.add(
+      request.id,
+      timeoutMs,
+      () =>
+        new Exception('The HQ store failed: request deadline exceeded', {
+          code: 'JG_AGENT_HQ_STORE_FAILED',
+          data: { kind: 'operation-failed' },
+        }),
+    );
+    try {
+      worker.postMessage(request);
+    } catch (cause) {
+      pending.reject(request.id, cause);
+    }
+    return response;
+  };
+  /**
+   * Admits one more request, IPC, native callbacks and queue dispatch sharing the one worker with
+   * bounded headroom.
+   * @returns The request's ID.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  const admit = (): number => {
     if (!isAvailable || pending.size >= 128)
-      return Promise.reject(
-        new Exception('The HQ store failed', {
-          code: 'JG_AGENT_HQ_STORE_FAILED',
-          data: { kind: 'operation-failed' },
-        }),
-      );
-    const id = ++sequence;
-    const parsed = StoreRequestSchema.safeParse({ id, command });
-    if (!parsed.success)
-      return Promise.reject(
-        new Exception('The HQ store failed', {
-          code: 'JG_AGENT_HQ_STORE_FAILED',
-          data: { kind: 'operation-failed' },
-          cause: parsed.error,
-        }),
-      );
-    return new Promise((resolve, reject) => {
-      const timer =
-        command.kind === 'snapshot-backup'
-          ? undefined
-          : setTimeout(() => {
-              pending.delete(id);
-              reject(
-                new Exception('The HQ store failed: request deadline exceeded', {
-                  code: 'JG_AGENT_HQ_STORE_FAILED',
-                  data: {
-                    kind: 'operation-failed',
-                  },
-                }),
-              );
-            }, 5000);
-      pending.set(id, {
-        resolve: (result) => {
-          const checked = schema.safeParse(result);
-          if (checked.success) resolve(checked.data);
-          else
-            reject(
-              new Exception('The HQ store failed', {
-                code: 'JG_AGENT_HQ_STORE_FAILED',
-                data: { kind: 'operation-failed' },
-                cause: checked.error,
-              }),
-            );
-        },
-        reject,
-        timer,
-      });
-      worker.postMessage(parsed.data);
-    });
+      throw HQ_ERRORS.create('storeFailed', { data: { kind: 'operation-failed' } });
+    return ++sequence;
   };
   return {
     storage: storage!,
-    prepareStorageMaintenance: () => request({ kind: 'storage-maintenance' }, z.boolean()),
-    snapshotBackup: async (destination) => {
-      await request({ kind: 'snapshot-backup', destination }, z.null());
-    },
-    getBrowserAction: (id, operatorId) =>
-      request({ kind: 'browser-read', id, operatorId }, BrowserReceiptSchema.nullable()),
-    admitBrowserAction: (action, operatorId) =>
-      request(
-        { kind: 'browser-admit', action, operatorId },
-        z.object({ receipt: BrowserReceiptSchema, isNew: z.boolean() }),
-      ),
-    settleBrowserAction: (id, operatorId, state) =>
-      request({ kind: 'browser-settle', id, operatorId, state }, BrowserReceiptSchema.nullable()),
     get isAvailable() {
       return isAvailable;
     },
-    readClaudeHistory: (command) =>
-      request({ kind: 'claude-history', request: command }, ClaudeHistoryReadSchema),
-    getEvidenceOrigins: (command) =>
-      request(
-        { kind: 'evidence-origins', request: command },
-        z.array(HistoryProvenanceSchema.nullable()).max(128),
-      ),
-    observeSessions: async (provider, sessions, isComplete) => {
-      await request({ kind: 'sessions-observe', provider, sessions, isComplete }, z.null());
-    },
-    markSessionsUnknown: async (provider) => {
-      await request({ kind: 'sessions-unknown', provider }, z.null());
-    },
-    getSessionStates: (provider, nativeIds) =>
-      request(
-        { kind: 'sessions-states', provider, nativeIds },
-        z.array(z.object({ nativeId: z.string(), state: SessionStateSchema })),
-      ),
-    listSessionTransitions: (afterSequence, limit) =>
-      request({ kind: 'session-transitions', afterSequence, limit }, SessionTransitionPageSchema),
-    listActiveSessions: (limit, includedKeys) =>
-      request({ kind: 'sessions-active', limit, includedKeys }, ActiveSessionRecordsSchema),
-    getClaudeTranscriptRoot: (nativeId) =>
-      request({ kind: 'claude-transcript-root', nativeId }, z.string().nullable()),
-    getAction: (id) => request({ kind: 'action-read', id }, ActionReceiptSchema.nullable()),
-    getThread: (id) => request({ kind: 'thread-read', id }, ManagedThreadSchema.nullable()),
-    getThreadByName: (name) =>
-      request({ kind: 'thread-name-read', name }, ManagedThreadSchema.nullable()),
-    suggestThreadName: (name) =>
-      request({ kind: 'thread-name-suggest', name }, ManagedThreadSchema.shape.name),
-    getThreadByNativeId: (provider, nativeId) =>
-      request({ kind: 'native-thread-read', provider, nativeId }, ManagedThreadSchema.nullable()),
-    getTurnRecord: (provider, nativeId) =>
-      request({ kind: 'turn-record', provider, nativeId }, TurnRecordSchema.nullable()),
-    getNativeThreads: (provider, nativeIds) =>
-      request(
-        { kind: 'native-threads', provider, nativeIds },
-        z.array(ManagedThreadSchema).max(128),
-      ),
-    listThreads: (workspaceRoot, page) =>
-      request({ kind: 'threads', workspaceRoot, page }, ManagedThreadPageSchema),
-    getUnstartedThread: (provider, nativeId) =>
-      request({ kind: 'thread-unstarted', provider, nativeId }, ManagedThreadSchema.nullable()),
-    listUnstartedThreads: (provider, workspaceRoot, limit) =>
-      request(
-        { kind: 'threads-unstarted', provider, workspaceRoot, limit },
-        z.object({ data: z.array(ManagedThreadSchema).max(128), isTruncated: z.boolean() }),
-      ),
-    listActions: (threadId, page) => request({ kind: 'actions', threadId, page }, ActionPageSchema),
-    listProviderActions: (provider, page) =>
-      request({ kind: 'provider-actions', provider, page }, ActionPageSchema),
-    listApprovals: (threadId, page) =>
-      request({ kind: 'approvals', threadId, page }, ApprovalPageSchema),
-    listEvents: (page) => request({ kind: 'events', page }, LifecyclePageSchema),
-    admit: (input) => request({ kind: 'admit', input }, AdmissionResultSchema),
-    applyOutcome: (input) => request({ kind: 'outcome', input }, ActionReceiptSchema.nullable()),
-    observe: (input) => request({ kind: 'observe', input }, ObservationResultSchema),
-    claimQueued: (threadId) =>
-      request({ kind: 'claim-queue', threadId }, DispatchSchema.nullable()),
-    openApproval: (input) =>
-      request({ kind: 'approval', input }, ApprovalIdentitySchema.nullable()),
-    releaseControls: async () => {
-      await request({ kind: 'release' }, z.null());
-    },
-    listReattachable: () => request({ kind: 'reattachable' }, z.array(ManagedThreadSchema)),
-    reattach: (input) => request({ kind: 'reattach', input }, ObservationResultSchema.nullable()),
-    quarantineThread: async (threadId) => {
-      await request({ kind: 'quarantine', threadId }, z.null());
+    // a backup steps through the whole database, so it has no deadline
+    call: async (model, method, ...args) =>
+      (await send(
+        { kind: 'call', id: admit(), model, method: String(method), args },
+        model === 'snapshot' ? undefined : 5000,
+      )) as IStoreResult<typeof model, typeof method>,
+    onTransition: (listener) => {
+      onTransition = listener;
     },
     close: (): Promise<void> =>
       (closing ??= (async () => {
         try {
-          await request({ kind: 'close' }, z.null());
+          await send({ kind: 'close', id: admit() }, 5000);
           await exited;
         } finally {
           if (!hasExited) await worker.terminate();

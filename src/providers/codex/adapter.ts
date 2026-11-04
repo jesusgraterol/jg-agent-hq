@@ -1,20 +1,19 @@
 import { randomUUID } from 'node:crypto';
-import { Exception } from 'jg-exception';
+
 import { z } from 'zod';
 
 import {
   SessionSettingsSchema,
   MAX_PAGE_SIZE,
-  MAX_INPUT_FILES,
-  MAX_INPUT_FILE_BYTES,
-  MAX_TEXT_FILE_BYTES,
   TurnSettingsSchema,
+  type IProviderCapability,
   type IProviderCapabilitySet,
   type ISessionState,
 } from '../../contracts/index.js';
 import { resolveWorkspaceTarget } from '../../runtime/state/index.js';
 import { decodeHistoryCursor, encodeHistoryCursor } from '../../sessions/index.js';
 import type { IHistoryRequest } from '../../sessions/index.js';
+import type { IObservedThread } from '../../store/sessions/index.js';
 import {
   buildEvidencePage,
   evidencePosition,
@@ -22,7 +21,8 @@ import {
 } from '../../sessions/evidence/index.js';
 
 import {
-  PROVIDER_INPUT_SCHEMA,
+  buildProviderCapabilities,
+  MODEL_CATALOG_UNAVAILABLE,
   SUPPORTED_PROVIDER_OPERATION,
   type IAgentProviderFactory,
   type IProviderReattachment,
@@ -30,6 +30,7 @@ import {
 } from '../index.js';
 
 import { capabilityUnavailable } from '../registry/index.js';
+import { HQ_ERRORS } from '../../errors/index.js';
 
 import { createCodexProvider } from './codex.js';
 import { MAX_LOADED_THREAD_PAGES } from './constants.js';
@@ -48,26 +49,32 @@ export const createCodexProviderFactory = (
   id: 'codex',
   async create(context) {
     const native = await createCodexProvider(extraSkillRoots, daemonLauncher);
-    // whether each session is observed, read once: Codex saves it and it's inside an allowed workspace
-    const allowedSessions = new Map<string, boolean>();
+    /*
+     * Each session's workspace, name and creation time, read once, or null for one that isn't
+     * observed: Codex doesn't save it, or it runs outside the allowed workspaces.
+     */
+    const observedThreads = new Map<string, IObservedThread | null>();
     let observations = Promise.resolve();
     // records a session's state, read from Codex when no status change reported it
     const record = async (nativeId: string, reported: ISessionState | null): Promise<void> => {
-      let isAllowed = allowedSessions.get(nativeId);
+      let thread = observedThreads.get(nativeId);
       let state = reported;
-      if (isAllowed === undefined || state === null) {
+      if (thread === undefined || state === null) {
         const observed = await native.readObservedThread(nativeId);
+        const { workspaceRoot, name, createdAt } = observed.thread;
         state ??= observed.thread.state;
-        isAllowed =
+        thread =
           !observed.isEphemeral &&
-          (await resolveWorkspaceTarget(observed.thread.workspaceRoot, context.allowedRoots)
+          (await resolveWorkspaceTarget(workspaceRoot, context.allowedRoots)
             .then(() => true)
-            .catch(() => false));
-        if (allowedSessions.size >= 1024)
-          allowedSessions.delete(allowedSessions.keys().next().value!);
-        allowedSessions.set(nativeId, isAllowed);
+            .catch(() => false))
+            ? { workspaceRoot, name, createdAt }
+            : null;
+        if (observedThreads.size >= 1024)
+          observedThreads.delete(observedThreads.keys().next().value!);
+        observedThreads.set(nativeId, thread);
       }
-      if (isAllowed) context.events.session(nativeId, state);
+      if (thread) context.events.session(nativeId, state, thread);
     };
     const observeSession = (nativeId: string, state: ISessionState): void => {
       observations = observations
@@ -96,10 +103,7 @@ export const createCodexProviderFactory = (
     observeLoaded();
     const verifyRoot = async (workspaceRoot: string, expectedRoot: string): Promise<void> => {
       if ((await resolveWorkspaceTarget(workspaceRoot, context.allowedRoots)) !== expectedRoot)
-        throw new Exception('The HQ target is outside the allowed workspaces', {
-          code: 'JG_AGENT_HQ_TARGET_FORBIDDEN',
-          data: { kind: 'access-denied' },
-        });
+        throw HQ_ERRORS.create('targetForbidden', { data: { kind: 'access-denied' } });
     };
     // a session's latest turn, which runs only while the daemon reports the session active
     const readLatestTurn = async (
@@ -125,30 +129,6 @@ export const createCodexProviderFactory = (
         ...command,
         cursor: 'cursor' in command ? command.cursor : undefined,
       };
-      if (command.kind === 'threads') {
-        const page = await native.listThreads(
-          command.workspaceRoot,
-          command.limit,
-          decodeHistoryCursor(cursor, filters),
-          command.search,
-        );
-        const checkedRoots = new Set<string>();
-        for (const thread of page.data) {
-          if (!checkedRoots.has(thread.workspaceRoot)) {
-            await verifyRoot(thread.workspaceRoot, command.workspaceRoot);
-            checkedRoots.add(thread.workspaceRoot);
-          }
-          thread.workspaceRoot = command.workspaceRoot;
-        }
-        return {
-          kind: 'threads' as const,
-          result: {
-            data: page.data,
-            nextCursor: encodeHistoryCursor(page.nextCursor, filters),
-            source: 'native' as const,
-          },
-        };
-      }
       const thread = await native.readThread(command.nativeId);
       await verifyRoot(thread.workspaceRoot, command.workspaceRoot);
       thread.workspaceRoot = command.workspaceRoot;
@@ -176,7 +156,7 @@ export const createCodexProviderFactory = (
         const page = await native.listItems(
           command.nativeId,
           EVIDENCE_SOURCE_PAGE_SIZE,
-          position!.sourceCursor,
+          position!.sourceCursor ?? undefined,
           command.turnId,
           true,
         );
@@ -186,17 +166,6 @@ export const createCodexProviderFactory = (
         };
       }
       const nativeCursor = decodeHistoryCursor(cursor, filters);
-      if (command.kind === 'turns') {
-        const page = await native.listTurns(command.nativeId, command.limit, nativeCursor);
-        return {
-          kind: 'turns' as const,
-          result: {
-            data: page.data,
-            nextCursor: encodeHistoryCursor(page.nextCursor, filters),
-            source: 'native' as const,
-          },
-        };
-      }
       if (command.nativeItemId !== undefined) {
         // Codex has no lookup of one item, so its turn's items are read until it appears
         let itemCursor: string | undefined;
@@ -258,88 +227,17 @@ export const createCodexProviderFactory = (
       },
       async readCapabilities(): Promise<IProviderCapabilitySet> {
         if (!native.isAvailable)
-          throw new Exception('The Codex integration failed', {
-            code: 'JG_AGENT_HQ_CODEX_FAILED',
-            data: { kind: 'agent-unavailable' },
-          });
-        let models: IProviderCapabilitySet['operations']['models'] = SUPPORTED_PROVIDER_OPERATION;
+          throw HQ_ERRORS.create('codexFailed', { data: { kind: 'agent-unavailable' } });
+        let models: IProviderCapability = SUPPORTED_PROVIDER_OPERATION;
         try {
           await native.readModels(1);
         } catch {
-          models = {
-            state: 'unavailable',
-            changeMode: null,
-            reason: {
-              code: 'native-model-catalog-unavailable',
-              message: 'The native model catalog is unavailable.',
-            },
-          };
+          models = MODEL_CATALOG_UNAVAILABLE;
         }
-        return {
-          operations: {
-            create: SUPPORTED_PROVIDER_OPERATION,
-            adopt: SUPPORTED_PROVIDER_OPERATION,
-            resume: SUPPORTED_PROVIDER_OPERATION,
-            rename: SUPPORTED_PROVIDER_OPERATION,
-            close: SUPPORTED_PROVIDER_OPERATION,
-            interrupt: SUPPORTED_PROVIDER_OPERATION,
-            recover: SUPPORTED_PROVIDER_OPERATION,
-            steer: SUPPORTED_PROVIDER_OPERATION,
-            history: SUPPORTED_PROVIDER_OPERATION,
-            usage: SUPPORTED_PROVIDER_OPERATION,
-            skills: SUPPORTED_PROVIDER_OPERATION,
-            models,
-            fork: SUPPORTED_PROVIDER_OPERATION,
-            archive: SUPPORTED_PROVIDER_OPERATION,
-            unarchive: SUPPORTED_PROVIDER_OPERATION,
-            compact: SUPPORTED_PROVIDER_OPERATION,
-            revert: SUPPORTED_PROVIDER_OPERATION,
-            configuration: SUPPORTED_PROVIDER_OPERATION,
-            account: SUPPORTED_PROVIDER_OPERATION,
-            skillsReload: SUPPORTED_PROVIDER_OPERATION,
-            mcpReload: SUPPORTED_PROVIDER_OPERATION,
-            mcpReconnect: {
-              state: 'unsupported',
-              changeMode: null,
-              reason: {
-                code: 'native-control-unsupported',
-                message:
-                  'The native interface has no qualified structured control for this operation.',
-              },
-            },
-            mcpSetEnabled: {
-              state: 'unsupported',
-              changeMode: null,
-              reason: {
-                code: 'native-control-unsupported',
-                message:
-                  'The native interface has no qualified structured control for this operation.',
-              },
-            },
-            mcpLogin: SUPPORTED_PROVIDER_OPERATION,
-            pluginsReload: {
-              state: 'unsupported',
-              changeMode: null,
-              reason: {
-                code: 'native-control-unsupported',
-                message:
-                  'The native interface has no qualified structured control for this operation.',
-              },
-            },
-            accountLogin: SUPPORTED_PROVIDER_OPERATION,
-            accountLoginCancel: SUPPORTED_PROVIDER_OPERATION,
-            accountLogout: SUPPORTED_PROVIDER_OPERATION,
-            mcpServers: SUPPORTED_PROVIDER_OPERATION,
-            mcpTools: SUPPORTED_PROVIDER_OPERATION,
-            mcpResources: SUPPORTED_PROVIDER_OPERATION,
-          },
-          inputSchema: {
-            ...PROVIDER_INPUT_SCHEMA,
-            supportedMediaTypes: ['image/png', 'image/jpeg', 'image/webp', 'text/plain'],
-            maxFiles: MAX_INPUT_FILES,
-            maxFileBytes: MAX_INPUT_FILE_BYTES,
-            maxTextFileBytes: MAX_TEXT_FILE_BYTES,
-          },
+        return buildProviderCapabilities({
+          provider: 'codex',
+          operations: { models },
+          supportedMediaTypes: ['image/png', 'image/jpeg', 'image/webp', 'text/plain'],
           configurationSchema: {
             session: z
               .json()
@@ -350,31 +248,28 @@ export const createCodexProviderFactory = (
             permissionModes: ['untrusted', 'on-request', 'never'],
             sandboxModes: ['read-only', 'workspace-write', 'danger-full-access'],
           },
-        };
+        });
+      },
+      async listThreads(workspaceRoot, page) {
+        const listed = await native.listThreads(
+          workspaceRoot,
+          page.limit,
+          page.cursor ?? undefined,
+          page.search,
+        );
+        const checkedRoots = new Set<string>();
+        for (const thread of listed.data) {
+          if (!checkedRoots.has(thread.workspaceRoot)) {
+            await verifyRoot(thread.workspaceRoot, workspaceRoot);
+            checkedRoots.add(thread.workspaceRoot);
+          }
+          thread.workspaceRoot = workspaceRoot;
+        }
+        return listed;
       },
       readHistory,
-      readObservedThread: async (nativeId) => (await native.readObservedThread(nativeId)).thread,
       readConfiguration: (command, nativeId, call) =>
         native.readConfiguration(command, nativeId, call.signal),
-      forkThread: async (requestId, nativeId) =>
-        toProviderThread(await native.forkThread(requestId, nativeId)),
-      async archiveThread(requestId, nativeId, call) {
-        await native.verifyTerminalsClosed(nativeId);
-        if (call.signal.aborted)
-          throw new Exception('The Codex integration failed', {
-            code: 'JG_AGENT_HQ_CODEX_FAILED',
-            data: { kind: 'agent-unavailable' },
-          });
-        await native.archiveThread(requestId, nativeId);
-      },
-      unarchiveThread: async (requestId, nativeId) =>
-        toProviderThread(await native.unarchiveThread(requestId, nativeId)),
-      revertThread: async (requestId, nativeId, beforeTurnId) =>
-        toProviderThread(await native.revertThread(requestId, nativeId, beforeTurnId)),
-      async compactThread(requestId, nativeId) {
-        await native.compactThread(requestId, nativeId);
-        return { id: null };
-      },
       async readModels(command) {
         const { cursor, ...filters } = command;
         const page = await native.readModels(command.limit, decodeHistoryCursor(cursor, filters));
@@ -410,15 +305,6 @@ export const createCodexProviderFactory = (
         return { thread, latestTurn: await readLatestTurn(thread) };
       },
       readUsage: () => native.readUsage(),
-      readAccount: () => native.readAccount(),
-      readLogin: (requestId) => native.readLogin(requestId),
-      controlAccount: (requestId, command, loginRequestId) =>
-        native.controlAccount(requestId, command, loginRequestId),
-      controlExtensions: (requestId, nativeId, workspaceRoot, command) =>
-        native.controlExtensions(requestId, nativeId, workspaceRoot, command),
-      readMcpServers: (nativeId, limit, cursor) => native.readMcpServers(nativeId, limit, cursor),
-      readMcpTools: (nativeId, serverName) => native.readMcpTools(nativeId, serverName),
-      readMcpResources: (nativeId, serverName) => native.readMcpResources(nativeId, serverName),
       readSkills: (workspaceRoot) => native.readSkills(workspaceRoot),
       formatSkill: (skill, argumentsText) =>
         `$${skill.name}${argumentsText ? ` ${argumentsText}` : ''}`,
@@ -446,6 +332,8 @@ export const createCodexProviderFactory = (
         await native.verifyTerminalsClosed(nativeId);
         await native.unsubscribe(requestId, nativeId);
       },
+      // the daemon owns Codex's rollouts and its index of them, so it deletes the session
+      deleteThread: (requestId, nativeId) => native.deleteThread(requestId, nativeId),
       async prepareShutdown(nativeId) {
         await native.cleanTerminals(`${randomUUID()}:shutdown-clean`, nativeId);
         await native.verifyTerminalsClosed(nativeId);

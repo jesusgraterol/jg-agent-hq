@@ -1,14 +1,7 @@
 import { z } from 'zod';
 
-// registry capacity also bounds status payloads and trusted construction input
-export const MAX_PROVIDERS = 32;
-
-// provider identity is independent of the installed native executable's version
-export const ProviderIdSchema = z
-  .string()
-  .min(1)
-  .max(64)
-  .regex(/^[a-z][a-z0-9-]*$/);
+// the built-in native providers; identity is independent of the installed executable's version
+export const ProviderIdSchema = z.enum(['claude', 'codex']);
 export type IProviderId = z.infer<typeof ProviderIdSchema>;
 
 // public reasons contain stable classifications and safe explanations
@@ -45,25 +38,7 @@ export const ProviderCapabilitySetSchema = z.object({
     usage: ProviderCapabilitySchema,
     skills: ProviderCapabilitySchema,
     models: ProviderCapabilitySchema,
-    fork: ProviderCapabilitySchema,
-    archive: ProviderCapabilitySchema,
-    unarchive: ProviderCapabilitySchema,
-    compact: ProviderCapabilitySchema,
-    revert: ProviderCapabilitySchema,
     configuration: ProviderCapabilitySchema,
-    account: ProviderCapabilitySchema,
-    mcpServers: ProviderCapabilitySchema,
-    mcpTools: ProviderCapabilitySchema,
-    mcpResources: ProviderCapabilitySchema,
-    skillsReload: ProviderCapabilitySchema,
-    mcpReload: ProviderCapabilitySchema,
-    mcpReconnect: ProviderCapabilitySchema,
-    mcpSetEnabled: ProviderCapabilitySchema,
-    mcpLogin: ProviderCapabilitySchema,
-    pluginsReload: ProviderCapabilitySchema,
-    accountLogin: ProviderCapabilitySchema,
-    accountLoginCancel: ProviderCapabilitySchema,
-    accountLogout: ProviderCapabilitySchema,
   }),
   inputSchema: z.record(z.string(), z.json()).nullable(),
   configurationSchema: z.record(z.string(), z.json()).nullable(),

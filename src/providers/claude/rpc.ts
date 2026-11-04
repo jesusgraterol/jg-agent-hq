@@ -2,7 +2,9 @@ import { Exception, extractMessage } from 'jg-exception';
 import { z } from 'zod';
 
 import type { ISessionSettings } from '../../contracts/index.js';
+import { createPendingRequests } from '../../pending/index.js';
 import { createProviderProcess } from '../index.js';
+import { HQ_ERRORS } from '../../errors/index.js';
 
 import { ClaudeInitializeSchema } from './types.js';
 import { toClaudeSessionFlags } from './configuration/index.js';
@@ -36,7 +38,6 @@ export const createClaudeRpc = async (
     workspaceRoot: string;
     additionalDirectories: string[];
     isResume: boolean;
-    forkSourceNativeId?: string;
     settings?: ISessionSettings;
     receive(message: unknown): void;
     lateResponse(id: string, result: unknown, error: unknown): void;
@@ -46,27 +47,16 @@ export const createClaudeRpc = async (
 ) => {
   let sequence = 0;
   const late = new Set<string>();
-  const pending = new Map<
-    string,
-    {
-      resolve(result: unknown): void;
-      reject(cause: unknown): void;
-      timer: ReturnType<typeof setTimeout>;
-    }
-  >();
+  const pending = createPendingRequests<string>();
   const fail = (cause: unknown): void => {
     invalidate('unavailable');
-    for (const entry of pending.values()) {
-      clearTimeout(entry.timer);
-      entry.reject(
-        new Exception(`The Claude integration failed: ${extractMessage(cause)}`, {
-          code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-          data: { kind: 'agent-unavailable' },
-          cause,
-        }),
-      );
-    }
-    pending.clear();
+    pending.rejectAll(
+      new Exception(`The Claude integration failed: ${extractMessage(cause)}`, {
+        code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+        data: { kind: 'agent-unavailable' },
+        cause,
+      }),
+    );
   };
   const transport = createProviderProcess(
     'claude',
@@ -82,15 +72,8 @@ export const createClaudeRpc = async (
             '--permission-prompt-tool=stdio',
             '--replay-user-messages',
             '--include-partial-messages',
-            ...(control.forkSourceNativeId
-              ? [
-                  '--resume',
-                  control.forkSourceNativeId,
-                  '--fork-session',
-                  '--session-id',
-                  control.nativeId,
-                ]
-              : [control.isResume ? '--resume' : '--session-id', control.nativeId]),
+            control.isResume ? '--resume' : '--session-id',
+            control.nativeId,
             ...control.additionalDirectories.flatMap((directory) => ['--add-dir', directory]),
             ...toClaudeSessionFlags(control.settings ?? {}),
           ]
@@ -99,8 +82,7 @@ export const createClaudeRpc = async (
     (message) => {
       const parsed = EnvelopeSchema.safeParse(message);
       if (!parsed.success)
-        throw new Exception('The Claude integration failed', {
-          code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+        throw HQ_ERRORS.create('claudeFailed', {
           data: { kind: 'agent-unavailable' },
           cause: parsed.error,
         });
@@ -108,37 +90,30 @@ export const createClaudeRpc = async (
       if (envelope.type === 'control_response') {
         const response = envelope.response;
         if (!response)
-          throw new Exception('The Claude integration failed', {
-            code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-            data: {
-              kind: 'agent-unavailable',
-            },
+          throw HQ_ERRORS.create('claudeFailed', {
+            data: { kind: 'agent-unavailable' },
           });
-        const entry = pending.get(response.request_id);
-        if (!entry) {
-          if (late.delete(response.request_id))
-            control?.lateResponse(
-              response.request_id,
-              response.response,
-              response.subtype === 'error'
-                ? (response.error ?? 'Native request rejected')
-                : undefined,
-            );
-          return;
-        }
-        clearTimeout(entry.timer);
-        pending.delete(response.request_id);
-        if (response.subtype === 'error')
-          entry.reject(
-            new Exception(
-              `The Claude integration failed: ${response.error ?? 'native control request rejected'}`,
-              {
-                code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-                data: { kind: 'agent-unavailable', nativeRejection: true },
-              },
-            ),
+        const isPending =
+          response.subtype === 'error'
+            ? pending.reject(
+                response.request_id,
+                new Exception(
+                  `The Claude integration failed: ${response.error ?? 'native control request rejected'}`,
+                  {
+                    code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+                    data: { kind: 'agent-unavailable', nativeRejection: true },
+                  },
+                ),
+              )
+            : pending.resolve(response.request_id, response.response);
+        if (!isPending && late.delete(response.request_id))
+          control?.lateResponse(
+            response.request_id,
+            response.response,
+            response.subtype === 'error'
+              ? (response.error ?? 'Native request rejected')
+              : undefined,
           );
-        else entry.resolve(response.response);
       } else if (control) {
         control.receive(message);
       } else if (envelope.type === 'control_request' && envelope.request_id) {
@@ -171,70 +146,48 @@ export const createClaudeRpc = async (
   ): Promise<unknown> => {
     if (!transport.isRunning || pending.size >= 32)
       return Promise.reject(
-        new Exception('The Claude integration failed', {
-          code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-          data: { kind: 'agent-unavailable' },
-        }),
+        HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } }),
       );
     const id = requestId ?? `hq-read-${++sequence}`;
     if (pending.has(id) || late.has(id))
       return Promise.reject(
-        new Exception('The Claude integration failed', {
-          code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-          data: { kind: 'agent-unavailable' },
-        }),
+        HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } }),
       );
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pending.delete(id);
-        if (control) {
-          late.add(id);
-          if (late.size > 64) {
-            fail(
-              new Exception('The Claude integration failed', { code: 'JG_AGENT_HQ_CLAUDE_FAILED' }),
-            );
-            void transport.close().catch(fail);
-          }
+    const response = pending.add(id, 30_000, () => {
+      // a controlled session keeps a late answer's identity, to settle what it acknowledges
+      if (control) {
+        late.add(id);
+        if (late.size > 64) {
+          fail(HQ_ERRORS.create('claudeFailed'));
+          void transport.close().catch(fail);
         }
-        reject(
-          new Exception('The Claude integration failed: request deadline exceeded', {
+      }
+      return new Exception('The Claude integration failed: request deadline exceeded', {
+        code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+        data: { kind: 'agent-unavailable' },
+      });
+    });
+    void transport
+      .write({
+        type: 'control_request',
+        request_id: id,
+        request: requestBody,
+      })
+      .catch((cause: unknown) => {
+        pending.reject(
+          id,
+          new Exception(`The Claude integration failed: ${extractMessage(cause)}`, {
             code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-            data: {
-              kind: 'agent-unavailable',
-            },
+            data: { kind: 'agent-unavailable' },
+            cause,
           }),
         );
-      }, 30_000);
-      pending.set(id, { resolve, reject, timer });
-      void transport
-        .write({
-          type: 'control_request',
-          request_id: id,
-          request: requestBody,
-        })
-        .catch((cause: unknown) => {
-          const entry = pending.get(id);
-          if (!entry) return;
-          pending.delete(id);
-          clearTimeout(entry.timer);
-          entry.reject(
-            new Exception(`The Claude integration failed: ${extractMessage(cause)}`, {
-              code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-              data: { kind: 'agent-unavailable' },
-              cause,
-            }),
-          );
-        });
-    });
+      });
+    return response;
   };
   let cancellationCleanup: Promise<void> | undefined;
   const cancel = (): void => {
-    fail(
-      new Exception('The Claude integration failed', {
-        code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-        data: { kind: 'agent-unavailable' },
-      }),
-    );
+    fail(HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } }));
     cancellationCleanup ??= transport.close();
     // the owning close/catch awaits this same cleanup and preserves an unconfirmed exit
     void cancellationCleanup.catch(() => undefined);
@@ -242,14 +195,10 @@ export const createClaudeRpc = async (
   signal?.addEventListener('abort', cancel, { once: true });
   try {
     if (signal?.aborted)
-      throw new Exception('The Claude integration failed', {
-        code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-        data: { kind: 'agent-unavailable' },
-      });
+      throw HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } });
     const initialized = ClaudeInitializeSchema.safeParse(await request({ subtype: 'initialize' }));
     if (!initialized.success)
-      throw new Exception('The Claude integration failed', {
-        code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+      throw HQ_ERRORS.create('claudeFailed', {
         data: { kind: 'agent-unavailable' },
         cause: initialized.error,
       });

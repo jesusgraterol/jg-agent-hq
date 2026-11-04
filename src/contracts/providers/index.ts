@@ -1,6 +1,5 @@
 // provider identities, observations and concrete capabilities
 export {
-  MAX_PROVIDERS,
   ProviderIdSchema,
   CapabilityReasonSchema,
   ProviderCapabilitySchema,

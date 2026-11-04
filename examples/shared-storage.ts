@@ -1,12 +1,12 @@
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { createHqSnapshot, restoreHqSnapshot, type IAgentHq } from 'jg-agent-hq';
+import { openHostDatabase, restoreHqSnapshot, type IAgentHq } from 'jg-agent-hq';
 
 /**
  * Saves one application preference, captures shared storage and verifies an offline restore.
  * Keep other host connections from writing host tables until it returns; agents may keep
- * working. Both output directories must be absent. The caller owns HQ; this helper closes
- * its SQL connections.
+ * working. Both output directories must be absent. The caller owns the runtime; this helper
+ * closes its SQL connections.
  * The application transaction commits before capture and is not rolled back if capture fails.
  * Capture returns verified metadata; restore independently validates the staged copy.
  * @returns The inspected snapshot, its restored state root and the exact restored preference.
@@ -24,14 +24,9 @@ export const shareStorage = async (input: {
   recoveryDirectory: string;
 }) => {
   await input.hq.withStorageMaintenance(async (storage) => {
-    const database = new DatabaseSync(storage.databasePath, {
-      timeout: storage.connectionSettings.busyTimeoutMs,
-      enableForeignKeyConstraints: storage.connectionSettings.foreignKeys,
-    });
+    const database = openHostDatabase(storage);
     try {
-      database.exec(
-        `PRAGMA synchronous = FULL; PRAGMA journal_size_limit = ${storage.connectionSettings.journalSizeLimitBytes}; BEGIN IMMEDIATE`,
-      );
+      database.exec('BEGIN IMMEDIATE');
       try {
         database.exec(
           'CREATE TABLE IF NOT EXISTS app_preference (id INTEGER PRIMARY KEY CHECK (id = 1), label TEXT NOT NULL) STRICT',
@@ -51,7 +46,7 @@ export const shareStorage = async (input: {
     }
   });
 
-  const snapshot = await createHqSnapshot(input.hq, input.snapshotDirectory);
+  const snapshot = await input.hq.createSnapshot(input.snapshotDirectory);
   const restored = await restoreHqSnapshot({
     snapshotDirectory: snapshot.directory,
     destination: input.recoveryDirectory,

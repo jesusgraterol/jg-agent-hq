@@ -91,7 +91,14 @@ test.each(['codex', 'claude'] as const)(
       await writeFile(join(fixture.workspaceRoot, 'pixel.png'), image);
       await writeFile(join(fixture.workspaceRoot, 'note.txt'), 'A trusted UTF-8 document.');
       const output = { answer: '🧪'.repeat(40_000) };
-      await api.control({ structuredOutput: output, outputText: JSON.stringify(output) });
+      const outputControl = { structuredOutput: output, outputText: JSON.stringify(output) };
+      /*
+       * the runtime clears a finished Claude turn's live items once its saved history holds them,
+       * so Claude's result waits until the live window has been read
+       */
+      await api.control(
+        provider === 'claude' ? { ...outputControl, holdResult: true } : outputControl,
+      );
       const message = await api.send({
         kind: 'message',
         threadId: api.threadId,
@@ -105,6 +112,16 @@ test.each(['codex', 'claude'] as const)(
         },
         settings: { outputSchema: schema },
       });
+      // the live window carries the long answer cut to its bound
+      await expect
+        .poll(async () => {
+          const live = await fixture.request({ kind: 'live-items', threadId: api.threadId });
+          if (live.kind !== 'live-items') throw new Error('Missing live items');
+          return live.result.data.some((item) => item.kind === 'agent-message' && item.isTruncated);
+        })
+        .toBe(true);
+      if (provider === 'claude')
+        await api.control({ ...outputControl, holdResult: true, releaseResult: true });
       await expect
         .poll(() => api.receipt(message.id))
         .toMatchObject({
@@ -118,11 +135,6 @@ test.each(['codex', 'claude'] as const)(
       const calls = JSON.stringify(await api.inputs());
       expect(calls).toContain(image.toString('base64'));
       expect(calls).toContain('A trusted UTF-8 document.');
-      const live = await fixture.request({ kind: 'live-items', threadId: api.threadId });
-      if (live.kind !== 'live-items') throw new Error('Missing live items');
-      expect(
-        live.result.data.some((item) => item.kind === 'agent-message' && item.isTruncated),
-      ).toBe(true);
       expect(
         JSON.stringify(await fixture.request({ kind: 'actions', threadId: api.threadId })),
       ).not.toContain(output.answer);
@@ -539,18 +551,6 @@ test.each(['codex', 'claude'] as const)(
   },
 );
 
-test.each(['codex', 'claude'] as const)(
-  '%s compaction preserves native completion in a schema-configured session',
-  async (provider) => {
-    await withClaudeRuntime(async (fixture) => {
-      const api = await createClient(fixture, provider, true);
-      const compact = await api.send({ kind: 'thread-compact', threadId: api.threadId });
-      await expect.poll(async () => (await api.receipt(compact.id)).completion).toBe('completed');
-      expect(await api.thread()).toMatchObject({ state: 'completed' });
-    });
-  },
-);
-
 test('Codex native input rejection requires recovery before further native controls', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await createClient(fixture, 'codex', true);
@@ -562,10 +562,14 @@ test('Codex native input rejection requires recovery before further native contr
     });
     await expect.poll(() => api.receipt(rejected.id)).toMatchObject({ delivery: 'failed' });
     await api.control({});
-    const compact = await api.send({ kind: 'thread-compact', threadId: api.threadId });
+    const further = await api.send({
+      kind: 'message',
+      threadId: api.threadId,
+      input: { kind: 'text', text: 'Input after the rejection' },
+    });
     await expect
       .poll(async () => {
-        const receipt = await api.receipt(compact.id);
+        const receipt = await api.receipt(further.id);
         return {
           delivery: receipt.delivery,
           completion: receipt.completion,
@@ -574,6 +578,6 @@ test('Codex native input rejection requires recovery before further native contr
         };
       })
       .toMatchObject({ delivery: 'failed', completion: null, failure: 'state-conflict' });
-    expect(JSON.stringify(await api.inputs())).not.toContain('thread/compact/start');
+    expect(JSON.stringify(await api.inputs())).not.toContain('Input after the rejection');
   });
 });

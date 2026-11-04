@@ -37,9 +37,7 @@ const evidence = async (
 ): Promise<IEvidencePage> => {
   const response = await fixture.request(command);
   expect(
-    Buffer.byteLength(
-      JSON.stringify({ schemaVersion: 1, id: randomUUID(), success: true, response }),
-    ),
+    Buffer.byteLength(JSON.stringify({ id: randomUUID(), success: true, response })),
   ).toBeLessThanOrEqual(65_536);
   if (response.kind !== 'session-evidence') throw new Error('Missing evidence');
   return response.result;
@@ -66,7 +64,7 @@ const submit = async (
   return response.result;
 };
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   'session-evidence(%s) is newest first, filters exact identities and treats quoted approvals as untrusted history',
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
@@ -135,7 +133,7 @@ test.each(['codex', 'claude'])(
   },
 );
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   'session-evidence(%s) reconstructs complete UTF-8 bodies within the serialized response budget',
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
@@ -204,7 +202,7 @@ test.each(['codex', 'claude'])(
   },
 );
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   'session-evidence(%s) rejects changed content and changed query scopes during continuation',
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
@@ -252,7 +250,7 @@ test.each(['codex', 'claude'])(
   },
 );
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   'session-evidence(%s) enforces workspace authorization before native content retrieval',
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
@@ -265,10 +263,25 @@ test.each(['codex', 'claude'])(
         }),
         'JG_AGENT_HQ_TARGET_FORBIDDEN',
       );
-      const status = await fixture.request({ kind: 'status' });
-      expect(
-        status.kind === 'status' && status.result.providers.every((item) => item.state === 'idle'),
-      ).toBe(true);
+      // the denied read reached no native history of the folder outside the allowed workspaces
+      if (provider === 'codex')
+        expect(await readFile(join(fixture.root, 'calls.jsonl'), 'utf8')).not.toMatch(
+          /thread\/(read|items\/list|turns\/list)/,
+        );
+      else {
+        const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
+        try {
+          expect({
+            ...database
+              .prepare(
+                'SELECT count(*) AS count FROM agent_hq_claude_file WHERE workspace_root = ?',
+              )
+              .get(fixture.root),
+          }).toStrictEqual({ count: 0 });
+        } finally {
+          database.close();
+        }
+      }
       if (provider === 'codex') {
         await writeFixtureControl(fixture.root, 'control.json', { wrongRoot: fixture.root });
         await expectToRejectCode(
@@ -303,7 +316,7 @@ test.each(['codex', 'claude'])(
   },
 );
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   'exact native %s host inputs correlate with action receipts without granting authority',
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
@@ -329,7 +342,7 @@ test.each(['codex', 'claude'])(
               turnId: sent.nativeTurnId,
               item: {
                 id: 'host-item',
-                clientId: sent.nativeRequestId,
+                clientId: `${sent.id}:${sent.phase}`,
                 type: 'userMessage',
                 content: [{ type: 'text', text }],
               },
@@ -354,11 +367,11 @@ test.each(['codex', 'claude'])(
       const database = new DatabaseSync(fixture.runtime.storage.databasePath, { readOnly: true });
       try {
         expect(
-          database.prepare('SELECT input_sha256 FROM hq_action WHERE id = ?').get(sent.id)
+          database.prepare('SELECT input_sha256 FROM agent_hq_action WHERE id = ?').get(sent.id)
             ?.input_sha256,
         ).toBe(createHash('sha256').update(text).digest('hex'));
         expect(
-          database.prepare('SELECT queued_input FROM hq_action WHERE id = ?').get(sent.id)
+          database.prepare('SELECT queued_input FROM agent_hq_action WHERE id = ?').get(sent.id)
             ?.queued_input,
         ).toBeNull();
       } finally {
@@ -374,7 +387,7 @@ test.each(['codex', 'claude'])(
           );
         expect(
           calls.find((call) => call.method === 'turn/start')?.params?.clientUserMessageId,
-        ).toBe(sent.nativeRequestId);
+        ).toBe(`${sent.id}:${sent.phase}`);
         await writeFixtureControl(fixture.root, 'control.json', {
           items: [
             {
@@ -394,7 +407,7 @@ test.each(['codex', 'claude'])(
   },
 );
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   "a %s host input sent with an attachment, and past a page's cut, still correlates with its action receipt",
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
@@ -423,7 +436,7 @@ test.each(['codex', 'claude'])(
               turnId: sent.nativeTurnId,
               item: {
                 id: 'host-item',
-                clientId: sent.nativeRequestId,
+                clientId: `${sent.id}:${sent.phase}`,
                 type: 'userMessage',
                 content: [
                   { type: 'text', text },
@@ -620,14 +633,16 @@ test('cold Claude indexing, exact item queries and kind seeks avoid whole-histor
     try {
       const plan = database
         .prepare(
-          'EXPLAIN QUERY PLAN SELECT uuid FROM hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND item_kind = ? AND byte_offset < ? ORDER BY byte_offset DESC LIMIT 9',
+          'EXPLAIN QUERY PLAN SELECT uuid FROM agent_hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND item_kind = ? AND byte_offset < ? ORDER BY byte_offset DESC LIMIT 9',
         )
         .all(fixture.workspaceRoot, nativeId, 'agent-message', Number.MAX_SAFE_INTEGER);
-      expect(JSON.stringify(plan)).toContain('hq_idx_ce__workspace_native_kind_offset_current');
+      expect(JSON.stringify(plan)).toContain(
+        'agent_hq_idx_ce__workspace_native_kind_offset_current',
+      );
       expect(JSON.stringify(plan)).not.toContain('TEMP B-TREE');
       const turnPlan = database
         .prepare(
-          'EXPLAIN QUERY PLAN SELECT uuid FROM hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND turn_id = ? AND item_kind = ? AND byte_offset < ? ORDER BY byte_offset DESC LIMIT 9',
+          'EXPLAIN QUERY PLAN SELECT uuid FROM agent_hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND turn_id = ? AND item_kind = ? AND byte_offset < ? ORDER BY byte_offset DESC LIMIT 9',
         )
         .all(
           fixture.workspaceRoot,
@@ -637,12 +652,12 @@ test('cold Claude indexing, exact item queries and kind seeks avoid whole-histor
           Number.MAX_SAFE_INTEGER,
         );
       expect(JSON.stringify(turnPlan)).toContain(
-        'hq_idx_ce__workspace_native_turn_kind_offset_current',
+        'agent_hq_idx_ce__workspace_native_turn_kind_offset_current',
       );
       expect(JSON.stringify(turnPlan)).not.toContain('TEMP B-TREE');
       expect(
         database
-          .prepare('SELECT count(*) AS count FROM hq_claude_entry WHERE native_id = ?')
+          .prepare('SELECT count(*) AS count FROM agent_hq_claude_entry WHERE native_id = ?')
           .get(nativeId)?.count,
       ).toBe(1024);
     } finally {
@@ -727,45 +742,7 @@ test('a browser receipt cannot authenticate different text sent under its native
   });
 });
 
-test('session discovery preserves ambiguous native labels and exact identities within bounded pages', async () => {
-  await withClaudeRuntime(async (fixture) => {
-    const ids = [randomUUID(), randomUUID()];
-    for (const nativeId of ids)
-      await writeFile(
-        fixture.transcript(nativeId),
-        [
-          claudeRecord(fixture.workspaceRoot, nativeId),
-          { type: 'custom-title', sessionId: nativeId, customTitle: 'same-label' },
-        ]
-          .map((record) => JSON.stringify(record))
-          .join('\n') + '\n',
-      );
-    const command = {
-      kind: 'sessions',
-      provider: 'claude',
-      workspaceRoot: fixture.workspaceRoot,
-      search: 'same-label',
-      limit: 1,
-    } as const;
-    const first = await fixture.request(command);
-    if (first.kind !== 'sessions') throw new Error('Missing sessions');
-    const second = await fixture.request({ ...command, cursor: first.result.nextCursor! });
-    if (second.kind !== 'sessions') throw new Error('Missing sessions');
-    expect(
-      new Set([...first.result.data, ...second.result.data].map((thread) => thread.nativeId)),
-    ).toStrictEqual(new Set(ids));
-    expect(
-      [...first.result.data, ...second.result.data].map((thread) => thread.name),
-    ).toStrictEqual(['same-label', 'same-label']);
-    expect(second.result.nextCursor).toBeNull();
-    await expectToRejectCode(
-      fixture.request({ ...command, search: 'different', cursor: first.result.nextCursor! }),
-      'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
-    );
-  });
-});
-
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   'session-evidence(%s) paginates exact page boundaries without duplicate or missing items',
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
@@ -888,49 +865,6 @@ test('compacted Claude evidence excludes API diagnostics, identifies system summ
   });
 });
 
-test('bounded discovery truncates display labels explicitly and continues Codex source pages', async () => {
-  await withClaudeRuntime(async (fixture) => {
-    const nativeId = randomUUID();
-    await writeFile(
-      fixture.transcript(nativeId),
-      [
-        claudeRecord(fixture.workspaceRoot, nativeId),
-        { type: 'custom-title', sessionId: nativeId, customTitle: '🧪'.repeat(1024) },
-      ]
-        .map((record) => JSON.stringify(record))
-        .join('\n') + '\n',
-    );
-    const page = await fixture.request({
-      kind: 'sessions',
-      provider: 'claude',
-      workspaceRoot: fixture.workspaceRoot,
-    });
-    expect(page.kind === 'sessions' && page.result.data[0]).toMatchObject({
-      name: '🧪'.repeat(256),
-      isNameTruncated: true,
-      nativeId,
-    });
-    const selected = {
-      kind: 'sessions',
-      provider: 'codex',
-      workspaceRoot: fixture.workspaceRoot,
-      limit: 4,
-    } as const;
-    let cursor: string | undefined;
-    const ids: string[] = [];
-    for (let index = 0; index < 4; index += 1) {
-      const response = await fixture.request({ ...selected, cursor });
-      if (response.kind !== 'sessions') throw new Error('Missing discovery');
-      expect(Buffer.byteLength(JSON.stringify(response))).toBeLessThanOrEqual(65_000);
-      ids.push(...response.result.data.map((item) => item.nativeId));
-      cursor = response.result.nextCursor ?? undefined;
-    }
-    expect(ids).toStrictEqual(
-      Array.from({ length: 16 }, (_, index) => `thread-${String(1023 - index).padStart(4, '0')}`),
-    );
-  });
-});
-
 test('the dedicated evidence CLI resolves exact native targets and selection filters', async () => {
   await withClaudeRuntime(async (fixture) => {
     const nativeId = randomUUID();
@@ -972,6 +906,15 @@ const readActive = async (fixture: IClaudeFixture) => {
   if (response.kind !== 'active-sessions') throw new Error('Missing active sessions');
   return response.result;
 };
+// the sessions the Codex fixture was asked to read, in order
+const readCodexThreadReads = async (fixture: IClaudeFixture): Promise<string[]> =>
+  (await readFile(join(fixture.root, 'calls.jsonl'), 'utf8'))
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { method: string; params?: { threadId?: string } })
+    .filter((call) => call.method === 'thread/read')
+    .map((call) => call.params?.threadId ?? '');
 
 test('active sessions list managed sessions that run or wait, newest state change first', async () => {
   await withClaudeRuntime(async (fixture) => {
@@ -1025,7 +968,7 @@ test('active sessions list managed sessions that run or wait, newest state chang
   });
 });
 
-test('active observed sessions take their workspace from the Claude poll and from Codex', async () => {
+test("active observed sessions take their workspace from the Claude poll and from Codex's first read", async () => {
   await withClaudeRuntime(async (fixture) => {
     await fixture.request({ kind: 'observation-pace', pace: 'live' });
     // a terminal Claude session working in a subdirectory whose history was never read
@@ -1059,14 +1002,18 @@ test('active observed sessions take their workspace from the Claude poll and fro
       .poll(async () => (await readActive(fixture)).data.map((session) => session.nativeId))
       .toStrictEqual(['thread-1023', busy]);
     const [codex, claude] = (await readActive(fixture)).data;
+    // the fake's session 1023 was created at 1,700,000,511 seconds
     expect(codex).toMatchObject({
       provider: 'codex',
       workspaceRoot: fixture.workspaceRoot,
       name: 'Task 1023',
+      createdAt: 1_700_000_511_000,
       state: 'waiting',
       ownership: 'external',
       managedId: null,
     });
+    // Codex read the session once, when its status first reported it, and active reads never did
+    expect(await readCodexThreadReads(fixture)).toStrictEqual(['thread-1023']);
     expect(claude).toMatchObject({
       provider: 'claude',
       nativeLineage: { sessionId: busy, parentThreadId: null, forkedFromId: null },
@@ -1088,8 +1035,9 @@ test('active sessions return the newest 128 of more, in running and waiting stat
       await expect.poll(() => countHeldDelays(30)).toBe(1);
       const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { timeout: 5_000 });
       try {
+        // each Codex session with the workspace, name and creation time its first read found
         const insert = database.prepare(
-          'INSERT INTO hq_observed_session (provider, native_id, state, observed_at) VALUES (?, ?, ?, ?)',
+          'INSERT INTO agent_hq_observed_session (provider, native_id, state, observed_at, workspace_root, name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
         );
         for (let index = 0; index < 130; index += 1)
           insert.run(
@@ -1097,11 +1045,22 @@ test('active sessions return the newest 128 of more, in running and waiting stat
             `active-${String(index).padStart(4, '0')}`,
             index % 2 ? 'running' : 'waiting',
             1_700_000_000_000 + index,
+            fixture.workspaceRoot,
+            `Task ${index}`,
+            1_600_000_000_000,
           );
         for (const state of ['idle', 'closed', 'failed', 'unknown'])
-          insert.run('codex', `inactive-${state}`, state, 1_800_000_000_000);
+          insert.run(
+            'codex',
+            `inactive-${state}`,
+            state,
+            1_800_000_000_000,
+            fixture.workspaceRoot,
+            null,
+            1_600_000_000_000,
+          );
         // a Claude session no poll of this runtime has listed has no known workspace yet
-        insert.run('claude', randomUUID(), 'running', 1_800_000_000_000);
+        insert.run('claude', randomUUID(), 'running', 1_800_000_000_000, null, null, null);
       } finally {
         database.close();
       }
@@ -1114,8 +1073,91 @@ test('active sessions return the newest 128 of more, in running and waiting stat
       expect(active.data.every((session) => session.workspaceRoot === fixture.workspaceRoot)).toBe(
         true,
       );
+      // the summaries come from the records, without reading one session from Codex
+      expect(await readCodexThreadReads(fixture)).toStrictEqual([]);
     });
   } finally {
     stopHoldingDelays();
   }
+});
+
+test('a thread whose history its provider cannot read answers from what HQ knows of it, its history unavailable', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const { workspaceRoot } = fixture;
+    // a transcript that ran in the workspace, though one of its records has no identity
+    const unreadable = randomUUID();
+    const first = claudeRecord(workspaceRoot, unreadable);
+    await writeFile(
+      fixture.transcript(unreadable),
+      [
+        first,
+        { ...claudeRecord(workspaceRoot, unreadable, { parentUuid: first.uuid }), uuid: undefined },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join('\n') + '\n',
+    );
+    const target = { provider: 'claude' as const, workspaceRoot, nativeId: unreadable };
+    expect(await fixture.request({ kind: 'thread', ...target })).toMatchObject({
+      kind: 'thread',
+      result: {
+        nativeId: unreadable,
+        workspaceRoot,
+        ownership: 'external',
+        historyState: 'unavailable',
+      },
+    });
+    await expect(fixture.request({ kind: 'items', ...target })).rejects.toThrow(
+      'Coding agent is unavailable',
+    );
+    // a managed Codex session whose native read fails reads from its HQ record
+    const created = await submit(fixture, {
+      kind: 'thread-create',
+      provider: 'codex',
+      workspaceRoot,
+      name: 'unreadable-session',
+    });
+    const threadId = created.threadId!;
+    const managed = async () => {
+      const response = await fixture.request({ kind: 'managed-thread', threadId });
+      return response.kind === 'managed-thread' ? response.result : null;
+    };
+    await expect.poll(async () => (await managed())?.state).toBe('idle');
+    await submit(fixture, { kind: 'message', threadId, input: { kind: 'text', text: 'Start' } });
+    await expect.poll(async () => (await managed())?.state).toBe('completed');
+    const nativeId = (await managed())!.nativeId!;
+    await writeFixtureControl(fixture.root, 'control.json', { failRead: true });
+    expect(
+      await fixture.request({ kind: 'thread', provider: 'codex', workspaceRoot, nativeId }),
+    ).toMatchObject({
+      kind: 'thread',
+      result: {
+        nativeId,
+        name: 'unreadable-session',
+        ownership: 'managed',
+        managedId: threadId,
+        historyState: 'unavailable',
+      },
+    });
+    // a session HQ has no record of still fails as its provider did, and authorization comes first
+    await expectToRejectCode(
+      fixture.runtime.request({
+        kind: 'thread',
+        provider: 'codex',
+        workspaceRoot,
+        nativeId: 'unknown-session',
+      }),
+      'JG_AGENT_HQ_CODEX_FAILED',
+      'The Codex integration failed',
+    );
+    await expectToRejectCode(
+      fixture.runtime.request({
+        kind: 'thread',
+        provider: 'codex',
+        workspaceRoot: fixture.root,
+        nativeId,
+      }),
+      'JG_AGENT_HQ_TARGET_FORBIDDEN',
+      'The HQ target is outside the allowed workspaces',
+    );
+  });
 });

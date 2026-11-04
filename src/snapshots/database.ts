@@ -3,10 +3,10 @@ import { lstat, mkdir, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Exception, hasErrorCode, isException, extractMessage } from 'jg-exception';
-import { readPrivateFile, writePrivateFile } from 'jg-fs';
+import { isPathWithin, readPrivateFile, writePrivateFile } from 'jg-fs';
 
-import { isWithinWorkspace } from '../runtime/state/index.js';
 import { readStorageStamp } from '../storage/schema/index.js';
+import { HQ_ERRORS } from '../errors/index.js';
 
 import { applyRestoreFences } from './fences.js';
 import { SNAPSHOT_COMPLETE, SNAPSHOT_MANIFEST } from './constants.js';
@@ -119,11 +119,7 @@ export const verifySnapshot = async (directory: string): Promise<IHqSnapshotInsp
       ['JG_AGENT_HQ_SNAPSHOT_INVALID', 'JG_AGENT_HQ_STORAGE_INVALID'].includes(cause.code)
     )
       throw cause;
-    throw new Exception('The HQ snapshot is invalid', {
-      code: 'JG_AGENT_HQ_SNAPSHOT_INVALID',
-      data: { kind: 'invalid-request' },
-      cause,
-    });
+    throw HQ_ERRORS.create('snapshotInvalid', { data: { kind: 'invalid-request' }, cause });
   } finally {
     database?.close();
   }
@@ -143,7 +139,7 @@ export const restoreSnapshot = async (
   destination: string,
 ): Promise<IHqSnapshotInspection> => {
   const inspection = await verifySnapshot(directory);
-  if (isWithinWorkspace(directory, destination)) invalidSnapshot();
+  if (isPathWithin(directory, destination)) invalidSnapshot();
   let owned: string | undefined;
   try {
     owned = await reserveSnapshotDirectory(destination);

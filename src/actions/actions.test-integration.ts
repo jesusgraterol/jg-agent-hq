@@ -1,14 +1,16 @@
 // @vitest-environment node
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as wait } from 'node:timers/promises';
 import { expectToRejectCode } from 'jg-exception/testing';
 import { hasErrorCode } from 'jg-exception';
+import { inspectLock } from 'jg-locks';
 import { createAgentHq, requestAgentHq, type IAgentHq } from 'jg-agent-hq';
 import type {
+  IHqRequestInput,
   IActionCommand,
   IActionEnvelope,
   IActionReceipt,
@@ -19,10 +21,12 @@ import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
+  claudeRecord,
   countHeldDelays,
   installCodexFixture,
   releaseHeldDelays,
   startHoldingDelays,
+  stateLocks,
   stopHoldingDelays,
   writeFixtureControl,
   withClaudeRuntime,
@@ -50,7 +54,7 @@ const setup = async () => {
     const status = await runtime.request({ kind: 'status' });
     if (status.kind !== 'status') throw new Error('wrong response');
     const runtimeEpoch = status.result.runtimeEpoch;
-    const request = (command: Parameters<typeof requestAgentHq>[1]) =>
+    const request = <TCommand extends IHqRequestInput>(command: TCommand) =>
       requestAgentHq(stateRoot, command);
     const envelope = (command: IActionCommand): IActionEnvelope => ({
       id: randomUUID(),
@@ -145,7 +149,7 @@ const setup = async () => {
   }
 };
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   'native lineage for %s survives runtime restart from the HQ record, not the native session',
   async (provider) => {
     await withClaudeRuntime(async ({ runtime, stateRoot, workspaceRoot, root }) => {
@@ -230,243 +234,6 @@ test.each(['codex', 'claude'])(
   },
 );
 
-test.each(['codex', 'claude'])(
-  'forking %s preserves native lineage, source identity and replay safety',
-  async (provider) => {
-    await withClaudeRuntime(async ({ runtime, request, workspaceRoot, root }) => {
-      const status = await runtime.request({ kind: 'status' });
-      if (status.kind !== 'status') throw new Error('Missing runtime');
-      const submit = (id: string, command: IActionCommand) =>
-        request({
-          kind: 'action',
-          action: { id, runtimeEpoch: status.result.runtimeEpoch, command },
-        });
-      const createId = randomUUID();
-      const source = await submit(createId, {
-        kind: 'thread-create',
-        provider,
-        workspaceRoot,
-        name: 'fork-source',
-      });
-      if (source.kind !== 'action' || !source.result.threadId) throw new Error('Missing source');
-      await expect
-        .poll(() => request({ kind: 'receipt', actionId: createId }))
-        .toMatchObject({ kind: 'receipt', result: { delivery: 'acknowledged' } });
-      const messageId = randomUUID();
-      await submit(messageId, {
-        kind: 'message',
-        threadId: source.result.threadId,
-        input: { kind: 'text', text: 'Explore the source task' },
-      });
-      await expect
-        .poll(() => request({ kind: 'receipt', actionId: messageId }))
-        .toMatchObject({
-          kind: 'receipt',
-          result: { delivery: 'acknowledged', completion: 'completed' },
-        });
-      const parent = await request({ kind: 'managed-thread', threadId: source.result.threadId });
-      if (parent.kind !== 'managed-thread' || !parent.result) throw new Error('Missing parent');
-      const forkId = randomUUID();
-      const command: IActionCommand = {
-        kind: 'thread-fork',
-        threadId: parent.result.id,
-        name: 'fork-child',
-      };
-      const fork = await submit(forkId, command);
-      if (fork.kind !== 'action' || !fork.result.threadId) throw new Error('Missing fork');
-      await expect
-        .poll(() => request({ kind: 'receipt', actionId: forkId }))
-        .toMatchObject({ kind: 'receipt', result: { delivery: 'acknowledged' } });
-      const child = await request({ kind: 'managed-thread', threadId: fork.result.threadId });
-      expect(child).toMatchObject({
-        kind: 'managed-thread',
-        result: {
-          forkedFromThreadId: parent.result.id,
-          state: 'idle',
-          nativeLineage: { forkedFromId: parent.result.nativeId },
-        },
-      });
-      if (child.kind !== 'managed-thread' || !child.result) throw new Error('Missing child');
-      expect(child.result.nativeId).not.toBe(parent.result.nativeId);
-      expect(child.result.id).not.toBe(parent.result.id);
-      expect(
-        await request({
-          kind: 'thread',
-          provider,
-          nativeId: child.result.nativeId!,
-          workspaceRoot,
-        }),
-      ).toMatchObject({ kind: 'thread', result: { nativeLineage: child.result.nativeLineage } });
-      expect(await submit(forkId, command)).toMatchObject({
-        kind: 'action',
-        result: { threadId: child.result.id, delivery: 'acknowledged' },
-      });
-      expect(await request({ kind: 'managed-thread', threadId: parent.result.id })).toMatchObject({
-        kind: 'managed-thread',
-        result: { nativeId: parent.result.nativeId, state: 'completed' },
-      });
-      const calls = (
-        await readFile(
-          join(root, provider === 'codex' ? 'calls.jsonl' : 'claude-calls.jsonl'),
-          'utf8',
-        )
-      )
-        .trim()
-        .split('\n')
-        .map((line) =>
-          z
-            .object({
-              method: z.string().optional(),
-              type: z.string().optional(),
-              params: z
-                .object({ threadId: z.string().optional(), excludeTurns: z.boolean().optional() })
-                .optional(),
-            })
-            .parse(JSON.parse(line)),
-        );
-      expect(
-        calls.filter((call) =>
-          provider === 'codex' ? call.method === 'turn/start' : call.type === 'user',
-        ),
-      ).toHaveLength(1);
-      if (provider === 'codex')
-        expect(calls.filter((call) => call.method === 'thread/fork')).toStrictEqual([
-          {
-            method: 'thread/fork',
-            params: { threadId: parent.result.nativeId, excludeTurns: true },
-          },
-        ]);
-      else {
-        const starts = (await readFile(join(root, 'claude-starts.jsonl'), 'utf8'))
-          .trim()
-          .split('\n')
-          .map((line) => z.object({ args: z.array(z.string()) }).parse(JSON.parse(line)));
-        expect(starts.filter((start) => start.args.includes('--fork-session'))).toHaveLength(1);
-        expect(
-          await request({
-            kind: 'items',
-            provider,
-            nativeId: child.result.nativeId!,
-            workspaceRoot,
-          }),
-        ).toMatchObject({
-          kind: 'items',
-          result: {
-            data: expect.arrayContaining([
-              expect.objectContaining({ kind: 'user-message', text: 'Explore the source task' }),
-            ]),
-          },
-        });
-      }
-    });
-  },
-);
-
-test.each(['rejectFork', 'wrongForkSource'])(
-  'fork %s preserves uncertainty and never replays an admitted intent',
-  async (scenario) => {
-    const fixture = await setup();
-    try {
-      const { thread } = await fixture.create('fork-failure');
-      await fixture.control({
-        [scenario]: scenario === 'wrongForkSource' ? 'another-native-thread' : true,
-      });
-      const action = fixture.envelope({
-        kind: 'thread-fork',
-        threadId: thread.id,
-        name: 'fork-child',
-      });
-      const admitted = await fixture.submit(action);
-      await expect
-        .poll(() => fixture.receipt(action.id))
-        .toMatchObject({ delivery: scenario === 'rejectFork' ? 'failed' : 'uncertain' });
-      await fixture.submit(action);
-      expect((await fixture.calls()).filter((call) => call.method === 'thread/fork')).toHaveLength(
-        1,
-      );
-      expect(await fixture.thread(admitted.threadId!)).toMatchObject({
-        nativeId: null,
-        forkedFromThreadId: thread.id,
-      });
-      if (scenario === 'wrongForkSource')
-        await expect
-          .poll(() => fixture.thread(thread.id))
-          .toMatchObject({ ownership: 'uncertain', state: 'unknown' });
-      else
-        expect(await fixture.thread(thread.id)).toMatchObject({
-          ownership: 'managed',
-          state: 'idle',
-        });
-    } finally {
-      await fixture.close();
-    }
-  },
-);
-
-test('native archive, unarchive and revert retain identities and never resume implicitly', async () => {
-  const fixture = await setup();
-  try {
-    const { thread } = await fixture.create('lifecycle');
-    const message = fixture.envelope({
-      kind: 'message',
-      threadId: thread.id,
-      input: { kind: 'text', text: 'Prepare history' },
-    });
-    await fixture.submit(message);
-    await expect
-      .poll(() => fixture.receipt(message.id))
-      .toMatchObject({ delivery: 'acknowledged', completion: 'completed' });
-    const beforeTurnId = (await fixture.receipt(message.id)).nativeTurnId!;
-    const revert = fixture.envelope({ kind: 'thread-revert', threadId: thread.id, beforeTurnId });
-    await fixture.submit(revert);
-    await expect.poll(() => fixture.receipt(revert.id)).toMatchObject({ delivery: 'acknowledged' });
-    expect(await fixture.request({ kind: 'live-items', threadId: thread.id })).toMatchObject({
-      kind: 'live-items',
-      result: { data: [], hasGap: true },
-    });
-    const archive = fixture.envelope({ kind: 'thread-archive', threadId: thread.id });
-    await fixture.submit(archive);
-    await expect
-      .poll(() => fixture.thread(thread.id))
-      .toMatchObject({
-        nativeId: thread.nativeId,
-        state: 'inactive',
-        runtimeEpoch: null,
-        isArchived: true,
-      });
-    const resume = fixture.envelope({
-      kind: 'thread-resume',
-      threadId: thread.id,
-      operatorConfirmation: 'Native controller closed',
-    });
-    expect(await fixture.submit(resume)).toMatchObject({
-      delivery: 'failed',
-      failure: 'state-conflict',
-    });
-    const unarchive = fixture.envelope({ kind: 'thread-unarchive', threadId: thread.id });
-    await fixture.submit(unarchive);
-    await expect
-      .poll(() => fixture.receipt(unarchive.id))
-      .toMatchObject({ delivery: 'acknowledged' });
-    expect(await fixture.thread(thread.id)).toMatchObject({
-      nativeId: thread.nativeId,
-      state: 'inactive',
-      runtimeEpoch: null,
-      isArchived: false,
-    });
-    expect(await fixture.submit(unarchive)).toMatchObject({ delivery: 'acknowledged' });
-    const calls = await fixture.calls();
-    expect(calls.filter((call) => call.method === 'thread/unarchive')).toHaveLength(1);
-    expect(calls.filter((call) => call.method === 'thread/resume')).toHaveLength(0);
-    expect(calls.find((call) => call.method === 'thread/revert')).toStrictEqual({
-      method: 'thread/revert',
-      params: { threadId: thread.nativeId, beforeTurnId },
-    });
-  } finally {
-    await fixture.close();
-  }
-});
-
 test(
   'live Codex items take their running turn start as their time',
   { tags: ['full'] },
@@ -492,56 +259,6 @@ test(
       expect(live.result.data.map((item) => [item.text, item.createdAt])).toStrictEqual([
         ['Live response', (1_800_000_000 + turnNumber) * 1000],
       ]);
-    } finally {
-      await fixture.close();
-    }
-  },
-);
-
-test.each([false, true])(
-  'native compaction correlates its turn when acknowledgement arrives first: %s',
-  async (compactAckFirst) => {
-    const fixture = await setup();
-    try {
-      const { thread } = await fixture.create('compact');
-      const message = fixture.envelope({
-        kind: 'message',
-        threadId: thread.id,
-        input: { kind: 'text', text: 'Before compaction' },
-      });
-      await fixture.submit(message);
-      await expect
-        .poll(() => fixture.receipt(message.id))
-        .toMatchObject({ completion: 'completed' });
-      expect(await fixture.request({ kind: 'live-items', threadId: thread.id })).toMatchObject({
-        kind: 'live-items',
-        result: { data: [{ text: 'Live response' }] },
-      });
-      await fixture.control({ compactAckFirst });
-      const action = fixture.envelope({ kind: 'thread-compact', threadId: thread.id });
-      await fixture.submit(action);
-      await expect
-        .poll(() => fixture.receipt(action.id))
-        .toMatchObject({
-          delivery: 'acknowledged',
-          completion: 'completed',
-          nativeTurnId: expect.stringMatching(/^compact-/),
-        });
-      expect(await fixture.thread(thread.id)).toMatchObject({
-        state: 'completed',
-        activeTurnId: null,
-      });
-      expect(await fixture.request({ kind: 'live-items', threadId: thread.id })).toMatchObject({
-        kind: 'live-items',
-        result: { data: [], hasGap: true },
-      });
-      expect(await fixture.submit(action)).toMatchObject({
-        delivery: 'acknowledged',
-        completion: 'completed',
-      });
-      expect(
-        (await fixture.calls()).filter((call) => call.method === 'thread/compact/start'),
-      ).toHaveLength(1);
     } finally {
       await fixture.close();
     }
@@ -757,7 +474,7 @@ test('approval state survives answer resolution and runtime restart without reta
     const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
     try {
       expect(
-        JSON.stringify(database.prepare('SELECT * FROM hq_native_approval').all()),
+        JSON.stringify(database.prepare('SELECT * FROM agent_hq_native_approval').all()),
       ).not.toContain('private-prompt-marker');
     } finally {
       database.close();
@@ -781,7 +498,7 @@ test('approval history uses indexed, query-bound seek pages and expires requests
     );
     try {
       const insert = database.prepare(
-        "INSERT INTO hq_native_approval (id, thread_id, native_turn_id, runtime_epoch, native_request_id, digest, kind, is_blocking, state, created_at, updated_at) VALUES (?, ?, 'fixture-turn', ?, ?, ?, 'question', 1, ?, 100, 100)",
+        "INSERT INTO agent_hq_native_approval (id, thread_id, native_turn_id, runtime_epoch, native_request_id, digest, kind, is_blocking, state, created_at, updated_at) VALUES (?, ?, 'fixture-turn', ?, ?, ?, 'question', 1, ?, 100, 100)",
       );
       for (const [index, id] of ids.entries())
         insert.run(
@@ -795,13 +512,13 @@ test('approval history uses indexed, query-bound seek pages and expires requests
       for (const state of [false, true]) {
         const plan = database
           .prepare(
-            `EXPLAIN QUERY PLAN SELECT id FROM hq_native_approval WHERE thread_id = ? ${state ? "AND state = 'answered'" : ''} AND (created_at, id) < (100, ?) ORDER BY created_at DESC, id DESC LIMIT 3`,
+            `EXPLAIN QUERY PLAN SELECT id FROM agent_hq_native_approval WHERE thread_id = ? ${state ? "AND state = 'answered'" : ''} AND (created_at, id) < (100, ?) ORDER BY created_at DESC, id DESC LIMIT 3`,
           )
           .all(thread.id, ids[3]!);
         expect(JSON.stringify(plan)).toContain(
           state
-            ? 'hq_idx_na__thread_id_state_created_at_id_desc'
-            : 'hq_idx_na__thread_id_created_at_id_desc',
+            ? 'agent_hq_idx_na__thread_id_state_created_at_id_desc'
+            : 'agent_hq_idx_na__thread_id_created_at_id_desc',
         );
         expect(JSON.stringify(plan)).not.toContain('TEMP B-TREE');
       }
@@ -839,6 +556,11 @@ test('approval history uses indexed, query-bound seek pages and expires requests
     expect((await read(undefined, 'expired')).data).toHaveLength(2);
     await expectToRejectCode(read(first.nextCursor!, 'answered'), 'JG_AGENT_HQ_CURSOR_INVALID');
     await expectToRejectCode(read('invalid-cursor'), 'JG_AGENT_HQ_CURSOR_INVALID');
+    const cursor = first.nextCursor!;
+    await expectToRejectCode(
+      read(`${cursor.slice(0, 8)}${cursor[8] === 'A' ? 'B' : 'A'}${cursor.slice(9)}`),
+      'JG_AGENT_HQ_CURSOR_INVALID',
+    );
     const status = await restarted.request({ kind: 'status' });
     if (status.kind !== 'status') throw new Error('Wrong response');
     await expectToRejectCode(
@@ -1025,7 +747,7 @@ test('queued text cannot answer native questions; secret answers are absent from
     const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
     try {
       const saved = JSON.stringify(
-        database.prepare('SELECT id, digest, queued_input FROM hq_action').all(),
+        database.prepare('SELECT id, digest, queued_input FROM agent_hq_action').all(),
       );
       expect(saved).not.toContain('fictional-answer-for-the-test');
       expect(saved).toContain('Next task after the question');
@@ -1257,7 +979,7 @@ test('Codex live items present what history will, leaving reasoning out', async 
   }
 });
 
-test('live items remain available through native flush; lifecycle replay is bounded and ordered', async () => {
+test('live items remain available through native flush', async () => {
   const fixture = await setup();
   try {
     const { thread } = await fixture.create('live-history');
@@ -1310,23 +1032,6 @@ test('live items remain available through native flush; lifecycle replay is boun
     expect(await fixture.request({ kind: 'live-items', threadId: thread.id })).toMatchObject({
       result: { data: [] },
     });
-    const seen: number[] = [];
-    let after = 0;
-    for (;;) {
-      const response = await fixture.request({
-        kind: 'events',
-        threadId: thread.id,
-        after,
-        limit: 2,
-      });
-      if (response.kind !== 'events') throw new Error('wrong response');
-      expect(response.result.data.length).toBeLessThanOrEqual(2);
-      seen.push(...response.result.data.map((event) => event.sequence));
-      if (!response.result.hasMore) break;
-      after = response.result.data.at(-1)!.sequence;
-    }
-    expect(new Set(seen).size).toBe(seen.length);
-    expect(seen).toStrictEqual([...seen].sort((left, right) => left - right));
     expect((await fixture.receipt(action.id)).completion).toBe('completed');
   } finally {
     await fixture.close();
@@ -1691,9 +1396,6 @@ test('native output loss keeps delivery uncertain and restart never resends its 
       ownership: 'uncertain',
       state: 'unknown',
     });
-    const events = await fixture.request({ kind: 'events', threadId: thread.id, limit: 128 });
-    if (events.kind !== 'events') throw new Error('wrong response');
-    expect(events.result.data.some((event) => event.kind === 'native-unavailable')).toBe(true);
     await fixture.submit(action);
     await fixture.runtime.close();
     await fixture.control({});
@@ -1860,7 +1562,7 @@ test('explicit resume cannot acquire an active native thread or an already contr
   }
 });
 
-test('control seek pages preserve tied ordering, reject changed filters and omit queued bodies', async () => {
+test('control seek pages preserve tied ordering, reject changed filters and carry queued text cut to their limit', async () => {
   const fixture = await setup();
   try {
     const first = (await fixture.create('page-one')).thread;
@@ -1912,8 +1614,35 @@ test('control seek pages preserve tied ordering, reject changed filters and omit
         input: { kind: 'text', text: 'A selected queue body' },
       }),
     );
-    const actions = await fixture.request({ kind: 'actions', threadId: first.id, limit: 128 });
-    expect(JSON.stringify(actions)).not.toContain('A selected queue body');
+    // a page carries each queued input's text, cut to its limit, but never the input itself
+    const cut = await fixture.request({
+      kind: 'actions',
+      threadId: first.id,
+      limit: 1,
+      textLimit: 10,
+    });
+    expect(cut.result.data).toStrictEqual([
+      expect.objectContaining({
+        id: queued.id,
+        queuedText: { text: 'A selected', isTruncated: true },
+      }),
+    ]);
+    expect(cut.result.data[0]).not.toHaveProperty('queuedInput');
+    // the text limit cuts a page's text only, so its continuation may change it
+    const rest = await fixture.request({
+      kind: 'actions',
+      threadId: first.id,
+      limit: 1,
+      cursor: cut.result.nextCursor!,
+    });
+    expect(rest.result.data.map((action) => [action.kind, action.queuedText])).toStrictEqual([
+      ['message', null],
+    ]);
+    const whole = await fixture.request({ kind: 'actions', threadId: first.id, limit: 1 });
+    expect(whole.result.data[0]!.queuedText).toStrictEqual({
+      text: 'A selected queue body',
+      isTruncated: false,
+    });
     expect((await fixture.receipt(queued.id)).queuedInput?.text).toBe('A selected queue body');
     const cancel = await fixture.submit(
       fixture.envelope({ kind: 'queue-cancel', queuedActionId: queued.id }),
@@ -1923,6 +1652,8 @@ test('control seek pages preserve tied ordering, reject changed filters and omit
       delivery: 'canceled',
       queuedInput: null,
     });
+    const canceled = await fixture.request({ kind: 'actions', threadId: first.id, limit: 128 });
+    expect(canceled.result.data.every((action) => action.queuedText === null)).toBe(true);
   } finally {
     await fixture.close();
   }
@@ -2067,29 +1798,27 @@ test('large live windows bound serialized output, expose gaps and truncate text 
       () => fixture.thread(thread.id),
       (entry) => entry.state === 'running',
     );
-    const emit = async (events: { method: string; params: object }[]) => {
-      await fixture.control({ holdTurn: true, emit: events });
-      await fixture.request({ kind: 'usage', provider: 'codex' });
-      await fixture.control({ holdTurn: true });
-      await wait(10);
-    };
-    for (let offset = 0; offset < 130; offset += 16) {
-      await emit(
-        Array.from({ length: Math.min(16, 130 - offset) }, (_, index) => ({
-          method: 'item/completed',
-          params: {
-            threadId: thread.nativeId,
-            turnId: active.activeTurnId,
-            item: { id: `bounded-${offset + index}`, type: 'agentMessage', text: 'Small item' },
-          },
-        })),
-      );
-    }
+    /*
+     * The daemon sends the notifications before its answer to the request, and live items never
+     * wait in the event lane, so the window holds them once the request returns.
+     */
+    const send = (events: { method: string; params: object }[]) =>
+      emit(fixture, { holdTurn: true }, events);
+    await send(
+      Array.from({ length: 130 }, (_, index) => ({
+        method: 'item/completed',
+        params: {
+          threadId: thread.nativeId,
+          turnId: active.activeTurnId,
+          item: { id: `bounded-${index}`, type: 'agentMessage', text: 'Small item' },
+        },
+      })),
+    );
     const bounded = await fixture.request({ kind: 'live-items', threadId: thread.id });
     if (bounded.kind !== 'live-items') throw new Error('wrong response');
     expect(bounded.result.data).toHaveLength(128);
     expect(bounded.result.hasGap).toBe(true);
-    await emit(
+    await send(
       Array.from({ length: 16 }, (_, index) => ({
         method: 'item/completed',
         params: {
@@ -2104,7 +1833,7 @@ test('large live windows bound serialized output, expose gaps and truncate text 
     expect(large.result.data.length).toBeLessThan(16);
     expect(Buffer.byteLength(JSON.stringify(large))).toBeLessThan(4 * 1024 * 1024 + 1024);
     expect(large.result.hasGap).toBe(true);
-    await emit([
+    await send([
       {
         method: 'item/started',
         params: {
@@ -2152,10 +1881,10 @@ test('shutdown waits for admission and leaves a Codex session bound, unless its 
     const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
     try {
       const saved = database
-        .prepare('SELECT state, runtime_epoch, pending_action_id FROM hq_thread WHERE id = ?')
+        .prepare('SELECT state, runtime_epoch, pending_action_id FROM agent_hq_thread WHERE id = ?')
         .get(thread.id);
       const message = database
-        .prepare('SELECT delivery FROM hq_action WHERE id = ?')
+        .prepare('SELECT delivery FROM agent_hq_action WHERE id = ?')
         .get(action.id);
       // a message shutdown refused to send leaves its action pending, which releases the session
       if (message?.delivery === 'failed')
@@ -2235,7 +1964,7 @@ test('shutdown interrupts every active Claude session at once and leaves Codex t
       const saved = (name: string) =>
         database
           .prepare(
-            'SELECT ownership, state, runtime_epoch, active_turn_id FROM hq_thread WHERE id = ?',
+            'SELECT ownership, state, runtime_epoch, active_turn_id FROM agent_hq_thread WHERE id = ?',
           )
           .get(threadIds[name]!);
       for (const name of ['stop-one', 'stop-two', 'stop-three', 'stop-four'])
@@ -2507,15 +2236,12 @@ test('overflowing native events stop control and preserve explicit uncertain own
       () => fixture.thread(thread.id),
       (entry) => entry.state === 'running',
     );
+    // request resolutions are lifecycle evidence, which the provider's lane of 128 persists in order
     await fixture.control({
       holdTurn: true,
       emit: Array.from({ length: 2048 }, (_, index) => ({
-        method: 'item/completed',
-        params: {
-          threadId: thread.nativeId,
-          turnId: active.activeTurnId,
-          item: { id: `overflow-${index}`, type: 'agentMessage', text: 'item' },
-        },
+        method: 'serverRequest/resolved',
+        params: { threadId: thread.nativeId, requestId: `overflow-${index}` },
       })),
     });
     await fixture.request({ kind: 'usage', provider: 'codex' });
@@ -2536,7 +2262,7 @@ test('overflowing native events stop control and preserve explicit uncertain own
       'Coding agent is unavailable.',
     );
     await fixture.runtime.close();
-    await expect(readFile(join(fixture.stateRoot, 'hq-owner.json'))).rejects.toThrow('ENOENT');
+    expect((await inspectLock('runtime', stateLocks(fixture.stateRoot))).state).toBe('free');
   } finally {
     // remove only the disposable fixture after proving native exit, including after a failed assertion
     await fixture.runtime.close().catch(() => undefined);
@@ -2560,6 +2286,70 @@ test('overflowing native events stop control and preserve explicit uncertain own
   }
 });
 
+test('admission records a coded failure as a failed action, and rethrows a defect without recording it', async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('admission-failures');
+    // a coded failure of a known kind: the interrupt names a turn the idle session isn't running
+    const interrupt = fixture.envelope({
+      kind: 'interrupt',
+      threadId: thread.id,
+      expectedTurnId: 'turn-that-never-ran',
+    });
+    expect(await fixture.submit(interrupt)).toMatchObject({
+      id: interrupt.id,
+      delivery: 'failed',
+      failure: 'state-conflict',
+    });
+    // a defect: SQLite itself refuses the rename's write, which no HQ error describes
+    const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
+    try {
+      database.exec(
+        "CREATE TRIGGER app_injected_defect BEFORE UPDATE OF pending_action_id ON agent_hq_thread BEGIN SELECT RAISE(ABORT, 'injected admission defect'); END",
+      );
+    } finally {
+      database.close();
+    }
+    const rename = fixture.envelope({
+      kind: 'thread-rename',
+      threadId: thread.id,
+      name: 'renamed-after-defect',
+    });
+    try {
+      await expectToRejectCode(
+        fixture.runtime.request({ kind: 'action', action: rename }),
+        'JG_AGENT_HQ_STORE_FAILED',
+        'The HQ store failed: injected admission defect',
+      );
+    } finally {
+      const cleanup = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
+      try {
+        cleanup.exec('DROP TRIGGER app_injected_defect');
+      } finally {
+        cleanup.close();
+      }
+    }
+    expect(await fixture.request({ kind: 'receipt', actionId: rename.id })).toStrictEqual({
+      kind: 'receipt',
+      result: null,
+    });
+    // the rolled-back admission left the thread free for the next rename
+    expect(await fixture.thread(thread.id)).toMatchObject({ name: 'admission-failures' });
+    const retry = fixture.envelope({
+      kind: 'thread-rename',
+      threadId: thread.id,
+      name: 'renamed-after-defect',
+    });
+    expect((await fixture.submit(retry)).delivery).not.toBe('failed');
+    await fixture.until(
+      () => fixture.thread(thread.id),
+      (current) => current.name === 'renamed-after-defect',
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('a ledger read failure during shutdown still stops the owned native process group', async () => {
   const fixture = await setup();
   try {
@@ -2569,7 +2359,7 @@ test('a ledger read failure during shutdown still stops the owned native process
       enableForeignKeyConstraints: false,
     });
     try {
-      database.exec('DROP TABLE hq_thread');
+      database.exec('DROP TABLE agent_hq_thread');
     } finally {
       database.close();
     }
@@ -2578,7 +2368,10 @@ test('a ledger read failure during shutdown still stops the owned native process
       'JG_AGENT_HQ_TRANSPORT_FAILED',
       'The HQ store failed',
     );
-    expect(await readFile(join(fixture.stateRoot, 'hq-owner.json'), 'utf8')).toContain('serve');
+    expect(await inspectLock('runtime', stateLocks(fixture.stateRoot))).toMatchObject({
+      state: 'held',
+      owner: { pid: process.pid },
+    });
   } finally {
     await fixture.runtime.close().catch(() => undefined);
     try {
@@ -2601,7 +2394,7 @@ test('a ledger read failure during shutdown still stops the owned native process
   }
 });
 
-test('short names are suggested without reservation and resolved without replacing immutable IDs', async () => {
+test('short names are suggested without reservation and renamed without replacing immutable IDs', async () => {
   const fixture = await setup();
   try {
     const first = await fixture.create('build-usage');
@@ -2617,12 +2410,6 @@ test('short names are suggested without reservation and resolved without replaci
       'build-usage-3',
     ]);
     expect(new Set([first.thread.id, ...created.map(({ thread }) => thread.id)]).size).toBe(3);
-    expect(
-      await fixture.request({ kind: 'managed-thread-name', name: 'BUILD-USAGE' }),
-    ).toStrictEqual({ kind: 'managed-thread-name', result: await fixture.thread(first.thread.id) });
-    expect(
-      await fixture.request({ kind: 'managed-thread-name', name: 'missing-task' }),
-    ).toStrictEqual({ kind: 'managed-thread-name', result: null });
     const long = await fixture.create('a'.repeat(32));
     const collision = await fixture.create('a'.repeat(32));
     expect(long.thread.name).toHaveLength(32);
@@ -2634,39 +2421,15 @@ test('short names are suggested without reservation and resolved without replaci
       () => fixture.receipt(rename.id),
       (receipt) => receipt.delivery === 'acknowledged',
     );
-    expect(
-      await fixture.request({ kind: 'managed-thread-name', name: 'build-usage' }),
-    ).toMatchObject({ result: null });
-    expect(
-      await fixture.request({ kind: 'managed-thread-name', name: 'REVIEW-USAGE' }),
-    ).toMatchObject({ result: { id: first.thread.id, nativeId: first.thread.nativeId } });
+    expect(await fixture.thread(first.thread.id)).toMatchObject({
+      name: 'review-usage',
+      nativeId: first.thread.nativeId,
+    });
     const names = (await fixture.calls())
       .filter((call) => call.method === 'thread/name/set')
       .map((call) => call.params.name);
     expect(names).toContain('build-usage-2');
     expect(names).toContain('review-usage');
-  } finally {
-    await fixture.close();
-  }
-});
-
-test('readable lookup still authorizes the registered workspace and never adopts a native session', async () => {
-  const fixture = await setup();
-  try {
-    const created = await fixture.create('private-task');
-    await fixture.runtime.close();
-    const other = join(fixture.root, 'other-workspace');
-    await mkdir(other);
-    const runtime = await createAgentHq({ stateRoot: fixture.stateRoot, allowedRoots: [other] });
-    try {
-      await expectToRejectCode(
-        runtime.request({ kind: 'managed-thread-name', name: created.thread.name }),
-        'JG_AGENT_HQ_TARGET_FORBIDDEN',
-        'The HQ target is outside the allowed workspaces',
-      );
-    } finally {
-      await runtime.close();
-    }
   } finally {
     await fixture.close();
   }
@@ -2963,32 +2726,6 @@ test("a lost start of HQ's own Codex turn keeps its session managed, and the tur
       completion: 'completed',
       result: { state: 'completed' },
     });
-    expect(await fixture.thread(thread.id)).toMatchObject({ ownership: 'managed' });
-  } finally {
-    await fixture.close();
-  }
-});
-
-test('a compaction right after a lost Codex turn completion gets its own turn', async () => {
-  const fixture = await setup();
-  try {
-    const { thread, message, nativeId, turnId } = await startHeldTurn(fixture, 'compact-after');
-    await emit(fixture, reads(nativeId, { type: 'idle' }, turnId, 'completed'), [
-      lostCompletion(nativeId, turnId),
-    ]);
-    await fixture.until(
-      () => fixture.receipt(message.id),
-      (entry) => entry.completion !== null,
-    );
-    await fixture.control({});
-    const compaction = fixture.envelope({ kind: 'thread-compact', threadId: thread.id });
-    await fixture.submit(compaction);
-    expect(
-      await fixture.until(
-        () => fixture.receipt(compaction.id),
-        (entry) => entry.completion !== null,
-      ),
-    ).toMatchObject({ completion: 'completed', nativeTurnId: expect.stringMatching(/^compact-/) });
     expect(await fixture.thread(thread.id)).toMatchObject({ ownership: 'managed' });
   } finally {
     await fixture.close();
@@ -3471,3 +3208,641 @@ test('a response over the frame limit is discarded, leaving its request to fail 
   }
   // the request waits out the native connection's 30-second response deadline on purpose
 }, 45_000);
+
+// the durable native observations the runtime recorded, by which it recognizes a repeated one
+const countEvents = (stateRoot: string): number => {
+  const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'), { readOnly: true });
+  try {
+    return z
+      .object({ count: z.number() })
+      .parse(database.prepare('SELECT count(*) AS count FROM agent_hq_event').get()).count;
+  } finally {
+    database.close();
+  }
+};
+
+test('live items stay in memory: a burst of them records nothing and leaves control running, while a repeated turn start is still recognized', async () => {
+  const fixture = await setup();
+  try {
+    const { thread, nativeId, turnId } = await startHeldTurn(fixture, 'items-in-memory');
+    const recorded = countEvents(fixture.stateRoot);
+    const startedAt = 1_800_000_000 + Number(/^native-turn-(\d+)$/.exec(turnId)![1]);
+    /*
+     * More items than a provider's lane holds, the turn's start again, and the resolution of a
+     * request no approval waits on, the one new observation, which the lane persists last.
+     */
+    await emit(fixture, { holdTurn: true }, [
+      ...Array.from({ length: 2048 }, (_, index) => ({
+        method: 'item/completed',
+        params: {
+          threadId: nativeId,
+          turnId,
+          item: { id: `burst-${index}`, type: 'agentMessage', text: 'Streamed' },
+        },
+      })),
+      {
+        method: 'turn/started',
+        params: { threadId: nativeId, turn: { id: turnId, status: 'inProgress', startedAt } },
+      },
+      { method: 'serverRequest/resolved', params: { threadId: nativeId, requestId: 'marker' } },
+    ]);
+    await expect.poll(() => countEvents(fixture.stateRoot), { timeout: 5_000 }).toBe(recorded + 1);
+    expect(await fixture.thread(thread.id)).toMatchObject({
+      state: 'running',
+      ownership: 'managed',
+      activeTurnId: turnId,
+    });
+    // the window holds the newest 128 items of the burst
+    const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
+    if (live.kind !== 'live-items') throw new Error('wrong response');
+    expect(live.result.data).toHaveLength(128);
+    expect(live.result.data.at(-1)?.nativeId).toBe('burst-2047');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test.each(['codex', 'claude'] as const)(
+  'admitting a %s steer or thread-close asks the native CLI nothing about operation support',
+  async (provider) => {
+    await withClaudeRuntime(async (fixture) => {
+      const status = await fixture.request({ kind: 'status' });
+      if (status.kind !== 'status') throw new Error('Missing runtime status');
+      const submit = async (command: IActionCommand): Promise<IActionReceipt> => {
+        const action = { id: randomUUID(), runtimeEpoch: status.result.runtimeEpoch, command };
+        const response = await fixture.request({ kind: 'action', action });
+        if (response.kind !== 'action') throw new Error('Missing action receipt');
+        return response.result;
+      };
+      const receipt = async (id: string) => {
+        const response = await fixture.request({ kind: 'receipt', actionId: id });
+        return response.kind === 'receipt' ? response.result : null;
+      };
+      const thread = async (id: string) => {
+        const response = await fixture.request({ kind: 'managed-thread', threadId: id });
+        return response.kind === 'managed-thread' ? response.result : null;
+      };
+      // starting a native process can take seconds while other files run
+      const settle = (id: string) =>
+        expect
+          .poll(async () => (await receipt(id))?.delivery, { timeout: 5_000 })
+          .toBe('acknowledged');
+      const lines = async (filename: string) =>
+        (await readFile(join(fixture.root, filename), 'utf8')).trim().split('\n').filter(Boolean);
+      /*
+       * What the provider's CLI received, in order: Codex's methods, or the type or control subtype
+       * of each message Claude's session and read processes read.
+       */
+      const nativeCalls = async (): Promise<string[]> =>
+        provider === 'codex'
+          ? (await lines('calls.jsonl')).map(
+              (line) => z.object({ method: z.string() }).parse(JSON.parse(line)).method,
+            )
+          : (await lines('claude-calls.jsonl')).map((line) => {
+              const message = z
+                .object({ type: z.string(), request: z.object({ subtype: z.string() }).optional() })
+                .parse(JSON.parse(line));
+              return message.request?.subtype ?? message.type;
+            });
+      // the calls a support check makes, which list the models and Codex's skills
+      const supportChecks = ['model/list', 'skills/list', 'list_models'];
+      const created = await submit({
+        kind: 'thread-create',
+        provider,
+        workspaceRoot: fixture.workspaceRoot,
+        name: `${provider}-support`,
+      });
+      await settle(created.id);
+      const threadId = created.threadId!;
+      if (provider === 'codex')
+        await writeFixtureControl(fixture.root, 'control.json', { holdTurn: true });
+      else await fixture.control({ holdTurn: true, steer: 'join' });
+      const message = await submit({
+        kind: 'message',
+        threadId,
+        input: { kind: 'text', text: 'Keep working' },
+      });
+      await settle(message.id);
+      const turnId = (await receipt(message.id))!.nativeTurnId!;
+
+      const beforeSteer = await nativeCalls();
+      const steer = await submit({
+        kind: 'steer',
+        threadId,
+        expectedTurnId: turnId,
+        text: 'Also check the logout path',
+      });
+      await settle(steer.id);
+      // the steer itself is the one native call
+      expect((await nativeCalls()).slice(beforeSteer.length)).toStrictEqual([
+        provider === 'codex' ? 'turn/steer' : 'user',
+      ]);
+
+      const stop = await submit({ kind: 'interrupt', threadId, expectedTurnId: turnId });
+      await settle(stop.id);
+      await expect
+        .poll(async () => (await thread(threadId))?.activeTurnId, { timeout: 5_000 })
+        .toBeNull();
+      const beforeClose = await nativeCalls();
+      const close = await submit({ kind: 'thread-close', threadId });
+      await settle(close.id);
+      const closeCalls = (await nativeCalls()).slice(beforeClose.length);
+      // the interrupted turn's own history read may start Claude's read process meanwhile
+      expect(closeCalls.filter((call) => supportChecks.includes(call))).toStrictEqual([]);
+      expect(await thread(threadId)).toMatchObject({ state: 'inactive' });
+    });
+  },
+);
+
+test('a create with a first input sends it as the same action, which settles once the input is acknowledged', async () => {
+  const fixture = await setup();
+  try {
+    const action = fixture.envelope({
+      kind: 'thread-create',
+      provider: 'codex',
+      workspaceRoot: fixture.workspaceRoot,
+      name: 'first-input',
+      input: { kind: 'text', text: 'Start with this task' },
+    });
+    const admitted = await fixture.submit(action);
+    expect(admitted).toMatchObject({
+      kind: 'thread-create',
+      phase: 'create',
+      delivery: 'submitted',
+    });
+    const { receipt } = await fixture.actionWait(action.id, 'settled');
+    expect(receipt).toMatchObject({
+      delivery: 'acknowledged',
+      phase: 'turn',
+      nativeThreadId: 'native-1',
+      nativeTurnId: expect.stringMatching(/^native-turn-/),
+      queuedInput: null,
+    });
+    const completed = await fixture.until(
+      () => fixture.receipt(action.id),
+      (entry) => entry.completion === 'completed' && entry.result !== null,
+    );
+    expect(completed.result).toMatchObject({ state: 'completed', text: 'Live response' });
+    const methods = (await fixture.calls()).map((call) => call.method);
+    expect(
+      methods.filter((method) =>
+        ['thread/start', 'thread/name/set', 'turn/start'].includes(method),
+      ),
+    ).toStrictEqual(['thread/start', 'thread/name/set', 'turn/start']);
+    expect(
+      JSON.stringify((await fixture.calls()).find((call) => call.method === 'turn/start')),
+    ).toContain('Start with this task');
+    const thread = await fixture.thread(admitted.threadId!);
+    expect(thread).toMatchObject({ name: 'first-input', state: 'completed', nativeId: 'native-1' });
+    // one action holds the whole start
+    const actions = await fixture.request({ kind: 'actions', threadId: thread.id });
+    expect(actions.result.data.map((entry) => entry.id)).toStrictEqual([action.id]);
+    const transitions = (await fixture.request({ kind: 'session-states', limit: 128 })).result.data
+      .filter((transition) => transition.threadId === thread.id)
+      .map((transition) => transition.reason);
+    expect(transitions).toStrictEqual(['opened', 'turn-started', 'turn-completed']);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('a first input Codex refuses leaves its session created and named, needing recovery as a refused message does', async () => {
+  const fixture = await setup();
+  try {
+    await fixture.control({ rejectTurn: true });
+    const action = fixture.envelope({
+      kind: 'thread-create',
+      provider: 'codex',
+      workspaceRoot: fixture.workspaceRoot,
+      name: 'refused-input',
+      input: { kind: 'text', text: 'A refused first input' },
+    });
+    const admitted = await fixture.submit(action);
+    const { receipt } = await fixture.actionWait(action.id, 'settled');
+    expect(receipt).toMatchObject({
+      delivery: 'failed',
+      failure: 'agent-unavailable',
+      phase: 'turn',
+      nativeThreadId: 'native-1',
+      nativeTurnId: null,
+      queuedInput: { text: 'A refused first input' },
+    });
+    expect(await fixture.thread(admitted.threadId!)).toMatchObject({
+      name: 'refused-input',
+      nativeId: 'native-1',
+      ownership: 'managed',
+      state: 'unknown',
+    });
+    await fixture.control({});
+    const further = await fixture.submit(
+      fixture.envelope({
+        kind: 'message',
+        threadId: admitted.threadId!,
+        input: { kind: 'text', text: 'Input after the refusal' },
+      }),
+    );
+    expect(further).toMatchObject({ delivery: 'failed', failure: 'state-conflict' });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('a create refuses a first input whose skill the folder does not list, before any session starts', async () => {
+  const fixture = await setup();
+  try {
+    await expectToRejectCode(
+      fixture.runtime.request({
+        kind: 'action',
+        action: fixture.envelope({
+          kind: 'thread-create',
+          provider: 'codex',
+          workspaceRoot: fixture.workspaceRoot,
+          name: 'missing-skill',
+          input: { kind: 'skill', skillId: 'a'.repeat(64), arguments: '' },
+        }),
+      }),
+      'JG_AGENT_HQ_SKILL_UNAVAILABLE',
+    );
+    expect((await fixture.calls()).map((call) => call.method)).not.toContain('thread/start');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('a close with interrupt stops the running turn and closes in one action, and closes an idle session as before', async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('closing-turn');
+    await fixture.control({ holdTurn: true });
+    const message = await fixture.submit(
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'A long task' },
+      }),
+    );
+    const running = await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.state === 'running',
+    );
+    const close = fixture.envelope({ kind: 'thread-close', threadId: thread.id, interrupt: true });
+    expect(await fixture.submit(close)).toMatchObject({
+      phase: 'interrupt',
+      delivery: 'submitted',
+    });
+    const { receipt } = await fixture.actionWait(close.id, 'settled');
+    expect(receipt).toMatchObject({ delivery: 'acknowledged', phase: 'close' });
+    expect(await fixture.thread(thread.id)).toMatchObject({
+      state: 'inactive',
+      activeTurnId: null,
+    });
+    expect(await fixture.receipt(message.id)).toMatchObject({ completion: 'interrupted' });
+    const calls = (await fixture.calls()).map((call) => call.method);
+    const order = ['turn/interrupt', 'thread/backgroundTerminals/clean', 'thread/unsubscribe'];
+    expect(calls.filter((method) => order.includes(method))).toStrictEqual(order);
+    expect(
+      (await fixture.calls()).find((call) => call.method === 'turn/interrupt')?.params,
+    ).toMatchObject({ threadId: thread.nativeId, turnId: running.activeTurnId });
+    const reasons = (await fixture.request({ kind: 'session-states', limit: 128 })).result.data
+      .filter((transition) => transition.threadId === thread.id)
+      .map((transition) => transition.reason);
+    expect(reasons.slice(-2)).toStrictEqual(['operator-stopped', 'closed']);
+
+    const idle = (await fixture.create('closing-idle')).thread;
+    const before = (await fixture.calls()).length;
+    const idleClose = fixture.envelope({
+      kind: 'thread-close',
+      threadId: idle.id,
+      interrupt: true,
+    });
+    expect(await fixture.submit(idleClose)).toMatchObject({ phase: 'clean' });
+    expect((await fixture.actionWait(idleClose.id, 'settled')).receipt).toMatchObject({
+      delivery: 'acknowledged',
+      phase: 'close',
+    });
+    expect((await fixture.calls()).slice(before).map((call) => call.method)).not.toContain(
+      'turn/interrupt',
+    );
+    expect(await fixture.thread(idle.id)).toMatchObject({ state: 'inactive' });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('thread-delete deletes a Codex session through the daemon with its records, closing one HQ runs first', async () => {
+  const fixture = await setup();
+  try {
+    const remove = (nativeId: string) =>
+      fixture.envelope({
+        kind: 'thread-delete',
+        provider: 'codex',
+        workspaceRoot: fixture.workspaceRoot,
+        nativeId,
+      });
+    // a session HQ closed
+    const { action: created, thread: closed } = await fixture.create('closed-session');
+    const message = await fixture.submit(
+      fixture.envelope({
+        kind: 'message',
+        threadId: closed.id,
+        input: { kind: 'text', text: 'Some work' },
+      }),
+    );
+    await fixture.until(
+      () => fixture.receipt(message.id),
+      (entry) => entry.completion === 'completed',
+    );
+    const close = fixture.envelope({ kind: 'thread-close', threadId: closed.id });
+    await fixture.submit(close);
+    await fixture.actionWait(close.id, 'settled');
+    const deletion = remove(closed.nativeId!);
+    const deleted = await fixture.submit(deletion);
+    expect(deleted).toMatchObject({
+      kind: 'thread-delete',
+      provider: 'codex',
+      phase: 'delete',
+      delivery: 'acknowledged',
+      threadId: null,
+      nativeThreadId: null,
+    });
+    // a repeated request returns its receipt
+    expect(await fixture.submit(deletion)).toStrictEqual(deleted);
+    expect(
+      (await fixture.calls())
+        .filter((call) => call.method === 'thread/delete')
+        .map((call) => call.params),
+    ).toStrictEqual([{ threadId: closed.nativeId }]);
+    expect(
+      (await fixture.request({ kind: 'managed-thread', threadId: closed.id })).result,
+    ).toBeNull();
+    for (const id of [created.id, message.id, close.id])
+      expect((await fixture.request({ kind: 'receipt', actionId: id })).result).toBeNull();
+
+    // a session HQ runs is cleaned and closed by the same action, then deleted
+    const { thread: running } = await fixture.create('running-session');
+    const before = (await fixture.calls()).length;
+    expect(await fixture.submit(remove(running.nativeId!))).toMatchObject({
+      phase: 'delete',
+      delivery: 'acknowledged',
+    });
+    expect((await fixture.calls()).slice(before).map((call) => call.method)).toStrictEqual([
+      'thread/backgroundTerminals/clean',
+      'thread/backgroundTerminals/list',
+      'thread/unsubscribe',
+      'thread/delete',
+    ]);
+    expect(
+      (await fixture.request({ kind: 'managed-thread', threadId: running.id })).result,
+    ).toBeNull();
+
+    // a session HQ doesn't manage, which Codex reads to check its folder
+    const external = await fixture.submit(remove('thread-1023'));
+    expect(external).toMatchObject({ delivery: 'acknowledged', threadId: null });
+    const listed = await fixture.request({
+      kind: 'threads',
+      providers: ['codex'],
+      workspaceRoots: [fixture.workspaceRoot],
+      limit: 1,
+    });
+    expect(listed.result.data[0]?.nativeId).toBe('thread-1022');
+    // the transition log keeps what the deleted sessions went through
+    expect(
+      (await fixture.request({ kind: 'session-states', limit: 128 })).result.data.some(
+        (transition) => transition.threadId === closed.id,
+      ),
+    ).toBe(true);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('thread-delete refuses a running session, a folder outside the allowed roots and a session in another folder', async () => {
+  const fixture = await setup();
+  const outside = await mkdtemp(join(tmpdir(), 'jg-hq-outside-'));
+  try {
+    const { thread } = await fixture.create('busy-session');
+    await fixture.control({ holdTurn: true });
+    await fixture.submit(
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Keep working' },
+      }),
+    );
+    await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.state === 'running',
+    );
+    const remove = (workspaceRoot: string) =>
+      fixture.runtime.request({
+        kind: 'action',
+        action: fixture.envelope({
+          kind: 'thread-delete',
+          provider: 'codex',
+          workspaceRoot,
+          nativeId: thread.nativeId!,
+        }),
+      });
+    await expectToRejectCode(remove(fixture.workspaceRoot), 'JG_AGENT_HQ_REQUEST_INVALID');
+    await expectToRejectCode(remove(outside), 'JG_AGENT_HQ_TARGET_FORBIDDEN');
+    const nested = join(fixture.workspaceRoot, 'nested');
+    await mkdir(nested);
+    await expectToRejectCode(remove(nested), 'JG_AGENT_HQ_REQUEST_INVALID');
+    // nothing was recorded or sent for the refusals
+    expect((await fixture.calls()).map((call) => call.method)).not.toContain('thread/delete');
+    expect(
+      (await fixture.request({ kind: 'actions', threadId: thread.id })).result.data.map(
+        (action) => action.kind,
+      ),
+    ).not.toContain('thread-delete');
+  } finally {
+    await fixture.close();
+    await rm(outside, { recursive: true });
+  }
+});
+
+test('a Codex deletion that fails reports PROVIDER_FAILED, records its failure and leaves the session to delete again', async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('failing-deletion');
+    const close = fixture.envelope({ kind: 'thread-close', threadId: thread.id });
+    await fixture.submit(close);
+    await fixture.actionWait(close.id, 'settled');
+    await fixture.control({ deleteFailure: true });
+    const deletion = fixture.envelope({
+      kind: 'thread-delete',
+      provider: 'codex',
+      workspaceRoot: fixture.workspaceRoot,
+      nativeId: thread.nativeId!,
+    });
+    await expectToRejectCode(
+      fixture.runtime.request({ kind: 'action', action: deletion }),
+      'JG_AGENT_HQ_PROVIDER_FAILED',
+      'The HQ provider integration failed: The Codex integration failed: Synthetic delete failure',
+    );
+    expect(await fixture.receipt(deletion.id)).toMatchObject({
+      delivery: 'failed',
+      phase: 'delete',
+      threadId: thread.id,
+    });
+    expect(await fixture.thread(thread.id)).toMatchObject({ state: 'inactive' });
+    // a session Codex never saved, as one created without a turn, counts as deleted
+    await fixture.control({ noRollout: [thread.nativeId] });
+    expect(
+      await fixture.submit(
+        fixture.envelope({
+          kind: 'thread-delete',
+          provider: 'codex',
+          workspaceRoot: fixture.workspaceRoot,
+          nativeId: thread.nativeId!,
+        }),
+      ),
+    ).toMatchObject({ delivery: 'acknowledged', threadId: null });
+    expect(
+      (await fixture.request({ kind: 'managed-thread', threadId: thread.id })).result,
+    ).toBeNull();
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('thread-delete removes a Claude transcript with its folder and records, and refuses a session a terminal runs', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const remove = (nativeId: string) =>
+      fixture.runtime.request({
+        kind: 'action',
+        action: {
+          id: randomUUID(),
+          runtimeEpoch: fixture.runtime.runtimeEpoch,
+          command: {
+            kind: 'thread-delete',
+            provider: 'claude',
+            workspaceRoot: fixture.workspaceRoot,
+            nativeId,
+          },
+        },
+      });
+    const listed = async () =>
+      (
+        await fixture.runtime.request({
+          kind: 'threads',
+          providers: ['claude'],
+          workspaceRoots: [fixture.workspaceRoot],
+        })
+      ).result.data.map((session) => session.nativeId);
+    // a session HQ doesn't manage, with the folder beside its transcript
+    const external = randomUUID();
+    await writeFile(
+      fixture.transcript(external),
+      `${JSON.stringify(claudeRecord(fixture.workspaceRoot, external))}\n`,
+    );
+    await mkdir(join(fixture.projectRoot, external, 'subagents'), { recursive: true });
+    await writeFile(join(fixture.projectRoot, external, 'subagents', 'agent.jsonl'), '{}\n');
+    expect(await listed()).toContain(external);
+    expect((await remove(external)).result).toMatchObject({
+      kind: 'thread-delete',
+      delivery: 'acknowledged',
+    });
+    await expect(readFile(fixture.transcript(external))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readdir(join(fixture.projectRoot, external))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect(await listed()).not.toContain(external);
+
+    // a session HQ runs, idle, is closed and deleted with its records
+    const created = await fixture.runtime.request({
+      kind: 'action',
+      action: {
+        id: randomUUID(),
+        runtimeEpoch: fixture.runtime.runtimeEpoch,
+        command: {
+          kind: 'thread-create',
+          provider: 'claude',
+          workspaceRoot: fixture.workspaceRoot,
+          name: 'claude-deletion',
+        },
+      },
+    });
+    await fixture.runtime.request({
+      kind: 'action-wait',
+      actionId: created.result.id,
+      until: 'settled',
+      timeoutMs: 10_000,
+    });
+    const thread = (
+      await fixture.runtime.request({ kind: 'managed-thread', threadId: created.result.threadId! })
+    ).result!;
+    await expect(readFile(fixture.transcript(thread.nativeId!))).resolves.toBeDefined();
+    expect((await remove(thread.nativeId!)).result).toMatchObject({ delivery: 'acknowledged' });
+    await expect(readFile(fixture.transcript(thread.nativeId!))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect(
+      (await fixture.runtime.request({ kind: 'managed-thread', threadId: thread.id })).result,
+    ).toBeNull();
+
+    // a session a terminal runs stays
+    const terminal = randomUUID();
+    await writeFile(
+      fixture.transcript(terminal),
+      `${JSON.stringify(claudeRecord(fixture.workspaceRoot, terminal))}\n`,
+    );
+    await writeFixtureControl(fixture.root, 'claude-agents.json', {
+      agents: [
+        {
+          sessionId: terminal,
+          cwd: fixture.workspaceRoot,
+          kind: 'interactive',
+          status: 'idle',
+          pid: process.pid,
+        },
+      ],
+    });
+    await fixture.runtime.request({ kind: 'observation-pace', pace: 'live' });
+    await expect
+      .poll(
+        async () =>
+          (await fixture.runtime.request({ kind: 'active-sessions' })).result.data.length +
+          (
+            await fixture.runtime.request({ kind: 'session-states', limit: 128 })
+          ).result.data.filter((transition) => transition.nativeId === terminal).length,
+      )
+      .toBeGreaterThan(0);
+    await expectToRejectCode(remove(terminal), 'JG_AGENT_HQ_REQUEST_INVALID');
+    await expect(readFile(fixture.transcript(terminal))).resolves.toBeDefined();
+  });
+});
+
+test('a Claude transcript that cannot be deleted reports PROVIDER_FAILED and stays listed', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const nativeId = randomUUID();
+    await writeFile(
+      fixture.transcript(nativeId),
+      `${JSON.stringify(claudeRecord(fixture.workspaceRoot, nativeId))}\n`,
+    );
+    await chmod(fixture.projectRoot, 0o500);
+    try {
+      const deletion = {
+        id: randomUUID(),
+        runtimeEpoch: fixture.runtime.runtimeEpoch,
+        command: {
+          kind: 'thread-delete' as const,
+          provider: 'claude' as const,
+          workspaceRoot: fixture.workspaceRoot,
+          nativeId,
+        },
+      };
+      await expectToRejectCode(
+        fixture.runtime.request({ kind: 'action', action: deletion }),
+        'JG_AGENT_HQ_PROVIDER_FAILED',
+        'The HQ provider integration failed: EACCES',
+      );
+      expect(
+        (await fixture.runtime.request({ kind: 'receipt', actionId: deletion.id })).result,
+      ).toMatchObject({ delivery: 'failed', phase: 'delete' });
+      await expect(readFile(fixture.transcript(nativeId))).resolves.toBeDefined();
+    } finally {
+      await chmod(fixture.projectRoot, 0o700);
+    }
+  });
+});

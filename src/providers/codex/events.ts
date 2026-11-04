@@ -5,16 +5,16 @@ import {
   MAX_RESULT_BYTES,
   type IOutputSchema,
   type ISessionState,
-  type ITurnSummary,
   type ITurnUsage,
 } from '../../contracts/index.js';
 import { toTurnResult } from '../results/index.js';
 
 import { NativeIdSchema } from '../../contracts/identities/index.js';
 import type { IAgentProviderOutcome, IAgentProviderEvents, IProviderThread } from '../index.js';
+import { parseActionRequest } from '../utilities.js';
 
 import { LOST_NOTIFICATIONS, RUNNING_TURNS_CAPACITY } from './constants.js';
-import type { ICodexEvents, ICodexProvider, INativeThread } from './types.js';
+import type { ICodexEvents, ICodexProvider, INativeThread, ITurnSummary } from './types.js';
 import {
   NativeItemSchema,
   NativeThreadSchema,
@@ -33,11 +33,6 @@ import { buildCodexReply, parseCodexPrompt, toApprovalPresentation } from './app
 
 const TargetSchema = z.object({ threadId: NativeIdSchema, turnId: NativeIdSchema });
 const DeltaSchema = TargetSchema.extend({ itemId: NativeIdSchema, delta: z.string() });
-const PhaseIdSchema = z
-  .string()
-  .regex(
-    /^[a-f0-9-]{36}:(create|fork|resume|name|turn|steer|interrupt|clean|close|archive|unarchive|revert|compact)$/,
-  );
 
 /** @returns Exact native session metadata normalized to the common control boundary. */
 export const toProviderThread = (thread: INativeThread): IProviderThread => ({
@@ -72,8 +67,8 @@ export const createCodexEvents = (
   /**
    * Keeps HQ's result capture in step with a turn whose start or end failed validation: a lost
    * start still binds the capture prepared for HQ's input, and a lost end drops its turn's capture,
-   * which would otherwise refuse the session's next turn that HQ didn't prepare, such as a
-   * compaction.
+   * which would otherwise refuse the session's next turn that HQ didn't prepare, such as one
+   * another client starts.
    */
   const settleLostCapture = (method: string, params: unknown): void => {
     const lifecycle = z
@@ -223,7 +218,6 @@ export const createCodexEvents = (
     }
   };
   return {
-    controlOutcome: (outcome) => events.outcome(outcome),
     prepareTurn(nativeId, schema) {
       if (!turns.has(nativeId) && turns.size >= 32) parseNative(z.never(), nativeId);
       turns.set(nativeId, {
@@ -274,65 +268,57 @@ export const createCodexEvents = (
       });
     },
     lateResponse(requestId, result, error) {
-      if (!PhaseIdSchema.safeParse(requestId).success) return;
+      /*
+       * A reply's request ID is the native approval's, and answers no action phase. A deletion
+       * runs within its request, which records its outcome, so a late answer to it changes nothing.
+       */
+      const request = parseActionRequest(requestId);
+      if (!request || request.phase === 'reply' || request.phase === 'delete') return;
       let outcome: IAgentProviderOutcome;
       let thread: IProviderThread | undefined;
       if (error !== undefined)
-        outcome = { kind: 'failed', requestId, failure: 'agent-unavailable' };
-      else if (
-        requestId.endsWith(':create') ||
-        requestId.endsWith(':fork') ||
-        requestId.endsWith(':resume')
-      ) {
+        outcome = { kind: 'failed', ...request, failure: 'agent-unavailable' };
+      else if (request.phase === 'create' || request.phase === 'resume') {
         thread = toProviderThread(
           parseNative(z.object({ thread: NativeThreadSchema }), result).thread,
         );
         outcome =
-          requestId.endsWith(':create') || requestId.endsWith(':fork')
-            ? { kind: 'created', requestId, nativeId: thread.nativeId }
-            : { kind: 'resumed', requestId, nativeState: thread.nativeState };
-      } else if (requestId.endsWith(':unarchive') || requestId.endsWith(':revert')) {
-        thread = toProviderThread(
-          parseNative(z.object({ thread: NativeThreadSchema }), result).thread,
-        );
-        outcome = { kind: requestId.endsWith(':unarchive') ? 'unarchived' : 'reverted', requestId };
-      } else if (requestId.endsWith(':archive') || requestId.endsWith(':compact')) {
-        parseNative(z.object({}), result);
-        outcome = requestId.endsWith(':archive')
-          ? { kind: 'archived', requestId }
-          : { kind: 'compaction-accepted', requestId, nativeTurnId: null };
-      } else if (requestId.endsWith(':turn'))
+          request.phase === 'create'
+            ? { kind: 'created', ...request, nativeId: thread.nativeId }
+            : { kind: 'resumed', ...request, nativeState: thread.nativeState };
+      } else if (request.phase === 'turn')
         outcome = {
           kind: 'turn-accepted',
-          requestId,
+          ...request,
           nativeTurnId: parseNative(z.object({ turn: NativeTurnSchema }), result).turn.id,
         };
-      else if (requestId.endsWith(':steer'))
+      else if (request.phase === 'steer')
         outcome = {
           kind: 'steer-accepted',
-          requestId,
+          ...request,
           nativeTurnId: parseNative(z.object({ turnId: NativeIdSchema }), result).turnId,
         };
       else if (
-        requestId.endsWith(':name') ||
-        requestId.endsWith(':interrupt') ||
-        requestId.endsWith(':clean')
+        request.phase === 'name' ||
+        request.phase === 'interrupt' ||
+        request.phase === 'clean'
       ) {
         parseNative(z.object({}), result);
         outcome = {
-          kind: requestId.endsWith(':name')
-            ? 'renamed'
-            : requestId.endsWith(':interrupt')
-              ? 'interrupt-accepted'
-              : 'cleaned',
-          requestId,
+          kind:
+            request.phase === 'name'
+              ? 'renamed'
+              : request.phase === 'interrupt'
+                ? 'interrupt-accepted'
+                : 'cleaned',
+          ...request,
         };
       } else {
         parseNative(
           z.object({ status: z.enum(['unsubscribed', 'notSubscribed', 'notLoaded']) }),
           result,
         );
-        outcome = { kind: 'closed', requestId };
+        outcome = { kind: 'closed', ...request };
       }
       events.outcome(outcome, thread);
     },

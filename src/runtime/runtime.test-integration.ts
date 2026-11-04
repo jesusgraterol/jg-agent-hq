@@ -21,12 +21,18 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { expectToRejectCode } from 'jg-exception/testing';
 import { hasErrorCode } from 'jg-exception';
+import { acquireLock, inspectLock } from 'jg-locks';
 import { createAgentHq, requestAgentHq, type IAgentHq } from 'jg-agent-hq';
 import { HqResponseSchema, type IHqRequestInput } from 'jg-agent-hq/contracts';
 import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
-import { installCodexFixture, writeFixtureControl } from '../../scripts/test-support/index.js';
+import {
+  installCodexFixture,
+  leaveLock,
+  stateLocks,
+  writeFixtureControl,
+} from '../../scripts/test-support/index.js';
 
 const execute = promisify(execFile);
 const PidsSchema = z.object({ parent: z.number(), child: z.number() });
@@ -94,10 +100,7 @@ test('owner-only IPC survives abandoned clients; shutdown releases SQLite and th
     expect(first.kind).toBe('status');
     if (first.kind !== 'status') throw new Error('wrong response');
     expect(first.result.store).toBe('ready');
-    expect(first.result.providers).toStrictEqual([
-      { provider: 'codex', state: 'idle', version: null },
-      { provider: 'claude', state: 'idle', version: null },
-    ]);
+    expect(first.result.runtimeEpoch).toBe(runtime.runtimeEpoch);
     const abandoned = connect(join(stateRoot, 'hq.sock'));
     await new Promise<void>((resolve, reject) => {
       abandoned.once('connect', resolve);
@@ -108,7 +111,11 @@ test('owner-only IPC survives abandoned clients; shutdown releases SQLite and th
     await expect(createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] })).rejects.toThrow(
       'already owned',
     );
-    const reply = await request({ kind: 'threads', provider: 'codex', workspaceRoot });
+    const reply = await request({
+      kind: 'threads',
+      providers: ['codex'],
+      workspaceRoots: [workspaceRoot],
+    });
     if (reply.kind !== 'threads') throw new Error('wrong response');
     expect(reply.result.data).toHaveLength(32);
     expect(reply.result.data[0]).toMatchObject({
@@ -121,13 +128,19 @@ test('owner-only IPC survives abandoned clients; shutdown releases SQLite and th
     }
     await runtime.close();
     await runtime.closed;
-    expect(await readdir(stateRoot)).toStrictEqual(['action.key', 'hq.sqlite']);
+    // the runtime released its lock, leaving the empty locks folder
+    expect((await readdir(stateRoot)).sort()).toStrictEqual([
+      '.runtime',
+      'action.key',
+      'hq.sqlite',
+    ]);
+    expect(await readdir(stateLocks(stateRoot).root)).toStrictEqual([]);
     // native discovery pages are read, never copied into SQLite
     const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'), { readOnly: true });
     try {
       expect(
         database
-          .prepare("SELECT name FROM sqlite_schema WHERE name LIKE 'hq_native_history%'")
+          .prepare("SELECT name FROM sqlite_schema WHERE name LIKE 'agent_hq_native_history%'")
           .all(),
       ).toStrictEqual([]);
     } finally {
@@ -144,15 +157,15 @@ test('owner-only IPC survives abandoned clients; shutdown releases SQLite and th
   });
 });
 
-test('native seek pages cover 1024 sessions with stable ties and filter-bound continuation', async () => {
+test('native continuation pages cover 1024 sessions in order with filter-bound continuation', async () => {
   await withRuntime(async ({ workspaceRoot, request }) => {
     const identities: string[] = [];
     let cursor: string | undefined;
     do {
       const page = await request({
         kind: 'threads',
-        provider: 'codex',
-        workspaceRoot,
+        providers: ['codex'],
+        workspaceRoots: [workspaceRoot],
         limit: 128,
         cursor,
       });
@@ -163,8 +176,8 @@ test('native seek pages cover 1024 sessions with stable ties and filter-bound co
         await expectToRejectCode(
           request({
             kind: 'threads',
-            provider: 'codex',
-            workspaceRoot,
+            providers: ['codex'],
+            workspaceRoots: [workspaceRoot],
             limit: 128,
             search: 'Task',
             cursor: page.result.nextCursor!,
@@ -181,21 +194,31 @@ test('native seek pages cover 1024 sessions with stable ties and filter-bound co
     );
     const empty = await request({
       kind: 'threads',
-      provider: 'codex',
-      workspaceRoot,
+      providers: ['codex'],
+      workspaceRoots: [workspaceRoot],
       search: 'No matching task',
     });
     expect(empty).toStrictEqual({
       kind: 'threads',
-      result: { data: [], nextCursor: null, source: 'native' },
+      result: { data: [], nextCursor: null, unavailable: [] },
     });
     await expectToRejectCode(
-      request({ kind: 'threads', provider: 'codex', workspaceRoot, limit: 129 }),
+      request({
+        kind: 'threads',
+        providers: ['codex'],
+        workspaceRoots: [workspaceRoot],
+        limit: 129,
+      }),
       'JG_AGENT_HQ_REQUEST_INVALID',
       'The HQ request is invalid',
     );
     await expectToRejectCode(
-      request({ kind: 'threads', provider: 'codex', workspaceRoot, cursor: 'invalid' }),
+      request({
+        kind: 'threads',
+        providers: ['codex'],
+        workspaceRoots: [workspaceRoot],
+        cursor: 'invalid',
+      }),
       'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
       'Request is invalid.',
     );
@@ -205,11 +228,6 @@ test('native seek pages cover 1024 sessions with stable ties and filter-bound co
 test('authorized native history is re-read after a delayed flush and large frames are bounded for display', async () => {
   await withRuntime(async ({ root, workspaceRoot, control, request }) => {
     const target = { provider: 'codex' as const, workspaceRoot, nativeId: 'thread-1023' };
-    const turns = await request({ kind: 'turns', ...target });
-    expect(turns).toMatchObject({
-      kind: 'turns',
-      result: { data: [{ nativeId: 'turn-a', state: 'completed' }] },
-    });
     await control({ awaitingFlush: true });
     expect(await request({ kind: 'items', ...target })).toMatchObject({
       kind: 'items',
@@ -778,7 +796,7 @@ test('workspace authorization precedes native access and rejects symlink escapes
     const escaped = join(workspaceRoot, 'escape');
     await symlink(outside, escaped);
     await expectToRejectCode(
-      request({ kind: 'threads', provider: 'codex', workspaceRoot: escaped }),
+      request({ kind: 'threads', providers: ['codex'], workspaceRoots: [escaped] }),
       'JG_AGENT_HQ_CLIENT_ACCESS_DENIED',
       'Access is denied.',
     );
@@ -789,7 +807,7 @@ test('workspace authorization precedes native access and rejects symlink escapes
       'Access is denied.',
     );
     await expectToRejectCode(
-      request({ kind: 'threads', provider: 'codex', workspaceRoot }),
+      request({ kind: 'threads', providers: ['codex'], workspaceRoots: [workspaceRoot] }),
       'JG_AGENT_HQ_CLIENT_ACCESS_DENIED',
       'Access is denied.',
     );
@@ -1039,7 +1057,12 @@ test('native quota events coalesce refreshes and an account change discards the 
       credits: { hasCredits: true, unlimited: false, balance: '1.25000000000000001' },
       resetCredits: { availableCount: 2 },
     });
-    await request({ kind: 'threads', provider: 'codex', workspaceRoot, limit: 1 });
+    await request({
+      kind: 'threads',
+      providers: ['codex'],
+      workspaceRoots: [workspaceRoot],
+      limit: 1,
+    });
     const deadline = Date.now() + 2000;
     let count = 0;
     do {
@@ -1070,7 +1093,12 @@ test('native quota events coalesce refreshes and an account change discards the 
       },
     });
     await control({ accountChanged: true, quotaFailure: true });
-    await request({ kind: 'threads', provider: 'codex', workspaceRoot, limit: 1 });
+    await request({
+      kind: 'threads',
+      providers: ['codex'],
+      workspaceRoots: [workspaceRoot],
+      limit: 1,
+    });
     expect(await request({ kind: 'usage', provider: 'codex' })).toStrictEqual({
       kind: 'usage',
       result: {
@@ -1103,12 +1131,14 @@ test('malformed native items and cursors return a safe integration failure witho
       'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
       'Coding agent is unavailable.',
     );
+    // a native list whose continuation is malformed leaves Codex out of the page
     await control({ invalidCursor: true });
-    await expectToRejectCode(
-      request({ kind: 'threads', provider: 'codex', workspaceRoot }),
-      'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
-      'Coding agent is unavailable.',
-    );
+    expect(
+      await request({ kind: 'threads', providers: ['codex'], workspaceRoots: [workspaceRoot] }),
+    ).toStrictEqual({
+      kind: 'threads',
+      result: { data: [], nextCursor: null, unavailable: [{ provider: 'codex', workspaceRoot }] },
+    });
     await control({
       items: [
         {
@@ -1171,7 +1201,12 @@ const expectFailedInitialization = async (
     vi.stubEnv('JG_HQ_FIXTURE_WORKSPACE', root);
     runtime = await createAgentHq({ stateRoot, allowedRoots: [root] });
     await expect(
-      runtime.request({ kind: 'threads', provider: 'codex', workspaceRoot: root }),
+      runtime.request({
+        kind: 'items',
+        provider: 'codex',
+        workspaceRoot: root,
+        nativeId: 'thread-1023',
+      }),
     ).rejects.toThrow(failure);
     const pids = PidsSchema.parse(JSON.parse(await readFile(join(root, 'pids.json'), 'utf8')));
     // the native connection's own deadline, just after the provider's, closes a held initialization
@@ -1182,7 +1217,13 @@ const expectFailedInitialization = async (
       result: { store: 'ready' },
     });
     await runtime.close();
-    expect(await readdir(stateRoot)).toStrictEqual(['action.key', 'hq.sqlite']);
+    // the runtime released its lock, leaving the empty locks folder
+    expect((await readdir(stateRoot)).sort()).toStrictEqual([
+      '.runtime',
+      'action.key',
+      'hq.sqlite',
+    ]);
+    expect(await readdir(stateLocks(stateRoot).root)).toStrictEqual([]);
   } finally {
     await runtime?.close();
     vi.unstubAllEnvs();
@@ -1210,14 +1251,21 @@ test(
 test('unverifiable owners and linked database files are never reclaimed or followed', async () => {
   const root = await mkdtemp(join(tmpdir(), 'jg-hq-state-'));
   const stateRoot = join(root, 'state');
+  const ownerFile = join(stateLocks(stateRoot).root, 'runtime', 'owner.json');
   try {
-    await mkdir(stateRoot, { mode: 0o700 });
-    await writeFile(join(stateRoot, 'hq-owner.json'), 'partial', { mode: 0o600 });
-    await expect(createAgentHq({ stateRoot, allowedRoots: [root] })).rejects.toThrow(
-      'unverifiable',
+    await mkdir(join(stateLocks(stateRoot).root, 'runtime'), { recursive: true, mode: 0o700 });
+    await writeFile(ownerFile, 'partial', { mode: 0o600 });
+    await expectToRejectCode(
+      createAgentHq({
+        stateRoot,
+        allowedRoots: [root],
+        isPreviousRuntimeStopped: async () => true,
+      }),
+      'JG_AGENT_HQ_RUNTIME_ALREADY_OWNED',
+      'The HQ runtime is already owned',
     );
-    expect(await readFile(join(stateRoot, 'hq-owner.json'), 'utf8')).toBe('partial');
-    await rm(join(stateRoot, 'hq-owner.json'));
+    expect(await readFile(ownerFile, 'utf8')).toBe('partial');
+    await rm(join(stateLocks(stateRoot).root, 'runtime'), { recursive: true });
     const external = join(root, 'external.sqlite');
     await writeFile(external, 'untouched');
     await symlink(external, join(stateRoot, 'hq.sqlite'));
@@ -1225,7 +1273,8 @@ test('unverifiable owners and linked database files are never reclaimed or follo
       'state file is unsafe',
     );
     expect(await readFile(external, 'utf8')).toBe('untouched');
-    expect(await readdir(stateRoot)).toStrictEqual(['hq.sqlite']);
+    expect((await readdir(stateRoot)).sort()).toStrictEqual(['.runtime', 'hq.sqlite']);
+    expect((await inspectLock('runtime', stateLocks(stateRoot))).state).toBe('free');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1243,7 +1292,13 @@ test('a corrupt SQLite file fails worker startup without deleting stored content
       'JG_AGENT_HQ_STORAGE_INVALID',
       'The HQ storage is invalid',
     );
-    expect(await readdir(stateRoot)).toStrictEqual(['action.key', 'hq.sqlite']);
+    // the runtime released its lock, leaving the empty locks folder
+    expect((await readdir(stateRoot)).sort()).toStrictEqual([
+      '.runtime',
+      'action.key',
+      'hq.sqlite',
+    ]);
+    expect(await readdir(stateLocks(stateRoot).root)).toStrictEqual([]);
     expect(await readFile(join(stateRoot, 'hq.sqlite'), 'utf8')).toBe('corrupt SQLite content');
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1274,7 +1329,7 @@ test.each(['missing', 'truncated', 'oversized', 'linked'])(
         'The HQ action key is unavailable',
       );
       expect(await readFile(join(stateRoot, 'hq.sqlite'), 'utf8')).toBe('preserved database bytes');
-      expect(await readdir(stateRoot)).not.toContain('hq-owner.json');
+      expect((await inspectLock('runtime', stateLocks(stateRoot))).state).toBe('free');
       if (mode === 'missing') expect(await readdir(stateRoot)).not.toContain('action.key');
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -1285,11 +1340,12 @@ test.each(['missing', 'truncated', 'oversized', 'linked'])(
 test('lost native output makes the provider unavailable while the independent host and store remain usable', async () => {
   await withRuntime(async ({ workspaceRoot, control, request }) => {
     await control({ mode: 'exit-on-list' });
-    await expectToRejectCode(
-      request({ kind: 'threads', provider: 'codex', workspaceRoot }),
-      'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
-      'Coding agent is unavailable.',
-    );
+    expect(
+      await request({ kind: 'threads', providers: ['codex'], workspaceRoots: [workspaceRoot] }),
+    ).toStrictEqual({
+      kind: 'threads',
+      result: { data: [], nextCursor: null, unavailable: [{ provider: 'codex', workspaceRoot }] },
+    });
     expect(await request({ kind: 'status' })).toMatchObject({
       kind: 'status',
       result: {
@@ -1310,7 +1366,11 @@ test('Codex connects through the shared daemon proxy, and a failed daemon start 
       .map((line) => JSON.parse(line));
   await withRuntime(async ({ root, workspaceRoot, control, request }) => {
     await control({ ping: true, fragmentFrames: true });
-    const reply = await request({ kind: 'threads', provider: 'codex', workspaceRoot });
+    const reply = await request({
+      kind: 'threads',
+      providers: ['codex'],
+      workspaceRoots: [workspaceRoot],
+    });
     if (reply.kind !== 'threads') throw new Error('wrong response');
     expect(reply.result.data[0]).toMatchObject({ nativeId: 'thread-1023' });
     expect(await readCommands(root)).toStrictEqual([
@@ -1321,19 +1381,15 @@ test('Codex connects through the shared daemon proxy, and a failed daemon start 
   });
   await withRuntime(async ({ workspaceRoot, control, request }) => {
     await control({ wrongAccept: true });
-    await expectToRejectCode(
-      request({ kind: 'threads', provider: 'codex', workspaceRoot }),
-      'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
-      'Coding agent is unavailable.',
-    );
+    expect(
+      await request({ kind: 'threads', providers: ['codex'], workspaceRoots: [workspaceRoot] }),
+    ).toMatchObject({ result: { data: [], unavailable: [{ provider: 'codex', workspaceRoot }] } });
   });
   await withRuntime(async ({ root, workspaceRoot, control, request }) => {
     await control({ daemonFailure: true });
-    await expectToRejectCode(
-      request({ kind: 'threads', provider: 'codex', workspaceRoot }),
-      'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
-      'Coding agent is unavailable.',
-    );
+    expect(
+      await request({ kind: 'threads', providers: ['codex'], workspaceRoots: [workspaceRoot] }),
+    ).toMatchObject({ result: { data: [], unavailable: [{ provider: 'codex', workspaceRoot }] } });
     const commands = await readCommands(root);
     expect(commands).toContainEqual(['app-server', 'daemon', 'start']);
     expect(commands).not.toContainEqual(['app-server', 'proxy']);
@@ -1373,7 +1429,11 @@ process.exitCode = spawnSync(command,args,{ stdio: 'inherit' }).status ?? 1;
       );
     await withRuntime(
       async ({ root, workspaceRoot, request }) => {
-        const reply = await request({ kind: 'threads', provider: 'codex', workspaceRoot });
+        const reply = await request({
+          kind: 'threads',
+          providers: ['codex'],
+          workspaceRoots: [workspaceRoot],
+        });
         if (reply.kind !== 'threads') throw new Error('wrong response');
         expect(reply.result.data[0]).toMatchObject({ nativeId: 'thread-1023' });
         expect(await readLines(join(root, 'launcher.jsonl'))).toStrictEqual([
@@ -1460,14 +1520,20 @@ test(
         );
       try {
         await expectToRejectCode(
-          runtime.request({ kind: 'threads', provider: 'codex', workspaceRoot: root }),
+          runtime.request({
+            kind: 'items',
+            provider: 'codex',
+            workspaceRoot: root,
+            nativeId: 'thread-1023',
+          }),
           'JG_AGENT_HQ_CODEX_FAILED',
           'The Codex integration failed',
         );
         await expectToRejectCode(runtime.close(), 'JG_AGENT_HQ_TRANSPORT_FAILED');
-        expect(JSON.parse(await readFile(join(stateRoot, 'hq-owner.json'), 'utf8'))).toMatchObject({
-          command: 'serve',
-          pid: process.pid,
+        // the unconfirmed cleanup keeps the runtime lock held
+        expect(await inspectLock('runtime', stateLocks(stateRoot))).toMatchObject({
+          state: 'held',
+          owner: { pid: process.pid },
         });
       } finally {
         probe.mockRestore();
@@ -1521,7 +1587,18 @@ test(
       });
       const listing = await execute(
         process.execPath,
-        [cli, 'threads', '--state-root', stateRoot, '--workspace-root', root, '--limit', '2'],
+        [
+          cli,
+          'threads',
+          '--state-root',
+          stateRoot,
+          '--workspace-root',
+          root,
+          '--provider',
+          'codex',
+          '--limit',
+          '2',
+        ],
         { env },
       );
       expect(HqResponseSchema.parse(JSON.parse(listing.stdout))).toMatchObject({
@@ -1536,7 +1613,13 @@ test(
         result: { state: 'stopped' },
       });
       await hostClosed;
-      expect(await readdir(stateRoot)).toStrictEqual(['action.key', 'hq.sqlite']);
+      // the runtime released its lock, leaving the empty locks folder
+      expect((await readdir(stateRoot)).sort()).toStrictEqual([
+        '.runtime',
+        'action.key',
+        'hq.sqlite',
+      ]);
+      expect(await readdir(stateLocks(stateRoot).root)).toStrictEqual([]);
     } finally {
       if (host?.exitCode === null) {
         host.kill('SIGTERM');
@@ -1651,7 +1734,6 @@ test(
           },
         },
       });
-      const oldOwner = await readFile(join(stateRoot, 'hq-owner.json'), 'utf8');
       host.kill('SIGKILL');
       await hostClosed;
       const pids = PidsSchema.parse(JSON.parse(await readFile(join(root, 'pids.json'), 'utf8')));
@@ -1659,12 +1741,18 @@ test(
       await expect(createAgentHq({ stateRoot, allowedRoots: [root] })).rejects.toThrow(
         'already owned',
       );
-      expect(await readFile(join(stateRoot, 'hq-owner.json'), 'utf8')).toBe(oldOwner);
-      expect(JSON.parse(oldOwner)).toMatchObject({ nonce: epoch, pid: host.pid });
+      const left = await inspectLock('runtime', stateLocks(stateRoot));
+      expect(left).toMatchObject({
+        state: 'owner-gone',
+        owner: { nonce: epoch, pid: host.pid },
+      });
       // Explicit operator recovery in this disposable fixture follows proof that the exact owner and children stopped.
       expect((await lstat(join(stateRoot, 'hq.sock'))).isSocket()).toBe(true);
       await rm(join(stateRoot, 'hq.sock'));
-      await rm(join(stateRoot, 'hq-owner.json'));
+      if (!left.owner) throw new Error('Missing runtime owner');
+      await (
+        await acquireLock('runtime', { ...stateLocks(stateRoot), recoverFrom: left.owner })
+      ).release();
       vi.stubEnv('PATH', env.PATH);
       vi.stubEnv('JG_HQ_FIXTURE_DIRECTORY', root);
       vi.stubEnv('JG_HQ_FIXTURE_WORKSPACE', root);
@@ -1808,7 +1896,7 @@ test('locks lists the machine locks with their holders, alive or gone, without t
   });
 });
 
-// a process that held the state root and was killed: its PID is free and its socket stays behind
+// a runtime that held the state root and is gone: its lock and its socket stay behind
 const killRuntimeHolder = async (stateRoot: string): Promise<number> => {
   const holder = spawn(
     process.execPath,
@@ -1823,12 +1911,7 @@ const killRuntimeHolder = async (stateRoot: string): Promise<number> => {
   const exited = new Promise((resolve) => holder.once('exit', resolve));
   holder.kill('SIGKILL');
   await exited;
-  await writeFile(
-    join(stateRoot, 'hq-owner.json'),
-    `${JSON.stringify({ pid: holder.pid, nonce: randomUUID(), command: 'serve', createdAt: new Date().toISOString() })}\n`,
-    { mode: 0o600 },
-  );
-  return holder.pid!;
+  return (await leaveLock(stateLocks(stateRoot).root, 'runtime')).pid;
 };
 
 test('a runtime that stopped without releasing its state root is replaced once the host proves it stopped, clearing its leftover socket', async () => {
@@ -1876,10 +1959,8 @@ test('a symbolic link at the control socket path is never removed, even when the
     );
     expect((await lstat(join(stateRoot, 'hq.sock'))).isSymbolicLink()).toBe(true);
     expect(await readFile(target, 'utf8')).toBe('untouched');
-    // the failed start released the record it took over
-    await expect(lstat(join(stateRoot, 'hq-owner.json'))).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
+    // the failed start released the lock it took over
+    expect((await inspectLock('runtime', stateLocks(stateRoot))).state).toBe('free');
   } finally {
     await rm(root, { recursive: true, force: true });
   }

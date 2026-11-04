@@ -181,7 +181,7 @@ test('the homepage shows how HQ fits and previews every capability', async ({ pa
       .getByRole('article', { name: 'Local, private and recoverable' })
       .getByRole('list', { name: 'Snapshot and restore' })
       .getByRole('listitem'),
-  ).toHaveText([/createHqSnapshot.*Captured while agents work/u, /restoreHqSnapshot/u]);
+  ).toHaveText([/createSnapshot.*Captured while agents work/u, /restoreHqSnapshot/u]);
   const more = page.getByRole('region', { name: HOME_CONTENT.more.title });
   const items = more.getByRole('listitem');
   await expect(items).toHaveCount(HOME_CONTENT.more.items.length);

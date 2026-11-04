@@ -4,14 +4,13 @@ import { randomUUID } from 'node:crypto';
 import { Exception, extractMessage, hasErrorCode } from 'jg-exception';
 
 import {
-  HqResponseSchema,
   IpcRequestSchema,
   PUBLIC_ERROR_MESSAGES,
   type IHqRequest,
   type IHqResponse,
   type IIpcResponse,
 } from '../contracts/index.js';
-import { toPublicError } from '../errors/index.js';
+import { HQ_ERRORS, toPublicError } from '../errors/index.js';
 
 import {
   IPC_TIMEOUT_MS,
@@ -55,7 +54,7 @@ export const createIpcServer = async (
     const send = (reply: IIpcResponse): void => {
       let content = `${JSON.stringify(reply)}\n`;
       if (Buffer.byteLength(content) > MAX_FRAME_BYTES)
-        content = `${JSON.stringify({ schemaVersion: 1, id: reply.id, success: false, error: { kind: 'operation-failed', message: PUBLIC_ERROR_MESSAGES['operation-failed'] } })}\n`;
+        content = `${JSON.stringify({ id: reply.id, success: false, error: { kind: 'operation-failed', message: PUBLIC_ERROR_MESSAGES['operation-failed'] } })}\n`;
       socket.end(content);
     };
     const receive = async (message: unknown): Promise<void> => {
@@ -68,27 +67,18 @@ export const createIpcServer = async (
       const id = input.success ? input.data.id : randomUUID();
       try {
         if (!input.success)
-          throw new Exception('The HQ request is invalid', {
-            code: 'JG_AGENT_HQ_REQUEST_INVALID',
+          throw HQ_ERRORS.create('requestInvalid', {
             data: { kind: 'invalid-request' },
             cause: input.error,
           });
         if (input.data.runtimeEpoch !== runtimeEpoch)
-          throw new Exception('The HQ runtime owner is unverifiable', {
-            code: 'JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE',
-            data: {
-              kind: 'state-conflict',
-            },
+          throw HQ_ERRORS.create('runtimeOwnerUnverifiable', {
+            data: { kind: 'state-conflict' },
           });
-        const response = HqResponseSchema.safeParse(await handle(input.data.command));
-        if (!response.success || response.data.kind !== input.data.command.kind)
-          throw new Exception('The HQ transport failed', {
-            code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
-            data: { kind: 'operation-failed' },
-          });
-        send({ schemaVersion: 1, id, success: true, response: response.data });
+        // the client checks the response at its own boundary
+        send({ id, success: true, response: await handle(input.data.command) });
       } catch (error) {
-        send({ schemaVersion: 1, id, success: false, error: toPublicError(error) });
+        send({ id, success: false, error: toPublicError(error) });
       }
     };
     const decoder = createLineDecoder(MAX_REQUEST_BYTES, (message) => {

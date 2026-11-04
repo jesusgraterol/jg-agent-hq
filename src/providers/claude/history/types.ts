@@ -1,32 +1,30 @@
 import { z } from 'zod';
 
-import { HqResponseSchema } from '../../../contracts/index.js';
+import type { IHqResponse } from '../../../contracts/index.js';
 
 // private worker progress; the adapter completes bounded chunks before answering a client
-export const ClaudeHistoryReadSchema = z.union([
-  HqResponseSchema,
-  z.strictObject({ kind: z.literal('indexing') }),
-]);
-export type IClaudeHistoryRead = z.infer<typeof ClaudeHistoryReadSchema>;
+export type IClaudeHistoryRead = IHqResponse | { kind: 'indexing' };
+
+// the new transcript bytes one worker call may still index, and whether it has indexed a record
+export type IIndexingBudget = { bytes: number; hasIndexed: boolean };
 
 // byte locations and chain identities stay inside the Claude adapter
-export const FileRowSchema = z.object({
-  native_id: z.string(),
-  workspace_root: z.string(),
-  identity: z.string(),
-  file_size: z.number(),
-  modified_at: z.number().nullable(),
-  byte_offset: z.number(),
-  revision: z.string(),
-  leaf_id: z.string().nullable(),
-  name: z.string().nullable(),
-  created_at: z.number(),
-  updated_at: z.number(),
-  supported: z.number(),
+export type IFileRow = {
+  native_id: string;
+  workspace_root: string;
+  identity: string;
+  file_size: number;
+  modified_at: number | null;
+  byte_offset: number;
+  revision: string;
+  leaf_id: string | null;
+  name: string | null;
+  created_at: number;
+  updated_at: number;
+  supported: number;
   // matching once a record ran inside the workspace; foreign while every record named another folder
-  workspace_state: z.enum(['unknown', 'matching', 'foreign']),
-});
-export type IFileRow = z.infer<typeof FileRowSchema>;
+  workspace_state: 'unknown' | 'matching' | 'foreign';
+};
 // native API diagnostics have no conversation position and must never become history items
 export const ApiRequestMetadataSchema = z.object({
   type: z.literal('api-request-blob'),
@@ -35,19 +33,21 @@ export const ApiRequestMetadataSchema = z.object({
   parentUuid: z.never().optional(),
   cwd: z.string().optional(),
 });
-export const EntryRowSchema = z.object({
-  uuid: z.string(),
-  parent_uuid: z.string().nullable(),
-  turn_id: z.string(),
-  byte_offset: z.number(),
-  byte_length: z.number(),
-  created_at: z.number(),
-  is_visible: z.number(),
-});
+// one indexed record's position, chain and turn
+export type IEntryRow = {
+  uuid: string;
+  parent_uuid: string | null;
+  turn_id: string;
+  byte_offset: number;
+  byte_length: number;
+  created_at: number;
+  is_visible: number;
+};
 export const RecordSchema = z.object({
   type: z.string().min(1).max(256),
   uuid: z.string().min(1).max(4096).optional(),
-  parentUuid: z.string().nullable().optional(),
+  // bounded like a UUID, since a `!` shell output presents its parent as its item's call ID
+  parentUuid: z.string().min(1).max(4096).nullable().optional(),
   // a compaction boundary starts a new chain, and names the record it follows here
   logicalParentUuid: z.string().nullable().optional(),
   subtype: z.string().optional(),

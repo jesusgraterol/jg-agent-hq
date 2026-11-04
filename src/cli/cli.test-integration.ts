@@ -17,7 +17,7 @@ import {
   withClaudeRuntime,
 } from '../../scripts/test-support/index.js';
 
-test('dedicated CLI provider selection reads Claude capabilities and reports unavailable provider data', async () => {
+test('dedicated CLI provider selection reads Claude capabilities and refuses an unknown provider', async () => {
   await withClaudeRuntime(async ({ stateRoot }) => {
     const run = promisify(execFile);
     const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
@@ -44,30 +44,13 @@ test('dedicated CLI provider selection reads Claude capabilities and reports una
         operations: { steer: { state: 'supported' } },
       },
     });
-    const unavailable = await run(
-      process.execPath,
-      [cli, 'usage', '--state-root', stateRoot, '--provider', 'unregistered-provider'],
-      { timeout: 5000 },
-    );
-    expect(JSON.parse(unavailable.stdout)).toStrictEqual({
-      schemaVersion: 1,
-      kind: 'usage',
-      result: {
-        provider: 'unregistered-provider',
-        state: 'unavailable',
-        source: 'native',
-        observedAt: null,
-        ordinaryUsageAllowed: null,
-        windows: [],
-      },
-    });
-    await expect(
-      run(
-        process.execPath,
-        [cli, 'usage', '--state-root', stateRoot, '--provider', '../provider'],
-        { timeout: 5000 },
-      ),
-    ).rejects.toThrow();
+    // only the built-in providers exist
+    for (const provider of ['unregistered-provider', '../provider'])
+      await expect(
+        run(process.execPath, [cli, 'usage', '--state-root', stateRoot, '--provider', provider], {
+          timeout: 5000,
+        }),
+      ).rejects.toThrow();
   });
 });
 
@@ -126,15 +109,6 @@ test('stdin actions preserve split UTF-8 and return receipts without exposing me
       await wait(10);
     }
     const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
-    const named = await promisify(execFile)(
-      process.execPath,
-      [cli, 'managed-thread-name', '--state-root', runtime.stateRoot, '--name', 'STDIN-CHECK'],
-      { timeout: 5000 },
-    );
-    expect(JSON.parse(named.stdout)).toMatchObject({
-      kind: 'managed-thread-name',
-      result: { id: threadId, name: 'stdin-check' },
-    });
     const suggested = await promisify(execFile)(
       process.execPath,
       [cli, 'suggest-thread-name', '--state-root', runtime.stateRoot, '--topic', 'Stdin check'],
@@ -411,29 +385,29 @@ test.each([
   [
     // the hash of the schema jg-agent-hq 4.0.2 wrote, whose entry index had no notice kind
     'the 4.0.2 schema',
-    "UPDATE hq_schema SET schema_hash = '062346e252b338d94d126c3f55f50851e003691b1be51de46b6e43b5b09615ae', package_version = '4.0.2'",
+    "UPDATE agent_hq_schema SET schema_hash = '062346e252b338d94d126c3f55f50851e003691b1be51de46b6e43b5b09615ae', package_version = '4.0.2'",
     'The HQ storage is invalid: written by jg-agent-hq 4.0.2',
   ],
   [
     // the hash of the schema jg-agent-hq 8.0.2 wrote
     'the 8.0.2 schema',
-    "UPDATE hq_schema SET schema_hash = 'bf4d6ad7f2c97adaeb762f7206557999e6ed081d54484d233fe931b31fdf62ab', package_version = '8.0.2'",
+    "UPDATE agent_hq_schema SET schema_hash = 'bf4d6ad7f2c97adaeb762f7206557999e6ed081d54484d233fe931b31fdf62ab', package_version = '8.0.2'",
     'The HQ storage is invalid: written by jg-agent-hq 8.0.2',
   ],
   [
     // the hash of the schema jg-agent-hq 9.0.0 wrote, whose Claude history index sorted by creation
     'the 9.0.0 schema',
-    "UPDATE hq_schema SET schema_hash = '285c2e16237fc293a83cebd85c7283b0ba655f8efcf0ac262ed2c367ba85e913', package_version = '9.0.0'",
+    "UPDATE agent_hq_schema SET schema_hash = '285c2e16237fc293a83cebd85c7283b0ba655f8efcf0ac262ed2c367ba85e913', package_version = '9.0.0'",
     'The HQ storage is invalid: written by jg-agent-hq 9.0.0',
   ],
   [
     'a newer schema',
-    `UPDATE hq_schema SET schema_hash = '${'0'.repeat(64)}', package_version = '99.0.0'`,
+    `UPDATE agent_hq_schema SET schema_hash = '${'0'.repeat(64)}', package_version = '99.0.0'`,
     'The HQ storage is invalid: written by jg-agent-hq 99.0.0',
   ],
   [
     'a stamp without a package version',
-    'ALTER TABLE hq_schema DROP COLUMN package_version',
+    'ALTER TABLE agent_hq_schema DROP COLUMN package_version',
     'The HQ storage is invalid: written by another jg-agent-hq version',
   ],
 ])(
@@ -529,5 +503,60 @@ test('skills reads a folder catalog, and a session catalog with its thread, thro
       kind: 'skills',
       result: { state: 'available', invocationPrefix: '$' },
     });
+  });
+});
+
+test('threads lists sessions across repeated folders and providers through the installed command', async () => {
+  await withClaudeRuntime(async ({ root, stateRoot, workspaceRoot, configRoot }) => {
+    const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
+    const run = promisify(execFile);
+    const read = async (...args: string[]) =>
+      JSON.parse(
+        (await run(process.execPath, [cli, 'threads', ...args, '--state-root', stateRoot])).stdout,
+      );
+    const [a, b] = [join(workspaceRoot, 'a'), join(workspaceRoot, 'b')];
+    for (const folder of [a, b]) {
+      await mkdir(folder);
+      await mkdir(join(configRoot, 'projects', folder.replace(/[^a-zA-Z0-9]/g, '-')));
+    }
+    const claudeId = randomUUID();
+    await writeFile(
+      join(configRoot, 'projects', a.replace(/[^a-zA-Z0-9]/g, '-'), `${claudeId}.jsonl`),
+      [
+        claudeRecord(a, claudeId, { timestamp: '2026-10-21T10:00:00.000Z' }),
+        { type: 'custom-title', sessionId: claudeId, customTitle: 'Match in a' },
+      ]
+        .map((record) => `${JSON.stringify(record)}\n`)
+        .join(''),
+    );
+    await writeFile(
+      join(root, 'control.json'),
+      JSON.stringify({
+        listedThreads: [
+          { id: 'codex-match', cwd: b, name: 'Match in b', updatedAt: 1_700_000_000 },
+          { id: 'codex-other', cwd: b, name: 'Other', updatedAt: 1_700_000_001 },
+        ],
+      }),
+    );
+    const flags = [
+      ...['--workspace-root', a, '--workspace-root', b],
+      ...['--provider', 'codex', '--provider', 'claude'],
+      ...['--search', 'Match', '--exclude-continued', '--limit', '1'],
+    ];
+    const first = await read(...flags);
+    expect(first).toMatchObject({
+      schemaVersion: 1,
+      kind: 'threads',
+      result: { data: [{ nativeId: claudeId, name: 'Match in a' }], unavailable: [] },
+    });
+    expect(await read(...flags, '--cursor', first.result.nextCursor)).toMatchObject({
+      result: { data: [{ nativeId: 'codex-match' }], nextCursor: null },
+    });
+    for (const args of [
+      ['--workspace-root', a, '--native-id', claudeId],
+      ['--workspace-root', a, '--provider', 'gemini'],
+      ['--workspace-root', a, '--workspace-root', a],
+    ])
+      await expect(read(...args)).rejects.toThrow();
   });
 });

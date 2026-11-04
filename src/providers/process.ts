@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { Exception, extractMessage } from 'jg-exception';
 
 import { createLineDecoder, MAX_FRAME_BYTES } from '../ipc/index.js';
+import { HQ_ERRORS } from '../errors/index.js';
 
 import type { IProviderFraming, IProviderProcess } from './types.js';
 import { createProcessOwnership } from './process/index.js';
@@ -129,10 +130,7 @@ export const createProviderProcess = (
       await opened.catch(() => undefined);
       const content = framing.encode(message);
       if (!isRunning || content.length > MAX_FRAME_BYTES)
-        throw new Exception('The HQ transport failed', {
-          code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
-          data: { kind: 'agent-unavailable' },
-        });
+        throw HQ_ERRORS.create('transportFailed', { data: { kind: 'agent-unavailable' } });
       if (!child.stdin.write(content))
         await once(child.stdin, 'drain', { signal: AbortSignal.timeout(30_000) });
     },

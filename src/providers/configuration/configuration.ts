@@ -1,11 +1,12 @@
-import { Exception, extractMessage } from 'jg-exception';
 import { hashValue } from 'jg-crypto';
 import { z } from 'zod';
 
 import type { IConfigurationChoice, IConfigurationRequest } from '../../contracts/index.js';
-import { decodeHistoryCursor, encodeHistoryCursor } from '../../sessions/index.js';
+import { createRequestCursors } from '../../sessions/index.js';
+import { HQ_ERRORS } from '../../errors/index.js';
 
-const PositionSchema = z.object({ key: z.string(), revision: z.string() });
+// a choice page continues after its final key, in the inventory revision it was read from
+const positions = createRequestCursors(z.strictObject({ key: z.string(), revision: z.string() }));
 
 /**
  * Pages the bounded native agent/profile inventory using stable keys and a content revision.
@@ -22,39 +23,19 @@ export const pageConfigurationChoices = (
     .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   const revision = hashValue(JSON.stringify(entries));
   const { cursor, ...filters } = command;
-  const nativeCursor = decodeHistoryCursor(cursor, filters);
-  let after = '';
-  if (nativeCursor) {
-    let decoded: unknown;
-    try {
-      decoded = JSON.parse(nativeCursor);
-    } catch (cause) {
-      throw new Exception(`The HQ cursor does not match this request: ${extractMessage(cause)}`, {
-        code: 'JG_AGENT_HQ_CURSOR_INVALID',
-        data: { kind: 'invalid-request' },
-        cause,
-      });
-    }
-    const position = PositionSchema.safeParse(decoded);
-    if (
-      !position.success ||
-      position.data.revision !== revision ||
-      !entries.some((entry) => entry.key === position.data.key)
-    )
-      throw new Exception('The HQ cursor does not match this request', {
-        code: 'JG_AGENT_HQ_CURSOR_INVALID',
-        data: { kind: 'invalid-request' },
-      });
-    after = position.data.key;
-  }
+  const position = positions.decode(cursor, filters);
+  if (
+    position &&
+    (position.revision !== revision || !entries.some((entry) => entry.key === position.key))
+  )
+    throw HQ_ERRORS.create('cursorInvalid', { data: { kind: 'invalid-request' } });
+  const after = position?.key ?? '';
   const start = after ? entries.findIndex((entry) => entry.key === after) + 1 : 0;
   const selected = entries.slice(start, start + command.limit);
   return {
     choices: selected.map((entry) => entry.choice),
-    nextCursor: encodeHistoryCursor(
-      start + selected.length < entries.length
-        ? JSON.stringify({ key: selected.at(-1)!.key, revision })
-        : null,
+    nextCursor: positions.encode(
+      start + selected.length < entries.length ? { key: selected.at(-1)!.key, revision } : null,
       filters,
     ),
   };

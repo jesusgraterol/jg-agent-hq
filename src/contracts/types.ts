@@ -2,27 +2,12 @@ import { z } from 'zod';
 
 import {
   EvidenceRequestSchema,
-  SessionDiscoveryRequestSchema,
   EvidencePageSchema,
   HistoryKindSchema,
   HistoryProvenanceSchema,
 } from './evidence/index.js';
 
 import {
-  AccountRequestSchema,
-  AccountObservationSchema,
-  LoginRequestSchema,
-  LoginObservationSchema,
-} from './accounts/index.js';
-import {
-  McpRequestSchema,
-  McpServerPageSchema,
-  McpToolPageSchema,
-  McpResourcePageSchema,
-} from './extensions/index.js';
-
-import {
-  MAX_PROVIDERS,
   ProviderCapabilitiesSchema,
   ProviderIdSchema,
   ProviderStatusSchema,
@@ -34,9 +19,11 @@ import {
   MAX_ITEM_IMAGES,
   MAX_ITEM_TEXT_LENGTH,
   MAX_PAGE_SIZE,
+  MAX_WAIT_MS,
+  MAX_WORKSPACE_ROOTS,
   PUBLIC_ERROR_MESSAGES,
 } from './constants.js';
-import { SkillIdSchema, SkillPageSchema, SkillPreviewSchema } from './skills/index.js';
+import { SkillPageSchema } from './skills/index.js';
 
 import { NativeIdSchema, CursorSchema, NativeLineageSchema } from './identities/index.js';
 import { ProviderModelPageSchema, ProviderModelsRequestSchema } from './models/index.js';
@@ -53,7 +40,6 @@ import {
   ActionWaitSchema,
   ManagedThreadSchema,
   NativeApprovalSchema,
-  LifecycleEventSchema,
 } from './actions/index.js';
 import { LocksSchema } from './locks/index.js';
 
@@ -67,13 +53,19 @@ const TargetFields = {
   workspaceRoot: z.string().min(1).max(4096),
   nativeId: NativeIdSchema,
 };
+// how many UTF-16 code units of text each item, or queued input, keeps
+const TextLimitSchema = z
+  .number()
+  .int()
+  .min(1)
+  .max(MAX_ITEM_TEXT_LENGTH)
+  .default(MAX_ITEM_TEXT_LENGTH);
+// how long a long-poll waits for a change before it answers with none
+const WaitSchema = z.number().int().min(1).max(MAX_WAIT_MS).optional();
 
 // only implemented operations can be admitted; native RPC is never exposed
 export const HqRequestSchema = z.discriminatedUnion('kind', [
   EvidenceRequestSchema,
-  SessionDiscoveryRequestSchema,
-  AccountRequestSchema,
-  ...McpRequestSchema.options,
   ProviderModelsRequestSchema,
   ConfigurationRequestSchema,
   z.strictObject({ kind: z.literal('status') }),
@@ -83,15 +75,32 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     threadId: z.uuid().optional(),
   }),
   z.strictObject({ kind: z.literal('stop') }),
+  /*
+   * Sessions across folders and providers, last activity first, with the managed sessions no turn
+   * has started; `excludeContinued` leaves out those whose chat continues in another session.
+   */
   z.strictObject({
     kind: z.literal('threads'),
-    provider: TargetFields.provider,
-    workspaceRoot: TargetFields.workspaceRoot,
+    workspaceRoots: z
+      .array(TargetFields.workspaceRoot)
+      .min(1)
+      .max(MAX_WORKSPACE_ROOTS)
+      .refine((roots) => new Set(roots).size === roots.length, {
+        message: 'Each workspace root is listed once',
+      }),
+    providers: z
+      .array(ProviderIdSchema)
+      .min(1)
+      .max(ProviderIdSchema.options.length)
+      .refine((providers) => new Set(providers).size === providers.length, {
+        message: 'Each provider is listed once',
+      })
+      .default([...ProviderIdSchema.options]),
     search: z.string().max(1024).optional(),
+    excludeContinued: z.boolean().default(false),
     ...PageFields,
   }),
   z.strictObject({ kind: z.literal('thread'), ...TargetFields }),
-  z.strictObject({ kind: z.literal('turns'), ...TargetFields, ...PageFields }),
   // newest first: a page toward older items, or one item by its native ID within its turn
   z
     .strictObject({
@@ -99,7 +108,7 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
       ...TargetFields,
       turnId: NativeIdSchema.optional(),
       nativeItemId: NativeIdSchema.optional(),
-      textLimit: z.number().int().min(1).max(MAX_ITEM_TEXT_LENGTH).default(MAX_ITEM_TEXT_LENGTH),
+      textLimit: TextLimitSchema,
       ...PageFields,
     })
     .refine(
@@ -137,12 +146,6 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     search: z.string().max(1024).optional(),
     ...PageFields,
   }),
-  z.strictObject({
-    kind: z.literal('skill-preview'),
-    threadId: z.uuid(),
-    skillId: SkillIdSchema,
-    arguments: z.string().max(16_384),
-  }),
   z.strictObject({ kind: z.literal('action'), action: ActionEnvelopeSchema }),
   z.strictObject({ kind: z.literal('receipt'), actionId: z.uuid() }),
   // waits until the receipt has a native thread ID, or a final delivery state, or the time runs out
@@ -150,7 +153,7 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     kind: z.literal('action-wait'),
     actionId: z.uuid(),
     until: z.enum(['native', 'settled']),
-    timeoutMs: z.number().int().min(1).max(30_000),
+    timeoutMs: z.number().int().min(1).max(MAX_WAIT_MS),
   }),
   z.strictObject({
     kind: z.literal('managed-threads'),
@@ -158,23 +161,12 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     ...PageFields,
   }),
   z.strictObject({ kind: z.literal('managed-thread'), threadId: z.uuid() }),
-  z.strictObject({
-    kind: z.literal('managed-thread-name'),
-    name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/i),
-  }),
   z.strictObject({ kind: z.literal('suggest-thread-name'), topic: z.string().min(1).max(1024) }),
-  z.strictObject({ kind: z.literal('actions'), threadId: z.uuid(), ...PageFields }),
   z.strictObject({
-    kind: z.literal('provider-actions'),
-    provider: ProviderIdSchema,
-    ...PageFields,
-  }),
-  LoginRequestSchema,
-  z.strictObject({
-    kind: z.literal('events'),
+    kind: z.literal('actions'),
     threadId: z.uuid(),
-    after: z.number().int().nonnegative().default(0),
-    limit: PageFields.limit,
+    textLimit: TextLimitSchema,
+    ...PageFields,
   }),
   z.strictObject({
     kind: z.literal('approvals'),
@@ -182,22 +174,22 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     state: NativeApprovalSchema.shape.state.optional(),
     ...PageFields,
   }),
+  // with `waitMs`, waits for the window to change after `afterRevision`
   z.strictObject({
     kind: z.literal('live-items'),
     threadId: z.uuid(),
     afterRevision: z.number().int().nonnegative().optional(),
+    waitMs: WaitSchema,
+    textLimit: TextLimitSchema,
   }),
+  // with `waitMs`, waits for a transition after `afterSequence`
   z.strictObject({
     kind: z.literal('session-states'),
     afterSequence: z.number().int().nonnegative().default(0),
     limit: z.number().int().min(1).max(128).default(32),
+    waitMs: WaitSchema,
   }),
   z.strictObject({ kind: z.literal('active-sessions') }),
-  z.strictObject({
-    kind: z.literal('unstarted-threads'),
-    provider: TargetFields.provider,
-    workspaceRoot: TargetFields.workspaceRoot,
-  }),
   z.strictObject({ kind: z.literal('observation-pace'), pace: ObservationPaceSchema }),
   // the machine's jg-locks locks; HQ only reads them
   z.strictObject({ kind: z.literal('locks') }),
@@ -245,20 +237,18 @@ export const ActiveSessionsSchema = z.object({
 });
 export type IActiveSessions = z.infer<typeof ActiveSessionsSchema>;
 
-// one workspace's managed threads that no turn has started yet, newest first, with whether more exist
-export const UnstartedThreadsSchema = z.object({
-  data: z.array(ThreadSummarySchema).max(DEFAULT_PAGE_SIZE),
-  isTruncated: z.boolean(),
+/*
+ * One page of sessions, last activity first, and the folders and providers left out of it because
+ * their provider couldn't be read; a page that names one may miss its sessions.
+ */
+export const ThreadsPageSchema = z.object({
+  data: z.array(ThreadSummarySchema).max(MAX_PAGE_SIZE),
+  nextCursor: CursorSchema.nullable(),
+  unavailable: z
+    .array(z.object({ provider: ProviderIdSchema, workspaceRoot: z.string() }))
+    .max(MAX_WORKSPACE_ROOTS * ProviderIdSchema.options.length),
 });
-export type IUnstartedThreads = z.infer<typeof UnstartedThreadsSchema>;
-
-export const TurnSummarySchema = z.object({
-  nativeId: NativeIdSchema,
-  state: z.enum(['completed', 'interrupted', 'failed', 'inProgress', 'unknown']),
-  startedAt: z.number().int().nullable(),
-  completedAt: z.number().int().nullable(),
-});
-export type ITurnSummary = z.infer<typeof TurnSummarySchema>;
+export type IThreadsPage = z.infer<typeof ThreadsPageSchema>;
 
 // one file a file change touched, with the lines it added and removed
 export const HistoryFileSchema = z.object({
@@ -416,32 +406,12 @@ export const RuntimeStatusSchema = z.object({
   pid: z.number().int().positive(),
   startedAt: z.number().int(),
   store: z.enum(['ready', 'unavailable']),
-  providers: z.array(ProviderStatusSchema).max(MAX_PROVIDERS),
+  providers: z.array(ProviderStatusSchema).max(ProviderIdSchema.options.length),
 });
 export type IRuntimeStatus = z.infer<typeof RuntimeStatusSchema>;
 const PageResultFields = { nextCursor: CursorSchema.nullable(), source: z.literal('native') };
 export const HqResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('session-evidence'), result: EvidencePageSchema }),
-  z.object({
-    kind: z.literal('sessions'),
-    result: z.object({
-      data: z.array(ThreadSummarySchema.extend({ isNameTruncated: z.boolean() })).max(128),
-      nextCursor: CursorSchema.nullable(),
-      source: z.literal('native'),
-    }),
-  }),
-  z.object({ kind: z.literal('account'), result: AccountObservationSchema }),
-  z.object({ kind: z.literal('login'), result: LoginObservationSchema }),
-  z.object({
-    kind: z.literal('provider-actions'),
-    result: z.object({
-      data: z.array(ActionSummarySchema).max(128),
-      nextCursor: z.string().nullable(),
-    }),
-  }),
-  z.object({ kind: z.literal('mcp-servers'), result: McpServerPageSchema }),
-  z.object({ kind: z.literal('mcp-tools'), result: McpToolPageSchema }),
-  z.object({ kind: z.literal('mcp-resources'), result: McpResourcePageSchema }),
   z.object({ kind: z.literal('configuration'), result: SessionConfigurationSchema }),
   z.object({ kind: z.literal('models'), result: ProviderModelPageSchema }),
   z.object({ kind: z.literal('status'), result: RuntimeStatusSchema }),
@@ -450,18 +420,8 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
     kind: z.literal('stop'),
     result: z.object({ accepted: z.literal(true), runtimeEpoch: z.uuid() }),
   }),
-  z.object({
-    kind: z.literal('threads'),
-    result: z.object({
-      data: z.array(ThreadSummarySchema).max(MAX_PAGE_SIZE),
-      ...PageResultFields,
-    }),
-  }),
+  z.object({ kind: z.literal('threads'), result: ThreadsPageSchema }),
   z.object({ kind: z.literal('thread'), result: ThreadSummarySchema }),
-  z.object({
-    kind: z.literal('turns'),
-    result: z.object({ data: z.array(TurnSummarySchema).max(MAX_PAGE_SIZE), ...PageResultFields }),
-  }),
   z.object({
     kind: z.literal('items'),
     result: z.object({
@@ -475,7 +435,6 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('item-image'), result: ItemImageSchema }),
   z.object({ kind: z.literal('usage'), result: UsageSnapshotSchema }),
   z.object({ kind: z.literal('skills'), result: SkillPageSchema }),
-  z.object({ kind: z.literal('skill-preview'), result: SkillPreviewSchema }),
   z.object({ kind: z.literal('action'), result: ActionReceiptSchema }),
   z.object({ kind: z.literal('receipt'), result: ActionReceiptSchema.nullable() }),
   z.object({ kind: z.literal('action-wait'), result: ActionWaitSchema }),
@@ -487,7 +446,6 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
     }),
   }),
   z.object({ kind: z.literal('managed-thread'), result: ManagedThreadSchema.nullable() }),
-  z.object({ kind: z.literal('managed-thread-name'), result: ManagedThreadSchema.nullable() }),
   z.object({
     kind: z.literal('suggest-thread-name'),
     result: z.object({ name: ManagedThreadSchema.shape.name }),
@@ -500,13 +458,6 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
     }),
   }),
   z.object({
-    kind: z.literal('events'),
-    result: z.object({
-      data: z.array(LifecycleEventSchema).max(MAX_PAGE_SIZE),
-      hasMore: z.boolean(),
-    }),
-  }),
-  z.object({
     kind: z.literal('approvals'),
     result: z.object({
       data: z.array(NativeApprovalSchema).max(MAX_PAGE_SIZE),
@@ -516,7 +467,6 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('live-items'), result: LiveItemsSchema }),
   z.object({ kind: z.literal('session-states'), result: SessionTransitionPageSchema }),
   z.object({ kind: z.literal('active-sessions'), result: ActiveSessionsSchema }),
-  z.object({ kind: z.literal('unstarted-threads'), result: UnstartedThreadsSchema }),
   z.object({
     kind: z.literal('observation-pace'),
     result: z.object({ pace: ObservationPaceSchema }),
@@ -524,6 +474,8 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('locks'), result: LocksSchema }),
 ]);
 export type IHqResponse = z.infer<typeof HqResponseSchema>;
+// the response to a command of one kind, which always carries that kind
+export type IHqResponseOf<TKind extends IHqRequest['kind']> = Extract<IHqResponse, { kind: TKind }>;
 
 export const ErrorKindSchema = z.enum(
   Object.keys(PUBLIC_ERROR_MESSAGES) as [
@@ -533,20 +485,17 @@ export const ErrorKindSchema = z.enum(
 );
 export type IErrorKind = z.infer<typeof ErrorKindSchema>;
 export const IpcRequestSchema = z.strictObject({
-  schemaVersion: z.literal(1),
   id: z.uuid(),
   runtimeEpoch: z.uuid(),
   command: HqRequestSchema,
 });
 export const IpcResponseSchema = z.discriminatedUnion('success', [
   z.object({
-    schemaVersion: z.literal(1),
     id: z.uuid(),
     success: z.literal(true),
     response: HqResponseSchema,
   }),
   z.object({
-    schemaVersion: z.literal(1),
     id: z.uuid(),
     success: z.literal(false),
     error: z.object({ kind: ErrorKindSchema, message: z.string() }),

@@ -1,8 +1,9 @@
 import { constants } from 'node:fs';
 import { open, realpath, stat } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
 import { isAbsolute, resolve } from 'node:path';
+import { hashValue } from 'jg-crypto';
 import { Exception, isException } from 'jg-exception';
+import { detectMediaType } from 'jg-utilities';
 
 import {
   MAX_INPUT_FILE_BYTES,
@@ -11,6 +12,7 @@ import {
   type IBoundInputFile,
 } from '../../contracts/index.js';
 import { resolveWorkspaceTarget } from '../../runtime/state/index.js';
+import { HQ_ERRORS } from '../../errors/index.js';
 
 // only the trusted Node adapter receives bytes; public commands contain references
 export type IProviderInputFile = IBoundInputFile & { content: Uint8Array };
@@ -73,22 +75,13 @@ const readInputFile = async (
       )
         invalid();
       const bytes = content.subarray(0, length);
-      const signature = bytes.subarray(0, 16);
+      // a binary file's first bytes must name its declared type
       const validMedia =
         reference.mediaType === 'text/plain'
           ? !!new TextDecoder('utf-8', { fatal: true }).decode(bytes) && !bytes.includes(0)
-          : reference.mediaType === 'image/png'
-            ? signature.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-            : reference.mediaType === 'image/jpeg'
-              ? signature[0] === 255 && signature[1] === 216 && signature[2] === 255
-              : reference.mediaType === 'image/gif'
-                ? ['GIF87a', 'GIF89a'].includes(signature.toString('ascii', 0, 6))
-                : reference.mediaType === 'image/webp'
-                  ? signature.toString('ascii', 0, 4) === 'RIFF' &&
-                    signature.toString('ascii', 8, 12) === 'WEBP'
-                  : signature.toString('ascii', 0, 5) === '%PDF-';
+          : detectMediaType(bytes, [reference.mediaType]) === reference.mediaType;
       if (!validMedia) invalid();
-      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const sha256 = hashValue(bytes);
       if (
         isBound &&
         (sha256 !== reference.sha256 || length !== reference.bytes || path !== reference.path)
@@ -123,10 +116,7 @@ export const readInputFiles = async (
     const file = await readInputFile(reference, workspaceRoot, roots);
     bytes += file.bytes;
     if (bytes > MAX_INPUT_FILE_BYTES)
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
-        data: { kind: 'invalid-request' },
-      });
+      throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
     files.push(file);
   }
   return files;

@@ -95,7 +95,6 @@ test('long native continuations cannot exceed the response budget after a comple
   expect(
     Buffer.byteLength(
       JSON.stringify({
-        schemaVersion: 1,
         id: '00000000-0000-4000-8000-000000000000',
         success: true,
         response: { kind: 'session-evidence', result: page },
@@ -104,4 +103,31 @@ test('long native continuations cannot exceed the response budget after a comple
   ).toBeLessThanOrEqual(65_536);
   expect(page.data[0]?.isComplete).toBe(true);
   expect(page.nextCursor).not.toBeNull();
+});
+
+test('an evidence cursor continues only the request it came from, and a tampered one fails', () => {
+  const command = EvidenceRequestSchema.parse({
+    kind: 'session-evidence',
+    provider: 'codex',
+    workspaceRoot: '/workspace',
+    nativeId: 'thread',
+  });
+  const page = buildEvidencePage(command, evidencePosition(command), [], 'native-source-page-2');
+  const cursor = page.nextCursor!;
+  expect(evidencePosition({ ...command, cursor })).toStrictEqual({
+    sourceCursor: 'native-source-page-2',
+    digest: null,
+    index: 0,
+    offset: 0,
+  });
+  const another = { ...command, nativeId: 'another' };
+  expectToThrowCode(() => evidencePosition({ ...another, cursor }), 'JG_AGENT_HQ_CURSOR_INVALID');
+  expectToThrowCode(
+    () =>
+      evidencePosition({
+        ...command,
+        cursor: `${cursor.slice(0, 8)}${cursor[8] === 'A' ? 'B' : 'A'}${cursor.slice(9)}`,
+      }),
+    'JG_AGENT_HQ_CURSOR_INVALID',
+  );
 });

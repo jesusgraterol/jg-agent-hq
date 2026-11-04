@@ -12,17 +12,8 @@ export type IClaudeSessions = {
   backgroundSessions(): { provider: string; nativeId: string }[];
 };
 
-// reads with explicit native identities or a scoped discovery target
+// reads of one native session
 export type IHistoryRequest = Extract<
   IHqRequest,
-  {
-    kind:
-      | 'threads'
-      | 'thread'
-      | 'turns'
-      | 'items'
-      | 'item-detail'
-      | 'item-image'
-      | 'session-evidence';
-  }
+  { kind: 'thread' | 'items' | 'item-detail' | 'item-image' | 'session-evidence' }
 >;

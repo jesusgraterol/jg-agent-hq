@@ -3,7 +3,7 @@ import { expect, test } from 'vitest';
 
 import { withClaudeRuntime, writeFixtureControl } from '../../../../scripts/test-support/index.js';
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   '%s model discovery pages native choices and preserves new effort values',
   async (provider) => {
     await withClaudeRuntime(async ({ request, root, control }) => {
@@ -61,7 +61,7 @@ test('Claude model continuation rejects a changed catalog and duplicate native i
   });
 });
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   '%s malformed model metadata disables that catalog while ordinary creation remains usable',
   async (provider) => {
     await withClaudeRuntime(async ({ runtime, request, root, workspaceRoot, control }) => {

@@ -5,6 +5,7 @@ import { NativeIdSchema } from '../contracts/identities/index.js';
 import type {
   IActionCommand,
   IManagedThread,
+  IThreadSummary,
   IApprovalPresentation,
   ISkill,
   IHqResponse,
@@ -20,22 +21,12 @@ import type {
   IConfigurationRequest,
   ISessionConfiguration,
   IPreparedInput,
-  IAccountObservation,
-  IAccountControlCommand,
-  IExtensionControlCommand,
-  ILoginObservation,
-  INativeControlResult,
   ISessionState,
-  IThreadSummary,
 } from '../contracts/index.js';
 import type { IProviderInputFile } from './inputs/index.js';
-import type {
-  IProviderMcpServerPage,
-  IProviderMcpTools,
-  IProviderMcpResources,
-} from './extensions/index.js';
 import type { IHistoryRequest } from '../sessions/index.js';
 import type { INativeObservation, INativeOutcome } from '../store/control/index.js';
+import type { IObservedThread } from '../store/sessions/index.js';
 
 // control acknowledgements retain exact identities without interpreting unknown execution states
 export const ProviderThreadSchema = ThreadSummarySchema.pick({
@@ -79,10 +70,22 @@ export type IResyncLoss = z.infer<typeof ResyncLossSchema>;
 // adapters must honor cancellation and keep delivery uncertain when native consumption is unproven
 export type IProviderCall = { signal: AbortSignal };
 
-// adapters echo the opaque request identity; the runtime derives its own action identity
+/*
+ * One page of a workspace's sessions, last activity first: its `cursor` is the continuation an
+ * earlier page returned, or null for the first page, and its `nextCursor` the provider's own
+ * continuation, or null after its last session.
+ */
+export type IThreadListRequest = {
+  search: string | undefined;
+  limit: number;
+  cursor: string | null;
+};
+export type IThreadList = { data: IThreadSummary[]; nextCursor: string | null };
+
+// adapters name the action and phase the native request answers; the registry adds the lineage
 export type IAgentProviderOutcome = INativeOutcome extends infer TOutcome
   ? TOutcome extends unknown
-    ? Omit<TOutcome, 'actionId' | 'nativeLineage'>
+    ? Omit<TOutcome, 'nativeLineage'>
     : never
   : never;
 
@@ -103,8 +106,9 @@ export type IAgentProviderEvents = {
    */
   resync(nativeId: string | undefined, lost: IResyncLoss): void;
   outcome(outcome: IAgentProviderOutcome, thread?: IProviderThread): void;
-  // the live state of a session another client drives, inside the allowed workspaces
-  session(nativeId: string, state: ISessionState): void;
+  // the live state of a session another client drives, inside the allowed workspaces, with what
+  // the adapter's first read of it found
+  session(nativeId: string, state: ISessionState, thread: IObservedThread): void;
   unavailable(nativeId?: string): void;
 };
 
@@ -146,42 +150,14 @@ export type IAgentProvider = {
     nativeId: string | undefined,
     call: IProviderCall,
   ): Promise<ISessionConfiguration>;
-  /** @returns An idle native fork with the exact source recorded in native lineage. */
-  forkThread(
-    requestId: string,
-    nativeId: string,
+  /** @returns One page of the workspace's native sessions, each checked against the workspace. */
+  listThreads(
     workspaceRoot: string,
+    page: IThreadListRequest,
     call: IProviderCall,
-  ): Promise<IProviderThread>;
-  /** @returns Native archive acknowledgement; the session becomes inactive. */
-  archiveThread(requestId: string, nativeId: string, call: IProviderCall): Promise<void>;
-  /** @returns The exact unarchived session, without assuming control or starting inference. */
-  unarchiveThread(
-    requestId: string,
-    nativeId: string,
-    call: IProviderCall,
-  ): Promise<IProviderThread>;
-  /** @returns Compaction admission; a null turn ID is correlated from native lifecycle events. */
-  compactThread(
-    requestId: string,
-    nativeId: string,
-    call: IProviderCall,
-  ): Promise<{ id: string | null }>;
-  /** @returns Native history-revert acknowledgement, which does not revert filesystem changes. */
-  revertThread(
-    requestId: string,
-    nativeId: string,
-    beforeTurnId: string,
-    call: IProviderCall,
-  ): Promise<IProviderThread>;
+  ): Promise<IThreadList>;
   /** @returns One authorized, bounded native history response with query-bound continuation. */
   readHistory(command: IHistoryRequest, call: IProviderCall): Promise<IHqResponse>;
-  /**
-   * Reads a session another client drives by its identity alone, for active-session reads; a
-   * provider without it has its observed sessions left out of them.
-   * @returns The session's summary, whose workspace is where it runs.
-   */
-  readObservedThread?(nativeId: string, call: IProviderCall): Promise<IThreadSummary>;
   /** @returns Verified native metadata and explicit eligibility for adoption or reattachment. */
   inspectThread(
     nativeId: string,
@@ -212,44 +188,6 @@ export type IAgentProvider = {
   ): Promise<IProviderReattachment>;
   /** @returns Native quota observations without starting a model turn. */
   readUsage(call: IProviderCall): Promise<IUsageSnapshot>;
-  /** @returns Safe native account metadata, with an explicit unavailable observation when absent. */
-  readAccount(call: IProviderCall): Promise<IAccountObservation>;
-  /** @returns Safe live authentication presentation for one exact admitted request. */
-  readLogin(requestId: string, call: IProviderCall): Promise<ILoginObservation>;
-  /** @returns Native account-control acknowledgement; completion is observed separately for login. */
-  controlAccount(
-    requestId: string,
-    command: IAccountControlCommand,
-    loginRequestId: string | undefined,
-    call: IProviderCall,
-  ): Promise<INativeControlResult>;
-  /** @returns Native acknowledgement for a concrete extension operation. */
-  controlExtensions(
-    requestId: string,
-    nativeId: string,
-    workspaceRoot: string,
-    command: IExtensionControlCommand,
-    call: IProviderCall,
-  ): Promise<INativeControlResult>;
-  /** @returns One native server page without configuration credentials. */
-  readMcpServers(
-    nativeId: string,
-    limit: number,
-    cursor: string | undefined,
-    call: IProviderCall,
-  ): Promise<IProviderMcpServerPage>;
-  /** @returns A bounded inventory for one configured native MCP server. */
-  readMcpTools(
-    nativeId: string,
-    serverName: string,
-    call: IProviderCall,
-  ): Promise<IProviderMcpTools>;
-  /** @returns Bounded native resource metadata, or an explicit unsupported state. */
-  readMcpResources(
-    nativeId: string,
-    serverName: string,
-    call: IProviderCall,
-  ): Promise<IProviderMcpResources>;
   /**
    * @returns The bounded native skill inventory of the selected session, or without one the
    * inventory a session started in the folder gets.
@@ -280,14 +218,19 @@ export type IAgentProvider = {
   /** @returns Native acknowledgement of the selected session's name change. */
   nameThread(requestId: string, nativeId: string, name: string, call: IProviderCall): Promise<void>;
   /**
-   * Checks media and output options before action admission and dispatch.
+   * Checks media and output options before action admission and dispatch, without a session for
+   * a create's first input.
    * @returns Confirmation that the selected native control supports the input.
    * @throws
    * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
    * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
    * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
    */
-  validateInput(nativeId: string, input: IPreparedInput, call: IProviderCall): Promise<void>;
+  validateInput(
+    nativeId: string | undefined,
+    input: IPreparedInput,
+    call: IProviderCall,
+  ): Promise<void>;
   /**
    * Starts one native turn; completion arrives separately.
    * @returns The acknowledged native turn identity.
@@ -327,6 +270,22 @@ export type IAgentProvider = {
   cleanThread(requestId: string, nativeId: string, call: IProviderCall): Promise<void>;
   /** @returns Confirmed cleanup and release of the selected owned native controller. */
   releaseThread(requestId: string, nativeId: string, call: IProviderCall): Promise<void>;
+  /**
+   * Deletes a session no process runs from the provider's storage, in the workspace it ran in. A
+   * session already gone counts as deleted.
+   * @returns Confirmation that the provider holds the session no more.
+   * @throws
+   * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+   * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  deleteThread(
+    requestId: string,
+    nativeId: string,
+    workspaceRoot: string,
+    call: IProviderCall,
+  ): Promise<void>;
   /** @returns Confirmed native background cleanup before the runtime closes its transports. */
   prepareShutdown(nativeId: string, call: IProviderCall): Promise<void>;
   /** @returns Confirmed shutdown of the affected native control connection. */

@@ -3,10 +3,11 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, realpath, type FileHandle } from 'node:fs/promises';
 import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
 import { assertNoLinksBelow, assertPrivateDirectory } from 'jg-fs';
-import { Exception, hasErrorCode } from 'jg-exception';
+import { hasErrorCode } from 'jg-exception';
 
-import { isPrivateOwner } from '../locks/index.js';
+import { isPrivateOwner } from '../runtime/state/index.js';
 import { CURRENT_SCHEMA_HASH, rejectStorage } from '../storage/schema/index.js';
+import { HQ_ERRORS } from '../errors/index.js';
 
 import { SNAPSHOT_COPY_BYTES, SNAPSHOT_LINE_BYTES, SNAPSHOT_MANIFEST } from './constants.js';
 import {
@@ -22,10 +23,7 @@ import {
  * - JG_AGENT_HQ_SNAPSHOT_INVALID: The HQ snapshot is invalid
  */
 export const invalidSnapshot: () => never = () => {
-  throw new Exception('The HQ snapshot is invalid', {
-    code: 'JG_AGENT_HQ_SNAPSHOT_INVALID',
-    data: { kind: 'invalid-request' },
-  });
+  throw HQ_ERRORS.create('snapshotInvalid', { data: { kind: 'invalid-request' } });
 };
 
 /**
@@ -124,8 +122,7 @@ export const copySnapshotFile = async (
         while (written < chunk.length) {
           const result = await output.write(chunk, written, chunk.length - written, null);
           if (!result.bytesWritten)
-            throw new Exception('The HQ snapshot operation failed', {
-              code: 'JG_AGENT_HQ_SNAPSHOT_FAILED',
+            throw HQ_ERRORS.create('snapshotFailed', {
               data: { kind: 'operation-failed', reason: 'write-stalled' },
             });
           written += result.bytesWritten;

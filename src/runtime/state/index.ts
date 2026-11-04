@@ -1,13 +1,16 @@
 // state ownership and trusted paths
 export {
+  isPrivateOwner,
+  toLocksRoot,
   prepareStateRoot,
-  readExistingState,
   resolveAllowedRoots,
-  isWithinWorkspace,
   resolveWorkspaceTarget,
   readRuntimeOwner,
   claimRuntimeOwner,
+  recoverSnapshotLock,
   prepareDatabase,
   prepareActionKey,
 } from './state.js';
-export { RUNTIME_OWNER_FILE, DATABASE_FILE } from './constants.js';
+
+// constants
+export { SNAPSHOT_LOCK } from './constants.js';

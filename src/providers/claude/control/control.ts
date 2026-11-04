@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Exception, isException } from 'jg-exception';
+import { Exception } from 'jg-exception';
 import { delay, isEqual } from 'jg-utilities';
 import { z } from 'zod';
 
@@ -7,16 +7,14 @@ import type {
   IConfigurationRequest,
   ISessionSettings,
   ITurnSettings,
-  IExtensionControlCommand,
-  INativeControlResult,
 } from '../../../contracts/index.js';
 import type { IProviderInputFile } from '../../inputs/index.js';
+import { parseActionRequest } from '../../utilities.js';
 import { capabilityUnavailable } from '../../registry/index.js';
 import { toClaudeConfiguration } from '../configuration/index.js';
-import { createClaudeExtensions } from '../extensions/index.js';
 
 import { createClaudeRpc } from '../rpc.js';
-import { ClaudeInitializeSchema } from '../types.js';
+import { HQ_ERRORS, isCleanupUnconfirmed } from '../../../errors/index.js';
 
 import type { IClaudeControlEvents, IClaudeSession } from './types.js';
 import {
@@ -36,26 +34,16 @@ const IDLE_STOP_SECONDS = 3_600;
  */
 export const createClaudeControl = (additionalDirectories: string[] = []) => {
   const sessions = new Map<string, IClaudeSession>();
-  const extensionRequests = new Map<
-    string,
-    { nativeId: string; kind: IExtensionControlCommand['kind'] }
-  >();
   // calls running against each session, which a session never parks during
   const activeCalls = new Map<string, number>();
   let events: IClaudeControlEvents | undefined;
   let isClosing = false;
   const unavailable: () => never = () => {
-    throw new Exception('The Claude integration failed', {
-      code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-      data: { kind: 'agent-unavailable' },
-    });
+    throw HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } });
   };
   const conflict: () => never = () => {
-    throw new Exception('The HQ action conflicts with its recorded state', {
-      code: 'JG_AGENT_HQ_ACTION_CONFLICT',
-      data: {
-        kind: 'state-conflict',
-      },
+    throw HQ_ERRORS.create('actionConflict', {
+      data: { kind: 'state-conflict' },
     });
   };
   const get = (id: string, isParkedAllowed = false): IClaudeSession => {
@@ -70,8 +58,6 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
   };
   const countOpen = (): number =>
     [...sessions.values()].filter((session) => !session.parked).length;
-  const hasExtensionRequest = (nativeId: string): boolean =>
-    [...extensionRequests.values()].some((request) => request.nativeId === nativeId);
   /** Stops the wait that parks an idle session, as a turn or a stop does. */
   const cancelIdleStop = (session: IClaudeSession): void => {
     session.idleStop?.abort();
@@ -93,10 +79,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
   };
   // whether a call, a request or a background command still uses an idle session's process
   const isHeld = (session: IClaudeSession): boolean =>
-    activeCalls.has(session.id) ||
-    session.requests.size > 0 ||
-    session.backgroundTaskCount > 0 ||
-    hasExtensionRequest(session.id);
+    activeCalls.has(session.id) || session.requests.size > 0 || session.backgroundTaskCount > 0;
   /**
    * Reads an idle session's native settings once, then closes its process. The session stays idle
    * and records nothing; a call that arrives first keeps the process, and a background command
@@ -157,7 +140,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     if (isClosing || countOpen() >= 32) conflict();
     session.parked = undefined;
     session.scope = randomUUID();
-    session.opening = start(session, session.hasInput, undefined, signal);
+    session.opening = start(session, session.hasInput, signal);
     try {
       await session.opening;
     } catch (error) {
@@ -197,44 +180,6 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       else activeCalls.delete(nativeId);
     }
   };
-  /** Refreshes optional command/agent metadata after native configuration changes. */
-  const refreshCatalog = async (session: IClaudeSession): Promise<void> => {
-    session.skills = null;
-    session.connection!.initialization.agents = undefined;
-    try {
-      const initialized = ClaudeInitializeSchema.parse(
-        await session.connection!.requestControl({ subtype: 'initialize' }),
-      );
-      const inventory = toClaudeSkills({ skills: initialized.commands });
-      if (Buffer.byteLength(JSON.stringify(inventory.skills)) <= 1_048_576)
-        session.skills = { ...inventory, observedAt: Date.now() };
-      session.connection!.initialization.agents = initialized.agents;
-    } catch {
-      /* optional metadata stays unavailable after an acknowledged native reload */
-    }
-  };
-  /** Validates the exact control response and refreshes catalogs without starting inference. */
-  const completeExtension = async (
-    requestId: string,
-    raw: unknown,
-  ): Promise<INativeControlResult> => {
-    const request = extensionRequests.get(requestId);
-    if (!request) conflict();
-    const plugins =
-      request.kind === 'plugins-reload'
-        ? z
-            .object({ held: z.boolean().optional(), error_count: z.number().int().nonnegative() })
-            .parse(raw)
-        : null;
-    extensionRequests.delete(requestId);
-    if (plugins?.held) return { state: 'held', completion: 'completed' };
-    if (request.kind === 'skills-reload' || request.kind === 'plugins-reload')
-      await refreshCatalog(get(request.nativeId));
-    return {
-      state: 'applied',
-      completion: plugins && plugins.error_count > 0 ? 'failed' : 'completed',
-    };
-  };
   /**
    * Requires a turn's output format to be the one its session started with.
    * @throws
@@ -259,11 +204,10 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
   const start = async (
     session: IClaudeSession,
     isResume: boolean,
-    forkSourceNativeId: string | undefined,
     signal?: AbortSignal,
   ): Promise<void> => {
     const nativeId = session.id;
-    session.isResumed = isResume || forkSourceNativeId !== undefined;
+    session.isResumed = isResume;
     // a new process has no turn of its own and no background commands yet
     session.nativeTurn = undefined;
     setBackgroundCommands(session, 0, events);
@@ -276,11 +220,8 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
         if (session.input) {
           clearTimeout(session.input.timer);
           session.input.reject(
-            new Exception('The Claude integration failed', {
-              code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-              data: {
-                kind: 'agent-unavailable',
-              },
+            HQ_ERRORS.create('claudeFailed', {
+              data: { kind: 'agent-unavailable' },
             }),
           );
         }
@@ -292,7 +233,6 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
         additionalDirectories,
         isResume,
         settings: session.settings,
-        ...(forkSourceNativeId ? { forkSourceNativeId } : {}),
         receive: (raw) => {
           const wasBusy = isBusy(session);
           receiveClaudeMessage(session, raw, events);
@@ -300,35 +240,16 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
           if (!wasBusy && isBusy(session)) cancelIdleStop(session);
           else if (wasBusy && !isBusy(session)) scheduleIdleStop(session);
         },
-        lateResponse(id, result, error) {
-          if (extensionRequests.get(id)?.nativeId === nativeId) {
-            if (error !== undefined) {
-              extensionRequests.delete(id);
-              events?.outcome({ kind: 'failed', requestId: id, failure: 'agent-unavailable' });
-              return;
-            }
-            void (async () => {
-              try {
-                const resultState = await completeExtension(id, result);
-                events?.outcome({ kind: 'control-accepted', requestId: id, ...resultState });
-              } catch {
-                events?.unavailable(nativeId);
-                await session.connection?.close();
-              }
-            })().catch(() => events?.unavailable(nativeId));
-            return;
-          }
-          if (!/^[a-f0-9-]{36}:(name|interrupt)$/.test(id)) return;
+        lateResponse(id, _result, error) {
+          // only a name or an interrupt is a control request an action phase sends
+          const request = parseActionRequest(id);
+          if (request?.phase !== 'name' && request?.phase !== 'interrupt') return;
           if (error !== undefined)
-            events?.outcome({
-              kind: 'failed',
-              requestId: id,
-              failure: 'agent-unavailable',
-            });
+            events?.outcome({ kind: 'failed', ...request, failure: 'agent-unavailable' });
           else
             events?.outcome({
-              kind: id.endsWith(':name') ? 'renamed' : 'interrupt-accepted',
-              requestId: id,
+              kind: request.phase === 'name' ? 'renamed' : 'interrupt-accepted',
+              ...request,
             });
         },
       },
@@ -366,7 +287,6 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     nativeId: string,
     workspaceRoot: string,
     isResume: boolean,
-    forkSourceNativeId?: string,
     settings: ISessionSettings = {},
     signal?: AbortSignal,
   ) => {
@@ -383,7 +303,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       settings: { ...settings },
       scope: randomUUID(),
       isClosing: false,
-      hasInput: isResume || forkSourceNativeId !== undefined,
+      hasInput: isResume,
       isResumed: false,
       backgroundTaskCount: 0,
       opening: Promise.resolve(),
@@ -392,103 +312,13 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       steers: new Map(),
     };
     sessions.set(nativeId, session);
-    session.opening = start(session, isResume, forkSourceNativeId, signal);
+    session.opening = start(session, isResume, signal);
     await session.opening;
     return { id: nativeId, cwd: workspaceRoot, status: { type: 'idle' as const } };
   };
   return {
-    /**
-     * Applies one supported native extension command to an idle owned session, reopening a parked one.
-     * @returns Native acknowledgement, preserving held plugin reloads explicitly.
-     * @throws
-     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
-     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
-     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
-     */
-    async controlExtensions(
-      requestId: string,
-      nativeId: string,
-      workspaceRoot: string,
-      command: IExtensionControlCommand,
-    ): Promise<INativeControlResult> {
-      if (get(nativeId, true).workspaceRoot !== workspaceRoot) conflict();
-      if (command.kind === 'mcp-login' || command.kind === 'mcp-reload') capabilityUnavailable();
-      return withSession(nativeId, true, async (session) => {
-        if (isBusy(session) || session.requests.size || extensionRequests.size >= 32) conflict();
-        extensionRequests.set(requestId, { nativeId, kind: command.kind });
-        const body =
-          command.kind === 'skills-reload'
-            ? { subtype: 'reload_skills' }
-            : command.kind === 'plugins-reload'
-              ? { subtype: 'reload_plugins', hold_on_cache_impact: true }
-              : command.kind === 'mcp-reconnect'
-                ? { subtype: 'mcp_reconnect', serverName: command.serverName }
-                : {
-                    subtype: 'mcp_toggle',
-                    serverName: command.serverName,
-                    enabled: command.isEnabled,
-                  };
-        try {
-          return await completeExtension(
-            requestId,
-            await session.connection!.requestControl(body, requestId),
-          );
-        } catch (error) {
-          if (
-            isException(error) &&
-            z.object({ nativeRejection: z.literal(true) }).safeParse(error.data).success
-          )
-            extensionRequests.delete(requestId);
-          throw error;
-        }
-      });
-    },
     get isAvailable() {
       return !isClosing;
-    },
-    /**
-     * Reads native MCP status for this exact controlled session, reopening a parked one.
-     * @returns The native server page.
-     * @throws
-     * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
-     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
-     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
-     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
-     */
-    readMcpServers(nativeId: string, limit: number, cursor?: string) {
-      return withSession(nativeId, true, (session) =>
-        createClaudeExtensions(session.connection!).readMcpServers(limit, cursor),
-      );
-    },
-    /**
-     * Reads native tool metadata for one configured session server, reopening a parked one.
-     * @returns The server's native tool metadata.
-     * @throws
-     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
-     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
-     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
-     */
-    readMcpTools(nativeId: string, serverName: string) {
-      return withSession(nativeId, true, (session) =>
-        createClaudeExtensions(session.connection!).readMcpTools(serverName),
-      );
-    },
-    /**
-     * Reports the native resource catalog, reopening a parked session.
-     * @returns An explicit unsupported native resource catalog observation.
-     * @throws
-     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
-     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
-     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
-     */
-    readMcpResources(nativeId: string) {
-      return withSession(nativeId, true, async (session) =>
-        createClaudeExtensions(session.connection!).readMcpResources(),
-      );
     },
     get version() {
       return (
@@ -527,26 +357,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       settings: ISessionSettings = {},
       signal?: AbortSignal,
     ) {
-      return open(randomUUID(), workspaceRoot, false, undefined, settings, signal);
-    },
-    /**
-     * Uses native resume/fork flags while keeping the source session untouched.
-     * @returns The independently verified native fork and its source.
-     * @throws
-     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
-     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
-     */
-    async forkThread(
-      _requestId: string,
-      sourceNativeId: string,
-      workspaceRoot: string,
-      signal?: AbortSignal,
-    ) {
-      return {
-        ...(await open(randomUUID(), workspaceRoot, true, sourceNativeId, {}, signal)),
-        forkedFromId: sourceNativeId,
-      };
+      return open(randomUUID(), workspaceRoot, false, settings, signal);
     },
     /**
      * Loads a confirmed handoff and verifies its native session identity.
@@ -565,7 +376,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       settings: ISessionSettings = {},
       signal?: AbortSignal,
     ) {
-      const result = await open(nativeId, workspaceRoot, true, undefined, settings, signal);
+      const result = await open(nativeId, workspaceRoot, true, settings, signal);
       if (signal?.aborted) unavailable();
       // the native session-id fence verifies the exact resumed conversation before control is granted
       await get(nativeId).connection!.requestControl({
@@ -819,11 +630,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       // a parked session finishes without a process
       await session.transition?.catch(() => undefined);
       await session.opening.catch((cause: unknown) => {
-        if (
-          isException(cause) &&
-          z.object({ cleanupUnconfirmed: z.literal(true) }).safeParse(cause.data).success
-        )
-          throw cause;
+        if (isCleanupUnconfirmed(cause)) throw cause;
       });
       await session.connection?.close();
     },
@@ -857,20 +664,13 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
           if (session.input) {
             clearTimeout(session.input.timer);
             session.input.reject(
-              new Exception('The Claude integration failed', {
-                code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-                data: {
-                  kind: 'agent-unavailable',
-                },
+              HQ_ERRORS.create('claudeFailed', {
+                data: { kind: 'agent-unavailable' },
               }),
             );
           }
           await session.opening.catch((cause: unknown) => {
-            if (
-              isException(cause) &&
-              z.object({ cleanupUnconfirmed: z.literal(true) }).safeParse(cause.data).success
-            )
-              throw cause;
+            if (isCleanupUnconfirmed(cause)) throw cause;
           });
           await session.transition?.catch(() => undefined);
           await session.connection?.close();

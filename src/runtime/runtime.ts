@@ -1,15 +1,17 @@
 import { join } from 'node:path';
 import { hashValue } from 'jg-crypto';
-import { Exception, extractMessage, isException } from 'jg-exception';
+import { Exception, extractMessage } from 'jg-exception';
 import { listLocks } from 'jg-locks';
 import { z } from 'zod';
 
-import { HqRequestSchema, type IHqRequestInput, type IHqResponse } from '../contracts/index.js';
+import {
+  HqRequestSchema,
+  type IHqRequestInput,
+  type IHqResponse,
+  type IHqResponseOf,
+} from '../contracts/index.js';
 import { createActions, readControl } from '../actions/index.js';
-import { createAccounts } from '../accounts/index.js';
-import { createExtensions } from '../extensions/index.js';
 import { CONTROL_SOCKET, createIpcServer, removeLeftoverSocket } from '../ipc/index.js';
-import { removeStaleHqLock } from '../locks/index.js';
 import {
   createCodexProviderFactory,
   createClaudeProviderFactory,
@@ -20,51 +22,55 @@ import {
   limitItemText,
   readActiveSessions,
   readNativeHistory,
-  readUnstartedThreads,
+  readThreads,
   type IClaudeSessions,
 } from '../sessions/index.js';
 import { suggestThreadName } from '../sessions/names/index.js';
 import { createSkills } from '../skills/index.js';
 import { createStore } from '../store/index.js';
 import { createStorage } from '../storage/index.js';
-import { registerSnapshotContext } from '../snapshots/index.js';
+import { captureHqSnapshot } from '../snapshots/index.js';
+import { HQ_ERRORS, isCleanupUnconfirmed } from '../errors/index.js';
 
 import {
   claimRuntimeOwner,
   prepareDatabase,
   prepareActionKey,
   prepareStateRoot,
+  recoverSnapshotLock,
   resolveAllowedRoots,
   resolveWorkspaceTarget,
 } from './state/index.js';
 import { createBrowserActions } from './browser/index.js';
+import { startWarmUp } from './warm-up/index.js';
 import { AgentHqOptionsSchema, type IAgentHq, type IAgentHqOptions } from './types.js';
 
-const UnconfirmedCleanupSchema = z.object({ cleanupUnconfirmed: z.literal(true) });
-
 /**
- * Starts one local controller with private IPC, a SQLite worker and lazy native providers.
+ * Starts one local controller with private IPC, a SQLite worker and native providers, which it
+ * connects in the background without waiting for them.
  * @returns The owned runtime. Client disconnects do not close it.
  * @throws
  * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
- * - JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM: The HQ lock requires Linux or macOS
- * - JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID: The HQ runtime directory must be a real directory
- * - JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS: The HQ runtime directory must be private and owned by the current user
  * - JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE: The HQ state directory is unsafe
  * - JG_AGENT_HQ_STATE_FILE_UNSAFE: The HQ state file is unsafe
  * - JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE: The HQ action key is unavailable
  * - JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE: The HQ runtime owner is unverifiable
  * - JG_AGENT_HQ_RUNTIME_ALREADY_OWNED: The HQ runtime is already owned
- * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
  * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
+ * - LOCK_BUSY: The lock '<path>' is busy.
+ * - LOCK_ACQUISITION_FAILED: The lock '<path>' could not be acquired.
+ * - LOCK_NOT_OWNED: The lock '<path>' is no longer owned by this process.
+ * - LOCK_RELEASE_FAILED: The lock '<path>' could not be released.
+ * - NOT_A_DIRECTORY: The path '<path>' is not a directory.
+ * - DIRECTORY_NOT_PRIVATE: The directory '<path>' can be accessed by other users.
+ * - PATH_NOT_CANONICAL: The path '<path>' goes through a symbolic link.
  */
 export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq> => {
   const parsed = AgentHqOptionsSchema.safeParse(options);
   if (!parsed.success)
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
+    throw HQ_ERRORS.create('requestInvalid', {
       data: { kind: 'invalid-request' },
       cause: parsed.error,
     });
@@ -76,40 +82,28 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     ? await resolveAllowedRoots(parsed.data.claudeAdditionalDirectories)
     : [];
   const stateRoot = await prepareStateRoot(parsed.data.stateRoot);
+  const startedAt = Date.now();
   const ownership = await claimRuntimeOwner(stateRoot, parsed.data.isPreviousRuntimeStopped);
   let store: Awaited<ReturnType<typeof createStore>> | undefined;
   let registry: ReturnType<typeof createProviderRegistry> | undefined;
   let ipc: Awaited<ReturnType<typeof createIpcServer>> | undefined;
   let actionKey: Uint8Array;
   try {
-    // a runtime that stopped without releasing the state root left its lock and socket behind
-    if (ownership.isReclaimed) {
-      await removeStaleHqLock(stateRoot);
+    // a runtime that stopped without releasing the state root left its snapshot lock and socket
+    if (ownership.previous) {
+      await recoverSnapshotLock(stateRoot, ownership.previous.pid);
       await removeLeftoverSocket(join(stateRoot, CONTROL_SOCKET));
     }
     const databasePath = await prepareDatabase(stateRoot);
     actionKey = await prepareActionKey(stateRoot, databasePath);
-    // Codex sessions run in its shared daemon, so they keep running while the runtime restarts
-    const codex = {
-      factory: createCodexProviderFactory(
-        codexExtraSkillRoots,
-        parsed.data.codexDaemonLauncher ?? [],
-      ),
-      isBuiltIn: true,
-      keepsSessions: true,
-    };
-    store = await createStore(databasePath, ownership.owner.nonce, actionKey, [codex.factory.id]);
+    store = await createStore(databasePath, ownership.epoch, actionKey);
     registry = createProviderRegistry(
       [
-        codex,
-        {
-          factory: createClaudeProviderFactory(store, claudeAdditionalDirectories),
-          isBuiltIn: true,
-        },
-        ...(parsed.data.providerFactories ?? []).map((factory) => ({ factory, isBuiltIn: false })),
+        createCodexProviderFactory(codexExtraSkillRoots, parsed.data.codexDaemonLauncher ?? []),
+        createClaudeProviderFactory(store, claudeAdditionalDirectories),
       ],
       allowedRoots,
-      ownership.owner.nonce,
+      ownership.epoch,
     );
   } catch (error) {
     const cleanup = await Promise.allSettled([registry?.close(), store?.close()]);
@@ -120,8 +114,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
         data: { kind: 'operation-failed' },
         cause: error,
       });
-    if (!(isException(error) && UnconfirmedCleanupSchema.safeParse(error.data).success))
-      await ownership.release();
+    if (!isCleanupUnconfirmed(error)) await ownership.release();
     throw error;
   }
   const browser = createBrowserActions(store);
@@ -131,27 +124,23 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const skills = createSkills(providers, projection, allowedRoots);
   // terminal and background Claude sessions are observed while the runtime runs
   const claudeAgents = observeClaudeAgents(
-    (sessions) => storage.background(() => projection.observeSessions('claude', sessions, true)),
+    (sessions) =>
+      storage.background(() => projection.call('sessions', 'observe', 'claude', sessions, true)),
     allowedRoots,
-    (nativeId) => projection.getClaudeTranscriptRoot(nativeId),
+    (nativeId) => projection.call('sessions', 'claudeTranscriptRoot', nativeId),
   );
-  const accounts = createAccounts(providers);
-  const extensions = createExtensions(providers, projection, allowedRoots);
   const actions = createActions(
     providers,
     projection,
     allowedRoots,
-    ownership.owner.nonce,
+    ownership.epoch,
     actionKey,
     skills,
     storage.background,
-    () => {
-      skills.invalidate();
-      extensions.invalidate();
-      accounts.invalidate();
-    },
     (nativeId) => claudeAgents.terminalOf(nativeId),
   );
+  // a long-poll on session states reads again once a worker call recorded a new transition
+  projection.onTransition(() => actions.polls.notify({ kind: 'transitions' }));
   /*
    * What session reads join to each summary: the poll's listing and, for a session HQ runs, the
    * background commands its live window holds, the larger count winning for a session in both.
@@ -187,12 +176,17 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   // close() still reports errors; the lifetime promise may be awaited later by its owner
   void closed.catch(() => undefined);
   let closing: Promise<void> | undefined;
+  let warmUp: ReturnType<typeof startWarmUp> | undefined;
   const close = (): Promise<void> =>
     (closing ??= (async () => {
       try {
-        // receipt waits end first, so none holds up closing for its remaining time
+        // receipt waits and long-polls end first, so none holds up closing for its remaining time
         actions.waits.close();
+        actions.polls.close();
+        // the warm-up stops at once, and host work closes before it is awaited
+        const warmUpStopped = warmUp?.close();
         await browser.close();
+        await warmUpStopped;
         await claudeAgents.close();
         const results = await Promise.allSettled([ipc?.close(), actions.close()]);
         const storeCleanup = await Promise.allSettled([projection.close()]);
@@ -216,25 +210,20 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const handleRequest = async (input: IHqRequestInput): Promise<IHqResponse> => {
     const result = HqRequestSchema.safeParse(input);
     if (!result.success)
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      throw HQ_ERRORS.create('requestInvalid', {
         data: { kind: 'invalid-request' },
         cause: result.error,
       });
-    if (closing)
-      throw new Exception('The HQ runtime is not running', {
-        code: 'JG_AGENT_HQ_RUNTIME_NOT_RUNNING',
-        data: { kind: 'state-conflict' },
-      });
+    if (closing) throw HQ_ERRORS.create('runtimeNotRunning', { data: { kind: 'state-conflict' } });
     const command = result.data;
     switch (command.kind) {
       case 'status':
         return {
           kind: 'status',
           result: {
-            runtimeEpoch: ownership.owner.nonce,
+            runtimeEpoch: ownership.epoch,
             pid: process.pid,
-            startedAt: Date.parse(ownership.owner.createdAt),
+            startedAt,
             store: projection.isAvailable ? 'ready' : 'unavailable',
             providers: providers.statuses(),
           },
@@ -243,27 +232,20 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
         setImmediate(() => {
           void storage.background(close).catch(() => undefined);
         });
-        return { kind: 'stop', result: { accepted: true, runtimeEpoch: ownership.owner.nonce } };
+        return { kind: 'stop', result: { accepted: true, runtimeEpoch: ownership.epoch } };
       }
       case 'capabilities': {
-        const thread = command.threadId ? await projection.getThread(command.threadId) : undefined;
+        const thread = command.threadId
+          ? await projection.call('reads', 'getThread', command.threadId)
+          : undefined;
         if (command.threadId && (!thread || thread.provider !== command.provider))
-          throw new Exception('The HQ request is invalid', {
-            code: 'JG_AGENT_HQ_REQUEST_INVALID',
-            data: { kind: 'invalid-request' },
-          });
+          throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
         if (thread) await resolveWorkspaceTarget(thread.workspaceRoot, allowedRoots);
         return {
           kind: 'capabilities',
           result: await providers.capabilities(command.provider, thread ?? undefined),
         };
       }
-      case 'account':
-        return { kind: command.kind, result: await accounts.read(command) };
-      case 'mcp-servers':
-      case 'mcp-tools':
-      case 'mcp-resources':
-        return extensions.read(command);
       case 'usage':
         return {
           kind: 'usage',
@@ -276,7 +258,9 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
         };
       case 'configuration': {
         const workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, allowedRoots);
-        const thread = command.threadId ? await projection.getThread(command.threadId) : null;
+        const thread = command.threadId
+          ? await projection.call('reads', 'getThread', command.threadId)
+          : null;
         if (
           command.threadId &&
           (!thread ||
@@ -284,10 +268,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
             thread.workspaceRoot !== workspaceRoot ||
             !thread.nativeId)
         )
-          throw new Exception('The HQ request is invalid', {
-            code: 'JG_AGENT_HQ_REQUEST_INVALID',
-            data: { kind: 'invalid-request' },
-          });
+          throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
         return {
           kind: 'configuration',
           result: await (
@@ -298,57 +279,58 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       case 'skills': {
         const workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, allowedRoots);
         // a session's catalog answers only for the provider and folder the session runs in
-        const thread = command.threadId ? await projection.getThread(command.threadId) : null;
+        const thread = command.threadId
+          ? await projection.call('reads', 'getThread', command.threadId)
+          : null;
         if (
           command.threadId &&
           (!thread ||
             thread.provider !== command.provider ||
             thread.workspaceRoot !== workspaceRoot)
         )
-          throw new Exception('The HQ request is invalid', {
-            code: 'JG_AGENT_HQ_REQUEST_INVALID',
-            data: { kind: 'invalid-request' },
-          });
+          throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
         return { kind: command.kind, result: await skills.list({ ...command, workspaceRoot }) };
       }
-      case 'skill-preview':
-        return {
-          kind: command.kind,
-          result: await skills.preview(command.threadId, command.skillId, command.arguments),
-        };
       case 'action':
         return { kind: 'action', result: await actions.submit(command.action) };
       case 'suggest-thread-name':
         return {
           kind: command.kind,
-          result: { name: await projection.suggestThreadName(suggestThreadName(command.topic)) },
+          result: {
+            name: await projection.call('reads', 'suggestName', suggestThreadName(command.topic)),
+          },
         };
-      case 'managed-thread-name':
       case 'receipt':
       case 'action-wait':
       case 'managed-threads':
       case 'managed-thread':
       case 'actions':
-      case 'provider-actions':
-      case 'login':
-      case 'events':
       case 'approvals':
       case 'live-items':
         return readControl(command, projection, actions, allowedRoots);
-      case 'session-states':
-        return {
-          kind: 'session-states',
-          result: await projection.listSessionTransitions(command.afterSequence, command.limit),
-        };
+      case 'session-states': {
+        const read = () =>
+          projection.call('sessions', 'transitions', command.afterSequence, command.limit);
+        // a page with no transition waits for one, unless the reader can't continue from here
+        let page = await read();
+        if (!page.data.length && !page.isReset && command.waitMs !== undefined)
+          ({ value: page } = await actions.polls.wait(
+            read,
+            (current) => current.data.length > 0 || current.isReset,
+            (topic) => topic.kind === 'transitions',
+            command.waitMs,
+          ));
+        return { kind: 'session-states', result: page };
+      }
       case 'active-sessions':
         return {
           kind: 'active-sessions',
-          result: await readActiveSessions(providers, projection, allowedRoots, claudeSessions),
+          result: await readActiveSessions(projection, allowedRoots, claudeSessions),
         };
-      case 'unstarted-threads':
+      case 'threads':
         return {
-          kind: 'unstarted-threads',
-          result: await readUnstartedThreads(command, projection, allowedRoots, claudeSessions),
+          kind: 'threads',
+          result: await readThreads(command, providers, projection, allowedRoots, claudeSessions),
         };
       case 'observation-pace':
         claudeAgents.setPace(command.pace);
@@ -382,16 +364,28 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       }
     }
   };
-  const request = (input: IHqRequestInput): Promise<IHqResponse> =>
-    storage.run(() => handleRequest(input));
+  // each case answers with its command's kind, which TypeScript can't follow through the switch
+  const request = <TCommand extends IHqRequestInput>(
+    input: TCommand,
+  ): Promise<IHqResponseOf<TCommand['kind']>> =>
+    storage.run(() => handleRequest(input)) as Promise<IHqResponseOf<TCommand['kind']>>;
   try {
-    ipc = await createIpcServer(join(stateRoot, CONTROL_SOCKET), ownership.owner.nonce, request);
+    ipc = await createIpcServer(join(stateRoot, CONTROL_SOCKET), ownership.epoch, request);
   } catch (error) {
     await close();
     throw error;
   }
+  const snapshotContext = {
+    stateRoot,
+    actionKeyHash: hashValue(actionKey),
+    allowedRoots,
+    store: projection,
+    admit: storage.run,
+    isClosing: () => Boolean(closing),
+  };
   const runtime: IAgentHq = {
     stateRoot,
+    runtimeEpoch: ownership.epoch,
     closed,
     request,
     get storage() {
@@ -399,25 +393,15 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     },
     withStorageMaintenance: async (operation) => {
       if (closing)
-        throw new Exception('The HQ runtime is not running', {
-          code: 'JG_AGENT_HQ_RUNTIME_NOT_RUNNING',
-          data: { kind: 'state-conflict' },
-        });
+        throw HQ_ERRORS.create('runtimeNotRunning', { data: { kind: 'state-conflict' } });
       return storage.withStorageMaintenance(operation);
     },
     close: () => storage.run(close),
     performBrowserAction: (input, operatorId, execute) =>
       storage.run(() => browser.perform(input, operatorId, execute)),
     readBrowserAction: (id, operatorId) => storage.run(() => browser.read(id, operatorId)),
+    createSnapshot: (destination) => captureHqSnapshot(snapshotContext, destination),
   };
-  registerSnapshotContext({
-    runtime,
-    stateRoot,
-    actionKeyHash: hashValue(actionKey),
-    allowedRoots,
-    store: projection,
-    admit: storage.run,
-    isClosing: () => Boolean(closing),
-  });
+  warmUp = startWarmUp(providers, projection, allowedRoots, storage.background);
   return runtime;
 };

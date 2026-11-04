@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { Exception } from 'jg-exception';
 
 import type { IStore } from '../store/index.js';
+import { HQ_ERRORS } from '../errors/index.js';
 
 import type { IStorageMaintenanceOperation } from './types.js';
 
@@ -18,10 +18,7 @@ export const createStorage = (store: IStore) => {
   let isDisposed = false;
 
   const conflict = (): never => {
-    throw new Exception('The HQ action conflicts with its recorded state', {
-      code: 'JG_AGENT_HQ_ACTION_CONFLICT',
-      data: { kind: 'state-conflict' },
-    });
+    throw HQ_ERRORS.create('actionConflict', { data: { kind: 'state-conflict' } });
   };
 
   /**
@@ -73,10 +70,7 @@ export const createStorage = (store: IStore) => {
     operation: IStorageMaintenanceOperation<T>,
   ): Promise<T> => {
     if (typeof operation !== 'function')
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
-        data: { kind: 'invalid-request' },
-      });
+      throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
     if (maintenance || context.getStore()?.isActive) conflict();
     let release: () => void = () => undefined;
     maintenance = new Promise<void>((resolve) => {
@@ -85,7 +79,7 @@ export const createStorage = (store: IStore) => {
     try {
       while (active.size > 0) await Promise.allSettled([...active]);
       isMaintenanceHeld = true;
-      if (!(await store.prepareStorageMaintenance())) conflict();
+      if (!(await store.call('lifecycle', 'canStartMaintenance'))) conflict();
       return await operation(structuredClone(store.storage));
     } finally {
       isMaintenanceHeld = false;

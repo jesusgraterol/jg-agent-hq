@@ -1,18 +1,3 @@
-// shared lock contracts and lifecycle
-export {
-  type IHqLockOwner,
-  type IOwnerLiveness,
-  type IHqLockOptions,
-  type IHqLockState,
-  RUNTIME_DIRECTORY,
-  HQ_LOCK_FILE,
-  getOwnerLiveness,
-  acquireHqLock,
-  withHqLock,
-  releaseHqLock,
-  readHqLockState,
-} from './locks/index.js';
-
 // native runtime and local client
 export { createAgentHq } from './runtime/index.js';
 export type {
@@ -23,24 +8,10 @@ export type {
 } from './runtime/index.js';
 export { requestAgentHq } from './ipc/index.js';
 
-// trusted native provider adapters
-export type {
-  IAgentProvider,
-  IAgentProviderFactory,
-  IAgentProviderContext,
-  IAgentProviderEvents,
-  IAgentProviderOutcome,
-  INativePrompt,
-  IProviderCall,
-  IProviderThread,
-  IProviderInspection,
-  IProviderReattachment,
-  IResyncLoss,
-  IProviderSkills,
-  IProviderMcpServerPage,
-  IProviderMcpTools,
-  IProviderMcpResources,
-} from './providers/index.js';
+// safe error classification
+export { getErrorKind } from './errors/index.js';
+
+// provider identity, status and capabilities
 export type {
   IProviderId,
   IProviderCapability,
@@ -63,24 +34,18 @@ export type {
 export type { INativeLineage } from './contracts/identities/index.js';
 
 // trusted host storage
+export { openHostDatabase } from './storage/index.js';
 export type { IStorageDescriptor, IStorageMaintenanceOperation } from './storage/index.js';
 
-// trusted host snapshot and offline recovery
-export {
-  createHqSnapshot,
-  inspectHqSnapshot,
-  restoreHqSnapshot,
-  packHqSnapshot,
-  unpackHqSnapshot,
-} from './snapshots/index.js';
+// trusted host snapshot packing and offline recovery
+export { restoreHqSnapshot, packHqSnapshot, unpackHqSnapshot } from './snapshots/index.js';
 export type {
   IHqSnapshotInspection,
   IHqRestoreOptions,
   IHqRestoreResult,
 } from './snapshots/index.js';
 
-// native media transport and results
-export type { IProviderInputFile } from './providers/index.js';
+// file inputs and complete native results
 export type {
   IInputFile,
   IBoundInputFile,

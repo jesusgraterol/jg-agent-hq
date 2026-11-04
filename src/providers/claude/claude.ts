@@ -1,7 +1,5 @@
-import { Exception, isException } from 'jg-exception';
 import { delay } from 'jg-utilities';
 import { scheduler } from 'node:timers/promises';
-import { z } from 'zod';
 
 import type {
   IHqResponse,
@@ -12,14 +10,14 @@ import type {
 } from '../../contracts/index.js';
 import type { IStore } from '../../store/index.js';
 import type { IHistoryRequest } from '../../sessions/index.js';
-import type { IProviderSkills } from '../types.js';
+import type { IProviderSkills, IThreadList, IThreadListRequest } from '../types.js';
+import { HQ_ERRORS, isCleanupUnconfirmed } from '../../errors/index.js';
 
 import { createClaudeRpc } from './rpc.js';
 import { ClaudeUsageSchema } from './types.js';
 import { toClaudeUsageSnapshot } from './transformers.js';
 import { readClaudeModels } from './models/index.js';
 import { toClaudeConfiguration } from './configuration/index.js';
-import { toClaudeAccount } from './accounts/index.js';
 import { toClaudeSkills } from './control/index.js';
 
 // the session-less read process closes after this long without a read, and reopens on the next one
@@ -39,6 +37,10 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
   let opening: Promise<Awaited<ReturnType<typeof createClaudeRpc>>> | undefined;
   const metadataReads = new Set<Promise<Awaited<ReturnType<typeof createClaudeRpc>>>>();
   let isClosing = false;
+  // ends a read process that is still starting when the adapter closes
+  const lifetime = new AbortController();
+  // the read process failed to start, which leaves Claude unavailable until the host restarts
+  let hasFailed = false;
   let generation = 0;
   let reads = 0;
   let idleClose: AbortController | undefined;
@@ -77,13 +79,18 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
     return latest;
   };
   const connect = async () => {
-    connection = await createClaudeRpc((reason) => {
-      expireUsage();
-      if (reason === 'account') {
-        generation += 1;
-        latest = unavailable();
-      } else latest = { ...latest, state: latest.observedAt === null ? 'unavailable' : 'stale' };
-    });
+    connection = await createClaudeRpc(
+      (reason) => {
+        expireUsage();
+        if (reason === 'account') {
+          generation += 1;
+          latest = unavailable();
+        } else latest = { ...latest, state: latest.observedAt === null ? 'unavailable' : 'stale' };
+      },
+      undefined,
+      undefined,
+      lifetime.signal,
+    );
     version = connection.version;
     isVerified = true;
     return connection;
@@ -91,12 +98,12 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
   const open = () => {
     if (isClosing)
       return Promise.reject(
-        new Exception('The Claude integration failed', {
-          code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-          data: { kind: 'agent-unavailable' },
-        }),
+        HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } }),
       );
-    return (opening ??= connect());
+    return (opening ??= connect().catch((cause: unknown) => {
+      hasFailed = true;
+      throw cause;
+    }));
   };
   /** Closes the read process once it has gone unused, so the next read opens a fresh one. */
   const retire = (): void => {
@@ -148,19 +155,16 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
   };
   /** Runs one bounded metadata read and confirms native shutdown before releasing its slot. */
   const withReadConnection = async <T>(
-    workspaceRoot: string | undefined,
+    workspaceRoot: string,
     signal: AbortSignal | undefined,
     read: (native: Awaited<ReturnType<typeof createClaudeRpc>>) => Promise<T>,
   ): Promise<T> => {
     if (isClosing || metadataReads.size >= 4)
-      throw new Exception('The Claude integration failed', {
-        code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-        data: { kind: 'agent-unavailable' },
-      });
+      throw HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } });
     const starting = createClaudeRpc(
       () => {},
       undefined,
-      workspaceRoot === undefined ? undefined : { workspaceRoot, additionalDirectories },
+      { workspaceRoot, additionalDirectories },
       signal,
     );
     metadataReads.add(starting);
@@ -169,16 +173,10 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
     try {
       native = await starting;
       if (isClosing)
-        throw new Exception('The Claude integration failed', {
-          code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-          data: { kind: 'agent-unavailable' },
-        });
+        throw HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } });
       return await read(native);
     } catch (cause) {
-      hasUnconfirmedStartup =
-        !native &&
-        isException(cause) &&
-        z.object({ cleanupUnconfirmed: z.literal(true) }).safeParse(cause.data).success;
+      hasUnconfirmedStartup = !native && isCleanupUnconfirmed(cause);
       throw cause;
     } finally {
       if (native) await native.close();
@@ -186,26 +184,6 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
     }
   };
   return {
-    /**
-     * Drops account-derived observations and the read connection after native sign-out.
-     * @returns Confirmation that subsequent observations use a fresh native connection.
-     * @throws
-     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
-     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
-     */
-    async invalidateAuthentication(): Promise<void> {
-      idleClose?.abort();
-      idleClose = undefined;
-      generation += 1;
-      expireUsage();
-      latest = unavailable();
-      if (opening) {
-        const native = await opening;
-        await native.close();
-      }
-      connection = undefined;
-      opening = undefined;
-    },
     /**
      * Verifies native initialization without requesting usage or starting inference, keeping the
      * runtime's first successful check.
@@ -270,19 +248,6 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
         observedAt: native.initializedAt,
       }));
     },
-    /**
-     * Reads fresh native account metadata in a disposable read lane.
-     * @returns Safe account metadata after confirmed read-lane cleanup.
-     * @throws
-     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
-     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
-     */
-    async readAccount(signal?: AbortSignal) {
-      return withReadConnection(undefined, signal, async (native) =>
-        toClaudeAccount(native.initialization.account, native.initializedAt),
-      );
-    },
-
     // the last observed version stays known while the read process is closed
     get version() {
       return connection?.version ?? version;
@@ -290,8 +255,10 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
     get isAvailable() {
       return connection?.isAvailable ?? false;
     },
+    // a read process still starting reports idle, and one that failed or stopped unavailable
     get state(): 'idle' | 'ready' | 'unavailable' {
-      return connection?.isAvailable ? 'ready' : opening === undefined ? 'idle' : 'unavailable';
+      if (connection?.isAvailable) return 'ready';
+      return connection || hasFailed ? 'unavailable' : 'idle';
     },
     /**
      * Reads only a verified local transcript capability without resuming a session.
@@ -309,15 +276,39 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
       const deadline = Date.now() + 30_000;
       await verify();
       while (!isClosing && Date.now() < deadline) {
-        const result = await store.readClaudeHistory(command);
+        const result = await store.call('claudeHistory', 'read', command);
         if (result.kind !== 'indexing') return result;
         await scheduler.yield();
       }
-      throw new Exception('The Claude history is unavailable', {
-        code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
-        data: {
-          kind: 'agent-unavailable',
-        },
+      throw HQ_ERRORS.create('claudeHistoryUnavailable', {
+        data: { kind: 'agent-unavailable' },
+      });
+    },
+    /**
+     * Lists one page of a workspace's transcripts, indexing new transcript bytes first on a first
+     * page, within the same 30-second budget and its caller's signal.
+     * @returns The page, with the continuation its next page seeks from.
+     * @throws
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+     * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+     * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+     */
+    async listThreads(
+      workspaceRoot: string,
+      page: IThreadListRequest,
+      signal: AbortSignal,
+    ): Promise<IThreadList> {
+      const deadline = Date.now() + 30_000;
+      await verify();
+      while (!isClosing && !signal.aborted && Date.now() < deadline) {
+        const result = await store.call('claudeHistory', 'list', workspaceRoot, page);
+        if (result !== 'indexing') return result;
+        await scheduler.yield();
+      }
+      throw HQ_ERRORS.create('claudeHistoryUnavailable', {
+        data: { kind: 'agent-unavailable' },
       });
     },
     /**
@@ -337,8 +328,7 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
             const epoch = generation;
             const parsed = ClaudeUsageSchema.safeParse(await native.requestUsage());
             if (!parsed.success)
-              throw new Exception('The Claude integration failed', {
-                code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+              throw HQ_ERRORS.create('claudeFailed', {
                 data: { kind: 'agent-unavailable' },
                 cause: parsed.error,
               });
@@ -363,6 +353,7 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
      */
     async close(): Promise<void> {
       isClosing = true;
+      lifetime.abort();
       idleClose?.abort();
       idleClose = undefined;
       const results = await Promise.allSettled([
@@ -372,11 +363,7 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
           try {
             native = await starting;
           } catch (cause) {
-            if (
-              isException(cause) &&
-              z.object({ cleanupUnconfirmed: z.literal(true) }).safeParse(cause.data).success
-            )
-              throw cause;
+            if (isCleanupUnconfirmed(cause)) throw cause;
             return;
           }
           await native.close();

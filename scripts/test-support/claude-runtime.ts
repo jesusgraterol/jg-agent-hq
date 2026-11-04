@@ -1,16 +1,18 @@
 import { randomUUID } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hasErrorCode } from 'jg-exception';
-import { createAgentHq, requestAgentHq, type IAgentHq, type IAgentHqOptions } from 'jg-agent-hq';
-import type { IHqRequestInput } from 'jg-agent-hq/contracts';
+import { inspectLock } from 'jg-locks';
+import { createAgentHq, requestAgentHq, type IAgentHq } from 'jg-agent-hq';
+import type { IHqRequestInput, IHqResponseOf } from 'jg-agent-hq/contracts';
 import { expect, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 
 import { installClaudeFixture } from './claude.js';
 import { installCodexFixture } from './codex.js';
 import { writeFixtureControl } from './controls.js';
+import { stateLocks } from './locks.js';
 
 // owned filesystem/native setup shared by Claude usage and history integration tests
 export type IClaudeFixture = {
@@ -20,7 +22,9 @@ export type IClaudeFixture = {
   projectRoot: string;
   configRoot: string;
   runtime: IAgentHq;
-  request(command: IHqRequestInput): ReturnType<typeof requestAgentHq>;
+  request<TCommand extends IHqRequestInput>(
+    command: TCommand,
+  ): Promise<IHqResponseOf<TCommand['kind']>>;
   control(settings: object): Promise<void>;
   transcript(nativeId: string): string;
 };
@@ -28,7 +32,6 @@ export type IClaudeFixture = {
 /** Runs the real runtime and verifies native process teardown before deleting its fixture. */
 export const withClaudeRuntime = async (
   run: (fixture: IClaudeFixture) => Promise<void>,
-  options: Pick<IAgentHqOptions, 'providerFactories'> = {},
 ): Promise<void> => {
   const root = await mkdtemp(join(tmpdir(), 'jg-hq-claude-'));
   const stateRoot = join(root, 'state');
@@ -42,12 +45,8 @@ export const withClaudeRuntime = async (
     (teardown ??= (async () => {
       try {
         await runtime?.close();
-        try {
-          await lstat(join(stateRoot, 'hq-owner.json'));
+        if ((await inspectLock('runtime', stateLocks(stateRoot))).state !== 'free')
           throw new Error(`Fixture ownership requires inspection at ${stateRoot}`);
-        } catch (cause) {
-          if (!hasErrorCode(cause, 'ENOENT')) throw cause;
-        }
         let children: string[] = [];
         for (const filename of ['claude-pids.jsonl', 'claude-read-pids.jsonl']) {
           try {
@@ -92,7 +91,7 @@ export const withClaudeRuntime = async (
     vi.stubEnv('JG_HQ_FIXTURE_DIRECTORY', root);
     vi.stubEnv('JG_HQ_FIXTURE_WORKSPACE', workspaceRoot);
     vi.stubEnv('CLAUDE_CONFIG_DIR', configRoot);
-    runtime = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot], ...options });
+    runtime = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
     await run({
       root,
       stateRoot,
@@ -107,6 +106,19 @@ export const withClaudeRuntime = async (
   } finally {
     await cleanup();
   }
+};
+
+/**
+ * Waits until the runtime connected both providers, as it does once it starts, so a test that
+ * counts native processes or calls counts only its own.
+ * @returns A promise resolved once status reports both providers ready.
+ */
+export const waitForWarmUp = async (runtime: IAgentHq): Promise<void> => {
+  await expect
+    .poll(async () =>
+      (await runtime.request({ kind: 'status' })).result.providers.map(({ state }) => state),
+    )
+    .toStrictEqual(['ready', 'ready']);
 };
 
 /** Makes one supported top-level native record while keeping all transcript fields realistic. */

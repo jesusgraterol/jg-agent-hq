@@ -1,9 +1,10 @@
 import { DatabaseSync } from 'node:sqlite';
 import { hashValue } from 'jg-crypto';
-import { Exception, isException } from 'jg-exception';
+import { isException } from 'jg-exception';
 
 import { STORAGE_CONNECTION_SETTINGS } from '../storage/index.js';
 import { PACKAGE_VERSION, readStorageStamp } from '../storage/schema/index.js';
+import { HQ_ERRORS } from '../errors/index.js';
 
 /**
  * Recognizes an empty schema or validates its singleton stamp without issuing writes.
@@ -40,11 +41,7 @@ export const openDatabase = (
     validateSchemaStamp(inspection, actionKeyHash);
   } catch (cause) {
     if (isException(cause)) throw cause;
-    throw new Exception('The HQ storage is invalid', {
-      code: 'JG_AGENT_HQ_STORAGE_INVALID',
-      data: { kind: 'state-conflict' },
-      cause,
-    });
+    throw HQ_ERRORS.create('storageInvalid', { data: { kind: 'state-conflict' }, cause });
   } finally {
     inspection?.close();
   }
@@ -54,14 +51,11 @@ export const openDatabase = (
       database.exec('BEGIN IMMEDIATE');
       try {
         if (database.prepare('SELECT 1 FROM sqlite_schema LIMIT 1').get())
-          throw new Exception('The HQ storage is invalid', {
-            code: 'JG_AGENT_HQ_STORAGE_INVALID',
-            data: { kind: 'state-conflict' },
-          });
+          throw HQ_ERRORS.create('storageInvalid', { data: { kind: 'state-conflict' } });
         database.exec(source);
         database
           .prepare(
-            'INSERT INTO hq_schema (id, schema_hash, action_key_hash, package_version) VALUES (1, ?, ?, ?)',
+            'INSERT INTO agent_hq_schema (id, schema_hash, action_key_hash, package_version) VALUES (1, ?, ?, ?)',
           )
           .run(schemaHash, actionKeyHash, PACKAGE_VERSION);
         database.exec('COMMIT');

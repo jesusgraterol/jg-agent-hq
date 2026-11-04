@@ -4,7 +4,9 @@ import { promisify } from 'node:util';
 import { Exception, extractMessage } from 'jg-exception';
 import { z } from 'zod';
 
+import { createPendingRequests } from '../../pending/index.js';
 import { createProviderProcess, type IProviderProcess } from '../index.js';
+import { HQ_ERRORS } from '../../errors/index.js';
 
 import { createWebSocketFraming } from './websocket/index.js';
 
@@ -52,33 +54,21 @@ export const createCodexRpc = async (
     .parse(JSON.parse(await readFile(new URL('../../../package.json', import.meta.url), 'utf8')));
   let sequence = 0;
   let isClosed = false;
-  const pending = new Map<
-    string | number,
-    {
-      resolve: (result: unknown) => void;
-      reject: (error: unknown) => void;
-      timer: ReturnType<typeof setTimeout>;
-    }
-  >();
+  const pending = createPendingRequests<string | number>();
   const stopped = (cause: unknown): void => {
     handlers.unavailable();
-    for (const entry of pending.values()) {
-      clearTimeout(entry.timer);
-      entry.reject(
-        new Exception(`The Codex integration failed: ${extractMessage(cause)}`, {
-          code: 'JG_AGENT_HQ_CODEX_FAILED',
-          data: { kind: 'agent-unavailable' },
-          cause,
-        }),
-      );
-    }
-    pending.clear();
+    pending.rejectAll(
+      new Exception(`The Codex integration failed: ${extractMessage(cause)}`, {
+        code: 'JG_AGENT_HQ_CODEX_FAILED',
+        data: { kind: 'agent-unavailable' },
+        cause,
+      }),
+    );
   };
   const receive = (message: unknown): void => {
     const parsed = EnvelopeSchema.safeParse(message);
     if (!parsed.success)
-      throw new Exception('The Codex integration failed', {
-        code: 'JG_AGENT_HQ_CODEX_FAILED',
+      throw HQ_ERRORS.create('codexFailed', {
         data: { kind: 'agent-unavailable' },
         cause: parsed.error,
       });
@@ -90,31 +80,23 @@ export const createCodexRpc = async (
       return;
     }
     if (envelope.id === undefined)
-      throw new Exception('The Codex integration failed', {
-        code: 'JG_AGENT_HQ_CODEX_FAILED',
-        data: {
-          kind: 'agent-unavailable',
-        },
+      throw HQ_ERRORS.create('codexFailed', {
+        data: { kind: 'agent-unavailable' },
       });
-    const entry = pending.get(envelope.id);
-    if (!entry) {
-      if (typeof envelope.id === 'string')
-        handlers.lateResponse(envelope.id, envelope.result, envelope.error);
-      return;
-    }
-    pending.delete(envelope.id);
-    clearTimeout(entry.timer);
-    if (envelope.error)
-      entry.reject(
-        new Exception(`The Codex integration failed: ${envelope.error.message}`, {
-          code: 'JG_AGENT_HQ_CODEX_FAILED',
-          data: {
-            kind: 'agent-unavailable',
-            nativeCode: envelope.error.code,
-          },
-        }),
-      );
-    else entry.resolve(envelope.result);
+    const isPending = envelope.error
+      ? pending.reject(
+          envelope.id,
+          new Exception(`The Codex integration failed: ${envelope.error.message}`, {
+            code: 'JG_AGENT_HQ_CODEX_FAILED',
+            data: {
+              kind: 'agent-unavailable',
+              nativeCode: envelope.error.code,
+            },
+          }),
+        )
+      : pending.resolve(envelope.id, envelope.result);
+    if (!isPending && typeof envelope.id === 'string')
+      handlers.lateResponse(envelope.id, envelope.result, envelope.error);
   };
   /**
    * Sends one request on the given transport and waits for its response.
@@ -129,43 +111,30 @@ export const createCodexRpc = async (
     actionRequestId?: string,
   ): Promise<unknown> => {
     if (!transport.isRunning || pending.size >= 32)
-      throw new Exception('The Codex integration failed', {
-        code: 'JG_AGENT_HQ_CODEX_FAILED',
-        data: { kind: 'agent-unavailable' },
-      });
+      throw HQ_ERRORS.create('codexFailed', { data: { kind: 'agent-unavailable' } });
     const id = actionRequestId ?? ++sequence;
     if (pending.has(id))
-      throw new Exception('The Codex integration failed', {
-        code: 'JG_AGENT_HQ_CODEX_FAILED',
-        data: { kind: 'state-conflict' },
-      });
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pending.delete(id);
-        reject(
-          new Exception('The Codex integration failed: request deadline exceeded', {
-            code: 'JG_AGENT_HQ_CODEX_FAILED',
-            data: {
-              kind: 'agent-unavailable',
-            },
-          }),
-        );
-      }, 30_000);
-      pending.set(id, { resolve, reject, timer });
-      void transport.write({ id, method, params }).catch((cause: unknown) => {
-        const entry = pending.get(id);
-        if (!entry) return;
-        clearTimeout(entry.timer);
-        pending.delete(id);
-        entry.reject(
-          new Exception(`The Codex integration failed: ${extractMessage(cause)}`, {
-            code: 'JG_AGENT_HQ_CODEX_FAILED',
-            data: { kind: 'agent-unavailable' },
-            cause,
-          }),
-        );
-      });
+      throw HQ_ERRORS.create('codexFailed', { data: { kind: 'state-conflict' } });
+    const response = pending.add(
+      id,
+      30_000,
+      () =>
+        new Exception('The Codex integration failed: request deadline exceeded', {
+          code: 'JG_AGENT_HQ_CODEX_FAILED',
+          data: { kind: 'agent-unavailable' },
+        }),
+    );
+    void transport.write({ id, method, params }).catch((cause: unknown) => {
+      pending.reject(
+        id,
+        new Exception(`The Codex integration failed: ${extractMessage(cause)}`, {
+          code: 'JG_AGENT_HQ_CODEX_FAILED',
+          data: { kind: 'agent-unavailable' },
+          cause,
+        }),
+      );
     });
+    return response;
   };
   /**
    * Opens and initializes one proxy connection; terminal sessions and HQ share one daemon,
@@ -204,8 +173,7 @@ export const createCodexRpc = async (
           }),
         );
       if (!initialized.success)
-        throw new Exception('The Codex integration failed', {
-          code: 'JG_AGENT_HQ_CODEX_FAILED',
+        throw HQ_ERRORS.create('codexFailed', {
           data: { kind: 'agent-unavailable' },
           cause: initialized.error,
         });

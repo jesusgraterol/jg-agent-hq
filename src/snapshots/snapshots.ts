@@ -1,10 +1,14 @@
 import { rm } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { Exception, extractMessage, hasErrorCode } from 'jg-exception';
+import { Exception, extractMessage, hasErrorCode, isException } from 'jg-exception';
+import { ERRORS as FS_ERRORS } from 'jg-fs';
+import { withLock } from 'jg-locks';
+import { z } from 'zod';
 
-import type { IAgentHq } from '../runtime/index.js';
-import { acquireHqLock } from '../locks/index.js';
+import { SNAPSHOT_LOCK, toLocksRoot } from '../runtime/state/index.js';
+import { toWorkerExecArgv } from '../store/index.js';
+import { HQ_ERRORS } from '../errors/index.js';
 
 import { captureSnapshot } from './capture.js';
 import { invalidSnapshot, syncSnapshotDirectory } from './files.js';
@@ -16,13 +20,6 @@ import {
   type IHqRestoreResult,
   type ISnapshotContext,
 } from './types.js';
-
-const contexts = new WeakMap<IAgentHq, ISnapshotContext>();
-
-/** Binds trusted Node runtime state without adding worker handles or backup commands to RPC. */
-export const registerSnapshotContext = (context: ISnapshotContext): void => {
-  contexts.set(context.runtime, context);
-};
 
 /**
  * Runs full SQLite verification/restoration off the caller's event loop and confirms worker exit.
@@ -38,12 +35,7 @@ const runSnapshotWorker = async (input: {
   destination?: string;
 }): Promise<IHqSnapshotInspection> => {
   const worker = new Worker(new URL('./snapshots.worker.js', import.meta.url), {
-    execArgv: process.execArgv.filter(
-      (argument, index, args) =>
-        argument !== '--input-type' &&
-        !argument.startsWith('--input-type=') &&
-        args[index - 1] !== '--input-type',
-    ),
+    execArgv: toWorkerExecArgv(),
     workerData: input,
   });
   return new Promise((resolveResult, rejectResult) => {
@@ -90,10 +82,16 @@ const runSnapshotWorker = async (input: {
   });
 };
 
+// how long capture waits for another holder of the snapshot lock, in seconds
+const SNAPSHOT_LOCK_WAIT_SECONDS = 120;
+
 /**
  * Captures a running HQ, host tables and private key while agents keep working, under the state
- * root's HQ lock. The host must keep its own connections from writing host tables until the
- * capture resolves. The destination must be absent under an existing canonical parent.
+ * root's snapshot lock. The host must keep its own connections from writing host tables until the
+ * capture resolves. The destination must be absent under an existing canonical parent. The
+ * runtime's own state stays private to it, so no worker handle or backup command reaches RPC.
+ * @param context The running runtime's state.
+ * @param destination The snapshot directory to create.
  * @returns A fully verified local snapshot; remote durability remains the host's responsibility.
  * @throws
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
@@ -101,13 +99,11 @@ const runSnapshotWorker = async (input: {
  * - JG_AGENT_HQ_SNAPSHOT_FAILED: The HQ snapshot operation failed
  * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
  */
-export const createHqSnapshot = async (
-  runtime: IAgentHq,
+export const captureHqSnapshot = async (
+  context: ISnapshotContext,
   destination: string,
 ): Promise<IHqSnapshotInspection> => {
-  const context = contexts.get(runtime);
   if (
-    !context ||
     context.isClosing() ||
     typeof destination !== 'string' ||
     !isAbsolute(destination) ||
@@ -116,37 +112,27 @@ export const createHqSnapshot = async (
     invalidSnapshot();
   let owned: string | undefined;
   try {
-    return await context.admit(async () => {
-      let release: (() => Promise<void>) | undefined;
-      let failure: unknown;
-      try {
-        release = await acquireHqLock(context.stateRoot, 'snapshot');
-        const result = await captureSnapshot(
-          {
-            stateRoot: context.stateRoot,
-            allowedRoots: context.allowedRoots,
-            actionKeyHash: context.actionKeyHash,
-            schemaHash: context.store.storage.schemaHash,
-            backupDatabase: (path) => context.store.snapshotBackup(path),
-            verify: inspectHqSnapshot,
-          },
-          destination,
-        );
-        owned = result.directory;
-        return result;
-      } catch (cause) {
-        failure = cause;
-        throw cause;
-      } finally {
-        try {
-          await release?.();
-        } catch (cleanup) {
-          if (failure)
-            throw new AggregateError([failure, cleanup], 'Snapshot metadata lock release failed');
-          throw cleanup;
-        }
-      }
-    });
+    return await context.admit(() =>
+      withLock(
+        SNAPSHOT_LOCK,
+        { ...toLocksRoot(context.stateRoot), waitSeconds: SNAPSHOT_LOCK_WAIT_SECONDS },
+        async () => {
+          const result = await captureSnapshot(
+            {
+              stateRoot: context.stateRoot,
+              allowedRoots: context.allowedRoots,
+              actionKeyHash: context.actionKeyHash,
+              schemaHash: context.store.storage.schemaHash,
+              backupDatabase: (path) => context.store.call('snapshot', 'backup', path),
+              verify: inspectHqSnapshot,
+            },
+            destination,
+          );
+          owned = result.directory;
+          return result;
+        },
+      ),
+    );
   } catch (cause) {
     if (owned) {
       try {
@@ -163,12 +149,13 @@ export const createHqSnapshot = async (
       hasErrorCode(cause, 'JG_AGENT_HQ_STORAGE_INVALID')
     )
       throw cause;
-    if (hasErrorCode(cause, 'JG_AGENT_HQ_LOCK_TIMEOUT'))
-      throw new Exception('The HQ action conflicts with its recorded state', {
-        code: 'JG_AGENT_HQ_ACTION_CONFLICT',
-        data: { kind: 'state-conflict' },
-        cause,
-      });
+    // a live holder that kept the lock through the whole wait, unlike a dead one, conflicts
+    if (
+      isException(cause) &&
+      cause.code === FS_ERRORS.LOCK_BUSY &&
+      z.object({ reason: z.literal('held') }).safeParse(cause.data).success
+    )
+      throw HQ_ERRORS.create('actionConflict', { data: { kind: 'state-conflict' }, cause });
     throw new Exception(`The HQ snapshot operation failed: ${extractMessage(cause)}`, {
       code: 'JG_AGENT_HQ_SNAPSHOT_FAILED',
       data: { kind: 'operation-failed' },

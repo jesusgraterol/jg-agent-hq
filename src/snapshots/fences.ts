@@ -19,17 +19,19 @@ export const applyRestoreFences = (filename: string): void => {
     try {
       const now = Date.now();
       database
-        .prepare("UPDATE hq_thread SET ownership = 'uncertain', state = 'unknown', updated_at = ?")
-        .run(now);
-      database
         .prepare(
-          "UPDATE hq_action SET delivery = 'uncertain', updated_at = ? WHERE delivery = 'submitted'",
+          "UPDATE agent_hq_thread SET ownership = 'uncertain', state = 'unknown', updated_at = ?",
         )
         .run(now);
-      database.exec('UPDATE hq_action SET queue_ready = 0');
       database
         .prepare(
-          "UPDATE hq_native_approval SET state = 'expired', updated_at = ? WHERE state = 'pending'",
+          "UPDATE agent_hq_action SET delivery = 'uncertain', updated_at = ? WHERE delivery = 'submitted'",
+        )
+        .run(now);
+      database.exec('UPDATE agent_hq_action SET queue_ready = 0');
+      database
+        .prepare(
+          "UPDATE agent_hq_native_approval SET state = 'expired', updated_at = ? WHERE state = 'pending'",
         )
         .run(now);
       database.exec('COMMIT');

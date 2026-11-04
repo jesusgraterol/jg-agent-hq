@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
-import { Exception } from 'jg-exception';
+import { hashValue } from 'jg-crypto';
+
 import { z } from 'zod';
 
 import {
@@ -8,21 +8,33 @@ import {
   type INativeSkillInput,
   type ISkill,
   type ISkillPage,
-  type ISkillPreview,
   type IProviderId,
 } from '../contracts/index.js';
 import type { IProviderSkills } from '../providers/index.js';
 import type { createProviderRegistry, IBoundAgentProvider } from '../providers/registry/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
-import { decodeHistoryCursor, encodeHistoryCursor } from '../sessions/index.js';
+import { createRequestCursors } from '../sessions/index.js';
 import type { IStore } from '../store/index.js';
+import { HQ_ERRORS } from '../errors/index.js';
 
-const PositionSchema = z.strictObject({
-  digest: z.string().regex(/^[a-f0-9]{64}$/),
-  id: z.string().regex(/^[a-f0-9]{64}$/),
-});
-const digest = (input: object): string =>
-  createHash('sha256').update(JSON.stringify(input)).digest('hex');
+// a skill page continues after its final skill, in the catalog revision it was read from
+const positions = createRequestCursors(
+  z.strictObject({
+    digest: z.string().regex(/^[a-f0-9]{64}$/),
+    id: z.string().regex(/^[a-f0-9]{64}$/),
+  }),
+);
+const digest = (input: object): string => hashValue(JSON.stringify(input));
+
+// native inventories are unpaged, so one read accepts at most this many skills
+const MAX_CATALOG_SKILLS = 4096;
+
+// an invocation resolved from the catalog, with its exact native text only when it is ready
+type ISkillPreview = {
+  state: 'ready' | 'missing' | 'disabled' | 'unavailable';
+  skill: ISkill | null;
+  text: string | null;
+};
 
 // whose catalog a read takes: a managed session's, or the one a session started in a folder gets
 type ISkillTarget = { threadId: string } | { provider: IProviderId; workspaceRoot: string };
@@ -70,7 +82,7 @@ export const createSkills = (
   const scan = async (target: ISkillTarget) => {
     let source: { key: string; provider: IProviderId; workspaceRoot: string; nativeId?: string };
     if ('threadId' in target) {
-      const thread = await store.getThread(target.threadId);
+      const thread = await store.call('reads', 'getThread', target.threadId);
       if (!thread) return null;
       await resolveWorkspaceTarget(thread.workspaceRoot, roots);
       if (
@@ -114,6 +126,7 @@ export const createSkills = (
       );
       skills.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
       if (
+        skills.length > MAX_CATALOG_SKILLS ||
         skills.some((skill, index) => index > 0 && skill.id === skills[index - 1]!.id) ||
         Buffer.byteLength(JSON.stringify(skills)) > 1_048_576
       )
@@ -133,30 +146,6 @@ export const createSkills = (
     }
   };
   return {
-    /** Stops new reads joining an observation started before a native change. */
-    invalidate(): void {
-      pending.clear();
-    },
-    /** Resolves one unambiguous native name from a single bounded inventory read.
-     * @returns An exact preview, or an explicit missing/disabled/unavailable state.
-     * @throws
-     * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
-     * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
-     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
-     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-     */
-    async previewName(
-      threadId: string,
-      name: string,
-      skillArguments: string,
-    ): Promise<ISkillPreview> {
-      const result = await scan({ threadId });
-      if (!result) return { state: 'unavailable', skill: null, text: null };
-      const matches = result.skills.filter((skill) => skill.name === name);
-      if (matches.length > 1 || (!matches.length && result.unavailableCount))
-        return { state: 'unavailable', skill: null, text: null };
-      return toSkillPreview(result.formatSkill, matches[0], skillArguments);
-    },
     /**
      * Pages a managed session's native inventory, or with no session the one a session started in
      * the folder gets, with a content revision guard; an inventory change invalidates continuation.
@@ -175,19 +164,7 @@ export const createSkills = (
       search?: string;
     }): Promise<ISkillPage> {
       const { cursor, ...filters } = command;
-      const decoded = decodeHistoryCursor(cursor, filters);
-      let position: z.infer<typeof PositionSchema> | null = null;
-      if (decoded) {
-        try {
-          position = PositionSchema.parse(JSON.parse(decoded));
-        } catch (cause) {
-          throw new Exception('The HQ cursor does not match this request', {
-            code: 'JG_AGENT_HQ_CURSOR_INVALID',
-            data: { kind: 'invalid-request' },
-            cause,
-          });
-        }
-      }
+      const position = positions.decode(cursor, filters);
       const result = await scan(
         command.threadId
           ? { threadId: command.threadId }
@@ -204,11 +181,8 @@ export const createSkills = (
         };
       const revision = digest([result.skills, result.unavailableCount]);
       if (position && position.digest !== revision)
-        throw new Exception('The HQ cursor does not match this request', {
-          code: 'JG_AGENT_HQ_CURSOR_INVALID',
-          data: {
-            kind: 'invalid-request',
-          },
+        throw HQ_ERRORS.create('cursorInvalid', {
+          data: { kind: 'invalid-request' },
         });
       const query = command.search?.toLowerCase();
       const data = result.skills
@@ -227,14 +201,15 @@ export const createSkills = (
         observedAt: result.observedAt,
         data,
         unavailableCount: result.unavailableCount,
-        nextCursor: encodeHistoryCursor(
-          hasMore && last ? JSON.stringify({ digest: revision, id: last.id }) : null,
+        nextCursor: positions.encode(
+          hasMore && last ? { digest: revision, id: last.id } : null,
           filters,
         ),
       };
     },
     /**
-     * Resolves an exact current selection and shows the native invocation without sending input.
+     * Resolves an exact current selection from a managed session's catalog, or a folder's for a
+     * session not yet created, and shows the native invocation without sending input.
      * @returns Ready, missing, disabled or unavailable state; never an inferred workflow.
      * @throws
      * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
@@ -243,17 +218,18 @@ export const createSkills = (
      * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
     async preview(
-      threadId: string,
+      target: ISkillTarget,
       skillId: string,
       skillArguments: string,
     ): Promise<ISkillPreview> {
-      const result = await scan({ threadId });
+      const result = await scan(target);
       if (!result) return { state: 'unavailable', skill: null, text: null };
       const skill = result.skills.find((skill) => skill.id === skillId);
       return toSkillPreview(result.formatSkill, skill, skillArguments);
     },
     /**
-     * Prepares one explicitly selected input while leaving skill contents and permissions native.
+     * Prepares one explicitly selected input while leaving skill contents and permissions native,
+     * from the target's catalog.
      * @returns Exact text and optional native skill selection for the existing action dispatcher.
      * @throws
      * - JG_AGENT_HQ_SKILL_UNAVAILABLE: The HQ skill is unavailable
@@ -263,19 +239,13 @@ export const createSkills = (
      * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
     async prepare(
-      threadId: string,
-      input: IMessageInput | { kind: 'skill-name'; name: string; arguments: string },
+      target: ISkillTarget,
+      input: IMessageInput,
     ): Promise<{ text: string; skill: INativeSkillInput | null }> {
       if (input.kind === 'text') return { text: input.text, skill: null };
-      const preview =
-        input.kind === 'skill-name'
-          ? await this.previewName(threadId, input.name, input.arguments)
-          : await this.preview(threadId, input.skillId, input.arguments);
+      const preview = await this.preview(target, input.skillId, input.arguments);
       if (preview.state !== 'ready' || !preview.skill || !preview.text)
-        throw new Exception('The HQ skill is unavailable', {
-          code: 'JG_AGENT_HQ_SKILL_UNAVAILABLE',
-          data: { kind: 'state-conflict' },
-        });
+        throw HQ_ERRORS.create('skillUnavailable', { data: { kind: 'state-conflict' } });
       return { text: preview.text, skill: { name: preview.skill.name, path: preview.skill.path } };
     },
   };

@@ -47,12 +47,6 @@ export const SkillPageSchema = z.object({
   nextCursor: z.string().max(16_384).nullable(),
 });
 export type ISkillPage = z.infer<typeof SkillPageSchema>;
-export const SkillPreviewSchema = z.object({
-  state: z.enum(['ready', 'missing', 'disabled', 'unavailable']),
-  skill: SkillSchema.nullable(),
-  text: z.string().max(65_536).nullable(),
-});
-export type ISkillPreview = z.infer<typeof SkillPreviewSchema>;
 
 // explicit skill input is user intent; native agents retain workflow and permission ownership
 export const MessageInputSchema = z.discriminatedUnion('kind', [

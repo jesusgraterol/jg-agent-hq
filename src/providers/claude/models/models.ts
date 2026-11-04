@@ -6,9 +6,13 @@ import type {
   IProviderModelPage,
   IProviderModelsRequest,
 } from '../../../contracts/index.js';
-import { decodeHistoryCursor, encodeHistoryCursor } from '../../../sessions/index.js';
+import { createRequestCursors } from '../../../sessions/index.js';
+import { HQ_ERRORS } from '../../../errors/index.js';
 
 import { ModelPositionSchema, NativeModelsSchema } from './types.js';
+
+// a model page continues after its final model, in the catalog revision it was read from
+const positions = createRequestCursors(ModelPositionSchema);
 
 /**
  * Pages native choices by stable identity and rejects continuation against a changed inventory.
@@ -43,26 +47,10 @@ export const readClaudeModels = (
   }
   const { cursor, ...filters } = command;
   const revision = hashValue(JSON.stringify(models));
-  const decoded = decodeHistoryCursor(cursor, filters);
-  let after: string | undefined;
-  if (decoded) {
-    let position: ReturnType<typeof ModelPositionSchema.parse>;
-    try {
-      position = ModelPositionSchema.parse(JSON.parse(decoded));
-    } catch (cause) {
-      throw new Exception(`The HQ cursor does not match this request: ${extractMessage(cause)}`, {
-        code: 'JG_AGENT_HQ_CURSOR_INVALID',
-        data: { kind: 'invalid-request' },
-        cause,
-      });
-    }
-    if (position.revision !== revision)
-      throw new Exception('The HQ cursor does not match this request', {
-        code: 'JG_AGENT_HQ_CURSOR_INVALID',
-        data: { kind: 'invalid-request' },
-      });
-    after = position.id;
-  }
+  const position = positions.decode(cursor, filters);
+  if (position && position.revision !== revision)
+    throw HQ_ERRORS.create('cursorInvalid', { data: { kind: 'invalid-request' } });
+  const after = position?.id;
   const start = after === undefined ? 0 : models.findIndex((model) => model.id > after);
   const data = start < 0 ? [] : models.slice(start, start + command.limit);
   const last = data.at(-1);
@@ -72,9 +60,6 @@ export const readClaudeModels = (
     source: 'native',
     observedAt: Date.now(),
     data,
-    nextCursor: encodeHistoryCursor(
-      hasMore && last ? JSON.stringify({ revision, id: last.id }) : null,
-      filters,
-    ),
+    nextCursor: positions.encode(hasMore && last ? { revision, id: last.id } : null, filters),
   };
 };

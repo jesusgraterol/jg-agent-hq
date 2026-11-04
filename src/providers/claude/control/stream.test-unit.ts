@@ -481,7 +481,7 @@ test("a steer Claude replays after its turn's result runs as the next turn, whic
   vi.useFakeTimers();
   const session = createSession();
   const { events, items } = createEvents();
-  const observed: { kind: string; nativeTurnId?: string; isAgentInitiated?: boolean }[] = [];
+  const observed: { kind: string; nativeTurnId?: string }[] = [];
   events.observe = (observation) => observed.push(observation);
   const settled = addSteer(session);
 
@@ -513,17 +513,11 @@ test("a steer Claude replays after its turn's result runs as the next turn, whic
     ['user-message', STEER],
     ['agent-message', STEER],
   ]);
-  // the operator's steer started it, not Claude
-  expect(
-    observed.map(({ kind, nativeTurnId, isAgentInitiated }) => [
-      kind,
-      nativeTurnId,
-      isAgentInitiated,
-    ]),
-  ).toStrictEqual([
-    ['turn-completed', INPUT, undefined],
-    ['turn-started', STEER, undefined],
-    ['turn-completed', STEER, undefined],
+  // the operator's steer started it, under its own UUID
+  expect(observed.map(({ kind, nativeTurnId }) => [kind, nativeTurnId])).toStrictEqual([
+    ['turn-completed', INPUT],
+    ['turn-started', STEER],
+    ['turn-completed', STEER],
   ]);
   expect(session.nativeTurn).toBeUndefined();
 });

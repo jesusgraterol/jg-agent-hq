@@ -76,8 +76,8 @@ test('requests for a session merge into its waiting re-check, and one asked whil
 test('each provider has its own re-check order', async () => {
   const { resyncs, started, finishNext } = createRechecks();
   resyncs.request('codex', 'thread-a', fresh('unknown'));
-  resyncs.request('other', 'thread-a', fresh('unknown'));
-  expect(started.map((entry) => entry.provider)).toStrictEqual(['codex', 'other']);
+  resyncs.request('claude', 'thread-a', fresh('unknown'));
+  expect(started.map((entry) => entry.provider)).toStrictEqual(['codex', 'claude']);
   await finishNext();
   await finishNext();
 });

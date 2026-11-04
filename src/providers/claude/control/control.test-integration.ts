@@ -225,7 +225,7 @@ test('Claude live items present what history will: thinking and notifications le
     );
     const path = join(fixture.workspaceRoot, 'a.ts');
     const event = (body: unknown) => ({ type: 'stream_event', event: body });
-    await fixture.control({
+    const script = {
       frames: [
         event({ type: 'message_start', message: { id: 'api-thinking' } }),
         event({ type: 'content_block_start', index: 0, content_block: { type: 'thinking' } }),
@@ -284,8 +284,21 @@ test('Claude live items present what history will: thinking and notifications le
           },
         },
       ],
-    });
+    };
+    /*
+     * the runtime clears a finished turn's live items once its saved history holds them, so
+     * Claude's result waits until the live window has been read
+     */
+    await fixture.control({ ...script, holdResult: true });
     const input = await api.message(thread.id, 'Edit the file');
+    await expect
+      .poll(async () => {
+        const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
+        return live.result.data.map((item) => item.nativeId);
+      })
+      .toContain(answer);
+    const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
+    await fixture.control({ ...script, holdResult: true, releaseResult: true });
     await api.until(
       () => api.receipt(input.id),
       (entry) => entry.completion === 'completed',
@@ -305,8 +318,6 @@ test('Claude live items present what history will: thinking and notifications le
       outcome: item.outcome,
       files: item.files,
     });
-    const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
-    if (live.kind !== 'live-items') throw new Error('Missing live items');
     const liveItems = live.result.data.map(shown);
     expect(liveItems.map((item) => item.nativeId)).toStrictEqual([
       expect.any(String),
@@ -565,7 +576,8 @@ test('Claude permissions preserve native input and cannot grant a session-wide a
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture),
       { thread } = await api.create();
-    await fixture.control({ prompt: 'permission', toolFailure: true });
+    // Claude's result waits until the live window has been read, before its turn's flush clears it
+    await fixture.control({ prompt: 'permission', toolFailure: true, holdResult: true });
     const input = await api.message(thread.id),
       accepted = await api.settled(input.id);
     const [prompt] = await api.until(
@@ -601,15 +613,23 @@ test('Claude permissions preserve native input and cannot grant a session-wide a
     expect(
       (await api.calls()).find((call) => call.type === 'control_response')!.response?.response,
     ).toMatchObject({ behavior: 'deny' });
-    const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
-    expect(live).toMatchObject({
-      kind: 'live-items',
-      result: {
+    await expect
+      .poll(async () => (await fixture.request({ kind: 'live-items', threadId: thread.id })).result)
+      .toMatchObject({
         data: expect.arrayContaining([
           expect.objectContaining({ kind: 'tool', text: 'Tool failed' }),
         ]),
-      },
+      });
+    await fixture.control({
+      prompt: 'permission',
+      toolFailure: true,
+      holdResult: true,
+      releaseResult: true,
     });
+    await api.until(
+      () => api.receipt(input.id),
+      (entry) => entry.completion !== null,
+    );
   });
 });
 
@@ -948,7 +968,7 @@ test.each([{ requires_user_interaction: true }, { subtype: 'unknown-request' }])
       expect(await api.approvals(thread.id)).toStrictEqual([]);
       expect(
         (await api.calls()).find((call) => call.type === 'control_response')?.response,
-      ).toMatchObject({ subtype: 'error', error: "HQ couldn't present this request" });
+      ).toMatchObject({ subtype: 'error', error: "jg-agent-hq couldn't present this request" });
     });
   },
 );
@@ -1106,7 +1126,20 @@ test('the same native ID in Claude and Codex retains separate control, history a
     const codex = await api.thread(admitted.threadId!);
     expect(codex.nativeId).toBe(claude.thread.nativeId);
     expect(codex.id).not.toBe(claude.thread.id);
+    // Claude's result waits until its live window has been read, before its turn's flush clears it
+    await fixture.control({ holdResult: true });
     const inputs = await Promise.all([api.message(claude.thread.id), api.message(codex.id)]);
+    await expect
+      .poll(
+        async () =>
+          (await fixture.request({ kind: 'live-items', threadId: claude.thread.id })).result,
+      )
+      .toMatchObject({
+        data: expect.arrayContaining([
+          expect.objectContaining({ text: 'Native response to Please inspect this example' }),
+        ]),
+      });
+    await fixture.control({ holdResult: true, releaseResult: true });
     await Promise.all(
       inputs.map((input) =>
         api.until(
@@ -1115,15 +1148,7 @@ test('the same native ID in Claude and Codex retains separate control, history a
         ),
       ),
     );
-    const claudeLive = await fixture.request({ kind: 'live-items', threadId: claude.thread.id });
     const codexLive = await fixture.request({ kind: 'live-items', threadId: codex.id });
-    expect(claudeLive).toMatchObject({
-      result: {
-        data: expect.arrayContaining([
-          expect.objectContaining({ text: 'Native response to Please inspect this example' }),
-        ]),
-      },
-    });
     expect(codexLive).toMatchObject({
       result: { data: [expect.objectContaining({ text: 'Live response' })] },
     });
@@ -1622,47 +1647,37 @@ test('input queued while a turn Claude started runs is delivered after that turn
   });
 });
 
-test.each([
-  ['a message', 'Waiting request', 'Native response to Waiting request'],
-  ['a compaction', '/compact', 'Native response to /compact'],
-])(
-  '%s waiting for acknowledgement when Claude starts a turn of its own keeps its own turn, result and completion',
-  async (_label, text, response) => {
-    await withClaudeRuntime(async (fixture) => {
-      const api = await actions(fixture),
-        { thread } = await api.create();
-      await fixture.control({ nativeBeforeReplay: true, holdTurn: true });
-      const action =
-        text === '/compact'
-          ? api.envelope({ kind: 'thread-compact', threadId: thread.id })
-          : await api.message(thread.id, text);
-      if (text === '/compact') await api.submit(action);
-      // Claude replays the input after its own turn, whose result is held by no receipt
-      const acknowledged = await api.until(
-        () => api.receipt(action.id),
-        (entry) => entry.delivery === 'acknowledged',
-      );
-      const [written] = await writtenInputs(api);
-      expect(acknowledged).toMatchObject({
-        nativeTurnId: written!.uuid,
-        completion: null,
-        result: null,
-      });
-      expect((await api.thread(thread.id)).activeTurnId).toBe(written!.uuid);
-      await fixture.control({ release: true });
-      expect(
-        await api.until(
-          () => api.receipt(action.id),
-          (entry) => entry.completion !== null,
-        ),
-      ).toMatchObject({
-        nativeTurnId: written!.uuid,
-        completion: 'completed',
-        result: { text: response },
-      });
+test('a message waiting for acknowledgement when Claude starts a turn of its own keeps its own turn, result and completion', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture),
+      { thread } = await api.create();
+    await fixture.control({ nativeBeforeReplay: true, holdTurn: true });
+    const action = await api.message(thread.id, 'Waiting request');
+    // Claude replays the input after its own turn, whose result is held by no receipt
+    const acknowledged = await api.until(
+      () => api.receipt(action.id),
+      (entry) => entry.delivery === 'acknowledged',
+    );
+    const [written] = await writtenInputs(api);
+    expect(acknowledged).toMatchObject({
+      nativeTurnId: written!.uuid,
+      completion: null,
+      result: null,
     });
-  },
-);
+    expect((await api.thread(thread.id)).activeTurnId).toBe(written!.uuid);
+    await fixture.control({ release: true });
+    expect(
+      await api.until(
+        () => api.receipt(action.id),
+        (entry) => entry.completion !== null,
+      ),
+    ).toMatchObject({
+      nativeTurnId: written!.uuid,
+      completion: 'completed',
+      result: { text: 'Native response to Waiting request' },
+    });
+  });
+});
 
 test('input written just before a turn Claude starts that outlasts the acknowledgement deadline is uncertain until its replay, then completes as its own turn', async () => {
   await withClaudeRuntime(async (fixture) => {

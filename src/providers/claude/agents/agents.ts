@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { IObservationPace, ISessionState } from '../../../contracts/index.js';
 import { isOwnedProcess } from '../../process.js';
 import { resolveWorkspaceTarget } from '../../../runtime/state/index.js';
+import type { IObservedSession } from '../../../store/sessions/index.js';
 import { createClaudeBackgroundTasks, READ_BUDGET_BYTES } from '../background/index.js';
 import { projectDirectory } from '../history/index.js';
 
@@ -42,9 +43,10 @@ export const toAgentState = (agent: IClaudeAgent): ISessionState =>
 
 /**
  * Polls `claude agents --json` while the runtime runs and records the complete list of active
- * sessions inside the allowed workspaces, so a session missing from a run is closed. A failed,
- * late, oversized or malformed run changes nothing. Runs follow one another at the `background`
- * pace until `setPace` selects another, which takes effect with an immediate run.
+ * sessions inside the allowed workspaces, each with its resolved `cwd` as its folder, so a session
+ * missing from a run is closed. A failed, late, oversized or malformed run changes nothing. Runs
+ * follow one another at the `background` pace until `setPace` selects another, which takes effect
+ * with an immediate run.
  *
  * Before it records their states, each run counts every listed session's background tasks from
  * its transcript, read since its Claude process started, within one byte budget for the whole run.
@@ -58,29 +60,27 @@ export const toAgentState = (agent: IClaudeAgent): ISessionState =>
  * whose close stops polling and waits for a run in progress.
  */
 export const observeClaudeAgents = (
-  record: (sessions: { nativeId: string; state: ISessionState }[]) => Promise<void>,
+  record: (sessions: IObservedSession[]) => Promise<void>,
   allowedRoots: string[],
   locateTranscript: (nativeId: string) => Promise<string | null>,
 ): IClaudeAgentsObserver => {
   const lifetime = new AbortController();
-  // whether each session directory is inside an allowed workspace, checked once per directory
-  const allowedDirectories = new Map<string, boolean>();
+  // each session directory resolved inside an allowed workspace, or null outside them, once each
+  const allowedDirectories = new Map<string, string | null>();
   // what the latest run listed about each session, which no other source reports
   let listedSessions = new Map<string, IListedSession>();
   const background = createClaudeBackgroundTasks();
   let pace = 'background' as IObservationPace;
   let wait = new AbortController();
-  const isAllowed = async (directory: string): Promise<boolean> => {
-    let isInside = allowedDirectories.get(directory);
-    if (isInside === undefined) {
-      isInside = await resolveWorkspaceTarget(directory, allowedRoots)
-        .then(() => true)
-        .catch(() => false);
+  const resolveAllowed = async (directory: string): Promise<string | null> => {
+    let resolved = allowedDirectories.get(directory);
+    if (resolved === undefined) {
+      resolved = await resolveWorkspaceTarget(directory, allowedRoots).catch(() => null);
       if (allowedDirectories.size >= 1024)
         allowedDirectories.delete(allowedDirectories.keys().next().value!);
-      allowedDirectories.set(directory, isInside);
+      allowedDirectories.set(directory, resolved);
     }
-    return isInside;
+    return resolved;
   };
   // the Claude project directory that holds a session's transcript, or null when none does
   const findDirectory = async (nativeId: string, cwd: string): Promise<string | null> => {
@@ -111,15 +111,17 @@ export const observeClaudeAgents = (
     } catch {
       return;
     }
-    const sessions: { nativeId: string; state: ISessionState }[] = [];
+    const sessions: IObservedSession[] = [];
     const listed = new Map<string, IListedSession>();
     /*
      * An entry without a PID isn't running, whatever its state says, so it counts as missing; the
      * processes this runtime started, managed sessions and the metadata process, are its own.
      */
-    for (const agent of agents)
-      if (agent.pid !== undefined && !isOwnedProcess(agent.pid) && (await isAllowed(agent.cwd))) {
-        sessions.push({ nativeId: agent.sessionId, state: toAgentState(agent) });
+    for (const agent of agents) {
+      if (agent.pid === undefined || isOwnedProcess(agent.pid)) continue;
+      const workspaceRoot = await resolveAllowed(agent.cwd);
+      if (workspaceRoot !== null) {
+        sessions.push({ nativeId: agent.sessionId, state: toAgentState(agent), workspaceRoot });
         listed.set(agent.sessionId, {
           cwd: agent.cwd,
           terminal:
@@ -131,6 +133,7 @@ export const observeClaudeAgents = (
           backgroundCommands: 0,
         });
       }
+    }
     // counts are current before the states they explain are recorded
     const budget = { remaining: READ_BUDGET_BYTES };
     for (const [nativeId, session] of listed) {

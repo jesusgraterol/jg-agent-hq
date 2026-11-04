@@ -6,14 +6,17 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
-import { createAgentHq, createHqSnapshot, inspectHqSnapshot, restoreHqSnapshot } from 'jg-agent-hq';
+import { createAgentHq, restoreHqSnapshot } from 'jg-agent-hq';
 import { hashValue } from 'jg-crypto';
 import { expectToRejectCode } from 'jg-exception/testing';
+import { acquireLock, inspectLock } from 'jg-locks';
 import { afterEach, expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
   claudeRecord,
+  leaveLock,
+  stateLocks,
   withClaudeRuntime,
   writeFixtureControl,
 } from '../../scripts/test-support/index.js';
@@ -63,11 +66,10 @@ test('WAL-aware capture includes host tables and key but no plan files; offline 
       );
       host.prepare('INSERT INTO app_note VALUES (?, ?)').run(1, 'Committed in WAL');
       expect((await lstat(runtime.storage.databasePath + '-wal')).size).toBeGreaterThan(0);
-      const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
+      const snapshot = await runtime.createSnapshot(join(root, 'snapshot'));
       expect(snapshot).toMatchObject({
         header: { sourceStateRoot: stateRoot, sourceAllowedRoots: [workspaceRoot] },
       });
-      expect(await inspectHqSnapshot(snapshot.directory)).toStrictEqual(snapshot);
       expect((await readdir(snapshot.directory)).sort()).toStrictEqual([
         'action.key',
         'complete.json',
@@ -82,7 +84,7 @@ test('WAL-aware capture includes host tables and key but no plan files; offline 
       expect(await readFile(join(snapshot.directory, 'action.key'))).toStrictEqual(
         await readFile(join(stateRoot, 'action.key')),
       );
-      for (const name of ['hq-owner.json', 'control.sock', 'hq.lock'])
+      for (const name of ['.runtime', 'hq.sock'])
         await expect(lstat(join(snapshot.directory, name))).rejects.toMatchObject({
           code: 'ENOENT',
         });
@@ -90,6 +92,8 @@ test('WAL-aware capture includes host tables and key but no plan files; offline 
         snapshotDirectory: snapshot.directory,
         destination: join(root, 'recovery'),
       });
+      // restore inspects the snapshot again and finds it as capture reported it
+      expect(restored).toStrictEqual({ ...snapshot, stateRoot: join(root, 'recovery', 'state') });
       expect((await readdir(join(root, 'recovery'))).sort()).toStrictEqual([
         'recovered.json',
         'recovery.jsonl',
@@ -133,7 +137,9 @@ test('a snapshot leaves out the Claude history index and keeps host rowids; a re
     const nativeId = randomUUID();
     const question = claudeRecord(workspaceRoot, nativeId, { text: 'Kept in the transcript' });
     await writeFile(transcript(nativeId), `${JSON.stringify(question)}\n`);
-    expect(await request({ kind: 'threads', provider: 'claude', workspaceRoot })).toMatchObject({
+    expect(
+      await request({ kind: 'threads', providers: ['claude'], workspaceRoots: [workspaceRoot] }),
+    ).toMatchObject({
       kind: 'threads',
       result: { data: [{ nativeId }] },
     });
@@ -153,7 +159,7 @@ test('a snapshot leaves out the Claude history index and keeps host rowids; a re
         return {
           ...database
             .prepare(
-              'SELECT (SELECT count(*) FROM hq_claude_file) AS files, (SELECT count(*) FROM hq_claude_entry) AS entries',
+              'SELECT (SELECT count(*) FROM agent_hq_claude_file) AS files, (SELECT count(*) FROM agent_hq_claude_entry) AS entries',
             )
             .get(),
           events: database
@@ -170,7 +176,7 @@ test('a snapshot leaves out the Claude history index and keeps host rowids; a re
       { rowid: 3, body: 'third' },
     ];
     expect(readState(runtime.storage.databasePath)).toStrictEqual({ files: 1, entries: 1, events });
-    const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
+    const snapshot = await runtime.createSnapshot(join(root, 'snapshot'));
     expect(readState(join(snapshot.directory, 'hq.sqlite'))).toStrictEqual({
       files: 0,
       entries: 0,
@@ -192,7 +198,11 @@ test('a snapshot leaves out the Claude history index and keeps host rowids; a re
     });
     try {
       expect(
-        await reopened.request({ kind: 'threads', provider: 'claude', workspaceRoot }),
+        await reopened.request({
+          kind: 'threads',
+          providers: ['claude'],
+          workspaceRoots: [workspaceRoot],
+        }),
       ).toMatchObject({ kind: 'threads', result: { data: [{ nativeId }] } });
       const items = await reopened.request({
         kind: 'items',
@@ -221,7 +231,7 @@ test('capture uses construction roots rather than a mutated public runtime objec
     await writeFile(join(other, 'action.key'), Buffer.alloc(32), { mode: 0o600 });
     const expectedKeyHash = hashValue(await readFile(join(stateRoot, 'action.key')));
     runtime.stateRoot = other;
-    const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
+    const snapshot = await runtime.createSnapshot(join(root, 'snapshot'));
     expect(snapshot.header.sourceStateRoot).toBe(stateRoot);
     expect(hashValue(await readFile(join(snapshot.directory, 'action.key')))).toBe(expectedKeyHash);
   });
@@ -234,14 +244,14 @@ test('capture rejects an action key changed after startup and never publishes a 
     try {
       await writeFile(filename, Buffer.alloc(32), { mode: 0o600 });
       await expectToRejectCode(
-        createHqSnapshot(runtime, join(root, 'snapshot')),
+        runtime.createSnapshot(join(root, 'snapshot')),
         'JG_AGENT_HQ_SNAPSHOT_INVALID',
       );
       await expect(lstat(join(root, 'snapshot'))).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await writeFile(filename, original, { mode: 0o600 });
     }
-    expect((await createHqSnapshot(runtime, join(root, 'snapshot'))).header.sourceStateRoot).toBe(
+    expect((await runtime.createSnapshot(join(root, 'snapshot'))).header.sourceStateRoot).toBe(
       stateRoot,
     );
   });
@@ -262,18 +272,16 @@ test('startup rejects a different valid-length action key before changing the da
       })();
       await expectToRejectCode(opening, 'JG_AGENT_HQ_ACTION_KEY_UNAVAILABLE');
       expect(hashValue(await readFile(join(stateRoot, 'hq.sqlite')))).toBe(databaseHash);
-      await expect(lstat(join(stateRoot, 'hq-owner.json'))).rejects.toMatchObject({
-        code: 'ENOENT',
-      });
+      expect((await inspectLock('runtime', stateLocks(stateRoot))).state).toBe('free');
     } finally {
       await unexpected?.close();
       await writeFile(filename, original, { mode: 0o600 });
     }
     const reopened = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
     try {
-      expect(
-        (await createHqSnapshot(reopened, join(root, 'snapshot'))).header.sourceStateRoot,
-      ).toBe(stateRoot);
+      expect((await reopened.createSnapshot(join(root, 'snapshot'))).header.sourceStateRoot).toBe(
+        stateRoot,
+      );
     } finally {
       await reopened.close();
     }
@@ -297,7 +305,7 @@ test('host maintenance excludes capture, while capture proceeds through a native
     await admitted;
     try {
       await expectToRejectCode(
-        createHqSnapshot(runtime, join(root, 'snapshot')),
+        runtime.createSnapshot(join(root, 'snapshot')),
         'JG_AGENT_HQ_ACTION_CONFLICT',
       );
     } finally {
@@ -340,7 +348,7 @@ test('host maintenance excludes capture, while capture proceeds through a native
     if (running.kind !== 'managed-thread' || !running.result?.activeTurnId)
       throw new Error('Missing turn');
     // the turn is interrupted and completes while the capture is underway
-    const capture = createHqSnapshot(runtime, join(root, 'snapshot'));
+    const capture = runtime.createSnapshot(join(root, 'snapshot'));
     await runtime.request({
       kind: 'action',
       action: {
@@ -350,7 +358,6 @@ test('host maintenance excludes capture, while capture proceeds through a native
       },
     });
     const snapshot = await capture;
-    expect(await inspectHqSnapshot(snapshot.directory)).toStrictEqual(snapshot);
     await expect
       .poll(() => runtime.request({ kind: 'managed-thread', threadId }))
       .toMatchObject({ kind: 'managed-thread', result: { state: 'interrupted' } });
@@ -358,10 +365,13 @@ test('host maintenance excludes capture, while capture proceeds through a native
       snapshotDirectory: snapshot.directory,
       destination: join(root, 'recovery'),
     });
+    expect(restored).toStrictEqual({ ...snapshot, stateRoot: join(root, 'recovery', 'state') });
     const database = new DatabaseSync(join(restored.stateRoot, 'hq.sqlite'), { readOnly: true });
     try {
       expect({
-        ...database.prepare('SELECT ownership, state FROM hq_thread WHERE id = ?').get(threadId),
+        ...database
+          .prepare('SELECT ownership, state FROM agent_hq_thread WHERE id = ?')
+          .get(threadId),
       }).toStrictEqual({ ownership: 'uncertain', state: 'unknown' });
     } finally {
       database.close();
@@ -369,29 +379,57 @@ test('host maintenance excludes capture, while capture proceeds through a native
   });
 });
 
-test('capture takes the HQ lock in the state root and leaves a dead holder for explicit recovery', async () => {
+test('capture takes the snapshot lock in the state root and leaves a dead holder for explicit recovery', async () => {
   await withClaudeRuntime(async ({ runtime, root, stateRoot }) => {
-    const child = spawn(process.execPath, ['-e', '']);
-    await once(child, 'close');
-    if (!child.pid) throw new Error('test process did not start');
-    const lock = join(stateRoot, '.runtime', 'hq.lock');
-    const owner = JSON.stringify({
-      pid: child.pid,
-      nonce: randomUUID(),
-      command: 'holder',
-      createdAt: new Date().toISOString(),
-    });
-    await mkdir(join(stateRoot, '.runtime'), { recursive: true, mode: 0o700 });
-    await writeFile(lock, owner, { mode: 0o600 });
+    const owner = await leaveLock(stateLocks(stateRoot).root, 'snapshot');
     await expectToRejectCode(
-      createHqSnapshot(runtime, join(root, 'snapshot')),
+      runtime.createSnapshot(join(root, 'snapshot')),
       'JG_AGENT_HQ_SNAPSHOT_FAILED',
-      'The HQ lock has an inactive owner',
+      'is busy',
     );
     await expect(lstat(join(root, 'snapshot'))).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(await readFile(lock, 'utf8')).toBe(owner);
-    await rm(lock);
-    expect((await createHqSnapshot(runtime, join(root, 'snapshot'))).header.sourceStateRoot).toBe(
+    expect(await inspectLock('snapshot', stateLocks(stateRoot))).toMatchObject({
+      state: 'owner-gone',
+      owner,
+    });
+    await (
+      await acquireLock('snapshot', { ...stateLocks(stateRoot), recoverFrom: owner })
+    ).release();
+    expect((await runtime.createSnapshot(join(root, 'snapshot'))).header.sourceStateRoot).toBe(
+      stateRoot,
+    );
+    expect((await inspectLock('snapshot', stateLocks(stateRoot))).state).toBe('free');
+  });
+});
+
+test('a live holder of the snapshot lock blocks capture, which conflicts once its 120-second wait expires', async () => {
+  await withClaudeRuntime(async ({ runtime, root, stateRoot }) => {
+    const holder = await acquireLock('snapshot', stateLocks(stateRoot));
+    // jg-locks reads its wait's deadline from this clock, which the test moves instead of waiting
+    vi.useFakeTimers({ toFake: ['performance'] });
+    try {
+      let isSettled = false;
+      const capture = runtime.createSnapshot(join(root, 'snapshot'));
+      void capture.then(
+        () => (isSettled = true),
+        () => (isSettled = true),
+      );
+      await expect
+        .poll(
+          () => {
+            vi.advanceTimersByTime(30_000);
+            return isSettled;
+          },
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+      await expectToRejectCode(capture, 'JG_AGENT_HQ_ACTION_CONFLICT');
+    } finally {
+      vi.useRealTimers();
+      await holder.release();
+    }
+    await expect(lstat(join(root, 'snapshot'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await runtime.createSnapshot(join(root, 'snapshot'))).header.sourceStateRoot).toBe(
       stateRoot,
     );
   });
@@ -401,15 +439,11 @@ test.each(['action.key', 'hq.sqlite', 'manifest.jsonl', 'complete.json'])(
   'missing or corrupt %s prevents restore without creating a target',
   async (name) => {
     await withClaudeRuntime(async ({ runtime, root }) => {
-      const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
+      const snapshot = await runtime.createSnapshot(join(root, 'snapshot'));
       const filename = join(snapshot.directory, name);
       if (name === 'hq.sqlite' || name === 'manifest.jsonl')
         await writeFile(filename, 'corrupt', { mode: 0o600 });
       else await rm(filename);
-      await expectToRejectCode(
-        inspectHqSnapshot(snapshot.directory),
-        'JG_AGENT_HQ_SNAPSHOT_INVALID',
-      );
       await expectToRejectCode(
         restoreHqSnapshot({
           snapshotDirectory: snapshot.directory,
@@ -429,50 +463,48 @@ test.each([
   'extra-record',
   'bad-schema',
   'wrong-key-pair',
-])(
-  'inspection rejects %s even when the attacker recomputes manifest completion',
-  async (attack) => {
-    await withClaudeRuntime(async ({ runtime, root }) => {
-      const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
-      const entries = await readManifest(snapshot.directory);
-      if (attack === 'file-link') {
-        await rm(join(snapshot.directory, 'action.key'));
-        await symlink(
-          join(runtime.stateRoot, 'action.key'),
-          join(snapshot.directory, 'action.key'),
-        );
-      }
-      if (attack === 'shared-key') await chmod(join(snapshot.directory, 'action.key'), 0o644);
-      if (attack === 'omitted-record') entries.pop();
-      if (attack === 'extra-record') entries.push(entries[2]!);
-      if (attack === 'bad-schema') entries[0].schemaHash = '0'.repeat(64);
-      if (attack === 'wrong-key-pair') {
-        const key = Buffer.alloc(32);
-        await writeFile(join(snapshot.directory, 'action.key'), key, { mode: 0o600 });
-        entries[2].file = { bytes: 32, sha256: hashValue(key) };
-      }
-      const text = entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n';
-      await writeFile(join(snapshot.directory, 'manifest.jsonl'), text, { mode: 0o600 });
-      await writeFile(
-        join(snapshot.directory, 'complete.json'),
-        JSON.stringify({ manifestSha256: hashValue(text), records: entries.length }),
-        { mode: 0o600 },
-      );
-      // a header from another schema names the package version that claims to have written it
-      await expectToRejectCode(
-        inspectHqSnapshot(snapshot.directory),
-        attack === 'bad-schema' ? 'JG_AGENT_HQ_STORAGE_INVALID' : 'JG_AGENT_HQ_SNAPSHOT_INVALID',
-      );
-    });
-  },
-);
+])('restore rejects %s even when the attacker recomputes manifest completion', async (attack) => {
+  await withClaudeRuntime(async ({ runtime, root }) => {
+    const snapshot = await runtime.createSnapshot(join(root, 'snapshot'));
+    const entries = await readManifest(snapshot.directory);
+    if (attack === 'file-link') {
+      await rm(join(snapshot.directory, 'action.key'));
+      await symlink(join(runtime.stateRoot, 'action.key'), join(snapshot.directory, 'action.key'));
+    }
+    if (attack === 'shared-key') await chmod(join(snapshot.directory, 'action.key'), 0o644);
+    if (attack === 'omitted-record') entries.pop();
+    if (attack === 'extra-record') entries.push(entries[2]!);
+    if (attack === 'bad-schema') entries[0].schemaHash = '0'.repeat(64);
+    if (attack === 'wrong-key-pair') {
+      const key = Buffer.alloc(32);
+      await writeFile(join(snapshot.directory, 'action.key'), key, { mode: 0o600 });
+      entries[2].file = { bytes: 32, sha256: hashValue(key) };
+    }
+    const text = entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n';
+    await writeFile(join(snapshot.directory, 'manifest.jsonl'), text, { mode: 0o600 });
+    await writeFile(
+      join(snapshot.directory, 'complete.json'),
+      JSON.stringify({ manifestSha256: hashValue(text), records: entries.length }),
+      { mode: 0o600 },
+    );
+    // a header from another schema names the package version that claims to have written it
+    await expectToRejectCode(
+      restoreHqSnapshot({
+        snapshotDirectory: snapshot.directory,
+        destination: join(root, 'recovery'),
+      }),
+      attack === 'bad-schema' ? 'JG_AGENT_HQ_STORAGE_INVALID' : 'JG_AGENT_HQ_SNAPSHOT_INVALID',
+    );
+    await expect(lstat(join(root, 'recovery'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});
 
 test('occupied snapshot and restore targets, including a live state root, remain untouched', async () => {
   await withClaudeRuntime(async ({ runtime, root, workspaceRoot }) => {
-    const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
+    const snapshot = await runtime.createSnapshot(join(root, 'snapshot'));
     const before = await readFile(join(snapshot.directory, 'complete.json'));
     await expectToRejectCode(
-      createHqSnapshot(runtime, snapshot.directory),
+      runtime.createSnapshot(snapshot.directory),
       'JG_AGENT_HQ_SNAPSHOT_INVALID',
     );
     expect(await readFile(join(snapshot.directory, 'complete.json'))).toStrictEqual(before);
@@ -493,12 +525,12 @@ test.each(['/snapshot/manifest.jsonl', '/snapshot/action.key'])(
     await withClaudeRuntime(async ({ runtime, root, stateRoot }) => {
       faults.target = target;
       await expectToRejectCode(
-        createHqSnapshot(runtime, join(root, 'snapshot')),
+        runtime.createSnapshot(join(root, 'snapshot')),
         'JG_AGENT_HQ_SNAPSHOT_FAILED',
         'Injected full disk',
       );
       await expect(lstat(join(root, 'snapshot'))).rejects.toMatchObject({ code: 'ENOENT' });
-      expect((await createHqSnapshot(runtime, join(root, 'snapshot'))).header.sourceStateRoot).toBe(
+      expect((await runtime.createSnapshot(join(root, 'snapshot'))).header.sourceStateRoot).toBe(
         stateRoot,
       );
     });
@@ -507,7 +539,7 @@ test.each(['/snapshot/manifest.jsonl', '/snapshot/action.key'])(
 
 test('a restore copy failure removes its private workspace, preserves source evidence and can be retried', async () => {
   await withClaudeRuntime(async ({ runtime, root }) => {
-    const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
+    const snapshot = await runtime.createSnapshot(join(root, 'snapshot'));
     const before = await readFile(join(snapshot.directory, 'complete.json'));
     const preload = join(root, 'restore-fault.mjs');
     await writeFile(
@@ -558,7 +590,7 @@ try {
 
 test('restore rejects a source replaced by another valid snapshot after initial inspection', async () => {
   await withClaudeRuntime(async ({ runtime, root }) => {
-    const first = await createHqSnapshot(runtime, join(root, 'first'));
+    const first = await runtime.createSnapshot(join(root, 'first'));
     await runtime.withStorageMaintenance(async (storage) => {
       const host = new DatabaseSync(storage.databasePath);
       try {
@@ -567,7 +599,7 @@ test('restore rejects a source replaced by another valid snapshot after initial 
         host.close();
       }
     });
-    const second = await createHqSnapshot(runtime, join(root, 'second'));
+    const second = await runtime.createSnapshot(join(root, 'second'));
     expect(second.manifestSha256).not.toBe(first.manifestSha256);
     const destination = join(root, 'recovery');
     const preload = join(root, 'replace-source.mjs');
@@ -601,7 +633,12 @@ assert.ok(hasErrorCode(failure, 'JG_AGENT_HQ_SNAPSHOT_INVALID'), 'Replaced sourc
       maxBuffer: 65_536,
     });
     await expect(lstat(destination)).rejects.toMatchObject({ code: 'ENOENT' });
-    expect((await inspectHqSnapshot(first.directory)).manifestSha256).toBe(second.manifestSha256);
+    // the source now holds the second snapshot, which restores as itself
+    const replaced = await restoreHqSnapshot({
+      snapshotDirectory: first.directory,
+      destination: join(root, 'replaced-recovery'),
+    });
+    expect(replaced.manifestSha256).toBe(second.manifestSha256);
   });
 });
 
@@ -646,7 +683,7 @@ test(
         try {
           const now = Date.now();
           db.prepare(
-            'INSERT INTO hq_action (id,digest,requested_runtime_epoch,runtime_epoch,kind,thread_id,delivery,created_at,updated_at) VALUES (?,?,?,?,?,?,?, ?,?)',
+            'INSERT INTO agent_hq_action (id,digest,requested_runtime_epoch,runtime_epoch,kind,thread_id,delivery,created_at,updated_at) VALUES (?,?,?,?,?,?,?, ?,?)',
           ).run(
             actionId,
             'a'.repeat(64),
@@ -659,7 +696,7 @@ test(
             now,
           );
           db.prepare(
-            "INSERT INTO hq_action (id,digest,requested_runtime_epoch,runtime_epoch,kind,thread_id,delivery,queued_input,queue_ready,created_at,updated_at) VALUES (?,?,?,?,?,?,'queued',?,1,?,?)",
+            "INSERT INTO agent_hq_action (id,digest,requested_runtime_epoch,runtime_epoch,kind,thread_id,delivery,queued_input,queue_ready,created_at,updated_at) VALUES (?,?,?,?,?,?,'queued',?,1,?,?)",
           ).run(
             queueId,
             'b'.repeat(64),
@@ -672,7 +709,7 @@ test(
             now,
           );
           db.prepare(
-            "INSERT INTO hq_native_approval (id,thread_id,native_turn_id,runtime_epoch,native_request_id,digest,kind,is_blocking,state,created_at,updated_at) VALUES (?,?,?,?,?,?,'command',1,'pending',?,?)",
+            "INSERT INTO agent_hq_native_approval (id,thread_id,native_turn_id,runtime_epoch,native_request_id,digest,kind,is_blocking,state,created_at,updated_at) VALUES (?,?,?,?,?,?,'command',1,'pending',?,?)",
           ).run(
             approvalId,
             threadId,
@@ -687,7 +724,7 @@ test(
           db.close();
         }
       });
-      const snapshot = await createHqSnapshot(fixture.runtime, join(fixture.root, 'snapshot'));
+      const snapshot = await fixture.runtime.createSnapshot(join(fixture.root, 'snapshot'));
       const restored = await restoreHqSnapshot({
         snapshotDirectory: snapshot.directory,
         destination: join(fixture.root, 'recovery'),
@@ -695,13 +732,11 @@ test(
       const db = new DatabaseSync(join(restored.stateRoot, 'hq.sqlite'));
       try {
         expect(
-          db
-            .prepare('SELECT delivery, native_request_id FROM hq_action WHERE id = ?')
-            .get(actionId),
-        ).toMatchObject({ delivery: 'uncertain', native_request_id: null });
+          db.prepare('SELECT delivery, phase FROM agent_hq_action WHERE id = ?').get(actionId),
+        ).toMatchObject({ delivery: 'uncertain', phase: null });
         expect(
           db
-            .prepare('SELECT delivery, queued_input, queue_ready FROM hq_action WHERE id = ?')
+            .prepare('SELECT delivery, queued_input, queue_ready FROM agent_hq_action WHERE id = ?')
             .get(queueId),
         ).toMatchObject({
           delivery: 'queued',
@@ -709,7 +744,8 @@ test(
           queue_ready: 0,
         });
         expect(
-          db.prepare('SELECT state FROM hq_native_approval WHERE id = ?').get(approvalId)?.state,
+          db.prepare('SELECT state FROM agent_hq_native_approval WHERE id = ?').get(approvalId)
+            ?.state,
         ).toBe('expired');
       } finally {
         db.close();
@@ -755,12 +791,12 @@ test.each(['header', 'database'])(
   'a snapshot whose %s comes from another schema is refused by name before restore reserves its destination',
   async (source) => {
     await withClaudeRuntime(async ({ runtime, root }) => {
-      const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
+      const snapshot = await runtime.createSnapshot(join(root, 'snapshot'));
       if (source === 'database') {
         const database = new DatabaseSync(join(snapshot.directory, 'hq.sqlite'));
         try {
           database
-            .prepare('UPDATE hq_schema SET schema_hash = ?, package_version = ?')
+            .prepare('UPDATE agent_hq_schema SET schema_hash = ?, package_version = ?')
             .run('f'.repeat(64), '9.9.9');
         } finally {
           database.close();
@@ -773,17 +809,12 @@ test.each(['header', 'database'])(
         });
       const before = hashValue(await readFile(join(snapshot.directory, 'hq.sqlite')));
       await expectToRejectCode(
-        inspectHqSnapshot(snapshot.directory),
-        'JG_AGENT_HQ_STORAGE_INVALID',
-        'The HQ storage is invalid: written by jg-agent-hq 9.9.9',
-      );
-      await expectToRejectCode(
         restoreHqSnapshot({
           snapshotDirectory: snapshot.directory,
           destination: join(root, 'recovery'),
         }),
         'JG_AGENT_HQ_STORAGE_INVALID',
-        'written by jg-agent-hq 9.9.9',
+        'The HQ storage is invalid: written by jg-agent-hq 9.9.9',
       );
       await expect(lstat(join(root, 'recovery'))).rejects.toMatchObject({ code: 'ENOENT' });
       expect(hashValue(await readFile(join(snapshot.directory, 'hq.sqlite')))).toBe(before);
@@ -794,7 +825,7 @@ test.each(['header', 'database'])(
 // the header and records jg-agent-hq 8.0.2 wrote, with a field and records this schema lacks
 test("a snapshot with another schema's header fields and records is refused by name before its shape is checked", async () => {
   await withClaudeRuntime(async ({ runtime, root, stateRoot, workspaceRoot }) => {
-    const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
+    const snapshot = await runtime.createSnapshot(join(root, 'snapshot'));
     const entries = await readManifest(snapshot.directory);
     Object.assign(entries[0]!, {
       schemaHash: 'bf4d6ad7f2c97adaeb762f7206557999e6ed081d54484d233fe931b31fdf62ab',
@@ -821,17 +852,12 @@ test("a snapshot with another schema's header fields and records is refused by n
       JSON.stringify({ manifestSha256: hashValue(text), records: entries.length }),
     );
     await expectToRejectCode(
-      inspectHqSnapshot(snapshot.directory),
-      'JG_AGENT_HQ_STORAGE_INVALID',
-      'The HQ storage is invalid: written by jg-agent-hq 8.0.2',
-    );
-    await expectToRejectCode(
       restoreHqSnapshot({
         snapshotDirectory: snapshot.directory,
         destination: join(root, 'recovery'),
       }),
       'JG_AGENT_HQ_STORAGE_INVALID',
-      'written by jg-agent-hq 8.0.2',
+      'The HQ storage is invalid: written by jg-agent-hq 8.0.2',
     );
     await expect(lstat(join(root, 'recovery'))).rejects.toMatchObject({ code: 'ENOENT' });
   });

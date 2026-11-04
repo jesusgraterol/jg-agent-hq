@@ -3,7 +3,7 @@ import { createCipheriv, randomBytes } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { createHqSnapshot, packHqSnapshot, restoreHqSnapshot, unpackHqSnapshot } from 'jg-agent-hq';
+import { packHqSnapshot, restoreHqSnapshot, unpackHqSnapshot, type IAgentHq } from 'jg-agent-hq';
 import { expectToRejectCode } from 'jg-exception/testing';
 import { afterEach, expect, test, vi } from 'vitest';
 
@@ -71,7 +71,7 @@ const encodeArchive = (entries: { path: string; content: Buffer }[], key = KEY):
 const withArchive = async (
   run: (fixture: {
     root: string;
-    snapshot: Awaited<ReturnType<typeof createHqSnapshot>>;
+    snapshot: Awaited<ReturnType<IAgentHq['createSnapshot']>>;
     entries: { path: string; content: Buffer }[];
     archive: string;
   }) => Promise<void>,
@@ -87,7 +87,7 @@ const withArchive = async (
         host.close();
       }
     });
-    const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
+    const snapshot = await runtime.createSnapshot(join(root, 'snapshot'));
     const entries = await Promise.all(
       ['manifest.jsonl', 'complete.json', 'hq.sqlite', 'action.key'].map(async (path) => ({
         path,

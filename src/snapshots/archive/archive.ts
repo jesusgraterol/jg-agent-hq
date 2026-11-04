@@ -15,6 +15,7 @@ import {
 } from '../files.js';
 import { inspectHqSnapshot } from '../snapshots.js';
 import type { IHqSnapshotInspection } from '../types.js';
+import { HQ_ERRORS } from '../../errors/index.js';
 
 import {
   ARCHIVE_FORMAT,
@@ -97,7 +98,7 @@ const readEntries = async function* (directory: string): AsyncGenerator<Buffer> 
  * Encrypts a verified snapshot into one new private file with AES-256-GCM: a format identifier,
  * a fresh 12-byte IV, the ciphertext of every snapshot file in manifest order with its path and
  * length, and the authentication tag. The caller keeps the 32-byte key.
- * @param snapshotDirectory A snapshot from createHqSnapshot.
+ * @param snapshotDirectory A snapshot from the runtime's createSnapshot.
  * @param archivePath An absent absolute path beneath an existing canonical parent.
  * @param key The 32-byte encryption key.
  * @returns The inspection of the snapshot that was packed.
@@ -194,11 +195,7 @@ const decryptArchive = async (archivePath: string, output: string, key: Buffer):
   } catch (cause) {
     // filesystem failures stay operational; a wrong key, a modified byte or a truncation fail the tag
     if (cause instanceof Error && 'syscall' in cause) throw cause;
-    throw new Exception('The HQ snapshot is invalid', {
-      code: 'JG_AGENT_HQ_SNAPSHOT_INVALID',
-      data: { kind: 'invalid-request' },
-      cause,
-    });
+    throw HQ_ERRORS.create('snapshotInvalid', { data: { kind: 'invalid-request' }, cause });
   }
   const plaintext = await open(output, 'r');
   try {

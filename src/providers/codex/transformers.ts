@@ -4,7 +4,6 @@ import {
   UsageSnapshotSchema,
   UsageCreditsSchema,
   ThreadSummarySchema,
-  TurnSummarySchema,
   HistoryItemSchema,
   MAX_ITEM_IMAGES,
   MAX_ITEM_TEXT_LENGTH,
@@ -12,7 +11,6 @@ import {
   type IHistoryItem,
   type IItemDetail,
   type IThreadSummary,
-  type ITurnSummary,
   type IUsageSnapshot,
   type INativeLineage,
   type ISessionState,
@@ -26,12 +24,14 @@ import {
 } from '../../sessions/index.js';
 import { nativeProvenance } from '../../sessions/evidence/index.js';
 
-import type {
-  INativeItem,
-  INativeThread,
-  INativeThreadStatus,
-  INativeTurn,
-  INativeUsage,
+import {
+  TurnSummarySchema,
+  type INativeItem,
+  type INativeThread,
+  type INativeThreadStatus,
+  type INativeTurn,
+  type INativeUsage,
+  type ITurnSummary,
 } from './types.js';
 import { KNOWN_NATIVE_STATES } from './constants.js';
 import { parseNative } from './validations.js';

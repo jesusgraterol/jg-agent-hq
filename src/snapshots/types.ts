@@ -1,7 +1,6 @@
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 
-import type { IAgentHq } from '../runtime/index.js';
 import type { IStore } from '../store/index.js';
 import type { createStorage } from '../storage/index.js';
 
@@ -65,7 +64,6 @@ export type IHqRestoreResult = IHqSnapshotInspection & {
 
 // runtime-private access prevents exposing worker commands or backup paths through RPC
 export type ISnapshotContext = {
-  runtime: IAgentHq;
   stateRoot: string;
   actionKeyHash: string;
   allowedRoots: string[];

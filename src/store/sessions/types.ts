@@ -1,40 +1,44 @@
-import { z } from 'zod';
+import type { INativeLineage, IProviderId, ISessionState } from '../../contracts/index.js';
 
-import { NativeLineageSchema, SessionStateSchema } from '../../contracts/index.js';
+// what the provider's first read of a session another client drives found, which its record keeps
+export type IObservedThread = { workspaceRoot: string; name: string | null; createdAt: number };
+
+/*
+ * One observed session's state. Codex's adapter reports what its first read of the session found,
+ * and Claude's poll the folder it lists the session in.
+ */
+export type IObservedSession = {
+  nativeId: string;
+  state: ISessionState;
+  thread?: IObservedThread;
+  workspaceRoot?: string;
+};
 
 /*
  * One running or waiting session as the store knows it, or an idle one that runs background
- * commands. A managed session carries its thread,
- * and an observed Claude session its history index entry when its transcript is indexed; an
- * observed session's workspace is resolved outside the store.
+ * commands. A managed session carries its thread, an observed Codex session what the first read
+ * of it found, and an observed Claude session its history index entry when its transcript is
+ * indexed; an observed Claude session's workspace is resolved outside the store.
  */
-export const ActiveSessionRecordSchema = z.object({
-  provider: z.string(),
-  nativeId: z.string(),
-  state: SessionStateSchema.extract(['running', 'waiting', 'idle']),
-  changedAt: z.number().int(),
-  thread: z
-    .object({
-      id: z.uuid(),
-      ownership: z.enum(['managed', 'uncertain']),
-      name: z.string(),
-      workspaceRoot: z.string(),
-      nativeLineage: NativeLineageSchema.nullable(),
-      createdAt: z.number().int(),
-      updatedAt: z.number().int(),
-    })
-    .nullable(),
-  history: z
-    .object({
-      name: z.string().nullable(),
-      createdAt: z.number().int(),
-      updatedAt: z.number().int(),
-      isSupported: z.boolean(),
-    })
-    .nullable(),
-});
-export type IActiveSessionRecord = z.infer<typeof ActiveSessionRecordSchema>;
-export const ActiveSessionRecordsSchema = z.object({
-  data: z.array(ActiveSessionRecordSchema).max(128),
-  isTruncated: z.boolean(),
-});
+export type IActiveSessionRecord = {
+  provider: IProviderId;
+  nativeId: string;
+  state: Extract<ISessionState, 'running' | 'waiting' | 'idle'>;
+  changedAt: number;
+  thread: {
+    id: string;
+    ownership: 'managed' | 'uncertain';
+    name: string;
+    workspaceRoot: string;
+    nativeLineage: INativeLineage | null;
+    createdAt: number;
+    updatedAt: number;
+  } | null;
+  observed: IObservedThread | null;
+  history: {
+    name: string | null;
+    createdAt: number;
+    updatedAt: number;
+    isSupported: boolean;
+  } | null;
+};

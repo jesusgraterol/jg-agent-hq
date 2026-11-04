@@ -1,11 +1,11 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, fstatSync, opendirSync, readSync, type Dir } from 'node:fs';
-import type { DatabaseSync, SQLOutputValue, StatementSync } from 'node:sqlite';
+import { randomUUID } from 'node:crypto';
+import { closeSync, fstatSync, opendirSync, readSync, statSync, type Dir } from 'node:fs';
+import type { DatabaseSync } from 'node:sqlite';
+import { hashValue } from 'jg-crypto';
 import { Exception, extractMessage, hasErrorCode, isException } from 'jg-exception';
 import { z } from 'zod';
 
 import {
-  HqResponseSchema,
   type IHqRequest,
   type IItemDetail,
   type IItemImage,
@@ -14,9 +14,8 @@ import {
   type IEvidencePage,
 } from '../../../contracts/index.js';
 import {
+  createRequestCursors,
   decodeBase64Image,
-  decodeHistoryCursor,
-  encodeHistoryCursor,
   imageUnavailable,
   type IHistoryRequest,
 } from '../../../sessions/index.js';
@@ -25,16 +24,19 @@ import {
   buildEvidencePage,
   EVIDENCE_SOURCE_PAGE_SIZE,
 } from '../../../sessions/evidence/index.js';
+import { HQ_ERRORS } from '../../../errors/index.js';
+import type { IStatements } from '../../../store/index.js';
+import type { IThreadList, IThreadListRequest } from '../../types.js';
 
 import {
-  EntryRowSchema,
   EntrySeekSchema,
-  FileRowSchema,
   RecordSchema,
   ApiRequestMetadataSchema,
   SeekSchema,
+  type IEntryRow,
   type IFileRow,
   type IClaudeHistoryRead,
+  type IIndexingBudget,
   type IRecord,
 } from './types.js';
 import {
@@ -51,28 +53,66 @@ import {
   toClaudeItem,
 } from './utilities.js';
 
+// an item page continues before its oldest record
+const itemCursors = createRequestCursors(EntrySeekSchema);
+// a thread page's continuation: the activity time and session ID of the last transcript listed
+const THREAD_CURSOR = /^(\d{1,16}):(.+)$/;
+
 // identifies the path and record interpretation used by persisted projection entries
 const HISTORY_PROJECTION_VERSION = 10;
 // the transcripts whose continuing session is remembered, oldest dropped first
 const MAX_CONTINUED_ANSWERS = 1_024;
-// one record, such as a tool result holding images, and an indexing read, which fits the largest
+// one record, such as a tool result holding images
 const MAX_RECORD_BYTES = 33_554_432;
-const MAX_REFRESH_BYTES = 67_108_864;
+/*
+ * The new transcript bytes one worker call indexes, half of what a second indexes at the slowest
+ * measured rate, so a call stays well under a second; docs/architecture.md records the measurement.
+ * A call whose first record is larger reads that record whole.
+ */
+const INDEXING_BUDGET_BYTES = 8_388_608;
+// the ancestor record bytes an item detail reads in one call while it looks for a result's call,
+// which stays well under a second; docs/architecture.md records the measurement
+const MAX_CALL_SEARCH_BYTES = 67_108_864;
 // the record bytes and serialized items of one page, which stays well inside the IPC frame
 const MAX_PAGE_BYTES = 4_194_304;
 // hidden records awaiting a parent later in the file; Claude Code writes them a few lines early
 const MAX_HELD_BACK_RECORDS = 64;
 // the ancestors a result's call is looked for in, enough for 16 parallel calls and their results
 const MAX_CALL_DISTANCE = 32;
+// the statements indexing runs for every record, which the worker's statement cache prepares once
+const PARENT_TURN = `SELECT turn_id, turn_start_offset, anchor_id, is_current FROM agent_hq_claude_entry
+WHERE workspace_root = ? AND native_id = ? AND uuid = ?`;
+const RECORDED_PARENT =
+  'SELECT parent_uuid FROM agent_hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?';
+const UPSERT_ENTRY = `INSERT INTO agent_hq_claude_entry (workspace_root, native_id, uuid, parent_uuid, turn_id, byte_offset,
+  byte_length, created_at, is_visible, is_current, turn_start_offset, anchor_id, item_kind)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(workspace_root, native_id, uuid) DO UPDATE SET parent_uuid = excluded.parent_uuid,
+turn_id = excluded.turn_id, byte_offset = excluded.byte_offset, byte_length = excluded.byte_length,
+created_at = excluded.created_at, is_visible = excluded.is_visible, is_current = excluded.is_current,
+turn_start_offset = excluded.turn_start_offset, anchor_id = excluded.anchor_id, item_kind = excluded.item_kind`;
+const HAS_ENTRY =
+  'SELECT 1 FROM agent_hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?';
+// the current chain runs from a leaf back through its parents
 const CHAIN = `WITH RECURSIVE current_chain AS (
   SELECT workspace_root, native_id, uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible
-  FROM hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?
-  UNION SELECT hq_claude_entry.workspace_root, hq_claude_entry.native_id, hq_claude_entry.uuid, hq_claude_entry.parent_uuid,
-  hq_claude_entry.turn_id, hq_claude_entry.byte_offset, hq_claude_entry.byte_length, hq_claude_entry.created_at, hq_claude_entry.is_visible
-  FROM hq_claude_entry JOIN current_chain
-  ON hq_claude_entry.workspace_root = current_chain.workspace_root AND hq_claude_entry.native_id = current_chain.native_id
-  AND hq_claude_entry.uuid = current_chain.parent_uuid
+  FROM agent_hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?
+  UNION SELECT agent_hq_claude_entry.workspace_root, agent_hq_claude_entry.native_id, agent_hq_claude_entry.uuid, agent_hq_claude_entry.parent_uuid,
+  agent_hq_claude_entry.turn_id, agent_hq_claude_entry.byte_offset, agent_hq_claude_entry.byte_length, agent_hq_claude_entry.created_at, agent_hq_claude_entry.is_visible
+  FROM agent_hq_claude_entry JOIN current_chain
+  ON agent_hq_claude_entry.workspace_root = current_chain.workspace_root AND agent_hq_claude_entry.native_id = current_chain.native_id
+  AND agent_hq_claude_entry.uuid = current_chain.parent_uuid
 )`;
+const CURRENT_CHAIN = `${CHAIN} UPDATE agent_hq_claude_entry
+SET is_current = CASE WHEN uuid IN (SELECT uuid FROM current_chain) THEN 1 ELSE 0 END
+WHERE workspace_root = ? AND native_id = ?`;
+// the turn, start and anchor an indexed entry gives the records that follow it
+type IParentTurnRow = {
+  turn_id: string;
+  turn_start_offset: number | null;
+  anchor_id: string | null;
+  is_current: number;
+};
 
 /**
  * Owns a replaceable metadata/byte-location projection, never conversation bodies.
@@ -85,48 +125,19 @@ export class ClaudeHistoryModel {
     string,
     { fileSize: number; modifiedAt: number | null; continuedIn: string | null }
   >();
-  // each workspace's open directory scan, with the transcripts it has inspected so far
+  /*
+   * Each workspace's open directory scan, with the transcripts it has inspected so far and the
+   * directory's modification time when it opened, which an added or removed transcript changes.
+   */
   private readonly __scans = new Map<
     string,
-    { entries: Dir; seen: Set<string>; pending: string | null }
+    { entries: Dir; seen: Set<string>; pending: string | null; changedAt: number }
   >();
-  // the statements indexing runs for every record, prepared once
-  private readonly __recordStatements: {
-    parentTurn: StatementSync;
-    recordedParent: StatementSync;
-    upsert: StatementSync;
-    currentChain: StatementSync;
-    hasEntry: StatementSync;
-  };
+  private readonly __statements: IStatements;
 
-  public constructor(database: DatabaseSync) {
+  public constructor(database: DatabaseSync, statements: IStatements) {
     this.__database = database;
-    this.__recordStatements = {
-      parentTurn: database.prepare(
-        `SELECT turn_id, turn_start_offset, anchor_id, is_current FROM hq_claude_entry
-      WHERE workspace_root = ? AND native_id = ? AND uuid = ?`,
-      ),
-      recordedParent: database.prepare(
-        'SELECT parent_uuid FROM hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?',
-      ),
-      upsert: database.prepare(
-        `INSERT INTO hq_claude_entry (workspace_root, native_id, uuid, parent_uuid, turn_id, byte_offset,
-          byte_length, created_at, is_visible, is_current, turn_start_offset, anchor_id, item_kind)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(workspace_root, native_id, uuid) DO UPDATE SET parent_uuid = excluded.parent_uuid,
-      turn_id = excluded.turn_id, byte_offset = excluded.byte_offset, byte_length = excluded.byte_length,
-      created_at = excluded.created_at, is_visible = excluded.is_visible, is_current = excluded.is_current,
-      turn_start_offset = excluded.turn_start_offset, anchor_id = excluded.anchor_id, item_kind = excluded.item_kind`,
-      ),
-      currentChain: database.prepare(
-        `${CHAIN} UPDATE hq_claude_entry
-        SET is_current = CASE WHEN uuid IN (SELECT uuid FROM current_chain) THEN 1 ELSE 0 END
-        WHERE workspace_root = ? AND native_id = ?`,
-      ),
-      hasEntry: database.prepare(
-        'SELECT 1 FROM hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?',
-      ),
-    };
+    this.__statements = statements;
   }
 
   /**
@@ -140,23 +151,101 @@ export class ClaudeHistoryModel {
    */
   public read(command: IHqRequest): IClaudeHistoryRead {
     if (
-      (command.kind !== 'threads' &&
-        command.kind !== 'thread' &&
-        command.kind !== 'turns' &&
+      (command.kind !== 'thread' &&
         command.kind !== 'items' &&
         command.kind !== 'item-detail' &&
         command.kind !== 'item-image' &&
         command.kind !== 'session-evidence') ||
       command.provider !== 'claude'
     )
-      throw new Exception('The Claude history is unavailable', {
-        code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
-        data: {
-          kind: 'agent-unavailable',
-        },
+      throw HQ_ERRORS.create('claudeHistoryUnavailable', {
+        data: { kind: 'agent-unavailable' },
       });
+    return this.__guard(() => this.__read(command));
+  }
+
+  /**
+   * Lists one page of a workspace's transcripts, last activity first, then session ID descending.
+   * A first page refreshes the index first; a continuation seeks the index without a refresh.
+   * @param workspaceRoot The canonical workspace.
+   * @param page The name search, page size and continuation.
+   * @returns The page, or `indexing` while the first page's refresh has more to index.
+   * @throws
+   * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+   * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+   */
+  public list(workspaceRoot: string, page: IThreadListRequest): IThreadList | 'indexing' {
+    // a continuation that isn't this reader's fails before any transcript is read
+    const seek = page.cursor === null ? undefined : this.__threadSeek(page.cursor);
+    return this.__guard(() => {
+      let directory: string;
+      try {
+        directory = projectDirectory(workspaceRoot);
+      } catch (cause) {
+        if (hasErrorCode(cause, 'ENOENT')) return { data: [], nextCursor: null };
+        throw cause;
+      }
+      if (!seek && !this.__refresh(directory, workspaceRoot)) return 'indexing';
+      // a row-value seek, so a continuation starts in the index rather than scanning earlier pages
+      const after = seek ? 'AND (updated_at, native_id) < (?, ?)' : '';
+      const rows = this.__statements.all<IFileRow>(
+        `SELECT native_id, workspace_root, identity, file_size, modified_at, byte_offset, revision,
+        leaf_id, name, created_at, updated_at, supported, workspace_state FROM agent_hq_claude_file
+        WHERE workspace_root = ? AND workspace_state = 'matching' ${after}
+        AND (? IS NULL OR instr(lower(coalesce(name, '')), lower(?)) > 0)
+        ORDER BY updated_at DESC, native_id DESC LIMIT ?`,
+        workspaceRoot,
+        ...(seek ? [seek.updatedAt, seek.nativeId] : []),
+        page.search ?? null,
+        page.search ?? null,
+        page.limit + 1,
+      );
+      const listed = rows.slice(0, page.limit);
+      const last = listed.at(-1);
+      return {
+        data: listed.map((row) => this.__summary(row, directory)),
+        nextCursor:
+          rows.length > page.limit && last ? `${last.updated_at}:${last.native_id}` : null,
+      };
+    });
+  }
+
+  /**
+   * Lists the workspaces the index holds transcripts of, by their latest activity, newest first.
+   * @param limit The most workspaces to list.
+   * @returns Their roots.
+   */
+  public indexedRoots(limit: number): string[] {
+    return this.__statements
+      .all<{
+        workspace_root: string;
+      }>(
+        'SELECT workspace_root FROM agent_hq_claude_file GROUP BY workspace_root ORDER BY max(updated_at) DESC LIMIT ?',
+        limit,
+      )
+      .map((row) => row.workspace_root);
+  }
+
+  /**
+   * Forgets a deleted session's transcript: its rows leave the index, and directory scans in
+   * progress start over, so none reads the transcript that is gone.
+   * @param nativeId The session's ID.
+   */
+  public forget(nativeId: string): void {
+    this.close();
+    this.__statements.run('DELETE FROM agent_hq_claude_file WHERE native_id = ?', nativeId);
+  }
+
+  /** Releases incomplete discovery iterators before the worker closes SQLite. */
+  public close(): void {
+    for (const scan of this.__scans.values()) scan.entries.closeSync();
+    this.__scans.clear();
+  }
+
+  // classifies a failure that isn't one of HQ's own exceptions as unavailable history
+  private __guard<T>(read: () => T): T {
     try {
-      return this.__read(command);
+      return read();
     } catch (cause) {
       if (isException(cause)) throw cause;
       throw new Exception(`The Claude history is unavailable: ${extractMessage(cause)}`, {
@@ -167,163 +256,79 @@ export class ClaudeHistoryModel {
     }
   }
 
-  /** Releases incomplete discovery iterators before the worker closes SQLite. */
-  public close(): void {
-    for (const scan of this.__scans.values()) scan.entries.closeSync();
-    this.__scans.clear();
-  }
-
   private __read(command: IHistoryRequest): IClaudeHistoryRead {
     const root = command.workspaceRoot;
     const { cursor, ...filters } =
       command.kind === 'thread' || command.kind === 'item-detail' || command.kind === 'item-image'
         ? { ...command, cursor: undefined }
         : command;
-    const continuation =
-      command.kind === 'session-evidence' ? undefined : decodeHistoryCursor(cursor, filters);
+    // a cursor that doesn't continue this request fails before any transcript is read
+    const itemSeek = command.kind === 'items' ? itemCursors.decode(cursor, filters) : undefined;
     if (command.kind === 'session-evidence') evidencePosition(command);
-    let directory: string;
+    const directory = projectDirectory(root);
+    let isIndexed: boolean;
     try {
-      directory = projectDirectory(root);
-    } catch (cause) {
-      if (hasErrorCode(cause, 'ENOENT') && command.kind === 'threads')
-        return { kind: 'threads', result: { data: [], nextCursor: null, source: 'native' } };
-      throw cause;
-    }
-    if (command.kind === 'threads') {
-      const seek = continuation ? this.__parseCursor(SeekSchema, continuation) : undefined;
-      if (!seek && !this.__refresh(directory, root)) return { kind: 'indexing' };
-      // a row-value seek, so a continuation starts in the index rather than scanning earlier pages
-      const after = seek ? 'AND (updated_at, native_id) < (?, ?)' : '';
-      const rows = this.__database
-        .prepare(
-          `SELECT native_id, workspace_root, identity, file_size, modified_at, byte_offset, revision,
-        leaf_id, name, created_at, updated_at, supported, workspace_state FROM hq_claude_file
-        WHERE workspace_root = ? AND workspace_state = 'matching' ${after}
-        AND (? IS NULL OR instr(lower(coalesce(name, '')), lower(?)) > 0)
-        ORDER BY updated_at DESC, native_id DESC LIMIT ?`,
-        )
-        .all(
-          root,
-          ...(seek ? [seek.updatedAt, seek.nativeId] : []),
-          command.search ?? null,
-          command.search ?? null,
-          command.limit + 1,
-        )
-        .map((row) => FileRowSchema.parse(row));
-      const page = rows.slice(0, command.limit);
-      const last = page.at(-1);
-      return HqResponseSchema.parse({
-        kind: 'threads',
-        result: {
-          data: page.map((row) => this.__summary(row, directory)),
-          source: 'native',
-          nextCursor: encodeHistoryCursor(
-            rows.length > command.limit && last
-              ? JSON.stringify({ updatedAt: last.updated_at, nativeId: last.native_id })
-              : null,
-            filters,
-          ),
-        },
+      isIndexed = this.__inspect(directory, root, command.nativeId, {
+        bytes: INDEXING_BUDGET_BYTES,
+        hasIndexed: false,
       });
+    } catch (cause) {
+      // as a scan does, a summary keeps a transcript the index marked unsupported
+      if (command.kind !== 'thread' || this.__file(root, command.nativeId)?.supported !== -1)
+        throw cause;
+      isIndexed = true;
     }
-    let budget = MAX_REFRESH_BYTES;
-    const isIndexed = this.__inspect(
-      directory,
-      root,
-      command.nativeId,
-      () => budget,
-      (used) => {
-        budget -= used;
-      },
-    );
     // a scan still running counts this transcript as seen, so its completion keeps it
     this.__scans.get(root)?.seen.add(command.nativeId);
     if (!isIndexed) return { kind: 'indexing' };
     const row = this.__file(root, command.nativeId);
-    if (!row || row.supported !== 1 || row.workspace_state !== 'matching') this.__unavailable();
-    if (command.kind === 'thread')
+    // a transcript whose records aren't supported still has a summary, its history unavailable
+    if (command.kind === 'thread') {
+      if (row?.workspace_state !== 'matching') this.__unavailable();
       return { kind: 'thread', result: this.__summary(row, directory) };
+    }
+    if (!row || row.supported !== 1 || row.workspace_state !== 'matching') this.__unavailable();
     if (command.kind === 'session-evidence')
       return { kind: 'session-evidence', result: this.__evidence(command, row, directory) };
     if (command.kind === 'item-detail')
-      return HqResponseSchema.parse({
+      return {
         kind: 'item-detail',
         result: this.__itemDetail(command, row, directory),
-      });
+      };
     if (command.kind === 'item-image')
-      return HqResponseSchema.parse({
+      return {
         kind: 'item-image',
         result: this.__itemImage(command, row, directory),
-      });
-    const seek = continuation ? this.__parseCursor(EntrySeekSchema, continuation) : undefined;
+      };
+    const seek = itemSeek;
     if (seek && seek.revision !== row.revision)
-      throw new Exception('The HQ cursor does not match this request', {
-        code: 'JG_AGENT_HQ_CURSOR_INVALID',
-        data: {
-          kind: 'invalid-request',
-        },
+      throw HQ_ERRORS.create('cursorInvalid', {
+        data: { kind: 'invalid-request' },
       });
-    const offset = seek?.offset ?? -1;
-    if (command.kind === 'turns') {
-      const turns = this.__database
-        .prepare(
-          `SELECT turn_id, byte_offset, created_at FROM hq_claude_entry
-        WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1
-        AND byte_offset = turn_start_offset AND byte_offset > ? ORDER BY byte_offset LIMIT ?`,
-        )
-        .all(root, command.nativeId, offset, command.limit + 1)
-        .map((entry) =>
-          z
-            .object({ turn_id: z.string(), byte_offset: z.number(), created_at: z.number() })
-            .parse(entry),
-        );
-      const page = turns.slice(0, command.limit);
-      return HqResponseSchema.parse({
-        kind: 'turns',
-        result: {
-          source: 'native',
-          data: page.map((turn) => ({
-            nativeId: turn.turn_id,
-            state: 'unknown',
-            startedAt: turn.created_at,
-            completedAt: null,
-          })),
-          nextCursor: encodeHistoryCursor(
-            turns.length > command.limit
-              ? JSON.stringify({ revision: row.revision, offset: page.at(-1)!.byte_offset })
-              : null,
-            filters,
-          ),
-        },
-      });
-    }
     // items read newest first, the cursor holding the oldest offset read; one item is read by its UUID
     const before = seek?.offset ?? Number.MAX_SAFE_INTEGER;
-    const entries = (
+    const entries =
       command.nativeItemId === undefined
-        ? this.__database
-            .prepare(
-              `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM hq_claude_entry
+        ? this.__statements.all<IEntryRow>(
+            `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM agent_hq_claude_entry
       WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND byte_offset < ?
       ${command.turnId === undefined ? '' : 'AND turn_id = ?'}
       ORDER BY byte_offset DESC LIMIT ?`,
-            )
-            .all(
-              root,
-              command.nativeId,
-              before,
-              ...(command.turnId === undefined ? [] : [command.turnId]),
-              command.limit + 1,
-            )
-        : this.__database
-            .prepare(
-              `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM hq_claude_entry
+            root,
+            command.nativeId,
+            before,
+            ...(command.turnId === undefined ? [] : [command.turnId]),
+            command.limit + 1,
+          )
+        : this.__statements.all<IEntryRow>(
+            `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM agent_hq_claude_entry
       WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND uuid = ? AND turn_id = ?
       LIMIT 1`,
-            )
-            .all(root, command.nativeId, command.nativeItemId, command.turnId ?? null)
-    ).map((entry) => EntryRowSchema.parse(entry));
+            root,
+            command.nativeId,
+            command.nativeItemId,
+            command.turnId ?? null,
+          );
     const page = entries.slice(0, command.limit);
     const fd = openTranscript(directory, command.nativeId);
     try {
@@ -353,20 +358,18 @@ export class ClaudeHistoryModel {
         lastOffset = entry.byte_offset;
         items.push(item);
       }
-      return HqResponseSchema.parse({
+      return {
         kind: 'items',
         result: {
           data: items,
           history: 'persisted',
           source: 'native',
-          nextCursor: encodeHistoryCursor(
-            entries.length > items.length
-              ? JSON.stringify({ revision: row.revision, offset: lastOffset })
-              : null,
+          nextCursor: itemCursors.encode(
+            entries.length > items.length ? { revision: row.revision, offset: lastOffset } : null,
             filters,
           ),
         },
-      });
+      };
     } finally {
       closeSync(fd);
     }
@@ -394,7 +397,7 @@ export class ClaudeHistoryModel {
       let call: IRecord | null = null;
       if (isClaudeAnswer(record, item)) {
         let parent = entry.parent_uuid;
-        let budget = MAX_REFRESH_BYTES;
+        let budget = MAX_CALL_SEARCH_BYTES;
         for (let step = 0; parent !== null && step < MAX_CALL_DISTANCE; step += 1) {
           const ancestor = this.__entry(root, command.nativeId, parent);
           if (!ancestor || ancestor.turn_id !== entry.turn_id || ancestor.byte_length > budget)
@@ -442,22 +445,19 @@ export class ClaudeHistoryModel {
   }
 
   // one current entry of a session's index, visible or not
-  private __entry(
-    root: string,
-    nativeId: string,
-    uuid: string,
-  ): z.infer<typeof EntryRowSchema> | null {
-    const entry = this.__database
-      .prepare(
-        `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM hq_claude_entry
+  private __entry(root: string, nativeId: string, uuid: string): IEntryRow | null {
+    const entry = this.__statements.get<IEntryRow>(
+      `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM agent_hq_claude_entry
       WHERE workspace_root = ? AND native_id = ? AND uuid = ? AND is_current = 1`,
-      )
-      .get(root, nativeId, uuid);
-    return entry === undefined ? null : EntryRowSchema.parse(entry);
+      root,
+      nativeId,
+      uuid,
+    );
+    return entry ?? null;
   }
 
   // reads an entry's record, which must still be the one the index found there
-  private __readEntry(fd: number, entry: z.infer<typeof EntryRowSchema>, root: string): IRecord {
+  private __readEntry(fd: number, entry: IEntryRow, root: string): IRecord {
     const bytes = Buffer.alloc(entry.byte_length);
     if (readSync(fd, bytes, 0, bytes.length, entry.byte_offset) !== bytes.length)
       this.__unavailable();
@@ -512,32 +512,25 @@ export class ClaudeHistoryModel {
       ? this.__parseCursor(EntrySeekSchema, position.sourceCursor)
       : undefined;
     if (seek && seek.revision !== row.revision)
-      throw new Exception('The HQ cursor does not match this request', {
-        code: 'JG_AGENT_HQ_CURSOR_INVALID',
-        data: { kind: 'invalid-request' },
-      });
+      throw HQ_ERRORS.create('cursorInvalid', { data: { kind: 'invalid-request' } });
     const kinds = command.kinds === undefined ? [undefined] : [...new Set(command.kinds)];
     const entries = kinds
       .flatMap((kind) =>
-        this.__database
-          .prepare(
-            `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM hq_claude_entry
+        this.__statements.all<IEntryRow>(
+          `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM agent_hq_claude_entry
       WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND byte_offset < ?
       ${command.turnId === undefined ? '' : 'AND turn_id = ?'}
       ${command.nativeItemId === undefined ? '' : 'AND uuid = ?'}
       ${kind === undefined ? '' : 'AND item_kind = ?'}
       ORDER BY byte_offset DESC LIMIT ?`,
-          )
-          .all(
-            command.workspaceRoot,
-            command.nativeId,
-            seek?.offset ?? Number.MAX_SAFE_INTEGER,
-            ...(command.turnId === undefined ? [] : [command.turnId]),
-            ...(command.nativeItemId === undefined ? [] : [command.nativeItemId]),
-            ...(kind === undefined ? [] : [kind]),
-            EVIDENCE_SOURCE_PAGE_SIZE + 1,
-          )
-          .map((entry) => EntryRowSchema.parse(entry)),
+          command.workspaceRoot,
+          command.nativeId,
+          seek?.offset ?? Number.MAX_SAFE_INTEGER,
+          ...(command.turnId === undefined ? [] : [command.turnId]),
+          ...(command.nativeItemId === undefined ? [] : [command.nativeItemId]),
+          ...(kind === undefined ? [] : [kind]),
+          EVIDENCE_SOURCE_PAGE_SIZE + 1,
+        ),
       )
       .sort((left, right) => right.byte_offset - left.byte_offset)
       .slice(0, EVIDENCE_SOURCE_PAGE_SIZE + 1);
@@ -580,26 +573,35 @@ export class ClaudeHistoryModel {
     }
   }
 
+  /**
+   * Reads a thread page's continuation, `<updatedAt>:<nativeId>` of the last transcript listed.
+   * @throws
+   * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
+   */
+  private __threadSeek(cursor: string): z.infer<typeof SeekSchema> {
+    const [, updatedAt, nativeId] = THREAD_CURSOR.exec(cursor) ?? [];
+    const seek = SeekSchema.safeParse({ updatedAt: Number(updatedAt), nativeId });
+    if (!seek.success)
+      throw HQ_ERRORS.create('cursorInvalid', { data: { kind: 'invalid-request' } });
+    return seek.data;
+  }
+
   private __parseCursor<T>(schema: z.ZodType<T>, text: string): T {
     try {
       return schema.parse(JSON.parse(text));
     } catch (cause) {
-      throw new Exception('The HQ cursor does not match this request', {
-        code: 'JG_AGENT_HQ_CURSOR_INVALID',
-        data: { kind: 'invalid-request' },
-        cause,
-      });
+      throw HQ_ERRORS.create('cursorInvalid', { data: { kind: 'invalid-request' }, cause });
     }
   }
 
   private __file(root: string, nativeId: string): IFileRow | undefined {
-    const row = this.__database
-      .prepare(
-        `SELECT native_id, workspace_root, identity, file_size, modified_at, byte_offset, revision,
-      leaf_id, name, created_at, updated_at, supported, workspace_state FROM hq_claude_file WHERE workspace_root = ? AND native_id = ?`,
-      )
-      .get(root, nativeId);
-    return row ? FileRowSchema.parse(row) : undefined;
+    const row = this.__statements.get<IFileRow>(
+      `SELECT native_id, workspace_root, identity, file_size, modified_at, byte_offset, revision,
+      leaf_id, name, created_at, updated_at, supported, workspace_state FROM agent_hq_claude_file WHERE workspace_root = ? AND native_id = ?`,
+      root,
+      nativeId,
+    );
+    return row;
   }
 
   private __identity(fd: number): string {
@@ -607,25 +609,41 @@ export class ClaudeHistoryModel {
     if (!stat.isFile()) this.__unavailable();
     const bytes = Buffer.alloc(Math.min(stat.size, 256));
     readSync(fd, bytes, 0, bytes.length, 0);
-    return `${HISTORY_PROJECTION_VERSION}:${stat.dev}:${stat.ino}:${stat.birthtimeMs}:${createHash('sha256').update(bytes).digest('hex')}`;
+    return `${HISTORY_PROJECTION_VERSION}:${stat.dev}:${stat.ino}:${stat.birthtimeMs}:${hashValue(bytes)}`;
   }
 
+  /**
+   * Indexes one budgeted piece of a workspace's directory scan, continuing the scan a call before
+   * it left open. A directory whose transcripts were added or removed since its scan opened is
+   * scanned again from its start, since a directory iterator may skip entries added after it
+   * opened, so a scan that completes saw every transcript the directory held as it did.
+   * @returns Whether the scan completed.
+   * @throws
+   * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+   */
   private __refresh(directory: string, root: string): boolean {
+    const changedAt = statSync(directory).mtimeMs;
     let scan = this.__scans.get(root);
+    if (scan && scan.changedAt !== changedAt) {
+      scan.entries.closeSync();
+      this.__scans.delete(root);
+      scan = undefined;
+    }
     if (!scan) {
       if (this.__scans.size >= 4) {
         const oldest = this.__scans.entries().next().value!;
         oldest[1].entries.closeSync();
         this.__scans.delete(oldest[0]);
       }
-      scan = { entries: opendirSync(directory), seen: new Set(), pending: null };
+      scan = { entries: opendirSync(directory), seen: new Set(), pending: null, changedAt };
       this.__scans.set(root, scan);
     }
     const { seen } = scan;
-    let budget = MAX_REFRESH_BYTES;
+    const budget: IIndexingBudget = { bytes: INDEXING_BUDGET_BYTES, hasIndexed: false };
     let isComplete = false;
     try {
-      for (let inspected = 0; inspected < 128; inspected += 1) {
+      // a spent budget leaves the next transcript to the next call
+      for (let inspected = 0; inspected < 128 && budget.bytes > 0; inspected += 1) {
         let nativeId = scan.pending;
         if (!nativeId) {
           const entry = scan.entries.readSync();
@@ -640,17 +658,7 @@ export class ClaudeHistoryModel {
         // an inspected transcript stays in the index, even one whose records are unsupported
         seen.add(nativeId);
         try {
-          if (
-            !this.__inspect(
-              directory,
-              root,
-              nativeId,
-              () => budget,
-              (used) => {
-                budget -= used;
-              },
-            )
-          ) {
+          if (!this.__inspect(directory, root, nativeId, budget)) {
             scan.pending = nativeId;
             break;
           }
@@ -670,18 +678,22 @@ export class ClaudeHistoryModel {
       this.__scans.delete(root);
       // transcripts the scan didn't see were removed, so they leave the index with their entries;
       // finding them with a read first keeps a scan of unchanged transcripts from writing
-      const removed = this.__database
-        .prepare('SELECT native_id FROM hq_claude_file WHERE workspace_root = ?')
-        .all(root)
-        .map((row) => z.object({ native_id: z.string() }).parse(row).native_id)
+      const removed = this.__statements
+        .all<{ native_id: string }>(
+          'SELECT native_id FROM agent_hq_claude_file WHERE workspace_root = ?',
+          root,
+        )
+        .map((row) => row.native_id)
         .filter((nativeId) => !seen.has(nativeId));
       if (removed.length) {
-        const remove = this.__database.prepare(
-          'DELETE FROM hq_claude_file WHERE workspace_root = ? AND native_id = ?',
-        );
         this.__database.exec('BEGIN IMMEDIATE');
         try {
-          for (const nativeId of removed) remove.run(root, nativeId);
+          for (const nativeId of removed)
+            this.__statements.run(
+              'DELETE FROM agent_hq_claude_file WHERE workspace_root = ? AND native_id = ?',
+              root,
+              nativeId,
+            );
           this.__database.exec('COMMIT');
         } catch (cause) {
           this.__database.exec('ROLLBACK');
@@ -689,11 +701,10 @@ export class ClaudeHistoryModel {
         }
       }
       if (
-        this.__database
-          .prepare(
-            "SELECT native_id FROM hq_claude_file WHERE workspace_root = ? AND workspace_state = 'unknown' LIMIT 1",
-          )
-          .get(root)
+        this.__statements.get(
+          "SELECT native_id FROM agent_hq_claude_file WHERE workspace_root = ? AND workspace_state = 'unknown' LIMIT 1",
+          root,
+        )
       )
         this.__unavailable();
     }
@@ -701,9 +712,10 @@ export class ClaudeHistoryModel {
   }
 
   /**
-   * Indexes a transcript's records past the position the index reached, within the read budget.
-   * A transcript whose identity, size and modification time match an index that reached its end
-   * is left as it is, without a write.
+   * Indexes a transcript's records past the position the index reached, within the call's budget,
+   * which it spends; the call's first record is read whole, whatever its size. A transcript whose
+   * identity, size and modification time match an index that reached its end is left as it is,
+   * without a write.
    * @returns Whether the index reached the transcript's end.
    * @throws
    * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
@@ -712,8 +724,7 @@ export class ClaudeHistoryModel {
     directory: string,
     root: string,
     nativeId: string,
-    remaining: () => number,
-    consume: (used: number) => void,
+    budget: IIndexingBudget,
   ): boolean {
     const fd = openTranscript(directory, nativeId);
     try {
@@ -728,24 +739,23 @@ export class ClaudeHistoryModel {
         return true;
       if (!row || row.identity !== identity || stat.size < row.file_size) {
         const revision = randomUUID();
-        this.__database
-          .prepare('DELETE FROM hq_claude_file WHERE workspace_root = ? AND native_id = ?')
-          .run(root, nativeId);
-        this.__database
-          .prepare(
-            `INSERT INTO hq_claude_file (workspace_root, native_id, identity, file_size, modified_at, byte_offset,
+        this.__statements.run(
+          'DELETE FROM agent_hq_claude_file WHERE workspace_root = ? AND native_id = ?',
+          root,
+          nativeId,
+        );
+        this.__statements.run(
+          `INSERT INTO agent_hq_claude_file (workspace_root, native_id, identity, file_size, modified_at, byte_offset,
             revision, leaf_id, name, created_at, updated_at, supported, workspace_state)
             VALUES (?, ?, ?, ?, NULL, 0, ?, NULL, NULL, ?, ?, 0, 'unknown')`,
-          )
-          .run(
-            root,
-            nativeId,
-            identity,
-            stat.size,
-            revision,
-            Math.trunc(stat.birthtimeMs),
-            Math.trunc(stat.mtimeMs),
-          );
+          root,
+          nativeId,
+          identity,
+          stat.size,
+          revision,
+          Math.trunc(stat.birthtimeMs),
+          Math.trunc(stat.mtimeMs),
+        );
         row = this.__file(root, nativeId)!;
       }
       if (row.supported === -1) return true;
@@ -769,10 +779,24 @@ export class ClaudeHistoryModel {
       };
       const isReleasable = ({ parentUuid }: { parentUuid: string }): boolean =>
         this.__hasEntry(root, nativeId, parentUuid);
+      // where this call started in the transcript, and whether it had the call's whole budget
+      const start = position;
+      const hasWholeBudget = !budget.hasIndexed;
+      /*
+       * The location of the first record held back now and the index's fields before it, with a
+       * savepoint there: a budgeted stop returns to it, so the next call indexes the hidden
+       * record together with the parent that follows it.
+       */
+      let beforeHeld = null as { offset: number; row: IFileRow } | null;
       const indexRecord = (bytes: Buffer, offset: number): void => {
+        const workspaceState = row.workspace_state;
         const parentUuid = this.__record(root, nativeId, row, bytes, offset, false);
         if (parentUuid !== null) {
           if (heldBack.length >= MAX_HELD_BACK_RECORDS) this.__unavailable();
+          if (!heldBack.length) {
+            this.__database.exec('SAVEPOINT agent_hq_held_back');
+            beforeHeld = { offset, row: { ...row, workspace_state: workspaceState } };
+          }
           heldBack.push({ offset, length: bytes.length, parentUuid });
           return;
         }
@@ -790,21 +814,30 @@ export class ClaudeHistoryModel {
             );
           held = heldBack.findIndex(isReleasable);
         }
+        if (beforeHeld && !heldBack.length) {
+          this.__database.exec('RELEASE agent_hq_held_back');
+          beforeHeld = null;
+        }
       };
       this.__database.exec('BEGIN IMMEDIATE');
       try {
-        while (position < stat.size && remaining() > 0) {
+        // a call that hasn't indexed a record yet reads on past its budget to the first record's end
+        while (position < stat.size && (budget.bytes > 0 || !budget.hasIndexed)) {
           const count = readSync(
             fd,
             chunk,
             0,
-            Math.min(chunk.length, stat.size - position, remaining()),
+            Math.min(
+              chunk.length,
+              stat.size - position,
+              budget.bytes > 0 ? budget.bytes : Infinity,
+            ),
             position,
           );
           if (count === 0) break;
           const chunkStart = position;
           position += count;
-          consume(count);
+          budget.bytes -= count;
           // a record that started in an earlier chunk is read again whole, not joined from chunks
           const read = chunk.subarray(0, count);
           for (let end = read.indexOf(10); end !== -1; end = read.indexOf(10, end + 1)) {
@@ -818,13 +851,25 @@ export class ClaudeHistoryModel {
                 lineStart,
               );
             lineStart = chunkStart + end + 1;
+            budget.hasIndexed = true;
           }
           if (position - lineStart > MAX_RECORD_BYTES) this.__unavailable();
         }
         /*
-         * A parent this read didn't reach is indexed as the root of its own turn: the projection
-         * keeps no position before byte_offset to retry from, and a hidden record only groups
-         * the records that follow it.
+         * A budgeted stop returns to before the records held back, unless this call held them
+         * from where it started through its whole budget, so their parent isn't coming soon.
+         */
+        if (position < stat.size && beforeHeld && (beforeHeld.offset > start || !hasWholeBudget)) {
+          this.__database.exec('ROLLBACK TO agent_hq_held_back');
+          Object.assign(row, beforeHeld.row);
+          lineStart = beforeHeld.offset;
+          heldBack.length = 0;
+        }
+        /*
+         * Otherwise a parent this read didn't reach is indexed as the root of its own turn: the
+         * projection keeps no position before byte_offset to retry from, and a hidden record only
+         * groups the records that follow it. At the transcript's end the parent may never come,
+         * and returning there would hide the records after the hidden one from this read.
          */
         for (const record of heldBack)
           this.__record(
@@ -836,34 +881,32 @@ export class ClaudeHistoryModel {
             true,
           );
         row.byte_offset = lineStart;
-        this.__database
-          .prepare(
-            `UPDATE hq_claude_file SET byte_offset = ?, file_size = ?, modified_at = ?, leaf_id = ?, name = ?,
+        this.__statements.run(
+          `UPDATE agent_hq_claude_file SET byte_offset = ?, file_size = ?, modified_at = ?, leaf_id = ?, name = ?,
           created_at = ?, updated_at = ?, supported = ?, revision = ?, workspace_state = ? WHERE workspace_root = ? AND native_id = ?`,
-          )
-          .run(
-            lineStart,
-            stat.size,
-            // an index the budget stopped short of the end has more to read
-            position < stat.size ? null : stat.mtimeMs,
-            row.leaf_id,
-            row.name,
-            row.created_at,
-            row.updated_at,
-            row.supported,
-            row.revision,
-            row.workspace_state,
-            root,
-            nativeId,
-          );
+          lineStart,
+          stat.size,
+          // an index the budget stopped short of the end has more to read
+          position < stat.size ? null : stat.mtimeMs,
+          row.leaf_id,
+          row.name,
+          row.created_at,
+          row.updated_at,
+          row.supported,
+          row.revision,
+          row.workspace_state,
+          root,
+          nativeId,
+        );
         this.__database.exec('COMMIT');
       } catch (cause) {
         this.__database.exec('ROLLBACK');
-        this.__database
-          .prepare(
-            'UPDATE hq_claude_file SET supported = -1, workspace_state = ? WHERE workspace_root = ? AND native_id = ?',
-          )
-          .run(row.workspace_state, root, nativeId);
+        this.__statements.run(
+          'UPDATE agent_hq_claude_file SET supported = -1, workspace_state = ? WHERE workspace_root = ? AND native_id = ?',
+          row.workspace_state,
+          root,
+          nativeId,
+        );
         if (isException(cause)) throw cause;
         this.__unavailable();
       }
@@ -938,10 +981,9 @@ export class ClaudeHistoryModel {
     )
       this.__unavailable();
     const createdAt = Date.parse(record.timestamp);
-    const statements = this.__recordStatements;
     const nativeParentUuid = readClaudeParentUuid(record);
     const nativeParent = nativeParentUuid
-      ? statements.parentTurn.get(root, nativeId, nativeParentUuid)
+      ? this.__statements.get<IParentTurnRow>(PARENT_TURN, root, nativeId, nativeParentUuid)
       : undefined;
     // the CLI's presentation decides what is shown, the kind evidence filters on and where turns start
     const item =
@@ -958,7 +1000,12 @@ export class ClaudeHistoryModel {
        */
       if (!isOrphanAllowed && record.parentUuid != null) return nativeParentUuid;
     }
-    const previous = statements.recordedParent.get(root, nativeId, record.uuid);
+    const previous = this.__statements.get<{ parent_uuid: string | null }>(
+      RECORDED_PARENT,
+      root,
+      nativeId,
+      record.uuid,
+    );
     const isCallResult =
       item?.nativeType === 'tool-result' &&
       nativeParentUuid !== null &&
@@ -973,7 +1020,7 @@ export class ClaudeHistoryModel {
     const parent =
       parentUuid === nativeParentUuid
         ? nativeParent
-        : statements.parentTurn.get(root, nativeId, parentUuid!);
+        : this.__statements.get<IParentTurnRow>(PARENT_TURN, root, nativeId, parentUuid!);
     const textPrompt = item?.kind === 'user-message';
     const turnId = textPrompt
       ? record.uuid
@@ -996,7 +1043,8 @@ export class ClaudeHistoryModel {
       : typeof parent?.anchor_id === 'string'
         ? parent.anchor_id
         : null;
-    statements.upsert.run(
+    this.__statements.run(
+      UPSERT_ENTRY,
       root,
       nativeId,
       record.uuid,
@@ -1013,7 +1061,7 @@ export class ClaudeHistoryModel {
     );
     if (visible) {
       if (!isAppend && !isSameLeaf)
-        statements.currentChain.run(root, nativeId, record.uuid, root, nativeId);
+        this.__statements.run(CURRENT_CHAIN, root, nativeId, record.uuid, root, nativeId);
       row.leaf_id = record.uuid;
       row.supported = 1;
     }
@@ -1035,7 +1083,7 @@ export class ClaudeHistoryModel {
     nativeId: string,
     row: IFileRow,
     callUuid: string,
-    call: Record<string, SQLOutputValue> | undefined,
+    call: IParentTurnRow | undefined,
   ): string {
     if (
       row.leaf_id === null ||
@@ -1044,20 +1092,17 @@ export class ClaudeHistoryModel {
       call.anchor_id === row.leaf_id
     )
       return callUuid;
-    const leaf = this.__recordStatements.parentTurn.get(root, nativeId, row.leaf_id);
+    const leaf = this.__statements.get<IParentTurnRow>(PARENT_TURN, root, nativeId, row.leaf_id);
     return leaf?.is_current === 1 && leaf.turn_id === call.turn_id ? row.leaf_id : callUuid;
   }
 
   private __hasEntry(root: string, nativeId: string, uuid: string): boolean {
-    return this.__recordStatements.hasEntry.get(root, nativeId, uuid) !== undefined;
+    return this.__statements.get(HAS_ENTRY, root, nativeId, uuid) !== undefined;
   }
 
   private __unavailable(): never {
-    throw new Exception('The Claude history is unavailable', {
-      code: 'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
-      data: {
-        kind: 'agent-unavailable',
-      },
+    throw HQ_ERRORS.create('claudeHistoryUnavailable', {
+      data: { kind: 'agent-unavailable' },
     });
   }
 }

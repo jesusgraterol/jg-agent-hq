@@ -1,9 +1,8 @@
 import { z } from 'zod';
 
+import { ACTION_PHASES, MAX_ACTION_BYTES } from '../constants.js';
 import { ProviderIdSchema } from '../providers/index.js';
 import { SessionSettingsSchema, TurnSettingsSchema } from '../configuration/index.js';
-import { AccountControlCommandSchema } from '../accounts/index.js';
-import { ExtensionControlCommandSchema } from '../extensions/index.js';
 
 import { MessageInputSchema, NativeSkillInputSchema } from '../skills/index.js';
 
@@ -27,14 +26,14 @@ const TextSchema = z.string().min(1).max(65_536);
 const ActiveTargetFields = { threadId: ThreadIdSchema, expectedTurnId: NativeIdSchema };
 
 export const ActionCommandSchema = z.discriminatedUnion('kind', [
-  ...AccountControlCommandSchema.options,
-  ...ExtensionControlCommandSchema.options,
+  // `input` is the session's first message, which the same action sends once the session is named
   z.strictObject({
     kind: z.literal('thread-create'),
     provider: ProviderIdSchema,
     workspaceRoot: z.string().min(1).max(4096),
     name: NameSchema,
     settings: SessionSettingsSchema.optional(),
+    input: MessageInputSchema.optional(),
   }),
   z.strictObject({
     kind: z.literal('thread-adopt'),
@@ -51,15 +50,18 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
     operatorConfirmation: z.string().trim().min(1).max(1024),
     settings: SessionSettingsSchema.optional(),
   }),
-  z.strictObject({ kind: z.literal('thread-close'), threadId: ThreadIdSchema }),
-  z.strictObject({ kind: z.literal('thread-fork'), threadId: ThreadIdSchema, name: NameSchema }),
-  z.strictObject({ kind: z.literal('thread-archive'), threadId: ThreadIdSchema }),
-  z.strictObject({ kind: z.literal('thread-unarchive'), threadId: ThreadIdSchema }),
-  z.strictObject({ kind: z.literal('thread-compact'), threadId: ThreadIdSchema }),
+  // `interrupt` stops a running turn first, instead of refusing a session that isn't idle
   z.strictObject({
-    kind: z.literal('thread-revert'),
+    kind: z.literal('thread-close'),
     threadId: ThreadIdSchema,
-    beforeTurnId: NativeIdSchema,
+    interrupt: z.boolean().optional(),
+  }),
+  // a session no process runs, by its native identity, whether HQ manages it or not
+  z.strictObject({
+    kind: z.literal('thread-delete'),
+    provider: ProviderIdSchema,
+    workspaceRoot: z.string().min(1).max(4096),
+    nativeId: NativeIdSchema,
   }),
   z.strictObject({
     kind: z.literal('thread-recover'),
@@ -134,7 +136,7 @@ export const ActionEnvelopeSchema = z
     runtimeEpoch: z.uuid(),
     command: ActionCommandSchema,
   })
-  .refine((action) => new TextEncoder().encode(JSON.stringify(action)).length <= 32_768);
+  .refine((action) => new TextEncoder().encode(JSON.stringify(action)).length <= MAX_ACTION_BYTES);
 export type IActionEnvelope = z.infer<typeof ActionEnvelopeSchema>;
 
 export const ActionReceiptSchema = z.object({
@@ -143,12 +145,12 @@ export const ActionReceiptSchema = z.object({
   runtimeEpoch: z.uuid(),
   kind: z.enum(ActionCommandSchema.options.map((command) => command.shape.kind.value)),
   provider: ProviderIdSchema.nullable(),
-  controlState: z.enum(['accepted', 'applied', 'held']).nullable(),
   threadId: ThreadIdSchema.nullable(),
   // the native session of the action's thread, once HQ recorded it
   nativeThreadId: NativeIdSchema.nullable(),
   nativeTurnId: NativeIdSchema.nullable(),
-  nativeRequestId: z.string().nullable(),
+  // the native step the action takes now
+  phase: z.enum(ACTION_PHASES).nullable(),
   delivery: z.enum(['queued', 'submitted', 'acknowledged', 'uncertain', 'failed', 'canceled']),
   completion: z.enum(['completed', 'failed', 'interrupted']).nullable(),
   failure: z
@@ -161,12 +163,18 @@ export const ActionReceiptSchema = z.object({
   updatedAt: z.number().int(),
 });
 export type IActionReceipt = z.infer<typeof ActionReceiptSchema>;
+export type IActionPhase = NonNullable<IActionReceipt['phase']>;
 
-// collections omit queued input, final result bodies and the native thread; selected receipts retain them
+/*
+ * Collections omit queued input, final result bodies and the native thread, which selected
+ * receipts retain; `queuedText` is the text of undelivered queued input, cut to the read's limit.
+ */
 export const ActionSummarySchema = ActionReceiptSchema.omit({
   nativeThreadId: true,
   queuedInput: true,
   result: true,
+}).extend({
+  queuedText: z.object({ text: z.string(), isTruncated: z.boolean() }).nullable(),
 });
 export type IActionSummary = z.infer<typeof ActionSummarySchema>;
 
@@ -186,8 +194,6 @@ export const ManagedThreadSchema = z.object({
   provider: ProviderIdSchema,
   nativeId: NativeIdSchema.nullable(),
   nativeLineage: NativeLineageSchema.nullable(),
-  forkedFromThreadId: ThreadIdSchema.nullable(),
-  isArchived: z.boolean(),
   name: NameSchema,
   workspaceRoot: z.string(),
   ownership: z.enum(['managed', 'uncertain']),
@@ -286,25 +292,3 @@ export const NativeApprovalSchema = NativeApprovalSummarySchema.extend({
   presentation: ApprovalPresentationSchema.nullable(),
 });
 export type INativeApproval = z.infer<typeof NativeApprovalSchema>;
-
-// lifecycle metadata provides reconnect ordering without mirroring token/tool output
-export const LifecycleEventSchema = z.object({
-  sequence: z.number().int().positive(),
-  runtimeEpoch: z.uuid(),
-  threadId: ThreadIdSchema.nullable(),
-  actionId: z.uuid().nullable(),
-  nativeTurnId: NativeIdSchema.nullable(),
-  nativeItemId: NativeIdSchema.nullable(),
-  kind: z.enum([
-    'action-admitted',
-    'action-updated',
-    'thread-updated',
-    'approval-opened',
-    'approval-resolved',
-    'item-started',
-    'item-completed',
-    'native-unavailable',
-  ]),
-  createdAt: z.number().int(),
-});
-export type ILifecycleEvent = z.infer<typeof LifecycleEventSchema>;

@@ -1,28 +1,17 @@
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 
-import { MAX_PROVIDERS, ProviderIdSchema } from '../contracts/index.js';
-
 import type {
   IHqRequestInput,
-  IHqResponse,
+  IHqResponseOf,
   IBrowserAction,
   IBrowserReceipt,
 } from '../contracts/index.js';
+import type { IHqSnapshotInspection } from '../snapshots/index.js';
 import type { IStorageDescriptor, IStorageMaintenanceOperation } from '../storage/index.js';
-import type { IAgentProviderFactory } from '../providers/index.js';
 
 // construction receives trusted operator configuration, never a browser-selected root
 export const AgentHqOptionsSchema = z.strictObject({
-  providerFactories: z
-    .array(
-      z.object({
-        id: ProviderIdSchema,
-        create: z.custom<IAgentProviderFactory['create']>((input) => typeof input === 'function'),
-      }),
-    )
-    .max(MAX_PROVIDERS)
-    .optional(),
   stateRoot: z.string().min(1).refine(isAbsolute),
   allowedRoots: z.array(z.string().min(1).refine(isAbsolute)).min(1).max(128),
   codexExtraSkillRoots: z.array(z.string().min(1).refine(isAbsolute)).max(128).optional(),
@@ -31,8 +20,7 @@ export const AgentHqOptionsSchema = z.strictObject({
   claudeAdditionalDirectories: z.array(z.string().min(1).refine(isAbsolute)).max(128).optional(),
   /*
    * Proves no process of a runtime that stopped without releasing the state root remains, which
-   * lets startup replace its owner record and clear its leftover lock and socket. The host
-   * guarantees that at most one caller reclaims a given state root at a time.
+   * lets startup take its runtime lock over and clear the snapshot lock and socket it left.
    */
   isPreviousRuntimeStopped: z
     .custom<IPreviousRuntimeCheck>((input) => typeof input === 'function')
@@ -40,7 +28,7 @@ export const AgentHqOptionsSchema = z.strictObject({
 });
 export type IAgentHqOptions = z.infer<typeof AgentHqOptionsSchema>;
 
-// the recorded owner of a state root whose process no longer exists
+// the runtime lock's owner whose process no longer exists, and when it took the lock
 export type IPreviousRuntimeOwner = { pid: number; createdAt: string };
 // a host check that resolves true only when no process of that runtime remains
 export type IPreviousRuntimeCheck = (owner: IPreviousRuntimeOwner) => Promise<boolean>;
@@ -49,9 +37,9 @@ export type IPreviousRuntimeCheck = (owner: IPreviousRuntimeOwner) => Promise<bo
 export type IAgentHq = {
   readonly storage: IStorageDescriptor;
   /**
-   * Drains admitted HQ work and runs a host callback under exclusive maintenance admission.
-   * The callback owns its SQLite connection; its errors propagate unchanged.
-   * It must not call HQ or resume native work. Conflicting requests are rejected.
+   * Drains the runtime's admitted work and runs a host callback under exclusive maintenance
+   * admission. The callback owns its SQLite connection; its errors propagate unchanged.
+   * It must not call the runtime or resume native work. Conflicting requests are rejected.
    * @returns The callback result after maintenance is released.
    * @throws
    * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
@@ -83,11 +71,28 @@ export type IAgentHq = {
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   readBrowserAction(id: string, operatorId: string): Promise<IBrowserReceipt | null>;
+  /**
+   * Captures the running runtime, host tables and private key while agents keep working, under
+   * the state root's snapshot lock, into an absent destination under an existing canonical
+   * parent. Host connections must not write host tables until it resolves.
+   * @param destination The snapshot directory to create.
+   * @returns The verified snapshot's directory, manifest hash and header.
+   * @throws
+   * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
+   * - JG_AGENT_HQ_SNAPSHOT_INVALID: The HQ snapshot is invalid
+   * - JG_AGENT_HQ_SNAPSHOT_FAILED: The HQ snapshot operation failed
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   */
+  createSnapshot(destination: string): Promise<IHqSnapshotInspection>;
   stateRoot: string;
+  // the epoch this runtime binds each action and IPC request to, as `status` reports it
+  readonly runtimeEpoch: string;
   closed: Promise<void>;
   /**
-   * Performs a validated local command; native failures may retain diagnostic context.
-   * @returns A normalized response. Stop acknowledges admission, not completed shutdown.
+   * Performs a validated local command; native failures may retain diagnostic context. A deletion
+   * runs within the request and throws its failure.
+   * @returns The response to the command's kind. Stop acknowledges admission, not completed
+   * shutdown.
    * @throws
    * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
    * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
@@ -105,17 +110,16 @@ export type IAgentHq = {
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    * - LOCK_ROOT_INVALID: The locks folder must be an absolute path.
    */
-  request(command: IHqRequestInput): Promise<IHqResponse>;
+  request<TCommand extends IHqRequestInput>(
+    command: TCommand,
+  ): Promise<IHqResponseOf<TCommand['kind']>>;
   /**
-   * Closes owned resources before removing the exact lifetime record.
-   * @returns A promise resolved after confirmed resource shutdown and owner release.
+   * Closes owned resources before releasing the runtime lock.
+   * @returns A promise resolved after confirmed resource shutdown and lock release.
    * @throws
    * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-   * - JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE: The HQ state directory is unsafe
-   * - JG_AGENT_HQ_STATE_FILE_UNSAFE: The HQ state file is unsafe
    * - JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE: The HQ runtime owner is unverifiable
-   * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
    */
   close(): Promise<void>;
 };

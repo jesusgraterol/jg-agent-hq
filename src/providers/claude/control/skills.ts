@@ -1,7 +1,7 @@
-import { Exception } from 'jg-exception';
 import { z } from 'zod';
 
 import type { IProviderSkills } from '../../types.js';
+import { HQ_ERRORS } from '../../../errors/index.js';
 
 const CommandsSchema = z.object({
   skills: z
@@ -29,8 +29,7 @@ const CommandsSchema = z.object({
 export const toClaudeSkills = (response: unknown): Omit<IProviderSkills, 'observedAt'> => {
   const parsed = CommandsSchema.safeParse(response);
   if (!parsed.success)
-    throw new Exception('The Claude integration failed', {
-      code: 'JG_AGENT_HQ_CLAUDE_FAILED',
+    throw HQ_ERRORS.create('claudeFailed', {
       data: { kind: 'agent-unavailable' },
       cause: parsed.error,
     });
@@ -38,11 +37,8 @@ export const toClaudeSkills = (response: unknown): Omit<IProviderSkills, 'observ
   for (const command of parsed.data.skills) {
     const existing = commands.get(command.name);
     if (existing && Boolean(existing.builtin) === Boolean(command.builtin))
-      throw new Exception('The Claude integration failed', {
-        code: 'JG_AGENT_HQ_CLAUDE_FAILED',
-        data: {
-          kind: 'agent-unavailable',
-        },
+      throw HQ_ERRORS.create('claudeFailed', {
+        data: { kind: 'agent-unavailable' },
       });
     if (!existing || command.builtin) commands.set(command.name, command);
   }

@@ -1,6 +1,8 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { installClaudeFixture } from './claude.js';
+
 // a synthetic external CLI boundary; the actual runtime/IPC/worker remain real in tests
 const FIXTURE_SOURCE = String.raw`#!/usr/bin/env node
 import { spawn } from 'node:child_process';
@@ -86,16 +88,17 @@ else {
       else if (opcode === 10) appendFileSync(join(directory,'pongs.jsonl'),payload.toString('utf8')+'\n');
     }
   });
-  const threads = Array.from({ length: 1024 },(_,index) => ({ id: 'thread-'+String(index).padStart(4,'0'), cwd: workspaceRoot, name: 'Task '+index, createdAt: 1_700_000_000 + Math.floor(index/2), updatedAt: 1_700_000_100, ephemeral: false, status: { type: 'notLoaded' } })).reverse();
+  const threads = Array.from({ length: 1024 },(_,index) => ({ id: 'thread-'+String(index).padStart(4,'0'), cwd: workspaceRoot, name: 'Task '+index, createdAt: 1_700_000_000 + Math.floor(index/2), updatedAt: 1_700_000_100 + index, ephemeral: false, status: { type: 'notLoaded' } })).reverse();
   const respond = (id,result) => send(JSON.stringify({ id,result }));
   const notify = (method,params) => send(JSON.stringify({ method,params }));
   const managed = new Map();
+  // sessions thread/delete removed, which reads and lists no longer find
+  const deleted = new Set();
   // each thread's service tier, which Codex reports with its start and resume but not its record
   const tiers = new Map();
   let threadSequence = 0;
   let turnSequence = 0;
   const interrupts = [];
-  const logins=new Map();
   const complete = (threadId,status = 'completed') => {
     const thread = managed.get(threadId);
     if (!thread?.activeTurn) return;
@@ -152,38 +155,6 @@ else {
       });
       respond(request.id,{data:[{cwd:control.wrongSkillRoot??params.cwds[0],skills,errors:control.skillErrors?[{}]:[]}]});return;
     }
-    if(method==='account/login/start'||method==='mcpServer/oauth/login'){
-      if(control.rejectAuth){send(JSON.stringify({id:request.id,error:{code:-32603,message:'Sensitive native failure must not escape'}}));return;}
-      const loginId=control.sharedMcpLoginId&&method==='mcpServer/oauth/login'?'shared-native-login':'login-'+request.id;
-      const kind=method==='account/login/start'?'account':'mcp';
-      logins.set(loginId,{kind,threadId:params.threadId,name:params.name});
-      const completeLogin=()=>{notify(kind==='account'?'account/login/completed':'mcpServer/oauthLogin/completed',{loginId:control.wrongLoginId?'unrelated-login':loginId,success:control.loginFails?false:true,threadId:params.threadId,name:params.name});if(control.duplicateLoginCompletion)notify(kind==='account'?'account/login/completed':'mcpServer/oauthLogin/completed',{loginId,success:true,threadId:params.threadId,name:params.name});};
-      if(control.loginCompletesEarly)completeLogin();
-      const acknowledge=()=>respond(request.id,kind==='account'?{type:'chatgpt',loginId,authUrl:'https://auth.example.test/authorize?state=transient-challenge'}:{loginId,authorizationUrl:'https://mcp.example.test/authorize?state=transient-challenge'});if(control.lateAuth)setTimeout(acknowledge,31000);else acknowledge();
-      if(control.loginCompletes)setImmediate(completeLogin);
-      return;
-    }
-    if(method==='account/login/cancel'){
-      const login=logins.get(params.loginId);
-      if(login&&control.cancelNotifiesEarly)notify('account/login/completed',{loginId:params.loginId,success:false,error:'Canceled'});
-      respond(request.id,{status:login?'canceled':'notFound'});logins.delete(params.loginId);return;
-    }
-    if(method==='account/logout'){
-      writeFileSync(join(directory,'control.json'),JSON.stringify({...control,account:null}));
-      notify('account/updated',{authMode:null});respond(request.id,{});return;
-    }
-    if(method==='config/mcpServer/reload'){
-      if(control.rejectExtension){send(JSON.stringify({id:request.id,error:{code:-32602,message:'Sensitive native failure must not escape'}}));return;}
-      if(control.lateExtension)setTimeout(()=>respond(request.id,{}),31000);else respond(request.id,{});return;
-    }
-    if (method === 'account/read') {respond(request.id,control.accountUnavailable?{}:{account:Object.hasOwn(control,'account')?control.account:{type:'chatgpt',email:'fixture@example.com',planType:'pro',token:'credential-must-not-be-returned'},requiresOpenaiAuth:true,credential:'credential-must-not-be-returned'});return;}
-    if (method === 'mcpServerStatus/list') {
-      if(control.mcpFailure){send(JSON.stringify({id:request.id,error:{code:-32603,message:'Native catalog unavailable'}}));return;}
-      const servers=control.mcpServers??[{name:'fixture-server',runtimeStatus:'connected',authStatus:'oAuth',pluginId:null,serverInfo:{name:'Fixture MCP',version:'1'},tools:{inspect:{name:'inspect',description:'Fixture native tool',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true}}},toolsError:null,resources:[{uri:'fixture://readme',name:'Fixture readme',mimeType:'text/plain'}],resourceTemplates:[{uriTemplate:'fixture://{name}',name:'Fixture template'}],config:{headers:{authorization:'credential-must-not-be-returned'}}}];
-      const selected=params.serverName?servers.filter(server=>server.name===params.serverName):servers;
-      const offset=Number(params.cursor??0),limit=params.limit??32;
-      respond(request.id,{data:selected.slice(offset,offset+limit),nextCursor:offset+limit<selected.length?String(offset+limit):null});return;
-    }
     if (method === 'thread/start') {
       const nativeId='native-'+(++threadSequence);
       const thread = { ...threads[0],id:nativeId,sessionId:'session-for-'+nativeId,parentThreadId:null,forkedFromId:null,cwd:params.cwd,name:null,status:{type:'idle'},activeTurn:null };
@@ -191,13 +162,6 @@ else {
       managed.set(thread.id,thread);tiers.set(thread.id,params.serviceTier??null);
       if(control.suppressStartAck)return;
       respond(request.id,{thread,model:thread.model,reasoningEffort:thread.reasoningEffort,serviceTier:tiers.get(thread.id),approvalPolicy:params.approvalPolicy??'on-request',sandbox:{type:params.sandbox??'read-only'},instructionSources:[]});return;
-    }
-    if (method === 'thread/fork') {
-      if(control.rejectFork){send(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic fork rejection'}}));return;}
-      const source=managed.get(params.threadId)||{...threads[0],id:params.threadId};
-      const nativeId='native-'+(++threadSequence);
-      const thread={...source,id:nativeId,sessionId:'session-for-'+nativeId,forkedFromId:control.wrongForkSource??params.threadId,parentThreadId:null,status:{type:'idle'},activeTurn:null};
-      managed.set(nativeId,thread);respond(request.id,{thread});return;
     }
     if (method === 'thread/resume') {
       const thread = managed.get(params.threadId) || { ...threads[0],id:params.threadId,activeTurn:null };
@@ -211,16 +175,6 @@ else {
       return;
     }
     if (method === 'thread/name/set') { managed.get(params.threadId).name=params.name;respond(request.id,{});return; }
-    if (method === 'thread/archive') { const thread=managed.get(params.threadId);thread.isArchived=true;thread.status={type:'notLoaded'};respond(request.id,{});return; }
-    if (method === 'thread/unarchive') { const thread=managed.get(params.threadId);thread.isArchived=false;thread.status={type:'notLoaded'};respond(request.id,{thread});return; }
-    if (method === 'thread/revert') { const thread=managed.get(params.threadId);respond(request.id,{thread});return; }
-    if (method === 'thread/compact/start') {
-      const thread=managed.get(params.threadId);const turn={id:'compact-'+(++turnSequence),status:'inProgress'};thread.activeTurn=turn.id;
-      const started=()=>notify('turn/started',{threadId:thread.id,turn});
-      if(control.compactAckFirst){respond(request.id,{});setImmediate(()=>{started();complete(thread.id);});}
-      else {started();if(!control.holdTurn)complete(thread.id);respond(request.id,{});}
-      return;
-    }
     if (method === 'turn/start') {
       if (control.rejectTurn) { send(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic input rejection'}}));return; }
       const thread = managed.get(params.threadId);
@@ -269,6 +223,13 @@ else {
     if (method === 'thread/backgroundTerminals/clean') { respond(request.id,{});return; }
     if (method === 'thread/backgroundTerminals/list') { respond(request.id,{data:control.backgroundRemaining?[{id:'remaining-task'}]:[],nextCursor:null});return; }
     if (method === 'thread/unsubscribe') { managed.get(params.threadId).status={type:control.unsubscribeState??'notLoaded'};respond(request.id,{status:'unsubscribed'});return; }
+    // deleteFailure refuses deletions, and noRollout lists sessions Codex never saved, as it answers for them
+    if (method === 'thread/delete') {
+      if (control.deleteFailure) { send(JSON.stringify({id:request.id,error:{code:-32603,message:'Synthetic delete failure'}}));return; }
+      if (control.noRollout?.includes(params.threadId) || deleted.has(params.threadId)) { send(JSON.stringify({id:request.id,error:{code:-32600,message:'no rollout found for thread id '+params.threadId}}));return; }
+      deleted.add(params.threadId);managed.delete(params.threadId);
+      respond(request.id,{});notify('thread/deleted',{threadId:params.threadId});return;
+    }
     if (method === 'thread/list') {
       if (control.mode === 'exit-on-list') { process.stdout.end();return; }
       if (control.notifyUsage) {
@@ -277,10 +238,17 @@ else {
         send(JSON.stringify({ method: 'account/rateLimits/updated', params }));
       }
       if (control.accountChanged) send(JSON.stringify({ method: 'account/updated', params: {} }));
-      const selected = params.searchTerm ? threads.filter((thread) => thread.name.includes(params.searchTerm)) : threads;
-      const after = params.cursor ? selected.findIndex((thread) => thread.id === params.cursor) + 1 : 0;
-      const batch = selected.slice(after,after+params.limit).map((thread) => ({ ...thread,status: statusOf(thread) }));
-      respond(request.id,{ data: control.wrongRoot ? batch.map((thread) => ({ ...thread,cwd: control.wrongRoot })) : batch, nextCursor: control.invalidCursor ? 'x'.repeat(8193) : after+batch.length < selected.length ? batch.at(-1).id : null });return;
+      // listedThreads replaces the sessions with ones per folder, as { id, cwd, name, updatedAt }
+      const listed = control.listedThreads ? control.listedThreads.filter((thread) => thread.cwd === params.cwd).map((thread) => ({ ...threads[0],createdAt: thread.updatedAt,...thread })) : threads;
+      const named = (params.searchTerm ? listed.filter((thread) => thread.name.includes(params.searchTerm)) : listed).filter((thread) => !deleted.has(thread.id));
+      // last activity first, ties by ascending ID unlike HQ's list, continuing after the last session's "updatedAt|id"
+      const isBefore = (left,right) => left.updatedAt > right.updatedAt || (left.updatedAt === right.updatedAt && left.id < right.id);
+      const selected = [...named].sort((left,right) => isBefore(left,right) ? -1 : isBefore(right,left) ? 1 : 0);
+      const [updatedAt,id] = params.cursor ? [Number(params.cursor.split('|')[0]),params.cursor.split('|').slice(1).join('|')] : [];
+      const rest = params.cursor ? selected.filter((thread) => isBefore({ updatedAt,id },thread)) : selected;
+      const batch = rest.slice(0,params.limit).map((thread) => ({ ...thread,status: statusOf(thread) }));
+      const last = batch.at(-1);
+      respond(request.id,{ data: control.wrongRoot ? batch.map((thread) => ({ ...thread,cwd: control.wrongRoot })) : batch, nextCursor: control.invalidCursor ? 'x'.repeat(8193) : batch.length < rest.length ? last.updatedAt+'|'+last.id : null });return;
     }
     if (method === 'config/read') {
       const profiles=Object.fromEntries(Array.from({length:control.profileCount??4},(_,index)=>['profile-'+String(index).padStart(4,'0'),{description:control.configRevision?'Updated profile':'Native profile',model:'model-0000'}]));
@@ -289,6 +257,7 @@ else {
     // loadedThreads lists the threads the daemon has loaded, for every client
     if (method === 'thread/loaded/list') { respond(request.id,{ data: control.loadedThreads ?? [], nextCursor: null });return; }
     // failRead refuses a session read; holdReadThread answers that session's read only once the control drops it
+    if (method === 'thread/read' && deleted.has(params.threadId)) { send(JSON.stringify({id:request.id,error:{code:-32600,message:'no rollout found for thread id '+params.threadId}}));return; }
     if (method === 'thread/read' && control.failRead) { send(JSON.stringify({id:request.id,error:{code:-32603,message:'Synthetic read failure'}}));return; }
     if (method === 'thread/read' && control.holdReadThread === params.threadId) { const answer = () => controls().holdReadThread === params.threadId ? setTimeout(answer,25) : handle(line,true); setTimeout(answer,25);return; }
     if (method === 'thread/read') { respond(request.id,{ thread: { ...threads[0],...managed.get(params.threadId),...(control.ephemeralThreads?.includes(params.threadId) ? { ephemeral: true } : {}),status: statusOf({ id: params.threadId,status: managed.get(params.threadId)?.status ?? threads[0].status }),...(control.unavailableSettings?{model:null,reasoningEffort:null}:{}),id: params.threadId,cwd: control.wrongRoot || managed.get(params.threadId)?.cwd || workspaceRoot } });return; }
@@ -321,12 +290,17 @@ else {
 }
 `;
 
-/** Installs one disposable native-boundary fixture in a caller-owned test directory. */
+/**
+ * Installs one disposable native-boundary fixture in a caller-owned test directory, with the
+ * Claude fixture beside it: a runtime starts both CLIs as it starts, and the one it finds must be
+ * a fixture, never an installed CLI.
+ */
 export const installCodexFixture = async (directory: string): Promise<string> => {
   const bin = join(directory, 'bin');
   await mkdir(bin, { recursive: true });
   await writeFile(join(directory, 'control.json'), '{}');
   await writeFile(join(directory, 'calls.jsonl'), '');
   await writeFile(join(bin, 'codex'), FIXTURE_SOURCE, { mode: 0o755 });
+  await installClaudeFixture(directory);
   return bin;
 };

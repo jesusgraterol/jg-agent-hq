@@ -179,8 +179,8 @@ test(
         );
       const listed = await fixture.runtime.request({
         kind: 'threads',
-        provider: 'claude',
-        workspaceRoot: fixture.workspaceRoot,
+        providers: ['claude'],
+        workspaceRoots: [fixture.workspaceRoot],
       });
       if (listed.kind !== 'threads') throw new Error('Missing Claude sessions');
       expect(
@@ -602,8 +602,8 @@ test(
       const listedCounts = async () => {
         const response = await fixture.runtime.request({
           kind: 'threads',
-          provider: 'claude',
-          workspaceRoot: fixture.workspaceRoot,
+          providers: ['claude'],
+          workspaceRoots: [fixture.workspaceRoot],
         });
         if (response.kind !== 'threads') throw new Error('Missing Claude sessions');
         return new Map(
@@ -744,8 +744,8 @@ test(
       // the workspace's read indexes the transcript where the session started
       await fixture.runtime.request({
         kind: 'threads',
-        provider: 'claude',
-        workspaceRoot: fixture.workspaceRoot,
+        providers: ['claude'],
+        workspaceRoots: [fixture.workspaceRoot],
       });
       // the session now works in a subfolder, whose Claude project directory holds nothing
       const subfolder = join(fixture.workspaceRoot, 'packages');

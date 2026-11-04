@@ -11,13 +11,13 @@ export {
   NativeApprovalSummarySchema,
   ApprovalPresentationSchema,
   NativeElicitationSchema,
-  LifecycleEventSchema,
 } from './types.js';
 export type {
   IPreparedInput,
   IActionCommand,
   IActionEnvelope,
   IActionReceipt,
+  IActionPhase,
   IActionSummary,
   IActionWait,
   IManagedThread,
@@ -25,5 +25,4 @@ export type {
   INativeApprovalSummary,
   IApprovalPresentation,
   INativeElicitation,
-  ILifecycleEvent,
 } from './types.js';

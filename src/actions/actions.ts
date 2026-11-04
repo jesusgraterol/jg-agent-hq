@@ -1,51 +1,29 @@
-import { createHmac, randomUUID } from 'node:crypto';
-import { Exception, extractMessage, isException } from 'jg-exception';
-import { delay } from 'jg-utilities';
-import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
+import { Exception, extractMessage } from 'jg-exception';
+import { createTaskRunner } from 'jg-utilities';
 
-import {
-  MAX_ITEM_TEXT_LENGTH,
-  MAX_PAGE_SIZE,
-  type IActionEnvelope,
-  type IActionReceipt,
-  type IManagedThread,
-  type INativeApproval,
-  type INativeApprovalSummary,
-  type IPreparedInput,
-  type ILoginObservation,
-  type ISessionTerminal,
+import type {
+  IActionEnvelope,
+  IActionReceipt,
+  IManagedThread,
+  INativeApproval,
+  INativeApprovalSummary,
+  ISessionTerminal,
 } from '../contracts/index.js';
-import { getErrorKind } from '../errors/index.js';
-import type { INativePrompt, IProviderReattachment, IProviderThread } from '../providers/index.js';
-import { retainNativeLineage, readInputFiles } from '../providers/index.js';
-import { capabilityUnavailable, type createProviderRegistry } from '../providers/registry/index.js';
-import { resolveWorkspaceTarget } from '../runtime/state/index.js';
+import { MAX_CONNECTIONS } from '../ipc/index.js';
+import type { createProviderRegistry } from '../providers/registry/index.js';
 import type { createSkills } from '../skills/index.js';
 import type { IStore } from '../store/index.js';
-import type { INativeOutcome, INativeObservation, IAdmission } from '../store/control/index.js';
 
 import { LiveItems } from './live/index.js';
-import {
-  RESYNC_REREAD_DELAY_SECONDS,
-  Resyncs,
-  decideResync,
-  type IResyncRequest,
-} from './resync/index.js';
-import { ActionWaits } from './waits/index.js';
+import { ActionWaits, ChangeWaits } from './waits/index.js';
+import { createDispatch } from './dispatch/index.js';
+import { createEvents } from './events/index.js';
+import { createAdmission } from './admission/index.js';
+import { createReattach } from './reattach/index.js';
+import type { IActionsContext, IPollTopic } from './types.js';
+import { keepsSessions } from './utilities.js';
 
-// item observations never change a receipt, and are too frequent to wake waits for
-const ITEM_OBSERVATIONS: ReadonlySet<INativeObservation['kind']> = new Set([
-  'item-started',
-  'item-completed',
-]);
-
-// the most history pages of 128 items a finished turn's own read takes, as a Codex page reads turns
-const TURN_FLUSH_PAGES = 8;
-
-const NativeRejectionSchema = z.union([
-  z.object({ nativeCode: z.number() }),
-  z.object({ nativeRejection: z.literal(true) }),
-]);
 /**
  * Owns admitted native work across client disconnects, with durable delivery evidence.
  * @returns The runtime-scoped action controller. Close must precede worker shutdown.
@@ -58,1215 +36,69 @@ export const createActions = (
   actionKey: Uint8Array,
   skills: ReturnType<typeof createSkills>,
   runBackground: (operation: () => Promise<void>) => Promise<void>,
-  invalidateNativeCatalogs: () => void,
   claudeTerminalOf: (nativeId: string) => ISessionTerminal | null,
 ) => {
-  const prompts = new Map<string, { native: INativePrompt; threadId: string }>();
-  const controlled = new Map<string, { provider: IManagedThread['provider']; nativeId: string }>();
+  const admissions = new Set<Promise<IActionReceipt>>();
+  // native work the runtime owns, which close stops admitting and drains
+  const owned = createTaskRunner({ onError: (error) => events.failEvents(error) });
   const key = (provider: IManagedThread['provider'], nativeId: string) =>
     JSON.stringify([provider, nativeId]);
-  const own = (provider: IManagedThread['provider'], nativeId: string): void => {
-    controlled.set(key(provider, nativeId), { provider, nativeId });
-    live.open(key(provider, nativeId));
-  };
-  const live = new LiveItems();
-  const waits = new ActionWaits((actionId) => store.getAction(actionId));
-  const tasks = new Set<Promise<void>>();
-  const admissions = new Set<Promise<IActionReceipt>>();
-  let lane = Promise.resolve();
-  const eventCounts = new Map<IManagedThread['provider'], number>();
-  const blockedProviders = new Set<IManagedThread['provider']>();
-  // providers whose connection reports the sessions other clients drive
-  const observingProviders = new Set<IManagedThread['provider']>();
-  let closing = false;
-  let unavailable = false;
-  let eventFailure: unknown;
-
-  const conflict: () => never = () => {
-    throw new Exception('The HQ action conflicts with its recorded state', {
-      code: 'JG_AGENT_HQ_ACTION_CONFLICT',
-      data: {
-        kind: 'state-conflict',
-      },
-    });
-  };
-  const agentUnavailable: () => never = () => {
-    throw new Exception('The HQ provider integration failed', {
-      code: 'JG_AGENT_HQ_PROVIDER_FAILED',
-      data: { kind: 'agent-unavailable' },
-    });
-  };
-
-  /**
-   * Records native evidence, then wakes the receipt waits it can affect: a lost connection's on
-   * every receipt, and other evidence's on its thread's receipts.
-   * @returns The refreshed thread and whether its queue may advance.
-   * @throws
-   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  const recordObservation = async (observation: INativeObservation) => {
-    const result = await store.observe(observation);
-    if (observation.kind === 'native-unavailable') waits.notifyAll();
-    else if (result.thread && !ITEM_OBSERVATIONS.has(observation.kind))
-      waits.notifyThread(result.thread.id);
-    return result;
-  };
-
-  /** Quarantines controls after a lifecycle gap and stops the native transport. */
-  const failEvents = (cause?: unknown): void => {
-    if (unavailable) return;
-    unavailable = true;
-    eventFailure = cause;
-    prompts.clear();
-    const previous = lane;
-    lane = runBackground(async () => {
-      await previous.catch(() => undefined);
-      for (const { provider } of registry.statuses())
-        await recordObservation({ kind: 'native-unavailable', provider });
-    });
-    void lane.catch((error: unknown) => {
-      eventFailure = error;
-    });
-    void registry.close().catch((error: unknown) => {
-      eventFailure = error;
-    });
-  };
-
-  /** Stops one event source after its bounded lane loses lifecycle evidence. */
-  const failProvider = (provider: IManagedThread['provider'], cause: unknown): void => {
-    if (blockedProviders.has(provider)) return;
-    blockedProviders.add(provider);
-    for (const [id, prompt] of prompts) if (prompt.native.provider === provider) prompts.delete(id);
-    const previous = lane;
-    lane = runBackground(async () => {
-      await previous.catch(() => undefined);
-      await recordObservation({ kind: 'native-unavailable', provider });
-    });
-    void lane.catch(failEvents);
-    registry.quarantine(provider, cause);
-  };
-
-  /** Keeps native work owned by the runtime when a requesting client disconnects. */
-  const runOwned = (operation: () => Promise<void>): void => {
-    const task = (async () => {
-      try {
-        await runBackground(operation);
-      } catch (error) {
-        failEvents(error);
-      }
-    })();
-    tasks.add(task);
-    void task
-      .finally(() => {
-        tasks.delete(task);
-      })
-      .catch(failEvents);
-  };
-  /** Contains native protocol failures to the affected controller before releasing its transport. */
-  const runNativeOwned = (
-    provider: IManagedThread['provider'],
-    nativeId: string | undefined,
-    operation: () => Promise<void>,
-  ): void => {
-    runOwned(async () => {
-      try {
-        await operation();
-      } catch {
-        await recordObservation({
-          kind: 'native-unavailable',
-          provider,
-          ...(nativeId ? { nativeThreadId: nativeId } : {}),
-        });
+  // over IPC each long-poll holds one of its connections, so as many may wait in process
+  const polls = new ChangeWaits<IPollTopic>(MAX_CONNECTIONS);
+  const context: IActionsContext = {
+    registry,
+    store,
+    roots,
+    epoch,
+    actionKey,
+    skills,
+    runBackground,
+    claudeTerminalOf,
+    state: {
+      isClosing: false,
+      isUnavailable: false,
+      eventFailure: undefined,
+      lane: Promise.resolve(),
+      ownedCount: 0,
+    },
+    prompts: new Map(),
+    controlled: new Map(),
+    watched: new Set(),
+    blockedProviders: new Set(),
+    live: new LiveItems(() => polls.notify({ kind: 'live' })),
+    waits: new ActionWaits((actionId) => store.call('reads', 'getAction', actionId)),
+    polls,
+    resyncLifetime: new AbortController(),
+    key,
+    own(provider, nativeId) {
+      context.controlled.set(key(provider, nativeId), { provider, nativeId });
+      context.live.open(key(provider, nativeId));
+    },
+    runOwned(operation) {
+      void owned.trigger(async () => {
+        context.state.ownedCount += 1;
         try {
-          await registry.stopControl(provider, nativeId);
-        } catch {
-          /* the registry retains failed cleanup and quarantines this provider */
+          await runBackground(operation);
+        } finally {
+          context.state.ownedCount -= 1;
         }
-      }
-    });
-  };
-  /** Orders lifecycle persistence without buffering an unbounded stream. */
-  const enqueue = (provider: IManagedThread['provider'], operation: () => Promise<void>): void => {
-    if (unavailable || blockedProviders.has(provider)) return;
-    if ((eventCounts.get(provider) ?? 0) >= 128) {
-      failProvider(
-        provider,
-        new Exception('The HQ provider integration failed', {
-          code: 'JG_AGENT_HQ_PROVIDER_FAILED',
-          data: { kind: 'agent-unavailable' },
-        }),
-      );
-      return;
-    }
-    eventCounts.set(provider, (eventCounts.get(provider) ?? 0) + 1);
-    const previous = lane;
-    lane = runBackground(async () => {
-      try {
-        await previous.catch(() => undefined);
-        if (unavailable) return;
-        await operation();
-      } finally {
-        const pending = (eventCounts.get(provider) ?? 1) - 1;
-        if (pending) eventCounts.set(provider, pending);
-        else eventCounts.delete(provider);
-      }
-    });
-    void lane.catch((error) => {
-      if (
-        getErrorKind(error) === 'agent-unavailable' ||
-        getErrorKind(error) === 'access-denied' ||
-        getErrorKind(error) === 'state-conflict' ||
-        (isException(error) && error.code === 'JG_AGENT_HQ_TRANSPORT_FAILED')
-      )
-        failProvider(provider, error);
-      else failEvents(error);
-    });
-  };
-
-  const validateRoot = async (thread: IManagedThread): Promise<void> => {
-    if ((await resolveWorkspaceTarget(thread.workspaceRoot, roots)) !== thread.workspaceRoot)
-      conflict();
-  };
-
-  /**
-   * Verifies native workspace and lineage before binding them to a managed identity.
-   * @returns The verified metadata with confirmed lineage retained.
-   * @throws
-   * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
-   * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  const verifyThread = async (
-    thread: IManagedThread,
-    native: IProviderThread,
-  ): Promise<IProviderThread> => {
-    try {
-      if ((await resolveWorkspaceTarget(native.workspaceRoot, roots)) !== thread.workspaceRoot)
-        agentUnavailable();
-      const existing = await store.getThreadByNativeId(thread.provider, native.nativeId);
-      if (existing && existing.id !== thread.id) agentUnavailable();
-      const nativeLineage = retainNativeLineage(thread.nativeLineage, native.nativeLineage);
-      if (thread.forkedFromThreadId) {
-        const source = await store.getThread(thread.forkedFromThreadId);
-        if (!source?.nativeId || nativeLineage?.forkedFromId !== source.nativeId)
-          agentUnavailable();
-      }
-      return { ...native, nativeLineage };
-    } catch (cause) {
-      registry.quarantine(thread.provider, cause);
-      throw cause;
-    }
-  };
-
-  /** Lets the worker claim one ready entry atomically without locking a turn’s lifetime. */
-  const advanceQueue = (threadId: string, provider: IManagedThread['provider']): void => {
-    if (closing || unavailable || blockedProviders.has(provider)) return;
-    runOwned(async () => {
-      const next = await store.claimQueued(threadId);
-      if (next)
-        await dispatch(
-          next.receipt,
-          next.thread,
-          {
-            kind: 'message',
-            threadId,
-            input: { kind: 'text', text: next.input.text },
-            settings: next.input.settings,
-          },
-          next.input,
-        );
-    });
-  };
-
-  const apply = async (outcome: INativeOutcome): Promise<IActionReceipt | null> => {
-    const receipt = await store.applyOutcome(outcome);
-    waits.notifyAction(outcome.actionId);
-    if (!receipt?.threadId) return receipt;
-    const thread = await store.getThread(receipt.threadId);
-    if (thread?.nativeId && (outcome.kind === 'closed' || outcome.kind === 'archived')) {
-      controlled.delete(key(thread.provider, thread.nativeId));
-      watched.delete(key(thread.provider, thread.nativeId));
-    }
-    if (
-      thread?.state === 'completed' &&
-      outcome.kind !== 'control-accepted' &&
-      outcome.kind !== 'control-completed'
-    )
-      advanceQueue(thread.id, thread.provider);
-    return receipt;
-  };
-  /**
-   * Applies a turn's acknowledgement after the lifecycle events reported before it, such as a
-   * turn the agent started and ended while the input waited, so the ledger sees them in order.
-   * @returns The updated receipt.
-   */
-  const applyAfterEvents = async (outcome: INativeOutcome): Promise<IActionReceipt | null> => {
-    await lane.catch(() => undefined);
-    return apply(outcome);
-  };
-
-  const continuePhases = async (receipt: IActionReceipt, thread: IManagedThread): Promise<void> => {
-    const requestId = receipt.nativeRequestId;
-    if (!requestId || !thread.nativeId || closing) return;
-    if (requestId.endsWith(':name')) {
-      const admissionName = receipt.kind === 'thread-rename' ? null : thread.name;
-      // rename's new name is retained only by its admitted in-memory command; late name acks need no resend
-      if (!admissionName) return;
-      await (
-        await registry.get(thread.provider)
-      ).nameThread(requestId, thread.nativeId, admissionName);
-      await apply({ kind: 'renamed', actionId: receipt.id, requestId });
-    } else if (requestId.endsWith(':close')) {
-      await (await registry.get(thread.provider)).releaseThread(requestId, thread.nativeId);
-      await apply({ kind: 'closed', actionId: receipt.id, requestId });
-    } else if (requestId.endsWith(':archive')) {
-      await (await registry.get(thread.provider)).archiveThread(requestId, thread.nativeId);
-      await apply({ kind: 'archived', actionId: receipt.id, requestId });
-    }
-  };
-
-  /**
-   * Dispatches one admitted intent once and records delivery without replaying it.
-   * @returns A promise resolved after delivery evidence or uncertainty is persisted.
-   * @throws
-   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  const dispatch = async (
-    initial: IActionReceipt,
-    originalThread: IManagedThread,
-    command: IActionEnvelope['command'],
-    input?: IPreparedInput,
-  ): Promise<void> => {
-    let receipt = initial;
-    let thread = originalThread;
-    let hasDispatched = false;
-    try {
-      const control = await registry.get(thread.provider);
-      if (closing) {
-        await apply({
-          kind: 'failed',
-          actionId: receipt.id,
-          requestId: receipt.nativeRequestId!,
-          failure: 'state-conflict',
-        });
-        return;
-      }
-      await validateRoot(thread);
-      if (closing) {
-        await apply({
-          kind: 'failed',
-          actionId: receipt.id,
-          requestId: receipt.nativeRequestId!,
-          failure: 'state-conflict',
-        });
-        return;
-      }
-      const requestId = receipt.nativeRequestId;
-      if (!requestId) conflict();
-      const nativeId = thread.nativeId;
-      const prompt = command.kind === 'native-reply' ? prompts.get(command.approvalId) : undefined;
-      if (command.kind === 'native-reply' && !prompt) conflict();
-      const reply =
-        command.kind === 'native-reply' ? prompt!.native.validate(command.response) : undefined;
-      const source =
-        requestId.endsWith(':fork') && thread.forkedFromThreadId
-          ? await store.getThread(thread.forkedFromThreadId)
-          : null;
-      if (requestId.endsWith(':fork') && !source?.nativeId) conflict();
-      hasDispatched = true;
-      if (requestId.endsWith(':control')) {
-        if (
-          !nativeId ||
-          ![
-            'skills-reload',
-            'mcp-reload',
-            'mcp-reconnect',
-            'mcp-set-enabled',
-            'mcp-login',
-            'plugins-reload',
-          ].includes(command.kind)
-        )
-          conflict();
-        const result = await control.controlExtensions(
-          requestId,
-          nativeId,
-          thread.workspaceRoot,
-          command as Extract<
-            IActionEnvelope['command'],
-            {
-              kind:
-                | 'skills-reload'
-                | 'mcp-reload'
-                | 'mcp-reconnect'
-                | 'mcp-set-enabled'
-                | 'mcp-login'
-                | 'plugins-reload';
-            }
-          >,
-        );
-        invalidateNativeCatalogs();
-        await apply({ kind: 'control-accepted', actionId: receipt.id, requestId, ...result });
-      } else if (requestId.endsWith(':create') || requestId.endsWith(':fork')) {
-        const created = await verifyThread(
-          thread,
-          requestId.endsWith(':fork')
-            ? await control.forkThread(requestId, source!.nativeId!, thread.workspaceRoot)
-            : await control.startThread(
-                requestId,
-                thread.workspaceRoot,
-                command.kind === 'thread-create' ? (command.settings ?? {}) : {},
-              ),
-        );
-        // bind the exact response before attempting the second, independently receipted native phase
-        own(thread.provider, created.nativeId);
-        receipt = (await apply({
-          kind: 'created',
-          actionId: receipt.id,
-          requestId,
-          nativeId: created.nativeId,
-          nativeLineage: created.nativeLineage,
-        }))!;
-        thread = (await store.getThread(thread.id))!;
-        await continuePhases(receipt, thread);
-      } else if (requestId.endsWith(':resume')) {
-        if (!nativeId) conflict();
-        own(thread.provider, nativeId);
-        const resumed = await verifyThread(
-          thread,
-          await control.resumeThread(
-            requestId,
-            nativeId,
-            thread.workspaceRoot,
-            thread.name,
-            command.kind === 'thread-resume' || command.kind === 'thread-adopt'
-              ? (command.settings ?? {})
-              : {},
-          ),
-        );
-        await apply({
-          kind: 'resumed',
-          actionId: receipt.id,
-          requestId,
-          nativeState: resumed.nativeState,
-          nativeLineage: resumed.nativeLineage,
-        });
-      } else if (requestId.endsWith(':name')) {
-        if (!nativeId || command.kind !== 'thread-rename') conflict();
-        await control.nameThread(requestId, nativeId, command.name);
-        await apply({ kind: 'renamed', actionId: receipt.id, requestId });
-      } else if (requestId.endsWith(':unarchive')) {
-        if (!nativeId) conflict();
-        await verifyThread(thread, await control.unarchiveThread(requestId, nativeId));
-        await apply({ kind: 'unarchived', actionId: receipt.id, requestId });
-      } else if (requestId.endsWith(':revert')) {
-        if (!nativeId || command.kind !== 'thread-revert') conflict();
-        await verifyThread(
-          thread,
-          await control.revertThread(requestId, nativeId, command.beforeTurnId),
-        );
-        live.reset(key(thread.provider, nativeId));
-        await apply({ kind: 'reverted', actionId: receipt.id, requestId });
-      } else if (requestId.endsWith(':compact')) {
-        if (!nativeId) conflict();
-        live.reset(key(thread.provider, nativeId));
-        const turn = await control.compactThread(requestId, nativeId);
-        await applyAfterEvents({
-          kind: 'compaction-accepted',
-          actionId: receipt.id,
-          requestId,
-          nativeTurnId: turn.id,
-        });
-      } else if (requestId.endsWith(':turn')) {
-        if (!nativeId || !input) conflict();
-        hasDispatched = false;
-        const files = await readInputFiles(input.files, thread.workspaceRoot, roots);
-        await control.validateInput(nativeId, input);
-        hasDispatched = true;
-        const turn = await control.startTurn(
-          requestId,
-          nativeId,
-          input.text,
-          input.skill,
-          input.settings,
-          files,
-        );
-        await applyAfterEvents({
-          kind: 'turn-accepted',
-          actionId: receipt.id,
-          requestId,
-          nativeTurnId: turn.id,
-        });
-      } else if (requestId.endsWith(':steer')) {
-        if (!nativeId || command.kind !== 'steer') conflict();
-        const nativeTurnId = await control.steer(
-          requestId,
-          nativeId,
-          command.expectedTurnId,
-          command.text,
-        );
-        await apply({ kind: 'steer-accepted', actionId: receipt.id, requestId, nativeTurnId });
-      } else if (requestId.endsWith(':interrupt')) {
-        if (!nativeId || command.kind !== 'interrupt') conflict();
-        await control.interrupt(requestId, nativeId, command.expectedTurnId);
-        await apply({ kind: 'interrupt-accepted', actionId: receipt.id, requestId });
-      } else if (requestId.endsWith(':clean')) {
-        if (!nativeId) conflict();
-        await control.cleanThread(requestId, nativeId);
-        receipt = (await apply({ kind: 'cleaned', actionId: receipt.id, requestId }))!;
-        await continuePhases(receipt, thread);
-      } else if (command.kind === 'native-reply') {
-        await prompt!.native.reply(reply);
-        await apply({ kind: 'reply-written', actionId: receipt.id, requestId });
-      }
-    } catch (error) {
-      // Only a matching native error response proves rejection. Transport loss and malformed results remain uncertain.
-      const explicit =
-        isException(error) &&
-        (NativeRejectionSchema.safeParse(error.data).success ||
-          error.code === 'JG_AGENT_HQ_CAPABILITY_UNAVAILABLE');
-      const kind = getErrorKind(error);
-      const failure =
-        kind === 'state-conflict' || kind === 'access-denied' || kind === 'agent-unavailable'
-          ? kind
-          : 'operation-failed';
-      await apply(
-        !hasDispatched || explicit
-          ? {
-              kind: 'failed',
-              actionId: receipt.id,
-              requestId: receipt.nativeRequestId!,
-              failure: explicit ? 'agent-unavailable' : failure,
-            }
-          : { kind: 'uncertain', actionId: receipt.id, requestId: receipt.nativeRequestId! },
-      );
-    }
-  };
-
-  // finished turns whose own history is being read, so a turn is read by one task at a time
-  const flushing = new Set<string>();
-  /*
-   * A saved item leaves the live window only once a native history page holds it, and a client may
-   * never read the pages that do, so a finished turn's own history is read here, newest first,
-   * until none of its saved items remain. Codex's saved state can trail its turn's end, so a turn
-   * whose items remain is read once more after the re-check wait. An aborted wait or a failed read
-   * leaves them to the next history read, as before, and never fails the session's events.
-   */
-  const flushTurn = (
-    provider: IManagedThread['provider'],
-    nativeId: string,
-    workspaceRoot: string,
-    turnId: string,
-  ): void => {
-    const liveKey = key(provider, nativeId);
-    const flushKey = JSON.stringify([liveKey, turnId]);
-    if (flushing.has(flushKey)) return;
-    flushing.add(flushKey);
-    runOwned(async () => {
-      try {
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-          if (attempt > 0)
-            await delay(RESYNC_REREAD_DELAY_SECONDS, { signal: resyncLifetime.signal });
-          const control = await registry.get(provider);
-          let cursor: string | undefined;
-          for (let page = 0; page < TURN_FLUSH_PAGES; page += 1) {
-            if (closing || !live.awaitsFlush(liveKey, turnId)) return;
-            const response = await control.readHistory({
-              kind: 'items',
-              provider,
-              workspaceRoot,
-              nativeId,
-              turnId,
-              limit: MAX_PAGE_SIZE,
-              cursor,
-              textLimit: MAX_ITEM_TEXT_LENGTH,
-            });
-            if (response.kind !== 'items') return;
-            live.reconcile(liveKey, response.result.data);
-            if (response.result.nextCursor === null) break;
-            cursor = response.result.nextCursor;
-          }
-        }
-      } catch {
-        // the items wait for the next history read
-      } finally {
-        flushing.delete(flushKey);
-      }
-    });
-  };
-
-  const observe = async (observation: INativeObservation): Promise<void> => {
-    const result = await recordObservation(observation);
-    if (observation.kind === 'turn-completed') {
-      if (result.thread && controlled.has(key(observation.provider, observation.nativeThreadId)))
-        flushTurn(
-          observation.provider,
-          observation.nativeThreadId,
-          result.thread.workspaceRoot,
-          observation.nativeTurnId,
-        );
-      watched.delete(key(observation.provider, observation.nativeThreadId));
-      for (const [id, prompt] of prompts)
-        if (
-          prompt.native.provider === observation.provider &&
-          prompt.native.nativeThreadId === observation.nativeThreadId &&
-          prompt.native.nativeTurnId === observation.nativeTurnId
-        )
-          prompts.delete(id);
-    }
-    if (observation.kind === 'request-resolved' || observation.kind === 'request-canceled')
-      for (const [id, prompt] of prompts)
-        if (
-          prompt.native.provider === observation.provider &&
-          prompt.native.requestId === observation.requestId &&
-          prompt.native.nativeThreadId === observation.nativeThreadId
-        )
-          prompts.delete(id);
-    if (result.canDispatchQueued && result.thread)
-      advanceQueue(result.thread.id, result.thread.provider);
-  };
-  /** Orders one observation about a controlled session behind the events before it. */
-  const receiveObservation = (
-    provider: IManagedThread['provider'],
-    observation: INativeObservation,
-  ): void => {
-    if (
-      !('nativeThreadId' in observation) ||
-      !observation.nativeThreadId ||
-      !controlled.has(key(provider, observation.nativeThreadId))
-    )
-      return;
-    if (observation.kind === 'turn-completed')
-      live.completeTurn(key(provider, observation.nativeThreadId), observation.nativeTurnId);
-    enqueue(provider, () => observe(observation));
-  };
-
-  // ends the waits of delayed re-checks and turn reads when the runtime closes
-  const resyncLifetime = new AbortController();
-  /*
-   * Sessions a re-check after an unidentified loss left running, or skipped while an action was in
-   * flight. Codex reporting one idle while its turn is recorded as active triggers the re-check a
-   * lost turn end gets, since that turn's completion may have been the lost message.
-   */
-  const watched = new Set<string>();
-  /**
-   * Makes up for a lost notification by reading the session from its native process, outside the
-   * shared lane, then orders only the resulting observation behind the events before it. A failed
-   * read makes the session uncertain.
-   * @returns A promise resolved once the decision is applied or scheduled.
-   */
-  const recheck = async (
-    provider: IManagedThread['provider'],
-    nativeId: string,
-    request: IResyncRequest,
-  ): Promise<void> => {
-    if (closing || !controlled.has(key(provider, nativeId))) return;
-    const record = await store.getTurnRecord(provider, nativeId);
-    if (!record) return;
-    // an action in flight may have started a turn the record doesn't hold yet
-    if (
-      (request.lost === 'unknown' || request.lost === 'turn-started') &&
-      record.hasPendingAction
-    ) {
-      watched.add(key(provider, nativeId));
-      return;
-    }
-    let latest: IProviderReattachment['latestTurn'] | undefined;
-    try {
-      const control = await registry.get(provider);
-      if (!control.readReattachment) capabilityUnavailable();
-      latest = (await control.readReattachment(nativeId, record.workspaceRoot)).latestTurn;
-    } catch {
-      latest = undefined;
-    }
-    const decision =
-      latest === undefined
-        ? ({ kind: 'uncertain' } as const)
-        : decideResync(record, latest, request);
-    if (decision.kind === 'complete')
-      receiveObservation(provider, {
-        kind: 'turn-completed',
-        provider,
-        nativeThreadId: nativeId,
-        nativeTurnId: decision.nativeTurnId,
-        state: decision.state,
-      });
-    else if (decision.kind === 'gap') live.markGap(key(provider, nativeId));
-    else if (decision.kind === 'watch') {
-      live.markGap(key(provider, nativeId));
-      watched.add(key(provider, nativeId));
-    } else if (decision.kind === 'reread') {
-      const reread = { lost: request.lost, isLastAttempt: true, turnId: decision.nativeTurnId };
-      // the wait holds back no other session's re-check
-      runOwned(async () => {
-        try {
-          await delay(RESYNC_REREAD_DELAY_SECONDS, { signal: resyncLifetime.signal });
-        } catch {
-          return;
-        }
-        if (!closing) resyncs.request(provider, nativeId, reread);
-      });
-    } else if (decision.kind === 'uncertain')
-      enqueue(provider, () =>
-        observe({ kind: 'native-unavailable', provider, nativeThreadId: nativeId }),
-      );
-  };
-  const resyncs = new Resyncs(recheck, runOwned);
-
-  registry.setEvents({
-    observe: receiveObservation,
-    resync(provider, nativeId, lost) {
-      if (closing) return;
-      const request: IResyncRequest = { lost, isLastAttempt: false, turnId: null };
-      // without a session, every session this runtime controls through the provider is read
-      if (nativeId === undefined) {
-        for (const thread of controlled.values())
-          if (thread.provider === provider) resyncs.request(provider, thread.nativeId, request);
-      } else if (controlled.has(key(provider, nativeId)))
-        resyncs.request(provider, nativeId, request);
-    },
-    item(provider, nativeId, item, isComplete, replacedIds) {
-      if (!controlled.has(key(provider, nativeId))) return;
-      for (const replacedId of replacedIds ?? [])
-        live.replace(key(provider, nativeId), item.turnId, replacedId);
-      live.put(key(provider, nativeId), item, isComplete);
-      enqueue(provider, () =>
-        observe({
-          kind: isComplete ? 'item-completed' : 'item-started',
-          provider,
-          nativeThreadId: nativeId,
-          nativeTurnId: item.turnId,
-          nativeItemId: item.nativeId,
-        }),
-      );
-    },
-    gap(provider, nativeId) {
-      if (controlled.has(key(provider, nativeId))) live.markGap(key(provider, nativeId));
-    },
-    background(provider, nativeId, count) {
-      if (controlled.has(key(provider, nativeId)))
-        live.setBackgroundCommands(key(provider, nativeId), count);
-    },
-    session(provider, nativeId, state) {
-      observingProviders.add(provider);
-      const sessionKey = key(provider, nativeId);
-      // a session this runtime controls reports its transitions through its own thread state
-      if (controlled.has(sessionKey)) {
-        if (watched.has(sessionKey) && state !== 'running' && state !== 'waiting') {
-          watched.delete(sessionKey);
-          resyncs.request(provider, nativeId, {
-            lost: 'turn-completed',
-            isLastAttempt: false,
-            turnId: null,
-          });
-        }
-        return;
-      }
-      enqueue(provider, () => store.observeSessions(provider, [{ nativeId, state }], false));
-    },
-    delta(provider, nativeId, turnId, itemId, text) {
-      if (controlled.has(key(provider, nativeId)))
-        live.append(key(provider, nativeId), turnId, itemId, text);
-    },
-    prompt(provider, prompt) {
-      // a session that outlives the runtime keeps its request for the next runtime to answer
-      if (closing && registry.keepsSessions(provider)) return;
-      // the client driving a session HQ doesn't control answers its requests, so HQ stays silent
-      if (!controlled.has(key(provider, prompt.nativeThreadId))) return;
-      if (prompts.size >= 32 || closing) {
-        runNativeOwned(provider, prompt.nativeThreadId, prompt.reject);
-        return;
-      }
-      enqueue(provider, async () => {
-        const recorded = await store.openApproval({
-          id: randomUUID(),
-          provider,
-          nativeThreadId: prompt.nativeThreadId,
-          nativeTurnId: prompt.nativeTurnId,
-          requestId: prompt.requestId,
-          kind: prompt.presentation.kind,
-          isBlocking: prompt.presentation.isBlocking,
-          digest: createHmac('sha256', actionKey).update(prompt.fingerprint).digest('hex'),
-        });
-        if (!recorded) {
-          await prompt.reject();
-          return;
-        }
-        if (prompts.has(recorded.id)) return;
-        prompts.set(recorded.id, {
-          native: prompt,
-          threadId: recorded.thread.id,
-        });
       });
     },
-    unpresentable(provider, nativeId, reject) {
-      if (closing && registry.keepsSessions(provider)) return;
-      // only a session HQ controls waits on HQ for an answer
-      if (!controlled.has(key(provider, nativeId))) return;
-      runNativeOwned(provider, nativeId, reject);
-    },
-    outcome(provider, outcome, nativeThread) {
-      if (closing) return;
-      enqueue(provider, async () => {
-        const receipt = await store.getAction(outcome.actionId);
-        if (
-          !receipt ||
-          receipt.runtimeEpoch !== epoch ||
-          receipt.nativeRequestId !== outcome.requestId ||
-          (!['submitted', 'uncertain'].includes(receipt.delivery) &&
-            !(
-              outcome.kind === 'control-completed' &&
-              receipt.delivery === 'acknowledged' &&
-              receipt.completion === null
-            )) ||
-          receipt.provider !== provider
-        )
-          return;
-        if (outcome.kind === 'control-accepted' || outcome.kind === 'control-completed') {
-          invalidateNativeCatalogs();
-          await apply(outcome);
-          return;
-        }
-        if (!receipt.threadId) return;
-        const thread = await store.getThread(receipt.threadId);
-        if (!thread || thread.provider !== provider) return;
-        let verifiedOutcome = outcome;
-        if (
-          nativeThread &&
-          (outcome.kind === 'created' ||
-            outcome.kind === 'resumed' ||
-            outcome.kind === 'reverted' ||
-            outcome.kind === 'unarchived')
-        ) {
-          if (outcome.kind !== 'created' && nativeThread.nativeId !== thread.nativeId)
-            agentUnavailable();
-          const verified = await verifyThread(thread, nativeThread);
-          if (outcome.kind === 'created' || outcome.kind === 'resumed')
-            verifiedOutcome = { ...outcome, nativeLineage: verified.nativeLineage };
-          if (outcome.kind === 'created') own(provider, verified.nativeId);
-          if (outcome.kind === 'reverted') live.reset(key(provider, verified.nativeId));
-        }
-        const updated = await apply(verifiedOutcome);
-        if (updated && (outcome.kind === 'created' || outcome.kind === 'cleaned'))
-          runNativeOwned(
-            provider,
-            nativeThread?.nativeId ?? thread.nativeId ?? undefined,
-            async () => continuePhases(updated, (await store.getThread(thread.id))!),
-          );
-      });
-    },
-    unavailable(provider, nativeId) {
-      if (closing || blockedProviders.has(provider)) return;
-      enqueue(provider, async () => {
-        await recordObservation({
-          kind: 'native-unavailable',
-          provider,
-          ...(nativeId ? { nativeThreadId: nativeId } : {}),
-        });
-        // only sessions observed through the lost connection lose their known state
-        if (!nativeId && observingProviders.has(provider))
-          await store.markSessionsUnknown(provider);
-        for (const [id, prompt] of prompts)
-          if (
-            prompt.native.provider === provider &&
-            (!nativeId || prompt.native.nativeThreadId === nativeId)
-          )
-            prompts.delete(id);
-      });
-      runNativeOwned(provider, nativeId, async () => registry.stopControl(provider, nativeId));
-    },
-  });
-
-  /**
-   * Validates the current target and separates new dispatch from idempotent receipt reads.
-   * @returns The durable admission receipt; native work runs independently.
-   * @throws
-   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-   * - JG_AGENT_HQ_SKILL_UNAVAILABLE: The HQ skill is unavailable
-   * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
-   * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
-   * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
-   * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
-   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
-   * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
-   * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  const admitAndDispatch = async (action: IActionEnvelope): Promise<IActionReceipt> => {
-    // The worker verifies the complete digest before returning any existing receipt.
-    const existing = await store.getAction(action.id);
-    if (existing) {
-      if (existing.threadId) {
-        const thread = await store.getThread(existing.threadId);
-        if (thread) await validateRoot(thread);
-      }
-      return (await store.admit({ action, prepared: {} })).receipt;
-    }
-    if (closing || unavailable || tasks.size >= 64) agentUnavailable();
-    const command = action.command;
-    let provider: IManagedThread['provider'] | undefined =
-      'provider' in command ? command.provider : undefined;
-    const prepared: IAdmission['prepared'] = {};
-    let input: IPreparedInput | undefined;
-    if ('threadId' in command) {
-      const target = await store.getThread(command.threadId);
-      if (target) {
-        await validateRoot(target);
-        provider = target.provider;
-      }
-    } else if ('queuedActionId' in command) {
-      const queued = await store.getAction(command.queuedActionId);
-      const target = queued?.threadId ? await store.getThread(queued.threadId) : null;
-      if (target) {
-        await validateRoot(target);
-        provider = target.provider;
-      }
-    }
-    if (!provider) return (await store.admit({ action, prepared })).receipt;
-    const control = await registry.get(provider);
-    if (!control.isAvailable) agentUnavailable();
-    if (
-      command.kind === 'account-login' ||
-      command.kind === 'account-login-cancel' ||
-      command.kind === 'account-logout'
-    ) {
-      const capabilities = await control.readCapabilities(undefined);
-      const operation =
-        command.kind === 'account-login'
-          ? 'accountLogin'
-          : command.kind === 'account-login-cancel'
-            ? 'accountLoginCancel'
-            : 'accountLogout';
-      if (capabilities.operations[operation].state !== 'supported') capabilityUnavailable();
-      const admitted = await store.admit({ action, prepared });
-      if (admitted.isNew && admitted.dispatchActionId) {
-        runOwned(async () => {
-          let hasDispatched = false;
-          try {
-            const login =
-              command.kind === 'account-login-cancel'
-                ? await store.getAction(command.loginActionId)
-                : null;
-            if (
-              command.kind === 'account-login-cancel' &&
-              (!login?.nativeRequestId ||
-                login.provider !== provider ||
-                login.runtimeEpoch !== epoch)
-            )
-              conflict();
-            hasDispatched = true;
-            const result = await control.controlAccount(
-              admitted.receipt.nativeRequestId!,
-              command,
-              login?.nativeRequestId ?? undefined,
-            );
-            invalidateNativeCatalogs();
-            await apply({
-              kind: 'control-accepted',
-              actionId: action.id,
-              requestId: admitted.receipt.nativeRequestId!,
-              ...result,
-            });
-          } catch (error) {
-            const explicit =
-              isException(error) &&
-              (NativeRejectionSchema.safeParse(error.data).success ||
-                error.code === 'JG_AGENT_HQ_CAPABILITY_UNAVAILABLE' ||
-                error.code === 'JG_AGENT_HQ_ACTION_CONFLICT');
-            await apply(
-              !hasDispatched || explicit
-                ? {
-                    kind: 'failed',
-                    actionId: action.id,
-                    requestId: admitted.receipt.nativeRequestId!,
-                    failure:
-                      getErrorKind(error) === 'state-conflict'
-                        ? 'state-conflict'
-                        : 'agent-unavailable',
-                  }
-                : {
-                    kind: 'uncertain',
-                    actionId: action.id,
-                    requestId: admitted.receipt.nativeRequestId!,
-                  },
-            );
-          }
-        });
-      }
-      return admitted.receipt;
-    }
-    if (
-      command.kind === 'skills-reload' ||
-      command.kind === 'mcp-reload' ||
-      command.kind === 'mcp-reconnect' ||
-      command.kind === 'mcp-set-enabled' ||
-      command.kind === 'mcp-login' ||
-      command.kind === 'plugins-reload'
-    ) {
-      const target = await store.getThread(command.threadId);
-      const capabilities = await control.readCapabilities(target?.nativeId ?? undefined);
-      const operation =
-        command.kind === 'skills-reload'
-          ? 'skillsReload'
-          : command.kind === 'mcp-reload'
-            ? 'mcpReload'
-            : command.kind === 'mcp-reconnect'
-              ? 'mcpReconnect'
-              : command.kind === 'mcp-set-enabled'
-                ? 'mcpSetEnabled'
-                : command.kind === 'mcp-login'
-                  ? 'mcpLogin'
-                  : 'pluginsReload';
-      if (capabilities.operations[operation].state !== 'supported') capabilityUnavailable();
-    }
-    if (command.kind === 'steer') {
-      const capabilities = await control.readCapabilities(
-        (await store.getThread(command.threadId))?.nativeId ?? undefined,
-      );
-      if (capabilities.operations.steer.state !== 'supported') capabilityUnavailable();
-    }
-    if (
-      command.kind === 'thread-archive' ||
-      command.kind === 'thread-unarchive' ||
-      command.kind === 'thread-compact' ||
-      command.kind === 'thread-revert'
-    ) {
-      const capabilities = await control.readCapabilities(
-        (await store.getThread(command.threadId))?.nativeId ?? undefined,
-      );
-      const operation =
-        command.kind === 'thread-archive'
-          ? 'archive'
-          : command.kind === 'thread-unarchive'
-            ? 'unarchive'
-            : command.kind === 'thread-compact'
-              ? 'compact'
-              : 'revert';
-      if (capabilities.operations[operation].state !== 'supported') capabilityUnavailable();
-    }
-    if (command.kind === 'thread-create' || command.kind === 'thread-adopt')
-      prepared.workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, roots);
-    if (command.kind === 'thread-fork') {
-      const source = await store.getThread(command.threadId);
-      if (!source?.nativeId) conflict();
-      const capabilities = await control.readCapabilities(source.nativeId);
-      if (capabilities.operations.fork.state !== 'supported') capabilityUnavailable();
-      const inspected = await control.inspectThread(source.nativeId, source.workspaceRoot);
-      const workspaceRoot = await resolveWorkspaceTarget(inspected.thread.workspaceRoot, roots);
-      if (workspaceRoot !== source.workspaceRoot) conflict();
-      prepared.workspaceRoot = workspaceRoot;
-    }
-    if (command.kind === 'thread-adopt') {
-      // a terminal that runs a Claude session keeps it; HQ takes it only once it runs nowhere
-      if (command.provider === 'claude' && claudeTerminalOf(command.nativeId)) conflict();
-      const target = await control.inspectThread(command.nativeId, prepared.workspaceRoot!);
-      // nobody holds it, or the client that does is between turns, as a Codex terminal can be
-      if (
-        (!target.canAdopt && !target.canResume) ||
-        (await resolveWorkspaceTarget(target.thread.workspaceRoot, roots)) !==
-          prepared.workspaceRoot
-      )
-        conflict();
-      prepared.nativeId = command.nativeId;
-    } else if (command.kind === 'thread-resume' || command.kind === 'thread-recover') {
-      const thread = await store.getThread(command.threadId);
-      if (!thread) conflict();
-      await validateRoot(thread);
-      const nativeId =
-        command.kind === 'thread-recover' && command.recovery.kind === 'attach'
-          ? command.recovery.nativeId
-          : thread.nativeId;
-      if (nativeId && thread.provider === 'claude' && claudeTerminalOf(nativeId)) conflict();
-      if (nativeId) {
-        const target = await control.inspectThread(nativeId, thread.workspaceRoot);
-        const canResume =
-          target.canAdopt ||
-          (command.kind === 'thread-resume' &&
-            thread.state === 'inactive' &&
-            thread.ownership === 'managed' &&
-            target.canResume);
-        if (
-          !canResume ||
-          (await resolveWorkspaceTarget(target.thread.workspaceRoot, roots)) !==
-            thread.workspaceRoot
-        )
-          conflict();
-        prepared.nativeId = nativeId;
-      }
-    } else if (command.kind === 'native-reply') {
-      const prompt = prompts.get(command.approvalId);
-      if (
-        !prompt ||
-        prompt.threadId !== command.threadId ||
-        prompt.native.nativeTurnId !== command.expectedTurnId
-      )
-        conflict();
-      prompt.native.validate(command.response);
-    }
-    if (command.kind === 'message' || command.kind === 'queue') {
-      const thread = await store.getThread(command.threadId);
-      if (!thread?.nativeId) conflict();
-      // a terminal that resumed a Claude session HQ runs has it now, so HQ sends nothing
-      if (thread.provider === 'claude' && claudeTerminalOf(thread.nativeId)) conflict();
-      const files = await readInputFiles(command.input.files ?? [], thread.workspaceRoot, roots);
-      input = {
-        ...(await skills.prepare(command.threadId, command.input)),
-        files: files.map(({ content: _content, ...reference }) => reference),
-        settings: command.settings ?? {},
-      };
-      await control.validateInput(thread.nativeId, input);
-      prepared.input = input;
-    }
-    const admitted = await store.admit({ action, prepared });
-    // sending or canceling a queued entry changes that entry's own receipt
-    if (admitted.isNew && 'queuedActionId' in command) waits.notifyAction(command.queuedActionId);
-    if (admitted.isNew && admitted.dispatchActionId && admitted.thread) {
-      const receipt =
-        admitted.dispatchActionId === admitted.receipt.id
-          ? admitted.receipt
-          : await store.getAction(admitted.dispatchActionId);
-      if (!receipt) conflict();
-      let dispatchedCommand = command;
-      if (command.kind === 'queue-send') {
-        if (!receipt.queuedInput) conflict();
-        dispatchedCommand = {
-          kind: 'message',
-          threadId: admitted.thread.id,
-          input: { kind: 'text', text: receipt.queuedInput.text },
-          settings: receipt.queuedInput.settings,
-        };
-        input = receipt.queuedInput;
-      }
-      runOwned(() => dispatch(receipt, admitted.thread!, dispatchedCommand, input));
-    }
-    return admitted.receipt;
   };
-
-  /**
-   * Rejoins one session the previous runtime left running in a native process that outlives it.
-   * The session is bound to this runtime as that process reports it before joining, so a request
-   * the process sends again on joining finds its turn, and a turn that finished between the two
-   * reads then completes. A session that can't be rejoined has its ownership marked uncertain.
-   * @returns A promise resolved once the session is rejoined or marked uncertain.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  const reattachThread = async (thread: IManagedThread): Promise<void> => {
-    const nativeId = thread.nativeId!;
-    let isOwned = false;
-    try {
-      const control = await registry.get(thread.provider);
-      if (!control.readReattachment || !control.reattachThread) capabilityUnavailable();
-      await validateRoot(thread);
-      const read = await control.readReattachment(nativeId, thread.workspaceRoot);
-      if (read.thread.nativeState === 'systemError') agentUnavailable();
-      const bound = await store.reattach({
-        threadId: thread.id,
-        latestTurn: read.latestTurn && {
-          nativeTurnId: read.latestTurn.nativeId,
-          state: read.latestTurn.state,
-        },
-      });
-      waits.notifyThread(thread.id);
-      if (bound?.thread?.ownership !== 'managed' || bound.thread.runtimeEpoch !== epoch) return;
-      own(thread.provider, nativeId);
-      isOwned = true;
-      const joined = await control.reattachThread(
-        `${randomUUID()}:reattach`,
-        nativeId,
-        thread.workspaceRoot,
-      );
-      const turnId = bound.thread.activeTurnId;
-      const latest = joined.latestTurn;
-      if (turnId && latest?.nativeId === turnId && latest.state !== 'running') {
-        const { state } = latest;
-        live.completeTurn(key(thread.provider, nativeId), turnId);
-        enqueue(thread.provider, () =>
-          observe({
-            kind: 'turn-completed',
-            provider: thread.provider,
-            nativeThreadId: nativeId,
-            nativeTurnId: turnId,
-            state,
-          }),
-        );
-      }
-      if (bound.canDispatchQueued) advanceQueue(thread.id, thread.provider);
-    } catch {
-      if (isOwned)
-        await recordObservation({
-          kind: 'native-unavailable',
-          provider: thread.provider,
-          nativeThreadId: nativeId,
-        });
-      else await store.quarantineThread(thread.id);
-      waits.notifyThread(thread.id);
-    }
-  };
-  /** Rejoins, one at a time, every session the previous runtime left running. */
-  const reattach = async (): Promise<void> => {
-    let batch = await store.listReattachable();
-    while (batch.length > 0 && !closing) {
-      for (const thread of batch) if (!closing) await reattachThread(thread);
-      batch = await store.listReattachable();
-    }
-  };
-  runOwned(reattach);
+  const { state, prompts, controlled, live, waits } = context;
+  const dispatcher = createDispatch(context);
+  const events = createEvents(context, dispatcher);
+  const { admitAndDispatch } = createAdmission(context, dispatcher);
+  context.runOwned(createReattach(context, dispatcher, events).reattach);
 
   return {
-    /**
-     * Reads live native authentication presentation without replaying an interrupted action.
-     * @returns The exact challenge or its known terminal status; restart loses sensitive presentation.
-     * @throws
-     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-     * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-     * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
-     * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
-     * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
-     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
-     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
-     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
-     */
-    async readLogin(actionId: string): Promise<ILoginObservation> {
-      const receipt = await store.getAction(actionId);
-      const absent: ILoginObservation = {
-        state: 'unavailable',
-        authorizationUrl: null,
-        canCancel: false,
-        observedAt: null,
-      };
-      if (
-        !receipt?.provider ||
-        !['account-login', 'mcp-login'].includes(receipt.kind) ||
-        !receipt.nativeRequestId
-      )
-        return absent;
-      if (receipt.threadId) {
-        const thread = await store.getThread(receipt.threadId);
-        if (!thread) return absent;
-        await validateRoot(thread);
-      }
-      if (receipt.completion !== null)
-        return {
-          state:
-            receipt.completion === 'completed'
-              ? 'completed'
-              : receipt.completion === 'interrupted'
-                ? 'canceled'
-                : 'failed',
-          authorizationUrl: null,
-          canCancel: false,
-          observedAt: receipt.updatedAt,
-        };
-      if (receipt.runtimeEpoch !== epoch || receipt.delivery === 'failed') return absent;
-      return (await registry.get(receipt.provider)).readLogin(receipt.nativeRequestId);
-    },
     live,
     waits,
+    polls,
     /**
-     * Returns after durable admission; the native operation outlives this client request.
-     * @returns The durable admission receipt after validation.
+     * Returns after durable admission; the native operation outlives this client request, except
+     * a deletion, which settles within it and throws its failure.
+     * @returns The durable admission receipt after validation, or a deletion's settled receipt.
      * @throws
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      * - JG_AGENT_HQ_SKILL_UNAVAILABLE: The HQ skill is unavailable
@@ -1277,6 +109,7 @@ export const createActions = (
      * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
      * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+     * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
      * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
     async submit(action: IActionEnvelope): Promise<IActionReceipt> {
@@ -1314,18 +147,16 @@ export const createActions = (
      * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
     async close(): Promise<void> {
-      closing = true;
-      resyncLifetime.abort();
+      state.isClosing = true;
+      context.resyncLifetime.abort();
       let cleanupFailure: unknown;
       try {
         await Promise.allSettled([...admissions]);
-        const stopped = [...controlled.values()].filter(
-          ({ provider }) => !registry.keepsSessions(provider),
-        );
+        const stopped = [...controlled.values()].filter(({ provider }) => !keepsSessions(provider));
         // Active turn IDs come from ordered native evidence, never from an interrupt acknowledgement.
         await Promise.all(
           stopped.map(async ({ provider, nativeId }) => {
-            const thread = await store.getThreadByNativeId(provider, nativeId);
+            const thread = await store.call('reads', 'getThreadByNativeId', provider, nativeId);
             if (thread?.activeTurnId) {
               try {
                 const control = await registry.get(provider);
@@ -1341,8 +172,8 @@ export const createActions = (
             }
           }),
         );
-        await Promise.allSettled([...tasks]);
-        await lane.catch(() => undefined);
+        await owned.close();
+        await state.lane.catch(() => undefined);
         const providerStates = new Map(
           registry.statuses().map((status) => [status.provider, status.state]),
         );
@@ -1355,8 +186,8 @@ export const createActions = (
         cleanupFailure = error;
       } finally {
         const nativeExit = await Promise.allSettled([registry.close()]);
-        await Promise.allSettled([...tasks]);
-        await lane.catch(() => undefined);
+        await owned.close();
+        await state.lane.catch(() => undefined);
         const failedExit = nativeExit.find((result) => result.status === 'rejected');
         if (failedExit?.status === 'rejected')
           throw new Exception(`The HQ transport failed: ${extractMessage(failedExit.reason)}`, {
@@ -1366,8 +197,8 @@ export const createActions = (
           });
       }
       if (cleanupFailure) throw cleanupFailure;
-      if (eventFailure) throw eventFailure;
-      await store.releaseControls();
+      if (state.eventFailure) throw state.eventFailure;
+      await store.call('lifecycle', 'releaseControls');
       prompts.clear();
       live.clear();
       controlled.clear();

@@ -2,12 +2,13 @@
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { setTimeout as wait } from 'node:timers/promises';
-import { Exception, hasErrorCode, isException } from 'jg-exception';
+import { hasErrorCode } from 'jg-exception';
 
 import { HqRequestSchema } from '../contracts/index.js';
 import { requestAgentHq } from '../ipc/index.js';
 import { createAgentHq } from '../runtime/index.js';
 import { readRuntimeOwner } from '../runtime/state/index.js';
+import { HQ_ERRORS } from '../errors/index.js';
 
 import { toCliError } from './utilities.js';
 
@@ -25,56 +26,42 @@ const main = async (): Promise<void> => {
       'text-limit': { type: 'string' },
       'evidence-kind': { type: 'string', multiple: true },
       'thread-id': { type: 'string' },
-      'server-name': { type: 'string' },
-      'skill-id': { type: 'string' },
-      arguments: { type: 'string' },
       'codex-extra-skill-root': { type: 'string', multiple: true },
       'claude-additional-directory': { type: 'string', multiple: true },
-      name: { type: 'string' },
       topic: { type: 'string' },
       cursor: { type: 'string' },
       limit: { type: 'string' },
       'after-sequence': { type: 'string' },
+      'wait-ms': { type: 'string' },
       pace: { type: 'string' },
       search: { type: 'string' },
-      provider: { type: 'string' },
+      'exclude-continued': { type: 'boolean' },
+      provider: { type: 'string', multiple: true },
       help: { type: 'boolean', short: 'h' },
     },
   });
   const [kind] = positionals;
   if (values.help || !kind || kind === 'help') {
     process.stdout.write(
-      'jg-agent-hq serve|status|stop|capabilities|threads|thread|turns|items|item-detail|item-image|sessions|session-evidence|usage|account|models|configuration|mcp-servers|mcp-tools|mcp-resources|managed-thread-name|suggest-thread-name|skills|skill-preview|session-states|active-sessions|unstarted-threads|observation-pace|locks|request --state-root <path> [--provider <provider-id>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--server-name <name>] [--skill-id <id>] [--arguments <text>] [--after-sequence <sequence>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nsession-evidence accepts --native-item-id and repeated --evidence-kind.\nitems reads newest first and accepts --text-limit <1..65536>, and --native-item-id with --turn-id for one item.\nitem-detail reads the detail of one item and takes --native-item-id and --turn-id.\nitem-image reads one image of an item and also takes --index <0..63>.\nobservation-pace takes --pace <live|background>.\nlocks lists the jg-locks locks on this machine with their holders; HQ never takes them.\nrequest reads one validated HQ command as JSON from stdin, such as action-wait.\n',
+      'jg-agent-hq serve|status|stop|capabilities|threads|thread|items|item-detail|item-image|session-evidence|usage|models|configuration|suggest-thread-name|skills|session-states|active-sessions|observation-pace|locks|request --state-root <path> [--provider <codex|claude>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--topic <topic>] [--thread-id <id>] [--after-sequence <sequence>]\nsession-states also accepts --wait-ms <1..30000>, which waits for a transition after --after-sequence.\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nthreads lists sessions across repeated --workspace-root and --provider, both providers by default, and accepts --search and --exclude-continued.\nsession-evidence accepts --native-item-id and repeated --evidence-kind.\nitems reads newest first and accepts --text-limit <1..65536>, and --native-item-id with --turn-id for one item.\nitem-detail reads the detail of one item and takes --native-item-id and --turn-id.\nitem-image reads one image of an item and also takes --index <0..63>.\nobservation-pace takes --pace <live|background>.\nlocks lists the jg-locks locks on this machine with their holders; the runtime never takes them.\nrequest reads one validated request command as JSON from stdin, such as action-wait.\n',
     );
     return;
   }
   if (positionals.length !== 1 || !values['state-root'])
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
-      data: { kind: 'invalid-request' },
-    });
+    throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
   const stateRoot = resolve(values['state-root']);
   const roots = (values['workspace-root'] ?? []).map((root) => resolve(root));
   if (kind === 'request') {
     if (Object.keys(values).some((key) => key !== 'state-root'))
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
-        data: { kind: 'invalid-request' },
-      });
+      throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
     const chunks: Buffer[] = [];
     let bytes = 0;
     for await (const chunk of process.stdin) {
       if (!Buffer.isBuffer(chunk))
-        throw new Exception('The HQ request is invalid', {
-          code: 'JG_AGENT_HQ_REQUEST_INVALID',
-          data: { kind: 'invalid-request' },
-        });
+        throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
       bytes += chunk.length;
       if (bytes > 65_536)
-        throw new Exception('The HQ request is invalid', {
-          code: 'JG_AGENT_HQ_REQUEST_INVALID',
-          data: { kind: 'invalid-request' },
-        });
+        throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
       chunks.push(chunk);
     }
     let input: unknown;
@@ -83,16 +70,11 @@ const main = async (): Promise<void> => {
         new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, bytes)),
       );
     } catch (cause) {
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
-        data: { kind: 'invalid-request' },
-        cause,
-      });
+      throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' }, cause });
     }
     const parsed = HqRequestSchema.safeParse(input);
     if (!parsed.success)
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      throw HQ_ERRORS.create('requestInvalid', {
         data: { kind: 'invalid-request' },
         cause: parsed.error,
       });
@@ -110,20 +92,15 @@ const main = async (): Promise<void> => {
       values['text-limit'] ||
       values['evidence-kind'] ||
       values['thread-id'] ||
-      values['skill-id'] ||
-      values.arguments ||
-      values.name ||
       values.topic ||
       values.cursor ||
       values.limit ||
       values.search ||
+      values['exclude-continued'] ||
       values.provider ||
       values['after-sequence']
     )
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
-        data: { kind: 'invalid-request' },
-      });
+      throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
     const runtime = await createAgentHq({
       stateRoot,
       allowedRoots: roots,
@@ -155,30 +132,52 @@ const main = async (): Promise<void> => {
     return;
   }
   if (values['codex-extra-skill-root'] || values['claude-additional-directory'])
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
-      data: { kind: 'invalid-request' },
-    });
-  if (roots.length > 1)
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
-      data: { kind: 'invalid-request' },
-    });
-  if (kind === 'session-states') {
-    const allowed = new Set(['state-root', 'after-sequence', 'limit']);
+    throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
+  if (kind === 'threads') {
+    const allowed = new Set([
+      'state-root',
+      'workspace-root',
+      'provider',
+      'search',
+      'exclude-continued',
+      'limit',
+      'cursor',
+    ]);
     if (Object.keys(values).some((key) => !allowed.has(key)))
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
+    const parsed = HqRequestSchema.safeParse({
+      kind,
+      workspaceRoots: roots,
+      providers: values.provider,
+      search: values.search,
+      excludeContinued: values['exclude-continued'],
+      limit: values.limit === undefined ? undefined : Number(values.limit),
+      cursor: values.cursor,
+    });
+    if (!parsed.success)
+      throw HQ_ERRORS.create('requestInvalid', {
         data: { kind: 'invalid-request' },
+        cause: parsed.error,
       });
+    process.stdout.write(
+      `${JSON.stringify({ schemaVersion: 1, ...(await requestAgentHq(stateRoot, parsed.data)) })}\n`,
+    );
+    return;
+  }
+  if (roots.length > 1 || (values.provider?.length ?? 0) > 1)
+    throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
+  if (kind === 'session-states') {
+    const allowed = new Set(['state-root', 'after-sequence', 'limit', 'wait-ms']);
+    if (Object.keys(values).some((key) => !allowed.has(key)))
+      throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
     const parsed = HqRequestSchema.safeParse({
       kind: 'session-states',
       afterSequence: values['after-sequence'] === undefined ? 0 : Number(values['after-sequence']),
       limit: values.limit === undefined ? 32 : Number(values.limit),
+      ...(values['wait-ms'] === undefined ? {} : { waitMs: Number(values['wait-ms']) }),
     });
     if (!parsed.success)
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      throw HQ_ERRORS.create('requestInvalid', {
         data: { kind: 'invalid-request' },
         cause: parsed.error,
       });
@@ -190,16 +189,12 @@ const main = async (): Promise<void> => {
   if (kind === 'active-sessions' || kind === 'observation-pace' || kind === 'locks') {
     const allowed = new Set(kind === 'observation-pace' ? ['state-root', 'pace'] : ['state-root']);
     if (Object.keys(values).some((key) => !allowed.has(key)))
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
-        data: { kind: 'invalid-request' },
-      });
+      throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
     const parsed = HqRequestSchema.safeParse(
       kind === 'observation-pace' ? { kind, pace: values.pace } : { kind },
     );
     if (!parsed.success)
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
+      throw HQ_ERRORS.create('requestInvalid', {
         data: { kind: 'invalid-request' },
         cause: parsed.error,
       });
@@ -208,36 +203,28 @@ const main = async (): Promise<void> => {
     );
     return;
   }
-  if (values['after-sequence'] || values.pace)
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
-      data: { kind: 'invalid-request' },
-    });
+  if (values['after-sequence'] || values['wait-ms'] || values.pace || values['exclude-continued'])
+    throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
+  const provider = values.provider?.[0];
   const payload = Object.fromEntries(
     [
       ['kind', kind],
       [
         'provider',
         [
-          'threads',
-          'unstarted-threads',
           'thread',
-          'turns',
           'items',
           'item-detail',
           'item-image',
-          'sessions',
           'session-evidence',
           'usage',
           'capabilities',
           'models',
           'configuration',
           'skills',
-          'account',
-          'provider-actions',
         ].includes(kind)
-          ? (values.provider ?? 'codex')
-          : values.provider,
+          ? (provider ?? 'codex')
+          : provider,
       ],
       ['workspaceRoot', roots[0]],
       ['nativeId', values['native-id']],
@@ -247,10 +234,6 @@ const main = async (): Promise<void> => {
       ['textLimit', values['text-limit'] === undefined ? undefined : Number(values['text-limit'])],
       ['kinds', values['evidence-kind']],
       ['threadId', values['thread-id']],
-      ['serverName', values['server-name']],
-      ['skillId', values['skill-id']],
-      ['arguments', values.arguments ?? (kind === 'skill-preview' ? '' : undefined)],
-      ['name', values.name],
       ['topic', values.topic],
       ['cursor', values.cursor],
       ['limit', values.limit === undefined ? undefined : Number(values.limit)],
@@ -259,8 +242,7 @@ const main = async (): Promise<void> => {
   );
   const parsed = HqRequestSchema.safeParse(payload);
   if (!parsed.success)
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
+    throw HQ_ERRORS.create('requestInvalid', {
       data: { kind: 'invalid-request' },
       cause: parsed.error,
     });
@@ -271,16 +253,13 @@ const main = async (): Promise<void> => {
     let stopped = false;
     while (Date.now() < deadline) {
       try {
-        const { owner } = await readRuntimeOwner(stateRoot);
+        const owner = await readRuntimeOwner(stateRoot);
         if (owner.nonce !== response.result.runtimeEpoch)
-          throw new Exception('The HQ runtime owner is unverifiable', {
-            code: 'JG_AGENT_HQ_RUNTIME_OWNER_UNVERIFIABLE',
-            data: {
-              kind: 'state-conflict',
-            },
+          throw HQ_ERRORS.create('runtimeOwnerUnverifiable', {
+            data: { kind: 'state-conflict' },
           });
       } catch (error) {
-        if (isException(error) && hasErrorCode(error.cause, 'ENOENT')) {
+        if (hasErrorCode(error, 'JG_AGENT_HQ_RUNTIME_NOT_RUNNING')) {
           stopped = true;
           break;
         }
@@ -288,11 +267,7 @@ const main = async (): Promise<void> => {
       }
       await wait(100);
     }
-    if (!stopped)
-      throw new Exception('The HQ transport failed', {
-        code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
-        data: { kind: 'state-conflict' },
-      });
+    if (!stopped) throw HQ_ERRORS.create('transportFailed', { data: { kind: 'state-conflict' } });
     process.stdout.write(
       `${JSON.stringify({ schemaVersion: 1, kind: 'stop', result: { state: 'stopped', runtimeEpoch: response.result.runtimeEpoch } })}\n`,
     );
