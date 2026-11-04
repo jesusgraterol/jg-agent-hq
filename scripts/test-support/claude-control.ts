@@ -22,8 +22,6 @@ export const startClaudeControl = () => {
  const directory=join(process.env.CLAUDE_CONFIG_DIR,'projects',process.cwd().replace(/[^a-zA-Z0-9]/g,'-'));
  mkdirSync(directory,{recursive:true});
  const transcript=join(directory,id+'.jsonl');
- const inherited=args.includes('--fork-session')?readFileSync(join(directory,args[args.indexOf('--resume')+1]+'.jsonl'),'utf8').trim().split('\n').filter(Boolean).map(line=>({...JSON.parse(line),sessionId:id})):[];
- if(inherited.length)writeFileSync(transcript,inherited.map(row=>JSON.stringify(row)).join('\n')+'\n');
  const child=spawn(process.execPath,['-e','setInterval(()=>{},60000)'],{stdio:'ignore'});
  appendFileSync(join(root,'claude-pids.jsonl'),JSON.stringify({pid:process.pid,child:child.pid})+'\n');
  appendFileSync(join(root,'claude-starts.jsonl'),JSON.stringify({args,cwd:process.cwd(),id})+'\n');
@@ -34,7 +32,7 @@ export const startClaudeControl = () => {
  // steer 'join' replays text written during a turn at once, as Claude does at a tool boundary;
  // 'next' holds it until the turn's result, as for text written while the answer streams
  let steers=[];
- let leaf=inherited.filter(row=>row.uuid).at(-1)?.uuid??null;
+ let leaf=null;
  let hasPrompt=false;
  let isClosing=false;
  // a turn the CLI starts on its own, as Claude does after a background command finishes
@@ -116,14 +114,9 @@ export const startClaudeControl = () => {
   if(message.type==='control_request'){
    const subtype=message.request.subtype;
    const response=body=>out({type:'control_response',response:{subtype:'success',request_id:message.request_id,response:body}});
-   if(['reload_skills','reload_plugins','mcp_reconnect','mcp_toggle'].includes(subtype)){
-    if(settings.rejectExtension){out({type:'control_response',response:{subtype:'error',request_id:message.request_id,error:'Sensitive native failure must not escape'}});return;}
-    const acknowledge=()=>response(subtype==='reload_plugins'?{held:!!settings.holdPlugins,error_count:settings.pluginErrors??0}:subtype==='reload_skills'?{}:undefined);if(settings.lateExtension)setTimeout(acknowledge,31000);else acknowledge();return;
-   }
    // nativeOnSettings starts a turn of its own just before answering a settings read
    if(subtype==='get_settings'&&settings.nativeOnSettings&&!native&&!input)startNative();
    if(subtype==='get_settings'){response({effective:{model,effortLevel:'stale-effort',agent:flag('--agent'),...(fast===null?{}:{fastMode:fast}),secret:'must-not-leak'},applied:settings.unavailableSettings?{model:null,effort:null}:{model,effort}});return;}
-   if(subtype==='mcp_status'){if(settings.mcpFailure){out({type:'control_response',response:{subtype:'error',request_id:message.request_id,error:'Native catalog unavailable'}});return;}response({mcpServers:settings.mcpServers??[{name:'fixture-server',status:'connected',source:'project',serverInfo:{name:'Fixture MCP',version:'1'},tools:[{name:'inspect',description:'Fixture native tool',annotations:{readOnly:true}}],config:{headers:{authorization:'credential-must-not-be-returned'}}}]});return;}
    if(subtype==='apply_flag_settings'){model=message.request.settings.model??model;effort=message.request.settings.effortLevel??effort;fast=message.request.settings.fastMode??fast;response();return;}
    if(subtype==='initialize'){response({...(settings.omitVersion?{}:{claude_code_version:settings.version??'2.1.304'}),futureMetadata:settings.futureMetadata,agents:settings.agentsUnavailable?undefined:Array.from({length:settings.agentCount??4},(_,index)=>({name:'agent-'+String(index).padStart(4,'0'),description:settings.configRevision?'Updated agent':'Native agent',model:'model-0000'})),current_permission_mode:flag('--permission-mode')??'default',session_state:settings.omitIdle?undefined:settings.nativeState??'idle',commands:fixtureCommands(settings)});return;}
    if(subtype==='rename_session'){

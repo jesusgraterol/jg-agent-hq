@@ -88,16 +88,6 @@ export class LiveItems {
     );
   }
 
-  /** Clears a reverted presentation and requires a fresh native history read. */
-  public reset(nativeId: string): void {
-    // the session's background commands outlive its reverted presentation
-    const backgroundCommands = this.__threads.get(nativeId)?.backgroundCommands ?? 0;
-    this.__remove(nativeId);
-    this.open(nativeId);
-    this.__threads.get(nativeId)!.backgroundCommands = backgroundCommands;
-    this.markGap(nativeId);
-  }
-
   /** Marks missing native stream evidence without discarding the surviving presentation. */
   public markGap(nativeId: string): void {
     const thread = this.__threads.get(nativeId);

@@ -1,18 +1,3 @@
-// native authentication and extension controls
-export {
-  AccountControlCommandSchema,
-  LoginObservationSchema,
-  LoginRequestSchema,
-  NativeControlResultSchema,
-} from './accounts/index.js';
-export type {
-  IAccountControlCommand,
-  ILoginObservation,
-  INativeControlResult,
-} from './accounts/index.js';
-export { ExtensionControlCommandSchema } from './extensions/index.js';
-export type { IExtensionControlCommand } from './extensions/index.js';
-
 // constants
 export {
   DEFAULT_PAGE_SIZE,
@@ -31,7 +16,6 @@ export {
   ThreadSummarySchema,
   ActiveSessionsSchema,
   UnstartedThreadsSchema,
-  TurnSummarySchema,
   HistoryFileSchema,
   HistoryItemSchema,
   ItemImageMediaTypeSchema,
@@ -57,7 +41,6 @@ export {
   ProviderCapabilitySetSchema,
   ProviderCapabilitiesSchema,
   ProviderStatusSchema,
-  MAX_PROVIDERS,
 } from './providers/index.js';
 export type {
   IProviderId,
@@ -73,7 +56,6 @@ export type {
   IThreadSummary,
   IActiveSessions,
   IUnstartedThreads,
-  ITurnSummary,
   IHistoryFile,
   IHistoryItem,
   IItemImageMediaType,
@@ -114,7 +96,6 @@ export {
   NativeApprovalSummarySchema,
   ApprovalPresentationSchema,
   NativeElicitationSchema,
-  LifecycleEventSchema,
 } from './actions/index.js';
 export type {
   IPreparedInput,
@@ -128,7 +109,6 @@ export type {
   INativeApprovalSummary,
   IApprovalPresentation,
   INativeElicitation,
-  ILifecycleEvent,
 } from './actions/index.js';
 
 // native skills and explicit message input
@@ -137,16 +117,9 @@ export {
   NativeSkillInputSchema,
   SkillSchema,
   SkillPageSchema,
-  SkillPreviewSchema,
   MessageInputSchema,
 } from './skills/index.js';
-export type {
-  INativeSkillInput,
-  ISkill,
-  ISkillPage,
-  ISkillPreview,
-  IMessageInput,
-} from './skills/index.js';
+export type { INativeSkillInput, ISkill, ISkillPage, IMessageInput } from './skills/index.js';
 
 // authenticated host actions
 export {
@@ -191,36 +164,13 @@ export {
   TurnResultSchema,
 } from './results/index.js';
 export type { IOutputSchema, ITurnUsage, ITurnResult } from './results/index.js';
-// native accounts and configured MCP inventories
-export { AccountRequestSchema, AccountObservationSchema } from './accounts/index.js';
-export type { IAccountRequest, IAccountObservation } from './accounts/index.js';
-export {
-  MAX_MCP_ITEMS,
-  MAX_MCP_CATALOG_BYTES,
-  McpRequestSchema,
-  McpServerSchema,
-  McpToolSchema,
-  McpResourceSchema,
-  McpServerPageSchema,
-  McpToolPageSchema,
-  McpResourcePageSchema,
-} from './extensions/index.js';
-export type {
-  IMcpRequest,
-  IMcpServer,
-  IMcpTool,
-  IMcpResource,
-  IMcpServerPage,
-  IMcpToolPage,
-  IMcpResourcePage,
-} from './extensions/index.js';
+
 // bounded historical evidence
 export {
   EvidenceRequestSchema,
   EvidencePageSchema,
   EvidenceItemSchema,
   HistoryProvenanceSchema,
-  SessionDiscoveryRequestSchema,
 } from './evidence/index.js';
 export type {
   IEvidenceRequest,

@@ -23,24 +23,7 @@ export type {
 } from './runtime/index.js';
 export { requestAgentHq } from './ipc/index.js';
 
-// trusted native provider adapters
-export type {
-  IAgentProvider,
-  IAgentProviderFactory,
-  IAgentProviderContext,
-  IAgentProviderEvents,
-  IAgentProviderOutcome,
-  INativePrompt,
-  IProviderCall,
-  IProviderThread,
-  IProviderInspection,
-  IProviderReattachment,
-  IResyncLoss,
-  IProviderSkills,
-  IProviderMcpServerPage,
-  IProviderMcpTools,
-  IProviderMcpResources,
-} from './providers/index.js';
+// provider identity, status and capabilities
 export type {
   IProviderId,
   IProviderCapability,
@@ -68,7 +51,6 @@ export type { IStorageDescriptor, IStorageMaintenanceOperation } from './storage
 // trusted host snapshot and offline recovery
 export {
   createHqSnapshot,
-  inspectHqSnapshot,
   restoreHqSnapshot,
   packHqSnapshot,
   unpackHqSnapshot,
@@ -79,8 +61,7 @@ export type {
   IHqRestoreResult,
 } from './snapshots/index.js';
 
-// native media transport and results
-export type { IProviderInputFile } from './providers/index.js';
+// file inputs and complete native results
 export type {
   IInputFile,
   IBoundInputFile,

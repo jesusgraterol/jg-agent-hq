@@ -1,6 +1,6 @@
 # Snapshot recovery
 
-HQ supplies local capture, inspection and offline restore primitives. The Node signatures and inventory contract live in [the API reference](../api/README.md#snapshot-and-restore).
+HQ supplies local capture, encrypted packing and offline restore primitives, each of which inspects the complete snapshot. The Node signatures and inventory contract live in [the API reference](../api/README.md#snapshot-and-restore).
 
 ## Capture
 
@@ -8,7 +8,7 @@ Capture runs while agents keep working, under the HQ lock in the state root. Kee
 
 Capture leaves out the index HQ keeps of Claude transcripts, the `hq_claude_file` and `hq_claude_entry` rows, which make up most of a database that has read Claude sessions, and compacts the copy with `VACUUM INTO`, which keeps the rowids of every table, including application tables. The snapshot of such a database is a small fraction of its size.
 
-A successful snapshot has exact file hashes and a final completion marker. The header records the package version that captured it, and the database stamp binds its schema, action-key fingerprint and writing package version; inspection and runtime startup reject a mismatched key or another schema. Keep it private. It excludes repositories and other workspace files, native transcripts/authentication, external references and transient runtime credentials. Inspection establishes complete local file/database evidence; hashes provide integrity rather than sender authentication.
+A successful snapshot has exact file hashes and a final completion marker. The header records the package version that captured it, and the database stamp binds its schema, action-key fingerprint and writing package version; restore and runtime startup reject a mismatched key or another schema. Keep it private. It excludes repositories and other workspace files, native transcripts/authentication, external references and transient runtime credentials. Inspection establishes complete local file/database evidence; hashes provide integrity rather than sender authentication.
 
 ## Restore
 

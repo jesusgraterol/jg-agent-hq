@@ -186,17 +186,6 @@ export const createCodexProviderFactory = (
         };
       }
       const nativeCursor = decodeHistoryCursor(cursor, filters);
-      if (command.kind === 'turns') {
-        const page = await native.listTurns(command.nativeId, command.limit, nativeCursor);
-        return {
-          kind: 'turns' as const,
-          result: {
-            data: page.data,
-            nextCursor: encodeHistoryCursor(page.nextCursor, filters),
-            source: 'native' as const,
-          },
-        };
-      }
       if (command.nativeItemId !== undefined) {
         // Codex has no lookup of one item, so its turn's items are read until it appears
         let itemCursor: string | undefined;
@@ -289,49 +278,7 @@ export const createCodexProviderFactory = (
             usage: SUPPORTED_PROVIDER_OPERATION,
             skills: SUPPORTED_PROVIDER_OPERATION,
             models,
-            fork: SUPPORTED_PROVIDER_OPERATION,
-            archive: SUPPORTED_PROVIDER_OPERATION,
-            unarchive: SUPPORTED_PROVIDER_OPERATION,
-            compact: SUPPORTED_PROVIDER_OPERATION,
-            revert: SUPPORTED_PROVIDER_OPERATION,
             configuration: SUPPORTED_PROVIDER_OPERATION,
-            account: SUPPORTED_PROVIDER_OPERATION,
-            skillsReload: SUPPORTED_PROVIDER_OPERATION,
-            mcpReload: SUPPORTED_PROVIDER_OPERATION,
-            mcpReconnect: {
-              state: 'unsupported',
-              changeMode: null,
-              reason: {
-                code: 'native-control-unsupported',
-                message:
-                  'The native interface has no qualified structured control for this operation.',
-              },
-            },
-            mcpSetEnabled: {
-              state: 'unsupported',
-              changeMode: null,
-              reason: {
-                code: 'native-control-unsupported',
-                message:
-                  'The native interface has no qualified structured control for this operation.',
-              },
-            },
-            mcpLogin: SUPPORTED_PROVIDER_OPERATION,
-            pluginsReload: {
-              state: 'unsupported',
-              changeMode: null,
-              reason: {
-                code: 'native-control-unsupported',
-                message:
-                  'The native interface has no qualified structured control for this operation.',
-              },
-            },
-            accountLogin: SUPPORTED_PROVIDER_OPERATION,
-            accountLoginCancel: SUPPORTED_PROVIDER_OPERATION,
-            accountLogout: SUPPORTED_PROVIDER_OPERATION,
-            mcpServers: SUPPORTED_PROVIDER_OPERATION,
-            mcpTools: SUPPORTED_PROVIDER_OPERATION,
-            mcpResources: SUPPORTED_PROVIDER_OPERATION,
           },
           inputSchema: {
             ...PROVIDER_INPUT_SCHEMA,
@@ -356,25 +303,6 @@ export const createCodexProviderFactory = (
       readObservedThread: async (nativeId) => (await native.readObservedThread(nativeId)).thread,
       readConfiguration: (command, nativeId, call) =>
         native.readConfiguration(command, nativeId, call.signal),
-      forkThread: async (requestId, nativeId) =>
-        toProviderThread(await native.forkThread(requestId, nativeId)),
-      async archiveThread(requestId, nativeId, call) {
-        await native.verifyTerminalsClosed(nativeId);
-        if (call.signal.aborted)
-          throw new Exception('The Codex integration failed', {
-            code: 'JG_AGENT_HQ_CODEX_FAILED',
-            data: { kind: 'agent-unavailable' },
-          });
-        await native.archiveThread(requestId, nativeId);
-      },
-      unarchiveThread: async (requestId, nativeId) =>
-        toProviderThread(await native.unarchiveThread(requestId, nativeId)),
-      revertThread: async (requestId, nativeId, beforeTurnId) =>
-        toProviderThread(await native.revertThread(requestId, nativeId, beforeTurnId)),
-      async compactThread(requestId, nativeId) {
-        await native.compactThread(requestId, nativeId);
-        return { id: null };
-      },
       async readModels(command) {
         const { cursor, ...filters } = command;
         const page = await native.readModels(command.limit, decodeHistoryCursor(cursor, filters));
@@ -410,15 +338,6 @@ export const createCodexProviderFactory = (
         return { thread, latestTurn: await readLatestTurn(thread) };
       },
       readUsage: () => native.readUsage(),
-      readAccount: () => native.readAccount(),
-      readLogin: (requestId) => native.readLogin(requestId),
-      controlAccount: (requestId, command, loginRequestId) =>
-        native.controlAccount(requestId, command, loginRequestId),
-      controlExtensions: (requestId, nativeId, workspaceRoot, command) =>
-        native.controlExtensions(requestId, nativeId, workspaceRoot, command),
-      readMcpServers: (nativeId, limit, cursor) => native.readMcpServers(nativeId, limit, cursor),
-      readMcpTools: (nativeId, serverName) => native.readMcpTools(nativeId, serverName),
-      readMcpResources: (nativeId, serverName) => native.readMcpResources(nativeId, serverName),
       readSkills: (workspaceRoot) => native.readSkills(workspaceRoot),
       formatSkill: (skill, argumentsText) =>
         `$${skill.name}${argumentsText ? ` ${argumentsText}` : ''}`,

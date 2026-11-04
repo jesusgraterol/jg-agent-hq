@@ -539,18 +539,6 @@ test.each(['codex', 'claude'] as const)(
   },
 );
 
-test.each(['codex', 'claude'] as const)(
-  '%s compaction preserves native completion in a schema-configured session',
-  async (provider) => {
-    await withClaudeRuntime(async (fixture) => {
-      const api = await createClient(fixture, provider, true);
-      const compact = await api.send({ kind: 'thread-compact', threadId: api.threadId });
-      await expect.poll(async () => (await api.receipt(compact.id)).completion).toBe('completed');
-      expect(await api.thread()).toMatchObject({ state: 'completed' });
-    });
-  },
-);
-
 test('Codex native input rejection requires recovery before further native controls', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await createClient(fixture, 'codex', true);
@@ -562,10 +550,14 @@ test('Codex native input rejection requires recovery before further native contr
     });
     await expect.poll(() => api.receipt(rejected.id)).toMatchObject({ delivery: 'failed' });
     await api.control({});
-    const compact = await api.send({ kind: 'thread-compact', threadId: api.threadId });
+    const further = await api.send({
+      kind: 'message',
+      threadId: api.threadId,
+      input: { kind: 'text', text: 'Input after the rejection' },
+    });
     await expect
       .poll(async () => {
-        const receipt = await api.receipt(compact.id);
+        const receipt = await api.receipt(further.id);
         return {
           delivery: receipt.delivery,
           completion: receipt.completion,
@@ -574,6 +566,6 @@ test('Codex native input rejection requires recovery before further native contr
         };
       })
       .toMatchObject({ delivery: 'failed', completion: null, failure: 'state-conflict' });
-    expect(JSON.stringify(await api.inputs())).not.toContain('thread/compact/start');
+    expect(JSON.stringify(await api.inputs())).not.toContain('Input after the rejection');
   });
 });

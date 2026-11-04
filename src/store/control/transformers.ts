@@ -14,8 +14,6 @@ export const toManagedThread = (thread: IThreadRow): IManagedThread => ({
   id: thread.id,
   provider: thread.provider,
   nativeId: thread.native_id,
-  forkedFromThreadId: thread.fork_source_thread_id,
-  isArchived: thread.is_archived === 1,
   nativeLineage:
     thread.native_lineage === null
       ? null
@@ -39,7 +37,6 @@ export const toActionSummary = (
   runtimeEpoch: action.runtime_epoch,
   kind: action.kind,
   provider: action.provider,
-  controlState: action.control_state,
   threadId: action.thread_id,
   nativeTurnId: action.native_turn_id,
   nativeRequestId: action.native_request_id,

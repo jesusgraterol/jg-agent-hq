@@ -36,7 +36,6 @@ export const createClaudeRpc = async (
     workspaceRoot: string;
     additionalDirectories: string[];
     isResume: boolean;
-    forkSourceNativeId?: string;
     settings?: ISessionSettings;
     receive(message: unknown): void;
     lateResponse(id: string, result: unknown, error: unknown): void;
@@ -82,15 +81,8 @@ export const createClaudeRpc = async (
             '--permission-prompt-tool=stdio',
             '--replay-user-messages',
             '--include-partial-messages',
-            ...(control.forkSourceNativeId
-              ? [
-                  '--resume',
-                  control.forkSourceNativeId,
-                  '--fork-session',
-                  '--session-id',
-                  control.nativeId,
-                ]
-              : [control.isResume ? '--resume' : '--session-id', control.nativeId]),
+            control.isResume ? '--resume' : '--session-id',
+            control.nativeId,
             ...control.additionalDirectories.flatMap((directory) => ['--add-dir', directory]),
             ...toClaudeSessionFlags(control.settings ?? {}),
           ]

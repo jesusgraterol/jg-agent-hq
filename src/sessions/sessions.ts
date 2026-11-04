@@ -20,14 +20,7 @@ import type { IActiveSessionRecord } from '../store/sessions/index.js';
 
 import type { IClaudeSessions, IHistoryRequest } from './types.js';
 import { imageUnavailable } from './utilities.js';
-import {
-  evidencePosition,
-  verifyEvidencePage,
-  evidenceCursor,
-  utf8Chunk,
-  resetProvenance,
-  EVIDENCE_SOURCE_PAGE_SIZE,
-} from './evidence/index.js';
+import { resetProvenance } from './evidence/index.js';
 
 /**
  * Authorizes native history before loading content and records only its discovery projection.
@@ -45,74 +38,13 @@ import {
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
  */
 export const readNativeHistory = async (
-  command: IHistoryRequest | Extract<IHqRequest, { kind: 'sessions' }>,
+  command: IHistoryRequest,
   registry: ReturnType<typeof createProviderRegistry>,
   projection: IStore,
   allowedRoots: string[],
   claude: IClaudeSessions,
 ): Promise<IHqResponse> => {
   const workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, allowedRoots);
-  if (command.kind === 'sessions') {
-    const selected = { ...command, workspaceRoot };
-    const position = evidencePosition(selected);
-    const page = await readNativeHistory(
-      {
-        kind: 'threads',
-        provider: command.provider,
-        workspaceRoot,
-        limit: EVIDENCE_SOURCE_PAGE_SIZE,
-        search: command.search,
-        cursor: position.sourceCursor,
-      },
-      registry,
-      projection,
-      allowedRoots,
-      claude,
-    );
-    if (page.kind !== 'threads')
-      throw new Exception('The HQ provider integration failed', {
-        code: 'JG_AGENT_HQ_PROVIDER_FAILED',
-        data: { kind: 'agent-unavailable' },
-      });
-    const digest = verifyEvidencePage(position, page.result.data);
-    const result: Extract<IHqResponse, { kind: 'sessions' }> = {
-      kind: 'sessions',
-      result: { data: [], nextCursor: null, source: 'native' },
-    };
-    let index = position.index;
-    for (
-      ;
-      index < page.result.data.length && result.result.data.length < command.limit;
-      index += 1
-    ) {
-      const thread = page.result.data[index]!;
-      const name = thread.name === null ? null : utf8Chunk(Buffer.from(thread.name), 0, 1024);
-      const item = { ...thread, name, isNameTruncated: name !== thread.name };
-      const candidate = {
-        ...result.result,
-        data: [...result.result.data, item],
-        nextCursor: evidenceCursor(selected, { ...position, digest, index: index + 1, offset: 0 }),
-      };
-      if (Buffer.byteLength(JSON.stringify(candidate)) > 45_056) {
-        if (result.result.data.length === 0)
-          throw new Exception('The HQ provider integration failed', {
-            code: 'JG_AGENT_HQ_PROVIDER_FAILED',
-            data: { kind: 'agent-unavailable' },
-          });
-        break;
-      }
-      result.result.data.push(item);
-    }
-    result.result.nextCursor = evidenceCursor(
-      selected,
-      index < page.result.data.length
-        ? { ...position, digest, index, offset: 0 }
-        : page.result.nextCursor === null
-          ? null
-          : { sourceCursor: page.result.nextCursor, digest: null, index: 0, offset: 0 },
-    );
-    return HqResponseSchema.parse(result);
-  }
   // a thread HQ created has no native history until its first turn, so its record answers
   if (
     command.kind === 'thread' ||

@@ -100,13 +100,12 @@ test(
       const usageContract = join(scratch, 'usage-contract.ts');
       await writeFile(
         usageContract,
-        `import type { IAgentProvider } from 'jg-agent-hq';
-import type { IUsageCredits, IUsageResetCredits, IUsageWindowScope } from 'jg-agent-hq/contracts';
-export const minimalReadUsage: IAgentProvider['readUsage'] = async () => ({
-  provider: 'minimal-provider', source: 'native', state: 'unavailable', observedAt: null,
+        `import type { IUsageCredits, IUsageResetCredits, IUsageSnapshot, IUsageWindowScope } from 'jg-agent-hq/contracts';
+export const minimalUsage: IUsageSnapshot = {
+  provider: 'codex', source: 'native', state: 'unavailable', observedAt: null,
   ordinaryUsageAllowed: null, windows: [],
-});
-export const credit: IUsageCredits = { bucket: 'minimal-provider', hasCredits: true, isUnlimited: false, balance: '0.29000000000000001' };
+};
+export const credit: IUsageCredits = { bucket: 'minimal-bucket', hasCredits: true, isUnlimited: false, balance: '0.29000000000000001' };
 export const resets: IUsageResetCredits = { availableCount: 0 };
 export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model' }, surface: null };
 `,
@@ -132,10 +131,11 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
       const script = `
       import * as packed from 'jg-agent-hq';
       import { createAgentHq, requestAgentHq, withHqLock, readHqLockState } from 'jg-agent-hq';
-      if ('upgradeHqStorage' in packed) throw new Error('packed storage upgrade remains');
+      for (const name of ['upgradeHqStorage', 'inspectHqSnapshot'])
+        if (name in packed) throw new Error('packed export remains: ' + name);
       import * as contracts from 'jg-agent-hq/contracts';
       import { HqResponseSchema, BrowserActionSchema, BrowserCommandSchema, UsageCreditsSchema, UsageResetCreditsSchema, UsageWindowScopeSchema } from 'jg-agent-hq/contracts';
-      for (const name of ['BrowserRepositorySchema','BrowserRepositoryPageSchema','BrowserPlanSummarySchema','BrowserPlanPageSchema','BrowserPlanDetailSchema','BrowserSessionSchema','BrowserSystemSchema','PublicationStatusSchema','PlanComparisonSchema','PlanCorrespondenceSchema','PlanProposalSchema','PlanReconciliationEntrySchema'])
+      for (const name of ['BrowserRepositorySchema','BrowserRepositoryPageSchema','BrowserPlanSummarySchema','BrowserPlanPageSchema','BrowserPlanDetailSchema','BrowserSessionSchema','BrowserSystemSchema','PublicationStatusSchema','PlanComparisonSchema','PlanCorrespondenceSchema','PlanProposalSchema','PlanReconciliationEntrySchema','AccountRequestSchema','AccountObservationSchema','AccountControlCommandSchema','LoginRequestSchema','LoginObservationSchema','NativeControlResultSchema','ExtensionControlCommandSchema','McpRequestSchema','McpServerPageSchema','McpToolPageSchema','McpResourcePageSchema','MAX_MCP_ITEMS','SessionDiscoveryRequestSchema','SkillPreviewSchema','LifecycleEventSchema','TurnSummarySchema','MAX_PROVIDERS'])
         if (name in contracts) throw new Error('packed contract remains: ' + name);
       if (BrowserCommandSchema.options.map((command) => command.shape.kind.value).join() !== 'native') throw new Error('packed browser commands changed');
       const credit = UsageCreditsSchema.parse({bucket:'codex',hasCredits:true,isUnlimited:false,balance:'0.29000000000000001'});
@@ -187,7 +187,7 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
         timeout: 10_000,
       });
       expect(help).toContain(
-        'serve|status|stop|capabilities|threads|thread|turns|items|item-detail|item-image|sessions|session-evidence|usage',
+        'serve|status|stop|capabilities|threads|thread|items|item-detail|item-image|session-evidence|usage',
       );
       expect(help).not.toContain('upgrade');
       const contractRoot = join(ROOT, 'dist/contracts');

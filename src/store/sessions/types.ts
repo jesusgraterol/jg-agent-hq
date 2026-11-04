@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
-import { NativeLineageSchema, SessionStateSchema } from '../../contracts/index.js';
+import {
+  NativeLineageSchema,
+  ProviderIdSchema,
+  SessionStateSchema,
+} from '../../contracts/index.js';
 
 /*
  * One running or waiting session as the store knows it, or an idle one that runs background
@@ -9,7 +13,7 @@ import { NativeLineageSchema, SessionStateSchema } from '../../contracts/index.j
  * observed session's workspace is resolved outside the store.
  */
 export const ActiveSessionRecordSchema = z.object({
-  provider: z.string(),
+  provider: ProviderIdSchema,
   nativeId: z.string(),
   state: SessionStateSchema.extract(['running', 'waiting', 'idle']),
   changedAt: z.number().int(),

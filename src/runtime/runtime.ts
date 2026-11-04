@@ -6,8 +6,6 @@ import { z } from 'zod';
 
 import { HqRequestSchema, type IHqRequestInput, type IHqResponse } from '../contracts/index.js';
 import { createActions, readControl } from '../actions/index.js';
-import { createAccounts } from '../accounts/index.js';
-import { createExtensions } from '../extensions/index.js';
 import { CONTROL_SOCKET, createIpcServer, removeLeftoverSocket } from '../ipc/index.js';
 import { removeStaleHqLock } from '../locks/index.js';
 import {
@@ -89,24 +87,11 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     }
     const databasePath = await prepareDatabase(stateRoot);
     actionKey = await prepareActionKey(stateRoot, databasePath);
-    // Codex sessions run in its shared daemon, so they keep running while the runtime restarts
-    const codex = {
-      factory: createCodexProviderFactory(
-        codexExtraSkillRoots,
-        parsed.data.codexDaemonLauncher ?? [],
-      ),
-      isBuiltIn: true,
-      keepsSessions: true,
-    };
-    store = await createStore(databasePath, ownership.owner.nonce, actionKey, [codex.factory.id]);
+    store = await createStore(databasePath, ownership.owner.nonce, actionKey);
     registry = createProviderRegistry(
       [
-        codex,
-        {
-          factory: createClaudeProviderFactory(store, claudeAdditionalDirectories),
-          isBuiltIn: true,
-        },
-        ...(parsed.data.providerFactories ?? []).map((factory) => ({ factory, isBuiltIn: false })),
+        createCodexProviderFactory(codexExtraSkillRoots, parsed.data.codexDaemonLauncher ?? []),
+        createClaudeProviderFactory(store, claudeAdditionalDirectories),
       ],
       allowedRoots,
       ownership.owner.nonce,
@@ -135,8 +120,6 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     allowedRoots,
     (nativeId) => projection.getClaudeTranscriptRoot(nativeId),
   );
-  const accounts = createAccounts(providers);
-  const extensions = createExtensions(providers, projection, allowedRoots);
   const actions = createActions(
     providers,
     projection,
@@ -145,11 +128,6 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     actionKey,
     skills,
     storage.background,
-    () => {
-      skills.invalidate();
-      extensions.invalidate();
-      accounts.invalidate();
-    },
     (nativeId) => claudeAgents.terminalOf(nativeId),
   );
   /*
@@ -258,12 +236,6 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           result: await providers.capabilities(command.provider, thread ?? undefined),
         };
       }
-      case 'account':
-        return { kind: command.kind, result: await accounts.read(command) };
-      case 'mcp-servers':
-      case 'mcp-tools':
-      case 'mcp-resources':
-        return extensions.read(command);
       case 'usage':
         return {
           kind: 'usage',
@@ -311,11 +283,6 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           });
         return { kind: command.kind, result: await skills.list({ ...command, workspaceRoot }) };
       }
-      case 'skill-preview':
-        return {
-          kind: command.kind,
-          result: await skills.preview(command.threadId, command.skillId, command.arguments),
-        };
       case 'action':
         return { kind: 'action', result: await actions.submit(command.action) };
       case 'suggest-thread-name':
@@ -323,15 +290,11 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           kind: command.kind,
           result: { name: await projection.suggestThreadName(suggestThreadName(command.topic)) },
         };
-      case 'managed-thread-name':
       case 'receipt':
       case 'action-wait':
       case 'managed-threads':
       case 'managed-thread':
       case 'actions':
-      case 'provider-actions':
-      case 'login':
-      case 'events':
       case 'approvals':
       case 'live-items':
         return readControl(command, projection, actions, allowedRoots);

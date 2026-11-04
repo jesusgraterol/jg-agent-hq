@@ -19,7 +19,6 @@ import { ClaudeUsageSchema } from './types.js';
 import { toClaudeUsageSnapshot } from './transformers.js';
 import { readClaudeModels } from './models/index.js';
 import { toClaudeConfiguration } from './configuration/index.js';
-import { toClaudeAccount } from './accounts/index.js';
 import { toClaudeSkills } from './control/index.js';
 
 // the session-less read process closes after this long without a read, and reopens on the next one
@@ -148,7 +147,7 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
   };
   /** Runs one bounded metadata read and confirms native shutdown before releasing its slot. */
   const withReadConnection = async <T>(
-    workspaceRoot: string | undefined,
+    workspaceRoot: string,
     signal: AbortSignal | undefined,
     read: (native: Awaited<ReturnType<typeof createClaudeRpc>>) => Promise<T>,
   ): Promise<T> => {
@@ -160,7 +159,7 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
     const starting = createClaudeRpc(
       () => {},
       undefined,
-      workspaceRoot === undefined ? undefined : { workspaceRoot, additionalDirectories },
+      { workspaceRoot, additionalDirectories },
       signal,
     );
     metadataReads.add(starting);
@@ -186,26 +185,6 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
     }
   };
   return {
-    /**
-     * Drops account-derived observations and the read connection after native sign-out.
-     * @returns Confirmation that subsequent observations use a fresh native connection.
-     * @throws
-     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
-     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
-     */
-    async invalidateAuthentication(): Promise<void> {
-      idleClose?.abort();
-      idleClose = undefined;
-      generation += 1;
-      expireUsage();
-      latest = unavailable();
-      if (opening) {
-        const native = await opening;
-        await native.close();
-      }
-      connection = undefined;
-      opening = undefined;
-    },
     /**
      * Verifies native initialization without requesting usage or starting inference, keeping the
      * runtime's first successful check.
@@ -270,19 +249,6 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
         observedAt: native.initializedAt,
       }));
     },
-    /**
-     * Reads fresh native account metadata in a disposable read lane.
-     * @returns Safe account metadata after confirmed read-lane cleanup.
-     * @throws
-     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
-     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
-     */
-    async readAccount(signal?: AbortSignal) {
-      return withReadConnection(undefined, signal, async (native) =>
-        toClaudeAccount(native.initialization.account, native.initializedAt),
-      );
-    },
-
     // the last observed version stays known while the read process is closed
     get version() {
       return connection?.version ?? version;

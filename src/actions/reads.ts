@@ -16,11 +16,7 @@ type IControlRead = Extract<
       | 'action-wait'
       | 'managed-threads'
       | 'managed-thread'
-      | 'managed-thread-name'
       | 'actions'
-      | 'provider-actions'
-      | 'login'
-      | 'events'
       | 'approvals'
       | 'live-items';
   }
@@ -70,11 +66,6 @@ const nextPageCursor = (
  * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
  * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
  * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
- * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
- * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
- * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
- * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
- * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
  */
 export const readControl = async (
   command: IControlRead,
@@ -85,19 +76,6 @@ export const readControl = async (
   const authorize = async (thread: IManagedThread | null): Promise<void> => {
     if (thread) await resolveWorkspaceTarget(thread.workspaceRoot, roots);
   };
-  if (command.kind === 'login')
-    return { kind: 'login', result: await actions.readLogin(command.actionId) };
-  if (command.kind === 'provider-actions') {
-    const { cursor, ...filters } = command;
-    const page = await store.listProviderActions(command.provider, {
-      limit: command.limit,
-      position: readPosition(cursor, filters),
-    });
-    return {
-      kind: command.kind,
-      result: { data: page.data, nextCursor: nextPageCursor(page, filters) },
-    };
-  }
   if (command.kind === 'receipt' || command.kind === 'action-wait') {
     const receipt = await store.getAction(command.actionId);
     if (receipt?.threadId) await authorize(await store.getThread(receipt.threadId));
@@ -121,11 +99,6 @@ export const readControl = async (
       result: { data: page.data, nextCursor: nextPageCursor(page, filters) },
     };
   }
-  if (command.kind === 'managed-thread-name') {
-    const thread = await store.getThreadByName(command.name);
-    await authorize(thread);
-    return { kind: command.kind, result: thread };
-  }
   if (command.kind === 'actions') {
     const { cursor, ...filters } = command;
     await authorize(await store.getThread(command.threadId));
@@ -148,15 +121,6 @@ export const readControl = async (
         kind: 'state-conflict',
       },
     });
-  if (command.kind === 'events')
-    return {
-      kind: 'events',
-      result: await store.listEvents({
-        threadId: thread.id,
-        after: command.after,
-        limit: command.limit,
-      }),
-    };
   if (command.kind === 'approvals') {
     const { cursor, ...filters } = command;
     const page = await store.listApprovals(thread.id, {

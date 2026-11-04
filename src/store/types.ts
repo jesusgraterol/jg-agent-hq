@@ -5,14 +5,12 @@ import {
   type IBrowserAction,
   type IBrowserReceipt,
   MAX_PAGE_SIZE,
-  MAX_PROVIDERS,
   ManagedThreadSchema,
   ErrorKindSchema,
   type IActionReceipt,
   type IManagedThread,
   type IActionSummary,
   type INativeApprovalSummary,
-  type ILifecycleEvent,
   HqRequestSchema,
   type IHistoryProvenance,
   SessionStateSchema,
@@ -33,7 +31,6 @@ import {
   NativeObservationSchema,
   ControlPageSchema,
   ApprovalPageRequestSchema,
-  EventPageSchema,
   ApprovalRecordSchema,
   ReattachmentSchema,
   type IAdmission,
@@ -41,7 +38,6 @@ import {
   type INativeObservation,
   type IControlPage,
   type IApprovalPageRequest,
-  type IEventPage,
   type IApprovalRecord,
   type IAdmissionResult,
   type IDispatch,
@@ -112,7 +108,6 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('close') }),
   z.strictObject({ kind: z.literal('action-read'), id: z.uuid() }),
   z.strictObject({ kind: z.literal('thread-read'), id: z.uuid() }),
-  z.strictObject({ kind: z.literal('thread-name-read'), name: z.string().min(1).max(32) }),
   z.strictObject({ kind: z.literal('thread-name-suggest'), name: ManagedThreadSchema.shape.name }),
   z.strictObject({
     kind: z.literal('native-thread-read'),
@@ -150,12 +145,6 @@ export const StoreCommandSchema = z.discriminatedUnion('kind', [
     threadId: z.uuid(),
     page: ControlPageSchema,
   }),
-  z.strictObject({
-    kind: z.literal('provider-actions'),
-    provider: ManagedThreadSchema.shape.provider,
-    page: ControlPageSchema,
-  }),
-  z.strictObject({ kind: z.literal('events'), page: EventPageSchema }),
   z.strictObject({
     kind: z.literal('approvals'),
     threadId: z.uuid(),
@@ -195,8 +184,6 @@ export const StoreWorkerSchema = z.strictObject({
   databasePath: z.string().min(1),
   runtimeEpoch: z.uuid(),
   actionKey: z.instanceof(Uint8Array).refine((key) => key.length === 32),
-  // the providers whose sessions outlive the runtime, which it rejoins
-  keepingProviders: z.array(ManagedThreadSchema.shape.provider).max(MAX_PROVIDERS),
 });
 
 // the worker owns persistence; callers cannot submit arbitrary statements
@@ -337,13 +324,6 @@ export type IStore = {
    */
   getThread(id: string): Promise<IManagedThread | null>;
   /**
-   * Resolves a case-insensitive label without granting native control.
-   * @returns The matching immutable control record, or null.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  getThreadByName(name: string): Promise<IManagedThread | null>;
-  /**
    * Suggests an unreserved label; creation checks it again atomically.
    * @returns A currently available label.
    * @throws
@@ -397,7 +377,7 @@ export type IStore = {
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   listUnstartedThreads(
-    provider: string,
+    provider: IManagedThread['provider'],
     workspaceRoot: string,
     limit: number,
   ): Promise<{ data: IManagedThread[]; isTruncated: boolean }>;
@@ -407,7 +387,10 @@ export type IStore = {
    * @throws
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
-  getUnstartedThread(provider: string, nativeId: string): Promise<IManagedThread | null>;
+  getUnstartedThread(
+    provider: IManagedThread['provider'],
+    nativeId: string,
+  ): Promise<IManagedThread | null>;
   /**
    * Reads one thread-scoped seek page without queued message bodies.
    * @returns One descending metadata page and whether another seek page exists.
@@ -416,16 +399,6 @@ export type IStore = {
    */
   listActions(
     threadId: string,
-    page: IControlPage,
-  ): Promise<{ data: IActionSummary[]; hasMore: boolean }>;
-  /**
-   * Reads indexed global provider actions, including authentication receipts.
-   * @returns One descending seek page without queued input or result bodies.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  listProviderActions(
-    provider: string,
     page: IControlPage,
   ): Promise<{ data: IActionSummary[]; hasMore: boolean }>;
   /**
@@ -438,13 +411,6 @@ export type IStore = {
     threadId: string,
     page: IApprovalPageRequest,
   ): Promise<{ data: INativeApprovalSummary[]; hasMore: boolean }>;
-  /**
-   * Replays one thread-scoped metadata page in sequence order.
-   * @returns One ascending sequence page and whether more events exist.
-   * @throws
-   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
-   */
-  listEvents(page: IEventPage): Promise<{ data: ILifecycleEvent[]; hasMore: boolean }>;
   /**
    * Atomically records the digest and fences native dispatch.
    * @returns The durable receipt, current thread and the one permitted dispatch identity.

@@ -2,27 +2,12 @@ import { z } from 'zod';
 
 import {
   EvidenceRequestSchema,
-  SessionDiscoveryRequestSchema,
   EvidencePageSchema,
   HistoryKindSchema,
   HistoryProvenanceSchema,
 } from './evidence/index.js';
 
 import {
-  AccountRequestSchema,
-  AccountObservationSchema,
-  LoginRequestSchema,
-  LoginObservationSchema,
-} from './accounts/index.js';
-import {
-  McpRequestSchema,
-  McpServerPageSchema,
-  McpToolPageSchema,
-  McpResourcePageSchema,
-} from './extensions/index.js';
-
-import {
-  MAX_PROVIDERS,
   ProviderCapabilitiesSchema,
   ProviderIdSchema,
   ProviderStatusSchema,
@@ -36,7 +21,7 @@ import {
   MAX_PAGE_SIZE,
   PUBLIC_ERROR_MESSAGES,
 } from './constants.js';
-import { SkillIdSchema, SkillPageSchema, SkillPreviewSchema } from './skills/index.js';
+import { SkillPageSchema } from './skills/index.js';
 
 import { NativeIdSchema, CursorSchema, NativeLineageSchema } from './identities/index.js';
 import { ProviderModelPageSchema, ProviderModelsRequestSchema } from './models/index.js';
@@ -53,7 +38,6 @@ import {
   ActionWaitSchema,
   ManagedThreadSchema,
   NativeApprovalSchema,
-  LifecycleEventSchema,
 } from './actions/index.js';
 import { LocksSchema } from './locks/index.js';
 
@@ -71,9 +55,6 @@ const TargetFields = {
 // only implemented operations can be admitted; native RPC is never exposed
 export const HqRequestSchema = z.discriminatedUnion('kind', [
   EvidenceRequestSchema,
-  SessionDiscoveryRequestSchema,
-  AccountRequestSchema,
-  ...McpRequestSchema.options,
   ProviderModelsRequestSchema,
   ConfigurationRequestSchema,
   z.strictObject({ kind: z.literal('status') }),
@@ -91,7 +72,6 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     ...PageFields,
   }),
   z.strictObject({ kind: z.literal('thread'), ...TargetFields }),
-  z.strictObject({ kind: z.literal('turns'), ...TargetFields, ...PageFields }),
   // newest first: a page toward older items, or one item by its native ID within its turn
   z
     .strictObject({
@@ -137,12 +117,6 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     search: z.string().max(1024).optional(),
     ...PageFields,
   }),
-  z.strictObject({
-    kind: z.literal('skill-preview'),
-    threadId: z.uuid(),
-    skillId: SkillIdSchema,
-    arguments: z.string().max(16_384),
-  }),
   z.strictObject({ kind: z.literal('action'), action: ActionEnvelopeSchema }),
   z.strictObject({ kind: z.literal('receipt'), actionId: z.uuid() }),
   // waits until the receipt has a native thread ID, or a final delivery state, or the time runs out
@@ -158,24 +132,8 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     ...PageFields,
   }),
   z.strictObject({ kind: z.literal('managed-thread'), threadId: z.uuid() }),
-  z.strictObject({
-    kind: z.literal('managed-thread-name'),
-    name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/i),
-  }),
   z.strictObject({ kind: z.literal('suggest-thread-name'), topic: z.string().min(1).max(1024) }),
   z.strictObject({ kind: z.literal('actions'), threadId: z.uuid(), ...PageFields }),
-  z.strictObject({
-    kind: z.literal('provider-actions'),
-    provider: ProviderIdSchema,
-    ...PageFields,
-  }),
-  LoginRequestSchema,
-  z.strictObject({
-    kind: z.literal('events'),
-    threadId: z.uuid(),
-    after: z.number().int().nonnegative().default(0),
-    limit: PageFields.limit,
-  }),
   z.strictObject({
     kind: z.literal('approvals'),
     threadId: z.uuid(),
@@ -251,14 +209,6 @@ export const UnstartedThreadsSchema = z.object({
   isTruncated: z.boolean(),
 });
 export type IUnstartedThreads = z.infer<typeof UnstartedThreadsSchema>;
-
-export const TurnSummarySchema = z.object({
-  nativeId: NativeIdSchema,
-  state: z.enum(['completed', 'interrupted', 'failed', 'inProgress', 'unknown']),
-  startedAt: z.number().int().nullable(),
-  completedAt: z.number().int().nullable(),
-});
-export type ITurnSummary = z.infer<typeof TurnSummarySchema>;
 
 // one file a file change touched, with the lines it added and removed
 export const HistoryFileSchema = z.object({
@@ -416,32 +366,12 @@ export const RuntimeStatusSchema = z.object({
   pid: z.number().int().positive(),
   startedAt: z.number().int(),
   store: z.enum(['ready', 'unavailable']),
-  providers: z.array(ProviderStatusSchema).max(MAX_PROVIDERS),
+  providers: z.array(ProviderStatusSchema).max(ProviderIdSchema.options.length),
 });
 export type IRuntimeStatus = z.infer<typeof RuntimeStatusSchema>;
 const PageResultFields = { nextCursor: CursorSchema.nullable(), source: z.literal('native') };
 export const HqResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('session-evidence'), result: EvidencePageSchema }),
-  z.object({
-    kind: z.literal('sessions'),
-    result: z.object({
-      data: z.array(ThreadSummarySchema.extend({ isNameTruncated: z.boolean() })).max(128),
-      nextCursor: CursorSchema.nullable(),
-      source: z.literal('native'),
-    }),
-  }),
-  z.object({ kind: z.literal('account'), result: AccountObservationSchema }),
-  z.object({ kind: z.literal('login'), result: LoginObservationSchema }),
-  z.object({
-    kind: z.literal('provider-actions'),
-    result: z.object({
-      data: z.array(ActionSummarySchema).max(128),
-      nextCursor: z.string().nullable(),
-    }),
-  }),
-  z.object({ kind: z.literal('mcp-servers'), result: McpServerPageSchema }),
-  z.object({ kind: z.literal('mcp-tools'), result: McpToolPageSchema }),
-  z.object({ kind: z.literal('mcp-resources'), result: McpResourcePageSchema }),
   z.object({ kind: z.literal('configuration'), result: SessionConfigurationSchema }),
   z.object({ kind: z.literal('models'), result: ProviderModelPageSchema }),
   z.object({ kind: z.literal('status'), result: RuntimeStatusSchema }),
@@ -459,10 +389,6 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
   }),
   z.object({ kind: z.literal('thread'), result: ThreadSummarySchema }),
   z.object({
-    kind: z.literal('turns'),
-    result: z.object({ data: z.array(TurnSummarySchema).max(MAX_PAGE_SIZE), ...PageResultFields }),
-  }),
-  z.object({
     kind: z.literal('items'),
     result: z.object({
       data: z.array(HistoryItemSchema).max(MAX_PAGE_SIZE),
@@ -475,7 +401,6 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('item-image'), result: ItemImageSchema }),
   z.object({ kind: z.literal('usage'), result: UsageSnapshotSchema }),
   z.object({ kind: z.literal('skills'), result: SkillPageSchema }),
-  z.object({ kind: z.literal('skill-preview'), result: SkillPreviewSchema }),
   z.object({ kind: z.literal('action'), result: ActionReceiptSchema }),
   z.object({ kind: z.literal('receipt'), result: ActionReceiptSchema.nullable() }),
   z.object({ kind: z.literal('action-wait'), result: ActionWaitSchema }),
@@ -487,7 +412,6 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
     }),
   }),
   z.object({ kind: z.literal('managed-thread'), result: ManagedThreadSchema.nullable() }),
-  z.object({ kind: z.literal('managed-thread-name'), result: ManagedThreadSchema.nullable() }),
   z.object({
     kind: z.literal('suggest-thread-name'),
     result: z.object({ name: ManagedThreadSchema.shape.name }),
@@ -497,13 +421,6 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
     result: z.object({
       data: z.array(ActionSummarySchema).max(MAX_PAGE_SIZE),
       nextCursor: CursorSchema.nullable(),
-    }),
-  }),
-  z.object({
-    kind: z.literal('events'),
-    result: z.object({
-      data: z.array(LifecycleEventSchema).max(MAX_PAGE_SIZE),
-      hasMore: z.boolean(),
     }),
   }),
   z.object({

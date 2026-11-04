@@ -17,9 +17,6 @@ import {
   SUPPORTED_PROVIDER_OPERATION,
   type IAgentProviderFactory,
 } from '../index.js';
-import { capabilityUnavailable } from '../registry/index.js';
-
-import { createClaudeAuthentication } from './authentication/index.js';
 import { createClaudeProvider } from './claude.js';
 import { createClaudeControl } from './control/index.js';
 
@@ -34,7 +31,6 @@ export const createClaudeProviderFactory = (
   id: 'claude',
   async create(context) {
     const reader = createClaudeProvider(store, additionalDirectories);
-    const authentication = createClaudeAuthentication();
     const control = createClaudeControl(additionalDirectories);
     control.setEvents(context.events);
     return {
@@ -94,86 +90,7 @@ export const createClaudeProviderFactory = (
             history: SUPPORTED_PROVIDER_OPERATION,
             usage: SUPPORTED_PROVIDER_OPERATION,
             models,
-            fork: SUPPORTED_PROVIDER_OPERATION,
-            compact: SUPPORTED_PROVIDER_OPERATION,
             configuration: SUPPORTED_PROVIDER_OPERATION,
-            account: SUPPORTED_PROVIDER_OPERATION,
-            skillsReload: SUPPORTED_PROVIDER_OPERATION,
-            mcpReload: {
-              state: 'unsupported',
-              changeMode: null,
-              reason: {
-                code: 'native-control-unsupported',
-                message:
-                  'The native interface has no qualified structured control for this operation.',
-              },
-            },
-            mcpReconnect: SUPPORTED_PROVIDER_OPERATION,
-            mcpSetEnabled: SUPPORTED_PROVIDER_OPERATION,
-            mcpLogin: {
-              state: 'unsupported',
-              changeMode: null,
-              reason: {
-                code: 'native-control-unsupported',
-                message:
-                  'The native interface has no qualified structured control for this operation.',
-              },
-            },
-            pluginsReload: SUPPORTED_PROVIDER_OPERATION,
-            accountLogin: {
-              state: 'unsupported',
-              changeMode: null,
-              reason: {
-                code: 'native-control-unsupported',
-                message:
-                  'The native interface has no qualified structured control for this operation.',
-              },
-            },
-            accountLoginCancel: {
-              state: 'unsupported',
-              changeMode: null,
-              reason: {
-                code: 'native-control-unsupported',
-                message:
-                  'The native interface has no qualified structured control for this operation.',
-              },
-            },
-            accountLogout: SUPPORTED_PROVIDER_OPERATION,
-            mcpServers: SUPPORTED_PROVIDER_OPERATION,
-            mcpTools: SUPPORTED_PROVIDER_OPERATION,
-            mcpResources: {
-              state: 'unsupported',
-              changeMode: null,
-              reason: {
-                code: 'native-resource-catalog-unsupported',
-                message: 'The structured Claude interface does not expose a resource catalog.',
-              },
-            },
-            archive: {
-              state: 'unsupported',
-              changeMode: null,
-              reason: {
-                code: 'native-control-unsupported',
-                message: 'The structured Claude interface has no native archive operation.',
-              },
-            },
-            unarchive: {
-              state: 'unsupported',
-              changeMode: null,
-              reason: {
-                code: 'native-control-unsupported',
-                message: 'The structured Claude interface has no native unarchive operation.',
-              },
-            },
-            revert: {
-              state: 'unsupported',
-              changeMode: null,
-              reason: {
-                code: 'native-control-unsupported',
-                message:
-                  'The structured Claude interface has no supported conversation-revert control.',
-              },
-            },
             skills,
           },
           inputSchema: {
@@ -213,24 +130,6 @@ export const createClaudeProviderFactory = (
         nativeId
           ? control.readConfiguration(command, nativeId)
           : reader.readConfiguration(command, call.signal),
-      archiveThread: async () => capabilityUnavailable(),
-      unarchiveThread: async () => capabilityUnavailable(),
-      revertThread: async () => capabilityUnavailable(),
-      compactThread: (requestId, nativeId, call) =>
-        control.startTurn(requestId, nativeId, '/compact', {}, call.signal),
-      async forkThread(requestId, nativeId, workspaceRoot, call) {
-        const result = await control.forkThread(requestId, nativeId, workspaceRoot, call.signal);
-        return {
-          nativeId: result.id,
-          workspaceRoot: result.cwd,
-          nativeState: result.status.type,
-          nativeLineage: {
-            sessionId: result.id,
-            parentThreadId: null,
-            forkedFromId: result.forkedFromId,
-          },
-        };
-      },
       async inspectThread(nativeId, workspaceRoot) {
         const response = await reader.readHistory({
           kind: 'thread',
@@ -247,24 +146,6 @@ export const createClaudeProviderFactory = (
         return { thread: response.result, canAdopt: available, canResume: available };
       },
       readUsage: () => reader.readUsage(),
-      readAccount: (call) => reader.readAccount(call.signal),
-      readLogin: async () => ({
-        state: 'unavailable',
-        authorizationUrl: null,
-        canCancel: false,
-        observedAt: null,
-      }),
-      controlAccount: async (_requestId, command, _loginRequestId, call) => {
-        if (command.kind !== 'account-logout') capabilityUnavailable();
-        const result = await authentication.logout(call.signal);
-        await reader.invalidateAuthentication();
-        return result;
-      },
-      controlExtensions: (requestId, nativeId, workspaceRoot, command) =>
-        control.controlExtensions(requestId, nativeId, workspaceRoot, command),
-      readMcpServers: (nativeId, limit, cursor) => control.readMcpServers(nativeId, limit, cursor),
-      readMcpTools: (nativeId, serverName) => control.readMcpTools(nativeId, serverName),
-      readMcpResources: (nativeId) => control.readMcpResources(nativeId),
       readSkills: (workspaceRoot, nativeId, call) =>
         nativeId === undefined
           ? reader.readWorkspaceSkills(workspaceRoot, call.signal)
@@ -312,18 +193,10 @@ export const createClaudeProviderFactory = (
         control.stopSession(`${randomUUID()}:shutdown-clean`, nativeId),
       async stopControl(nativeId) {
         if (nativeId) await control.stopSession(`${randomUUID()}:reject`, nativeId);
-        else {
-          const results = await Promise.allSettled([control.close(), authentication.close()]);
-          const failed = results.find((result) => result.status === 'rejected');
-          if (failed?.status === 'rejected') throw failed.reason;
-        }
+        else await control.close();
       },
       async close() {
-        const results = await Promise.allSettled([
-          reader.close(),
-          control.close(),
-          authentication.close(),
-        ]);
+        const results = await Promise.allSettled([reader.close(), control.close()]);
         const failed = results.find((result) => result.status === 'rejected');
         if (failed?.status === 'rejected') throw failed.reason;
       },

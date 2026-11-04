@@ -112,7 +112,7 @@ test('a session another Codex client drives stays external, and HQ adopts it bet
     });
     const adoption = {
       kind: 'thread-adopt' as const,
-      provider: 'codex',
+      provider: 'codex' as const,
       workspaceRoot: fixture.workspaceRoot,
       nativeId: EXTERNAL,
       name: 'adopted',
@@ -369,7 +369,7 @@ test('Codex threads are listed by last activity', async () => {
 
 test(
   'unstarted threads list the sessions HQ created that no turn has started, which read without native history',
-  // the test starts, runs, closes and archives several sessions through the fake daemon
+  // the test starts, runs and closes several sessions through the fake daemon
   { timeout: 30_000 },
   async () => {
     await withClaudeRuntime(async (fixture) => {
@@ -393,16 +393,6 @@ test(
       const closed = await createThread(fixture, 'closed');
       await submit(fixture, { kind: 'thread-close', threadId: closed.id });
       await expect.poll(async () => (await thread(fixture, closed.id))?.state).toBe('inactive');
-      const archived = await createThread(fixture, 'archived');
-      await submit(fixture, { kind: 'thread-archive', threadId: archived.id });
-      await expect.poll(async () => (await thread(fixture, archived.id))?.isArchived).toBe(true);
-      // a fork starts with its source's native history, so it isn't an empty session
-      const fork = await submit(fixture, {
-        kind: 'thread-fork',
-        threadId: worked.id,
-        name: 'fork',
-      });
-      await expect.poll(async () => (await thread(fixture, fork.threadId!))?.state).toBe('idle');
       expect(await unstarted()).toStrictEqual({
         data: [
           expect.objectContaining({
@@ -420,7 +410,7 @@ test(
       });
       // its own reads answer from the record instead of native history
       const target = {
-        provider: 'codex',
+        provider: 'codex' as const,
         workspaceRoot: fixture.workspaceRoot,
         nativeId: fresh.nativeId!,
       };

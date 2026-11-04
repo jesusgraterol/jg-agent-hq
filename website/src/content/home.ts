@@ -32,8 +32,8 @@ export const HOME_CONTENT = {
     {
       id: 'sessions',
       title: 'Drive native sessions',
-      text: 'Create, resume, fork or close sessions, and steer, queue or interrupt the running turn.',
-      commands: ['thread-create', 'message', 'steer', 'queue', 'interrupt', 'thread-fork'],
+      text: 'Create, resume or close sessions, and steer, queue or interrupt the running turn.',
+      commands: ['thread-create', 'message', 'steer', 'queue', 'interrupt', 'thread-close'],
       link: { href: '/examples/#control-session', label: 'Session walkthrough' },
     },
     {
@@ -47,14 +47,14 @@ export const HOME_CONTENT = {
       id: 'observe',
       title: 'See output, history and usage',
       text: 'Follow live output, browse past sessions and read each account’s real quota, credits and earned resets.',
-      commands: ['live-items', 'sessions', 'session-evidence', 'usage', 'models'],
+      commands: ['live-items', 'threads', 'session-evidence', 'usage', 'models'],
       link: null,
     },
     {
       id: 'storage',
       title: 'Local, private and recoverable',
       text: 'HQ keeps its records in one private SQLite file you can share, snapshot while agents work and restore.',
-      commands: ['hq.storage', 'createHqSnapshot', 'inspectHqSnapshot', 'restoreHqSnapshot'],
+      commands: ['hq.storage', 'createHqSnapshot', 'restoreHqSnapshot'],
       link: null,
     },
   ],
@@ -63,12 +63,6 @@ export const HOME_CONTENT = {
     eyebrow: 'Also included',
     title: 'The rest of the toolkit.',
     items: [
-      {
-        id: 'accounts',
-        title: 'Accounts and MCP',
-        text: 'Read native accounts, start sign-in and list a session’s MCP servers and tools.',
-        name: 'account-login',
-      },
       {
         id: 'configuration',
         title: 'Models and settings',
@@ -86,18 +80,6 @@ export const HOME_CONTENT = {
         title: 'Browser hosts',
         text: 'Closed contracts let a browser app act through your trusted Node host.',
         name: 'jg-agent-hq/contracts',
-      },
-      {
-        id: 'providers',
-        title: 'Custom providers',
-        text: 'Register another agent CLI behind the same session interface.',
-        name: 'IAgentProvider',
-      },
-      {
-        id: 'session-tools',
-        title: 'Session tools',
-        text: 'Fork, compact, archive, revert and name sessions, each with a durable receipt.',
-        name: 'thread-fork',
       },
     ],
   },

@@ -13,11 +13,9 @@ export {
   ControlPageSchema,
   ApprovalPageRequestSchema,
   ApprovalPageSchema,
-  EventPageSchema,
   ApprovalRecordSchema,
   ManagedThreadPageSchema,
   ActionPageSchema,
-  LifecyclePageSchema,
 } from './types.js';
 export type {
   IThreadRow,
@@ -32,7 +30,6 @@ export type {
   ITurnRecord,
   IControlPage,
   IApprovalPageRequest,
-  IEventPage,
   IApprovalRecord,
 } from './types.js';
 export { ApprovalIdentitySchema } from './types.js';

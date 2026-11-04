@@ -20,20 +20,10 @@ import type {
   IConfigurationRequest,
   ISessionConfiguration,
   IPreparedInput,
-  IAccountObservation,
-  IAccountControlCommand,
-  IExtensionControlCommand,
-  ILoginObservation,
-  INativeControlResult,
   ISessionState,
   IThreadSummary,
 } from '../contracts/index.js';
 import type { IProviderInputFile } from './inputs/index.js';
-import type {
-  IProviderMcpServerPage,
-  IProviderMcpTools,
-  IProviderMcpResources,
-} from './extensions/index.js';
 import type { IHistoryRequest } from '../sessions/index.js';
 import type { INativeObservation, INativeOutcome } from '../store/control/index.js';
 
@@ -146,34 +136,6 @@ export type IAgentProvider = {
     nativeId: string | undefined,
     call: IProviderCall,
   ): Promise<ISessionConfiguration>;
-  /** @returns An idle native fork with the exact source recorded in native lineage. */
-  forkThread(
-    requestId: string,
-    nativeId: string,
-    workspaceRoot: string,
-    call: IProviderCall,
-  ): Promise<IProviderThread>;
-  /** @returns Native archive acknowledgement; the session becomes inactive. */
-  archiveThread(requestId: string, nativeId: string, call: IProviderCall): Promise<void>;
-  /** @returns The exact unarchived session, without assuming control or starting inference. */
-  unarchiveThread(
-    requestId: string,
-    nativeId: string,
-    call: IProviderCall,
-  ): Promise<IProviderThread>;
-  /** @returns Compaction admission; a null turn ID is correlated from native lifecycle events. */
-  compactThread(
-    requestId: string,
-    nativeId: string,
-    call: IProviderCall,
-  ): Promise<{ id: string | null }>;
-  /** @returns Native history-revert acknowledgement, which does not revert filesystem changes. */
-  revertThread(
-    requestId: string,
-    nativeId: string,
-    beforeTurnId: string,
-    call: IProviderCall,
-  ): Promise<IProviderThread>;
   /** @returns One authorized, bounded native history response with query-bound continuation. */
   readHistory(command: IHistoryRequest, call: IProviderCall): Promise<IHqResponse>;
   /**
@@ -212,44 +174,6 @@ export type IAgentProvider = {
   ): Promise<IProviderReattachment>;
   /** @returns Native quota observations without starting a model turn. */
   readUsage(call: IProviderCall): Promise<IUsageSnapshot>;
-  /** @returns Safe native account metadata, with an explicit unavailable observation when absent. */
-  readAccount(call: IProviderCall): Promise<IAccountObservation>;
-  /** @returns Safe live authentication presentation for one exact admitted request. */
-  readLogin(requestId: string, call: IProviderCall): Promise<ILoginObservation>;
-  /** @returns Native account-control acknowledgement; completion is observed separately for login. */
-  controlAccount(
-    requestId: string,
-    command: IAccountControlCommand,
-    loginRequestId: string | undefined,
-    call: IProviderCall,
-  ): Promise<INativeControlResult>;
-  /** @returns Native acknowledgement for a concrete extension operation. */
-  controlExtensions(
-    requestId: string,
-    nativeId: string,
-    workspaceRoot: string,
-    command: IExtensionControlCommand,
-    call: IProviderCall,
-  ): Promise<INativeControlResult>;
-  /** @returns One native server page without configuration credentials. */
-  readMcpServers(
-    nativeId: string,
-    limit: number,
-    cursor: string | undefined,
-    call: IProviderCall,
-  ): Promise<IProviderMcpServerPage>;
-  /** @returns A bounded inventory for one configured native MCP server. */
-  readMcpTools(
-    nativeId: string,
-    serverName: string,
-    call: IProviderCall,
-  ): Promise<IProviderMcpTools>;
-  /** @returns Bounded native resource metadata, or an explicit unsupported state. */
-  readMcpResources(
-    nativeId: string,
-    serverName: string,
-    call: IProviderCall,
-  ): Promise<IProviderMcpResources>;
   /**
    * @returns The bounded native skill inventory of the selected session, or without one the
    * inventory a session started in the folder gets.

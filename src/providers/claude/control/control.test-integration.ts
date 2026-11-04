@@ -1622,47 +1622,37 @@ test('input queued while a turn Claude started runs is delivered after that turn
   });
 });
 
-test.each([
-  ['a message', 'Waiting request', 'Native response to Waiting request'],
-  ['a compaction', '/compact', 'Native response to /compact'],
-])(
-  '%s waiting for acknowledgement when Claude starts a turn of its own keeps its own turn, result and completion',
-  async (_label, text, response) => {
-    await withClaudeRuntime(async (fixture) => {
-      const api = await actions(fixture),
-        { thread } = await api.create();
-      await fixture.control({ nativeBeforeReplay: true, holdTurn: true });
-      const action =
-        text === '/compact'
-          ? api.envelope({ kind: 'thread-compact', threadId: thread.id })
-          : await api.message(thread.id, text);
-      if (text === '/compact') await api.submit(action);
-      // Claude replays the input after its own turn, whose result is held by no receipt
-      const acknowledged = await api.until(
-        () => api.receipt(action.id),
-        (entry) => entry.delivery === 'acknowledged',
-      );
-      const [written] = await writtenInputs(api);
-      expect(acknowledged).toMatchObject({
-        nativeTurnId: written!.uuid,
-        completion: null,
-        result: null,
-      });
-      expect((await api.thread(thread.id)).activeTurnId).toBe(written!.uuid);
-      await fixture.control({ release: true });
-      expect(
-        await api.until(
-          () => api.receipt(action.id),
-          (entry) => entry.completion !== null,
-        ),
-      ).toMatchObject({
-        nativeTurnId: written!.uuid,
-        completion: 'completed',
-        result: { text: response },
-      });
+test('a message waiting for acknowledgement when Claude starts a turn of its own keeps its own turn, result and completion', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture),
+      { thread } = await api.create();
+    await fixture.control({ nativeBeforeReplay: true, holdTurn: true });
+    const action = await api.message(thread.id, 'Waiting request');
+    // Claude replays the input after its own turn, whose result is held by no receipt
+    const acknowledged = await api.until(
+      () => api.receipt(action.id),
+      (entry) => entry.delivery === 'acknowledged',
+    );
+    const [written] = await writtenInputs(api);
+    expect(acknowledged).toMatchObject({
+      nativeTurnId: written!.uuid,
+      completion: null,
+      result: null,
     });
-  },
-);
+    expect((await api.thread(thread.id)).activeTurnId).toBe(written!.uuid);
+    await fixture.control({ release: true });
+    expect(
+      await api.until(
+        () => api.receipt(action.id),
+        (entry) => entry.completion !== null,
+      ),
+    ).toMatchObject({
+      nativeTurnId: written!.uuid,
+      completion: 'completed',
+      result: { text: 'Native response to Waiting request' },
+    });
+  });
+});
 
 test('input written just before a turn Claude starts that outlasts the acknowledgement deadline is uncertain until its replay, then completes as its own turn', async () => {
   await withClaudeRuntime(async (fixture) => {

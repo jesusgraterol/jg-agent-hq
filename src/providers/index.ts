@@ -16,13 +16,6 @@ export type {
   IAgentProviderEvents,
   IAgentProviderOutcome,
 } from './types.js';
-export {
-  ProviderThreadSchema,
-  ProviderInspectionSchema,
-  ProviderReattachmentSchema,
-  ProviderSkillsSchema,
-  ResyncLossSchema,
-} from './types.js';
 export { PROVIDER_INPUT_SCHEMA, SUPPORTED_PROVIDER_OPERATION } from './constants.js';
 export { createProviderProcess, isOwnedProcess } from './process.js';
 
@@ -54,9 +47,4 @@ export { createClaudeControl } from './claude/control/index.js';
 // bounded native inputs and complete results
 export { readInputFiles } from './inputs/index.js';
 export type { IProviderInputFile } from './inputs/index.js';
-export type {
-  IProviderMcpServerPage,
-  IProviderMcpTools,
-  IProviderMcpResources,
-} from './extensions/index.js';
 export { toTurnResult } from './results/index.js';

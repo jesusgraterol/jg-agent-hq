@@ -142,7 +142,6 @@ export class ClaudeHistoryModel {
     if (
       (command.kind !== 'threads' &&
         command.kind !== 'thread' &&
-        command.kind !== 'turns' &&
         command.kind !== 'items' &&
         command.kind !== 'item-detail' &&
         command.kind !== 'item-image' &&
@@ -264,40 +263,6 @@ export class ClaudeHistoryModel {
           kind: 'invalid-request',
         },
       });
-    const offset = seek?.offset ?? -1;
-    if (command.kind === 'turns') {
-      const turns = this.__database
-        .prepare(
-          `SELECT turn_id, byte_offset, created_at FROM hq_claude_entry
-        WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1
-        AND byte_offset = turn_start_offset AND byte_offset > ? ORDER BY byte_offset LIMIT ?`,
-        )
-        .all(root, command.nativeId, offset, command.limit + 1)
-        .map((entry) =>
-          z
-            .object({ turn_id: z.string(), byte_offset: z.number(), created_at: z.number() })
-            .parse(entry),
-        );
-      const page = turns.slice(0, command.limit);
-      return HqResponseSchema.parse({
-        kind: 'turns',
-        result: {
-          source: 'native',
-          data: page.map((turn) => ({
-            nativeId: turn.turn_id,
-            state: 'unknown',
-            startedAt: turn.created_at,
-            completedAt: null,
-          })),
-          nextCursor: encodeHistoryCursor(
-            turns.length > command.limit
-              ? JSON.stringify({ revision: row.revision, offset: page.at(-1)!.byte_offset })
-              : null,
-            filters,
-          ),
-        },
-      });
-    }
     // items read newest first, the cursor holding the oldest offset read; one item is read by its UUID
     const before = seek?.offset ?? Number.MAX_SAFE_INTEGER;
     const entries = (

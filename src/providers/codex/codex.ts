@@ -1,4 +1,4 @@
-import { Exception, isException } from 'jg-exception';
+import { Exception } from 'jg-exception';
 import { runInOrder } from 'jg-utilities';
 import { z } from 'zod';
 
@@ -7,7 +7,6 @@ import {
   type IUsageSnapshot,
   type ISessionSettings,
   type IOutputSchema,
-  type ITurnSummary,
 } from '../../contracts/index.js';
 import { NativeIdSchema } from '../../contracts/identities/index.js';
 import { decodeBase64Image, imageUnavailable, readImageFile } from '../../sessions/index.js';
@@ -19,10 +18,6 @@ import {
   TURN_TIMES_PAGE_SIZE,
 } from './constants.js';
 import { createCodexRpc } from './rpc.js';
-import { createCodexExtensions } from './extensions/index.js';
-import { createCodexAccounts } from './accounts/index.js';
-import { createCodexAuthentication } from './authentication/index.js';
-import { capabilityUnavailable } from '../registry/index.js';
 import {
   NativeBucketSchema,
   NativeSkillsSchema,
@@ -36,6 +31,7 @@ import {
   type ICodexProvider,
   type INativeItem,
   type INativePage,
+  type ITurnSummary,
 } from './types.js';
 import {
   toHistoryItem,
@@ -61,7 +57,7 @@ import {
 } from './configuration/index.js';
 
 /**
- * Connects native history, account observations and explicitly admitted runtime controls.
+ * Connects native history, usage observations and explicitly admitted runtime controls.
  * @returns The owned adapter. Its caller must close it on shutdown.
  * @throws
  * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
@@ -86,8 +82,6 @@ export const createCodexProvider = async (
   let accountGeneration = 0;
   let events: ICodexEvents | undefined;
   const controlled = new Set<string>();
-  let authentication: ReturnType<typeof createCodexAuthentication> | undefined;
-  const extensionRequests = new Map<string, 'skills-reload' | 'mcp-reload'>();
   const outputSchemas = new Map<string, IOutputSchema>();
   const configurations = new Map<
     string,
@@ -158,34 +152,11 @@ export const createCodexProvider = async (
       if (events) events.request(id, method, params);
       else void rpc?.reject(id).catch(() => undefined);
     },
-    lateResponse: (id, result, error) => {
-      if (authentication?.lateResponse(id, result, error)) return;
-      if (extensionRequests.has(id)) {
-        extensionRequests.delete(id);
-        if (error !== undefined)
-          events?.controlOutcome({ kind: 'failed', requestId: id, failure: 'agent-unavailable' });
-        else {
-          z.object({}).parse(result);
-          events?.controlOutcome({
-            kind: 'control-accepted',
-            requestId: id,
-            state: 'applied',
-            completion: 'completed',
-          });
-        }
-        return;
-      }
-      events?.lateResponse(id, result, error);
-    },
-    unavailable: () => {
-      authentication?.unavailable();
-      extensionRequests.clear();
-      events?.unavailable();
-    },
+    lateResponse: (id, result, error) => events?.lateResponse(id, result, error),
+    unavailable: () => events?.unavailable(),
     opened: () => events?.connected(),
     discarded: () => events?.discarded(),
     notify: (method, params) => {
-      authentication?.notify(method, params);
       events?.notify(method, params);
       if (method !== 'account/rateLimits/updated' && method !== 'account/updated') return;
       if (method === 'account/updated') {
@@ -214,9 +185,6 @@ export const createCodexProvider = async (
     },
   });
   const connection = rpc;
-  authentication = createCodexAuthentication(connection, (outcome) =>
-    events?.controlOutcome(outcome),
-  );
   const listTurns = async (
     nativeId: string,
     limit: number,
@@ -290,49 +258,6 @@ export const createCodexProvider = async (
     return null;
   };
   return {
-    ...createCodexExtensions(connection),
-    ...createCodexAccounts(connection),
-    readLogin: authentication.readLogin,
-    controlAccount: authentication.controlAccount,
-    /**
-     * Applies supported native reloads or starts exact-session MCP OAuth.
-     * @returns Native control acknowledgement, separate from authentication completion.
-     * @throws
-     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
-     * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
-     * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
-     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
-     */
-    async controlExtensions(requestId, nativeId, workspaceRoot, command) {
-      if (command.kind === 'mcp-login')
-        return authentication!.loginMcp(requestId, nativeId, command.serverName);
-      if (command.kind !== 'skills-reload' && command.kind !== 'mcp-reload')
-        capabilityUnavailable();
-      if (extensionRequests.size >= 32)
-        throw new Exception('The HQ action conflicts with its recorded state', {
-          code: 'JG_AGENT_HQ_ACTION_CONFLICT',
-          data: { kind: 'state-conflict' },
-        });
-      extensionRequests.set(requestId, command.kind);
-      try {
-        z.object({}).parse(
-          await connection.request(
-            command.kind === 'skills-reload' ? 'skills/list' : 'config/mcpServer/reload',
-            command.kind === 'skills-reload' ? { cwds: [workspaceRoot], forceReload: true } : {},
-            requestId,
-          ),
-        );
-        extensionRequests.delete(requestId);
-        return { state: 'applied', completion: 'completed' };
-      } catch (error) {
-        if (
-          isException(error) &&
-          z.object({ nativeCode: z.number() }).safeParse(error.data).success
-        )
-          extensionRequests.delete(requestId);
-        throw error;
-      }
-    },
     get userAgent() {
       return connection.userAgent;
     },
@@ -387,54 +312,6 @@ export const createCodexProvider = async (
     observeServiceTier(nativeId, serviceTier) {
       const recorded = configurations.get(nativeId);
       if (recorded) recorded.response = { ...recorded.response, serviceTier };
-    },
-    async forkThread(requestId, nativeId) {
-      const result = parseNative(
-        z.object({
-          thread: NativeThreadSchema.refine(
-            (thread) => thread.id !== nativeId && thread.forkedFromId === nativeId,
-          ),
-        }),
-        await connection.request(
-          'thread/fork',
-          { threadId: nativeId, excludeTurns: true },
-          requestId,
-        ),
-      );
-      controlled.add(result.thread.id);
-      return result.thread;
-    },
-    async archiveThread(requestId, nativeId) {
-      try {
-        parseNative(
-          z.object({}),
-          await connection.request('thread/archive', { threadId: nativeId }, requestId),
-        );
-      } finally {
-        releaseControlState(nativeId);
-      }
-    },
-    async unarchiveThread(requestId, nativeId) {
-      return parseNative(
-        z.object({ thread: NativeThreadSchema.refine((thread) => thread.id === nativeId) }),
-        await connection.request('thread/unarchive', { threadId: nativeId }, requestId),
-      ).thread;
-    },
-    async compactThread(requestId, nativeId) {
-      parseNative(
-        z.object({}),
-        await connection.request('thread/compact/start', { threadId: nativeId }, requestId),
-      );
-    },
-    async revertThread(requestId, nativeId, beforeTurnId) {
-      return parseNative(
-        z.object({
-          thread: NativeThreadSchema.refine(
-            (thread) => thread.id === nativeId && thread.status.type === 'idle',
-          ),
-        }),
-        await connection.request('thread/revert', { threadId: nativeId, beforeTurnId }, requestId),
-      ).thread;
     },
     async readNativeThread(nativeId) {
       return parseNative(

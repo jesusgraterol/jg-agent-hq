@@ -1,65 +1,28 @@
-import { Exception, isException } from 'jg-exception';
+import { isException } from 'jg-exception';
 import { abortable, createDeadline } from 'jg-utilities';
 import { z } from 'zod';
 
-import {
-  HistoryItemSchema,
-  ThreadSummarySchema,
-  MAX_PROVIDERS,
-  ApprovalPresentationSchema,
-  AccountObservationSchema,
-  LoginObservationSchema,
-  NativeControlResultSchema,
-  MAX_MCP_CATALOG_BYTES,
-  ProviderCapabilitySetSchema,
-  ProviderIdSchema,
-  ProviderStatusSchema,
-  ProviderModelPageSchema,
-  SessionConfigurationSchema,
-  SessionStateSchema,
-  UsageSnapshotSchema,
-  type IManagedThread,
-  type IProviderCapabilities,
-  type IProviderCapabilitySet,
-  type IProviderId,
-  type IProviderStatus,
+import type {
+  IManagedThread,
+  IProviderCapabilities,
+  IProviderCapabilitySet,
+  IProviderId,
+  IProviderStatus,
+  IUsageSnapshot,
 } from '../../contracts/index.js';
-import { NativeIdSchema } from '../../contracts/identities/index.js';
-import { MAX_FRAME_BYTES } from '../../ipc/index.js';
-import { resetProvenance } from '../../sessions/evidence/index.js';
-import { ApprovalRecordSchema } from '../../store/control/index.js';
-import {
-  ProviderMcpServerPageSchema,
-  ProviderMcpToolsSchema,
-  ProviderMcpResourcesSchema,
-} from '../extensions/index.js';
-import {
-  ProviderInspectionSchema,
-  ProviderReattachmentSchema,
-  ProviderThreadSchema,
-  ProviderSkillsSchema,
-  ResyncLossSchema,
-  type IAgentProvider,
-  type IAgentProviderEvents,
-  type IProviderCall,
+import type {
+  IAgentProvider,
+  IAgentProviderEvents,
+  IAgentProviderFactory,
+  INativePrompt,
+  IProviderCall,
 } from '../index.js';
 
-import type {
-  IBoundAgentProvider,
-  IProviderRegistration,
-  IProviderRegistryEvents,
-} from './types.js';
-import { MAX_BACKGROUND_COMMANDS } from './constants.js';
+import type { IBoundAgentProvider, IProviderRegistryEvents } from './types.js';
 import { capabilityUnavailable, normalizeProviderError } from './utilities.js';
-import {
-  parseProviderObservation,
-  parseProviderOutcome,
-  rejectProviderResponse,
-  validateProviderHistory,
-} from './validations.js';
 
 type IProviderEntry = {
-  registration: IProviderRegistration;
+  factory: IAgentProviderFactory;
   opening?: Promise<IAgentProvider>;
   ready?: Promise<IBoundAgentProvider>;
   adapter?: IAgentProvider;
@@ -91,25 +54,7 @@ const unavailableCapabilities = (): IProviderCapabilitySet => {
       usage: unavailable,
       skills: unavailable,
       models: unavailable,
-      fork: unavailable,
-      archive: unavailable,
-      unarchive: unavailable,
-      compact: unavailable,
-      revert: unavailable,
       configuration: unavailable,
-      account: unavailable,
-      mcpServers: unavailable,
-      mcpTools: unavailable,
-      mcpResources: unavailable,
-      skillsReload: unavailable,
-      mcpReload: unavailable,
-      mcpReconnect: unavailable,
-      mcpSetEnabled: unavailable,
-      mcpLogin: unavailable,
-      pluginsReload: unavailable,
-      accountLogin: unavailable,
-      accountLoginCancel: unavailable,
-      accountLogout: unavailable,
     },
     inputSchema: null,
     configurationSchema: null,
@@ -134,35 +79,21 @@ const bounded = async <T>(
 };
 
 /**
- * Registers trusted factories and starts only the provider explicitly selected by an operation.
+ * Holds the built-in factories and starts only the provider explicitly selected by an operation.
  * @returns Runtime-owned routing, observations and confirmed adapter cleanup.
- * @throws
- * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
  */
 export const createProviderRegistry = (
-  registrations: IProviderRegistration[],
+  factories: IAgentProviderFactory[],
   allowedRoots: string[],
   runtimeEpoch: string,
 ) => {
-  const entries = new Map<IProviderId, IProviderEntry>();
+  const entries = new Map<IProviderId, IProviderEntry>(
+    factories.map((factory) => [factory.id, { factory, stopping: new Map() }]),
+  );
   const lifetime = new AbortController();
   let handlers: IProviderRegistryEvents | undefined;
   let closing: Promise<void> | undefined;
   let isClosing = false;
-  if (registrations.length > MAX_PROVIDERS)
-    throw new Exception('The HQ request is invalid', {
-      code: 'JG_AGENT_HQ_REQUEST_INVALID',
-      data: { kind: 'invalid-request' },
-    });
-  for (const registration of registrations) {
-    const id = ProviderIdSchema.safeParse(registration.factory.id);
-    if (!id.success || entries.has(id.data) || typeof registration.factory.create !== 'function')
-      throw new Exception('The HQ request is invalid', {
-        code: 'JG_AGENT_HQ_REQUEST_INVALID',
-        data: { kind: 'invalid-request' },
-      });
-    entries.set(id.data, { registration, stopping: new Map() });
-  }
 
   /**
    * Confirms one adapter's cleanup once, retaining its failure for runtime shutdown.
@@ -178,20 +109,20 @@ export const createProviderRegistry = (
       try {
         if (entry.adapter) await bounded(() => entry.adapter!.close());
       } catch (cause) {
-        throw normalizeProviderError(cause, entry.registration.isBuiltIn);
+        throw normalizeProviderError(cause);
       }
     })());
 
-  /** Quarantines malformed provider evidence without throwing into a native event emitter. */
+  /** Quarantines a failed provider without throwing into a native event emitter. */
   const quarantine = (entry: IProviderEntry, cause: unknown): void => {
-    entry.failure ??= normalizeProviderError(cause, entry.registration.isBuiltIn);
-    handlers?.unavailable(entry.registration.factory.id);
+    entry.failure ??= normalizeProviderError(cause);
+    handlers?.unavailable(entry.factory.id);
     if (entry.adapter) void closeEntry(entry).catch(() => undefined);
   };
 
-  /** Binds identity and validates only the normalized evidence consumed by the runtime. */
+  /** Binds provider identity to the adapter's evidence and bounds its native replies. */
   const eventsFor = (entry: IProviderEntry): IAgentProviderEvents => {
-    const provider = entry.registration.factory.id;
+    const provider = entry.factory.id;
     const deliver = (operation: () => void): void => {
       if (entry.failure || isClosing) return;
       try {
@@ -201,143 +132,70 @@ export const createProviderRegistry = (
       }
     };
     return {
-      observe: (input) =>
-        deliver(() => {
-          const observation = parseProviderObservation(input);
-          if (observation.provider !== provider) rejectProviderResponse();
-          handlers?.observe(provider, observation);
-        }),
-      item: (nativeId, item, complete, replacedIds) =>
-        deliver(() => {
-          const normalized = HistoryItemSchema.parse(item);
-          normalized.provenance = resetProvenance(normalized.kind, normalized.provenance);
-          handlers?.item(
-            provider,
-            NativeIdSchema.parse(nativeId),
-            normalized,
-            z.boolean().parse(complete),
-            replacedIds === undefined
-              ? undefined
-              : z.array(NativeIdSchema).max(128).parse(replacedIds),
-          );
-        }),
-      gap: (nativeId) => deliver(() => handlers?.gap(provider, NativeIdSchema.parse(nativeId))),
+      observe: (observation) => deliver(() => handlers?.observe(provider, observation)),
+      item: (nativeId, item, isComplete, replacedIds) =>
+        deliver(() => handlers?.item(provider, nativeId, item, isComplete, replacedIds)),
+      gap: (nativeId) => deliver(() => handlers?.gap(provider, nativeId)),
       background: (nativeId, count) =>
-        deliver(() =>
-          handlers?.background(
-            provider,
-            NativeIdSchema.parse(nativeId),
-            z.number().int().nonnegative().max(MAX_BACKGROUND_COMMANDS).parse(count),
-          ),
-        ),
-      session: (nativeId, state) =>
-        deliver(() =>
-          handlers?.session(
-            provider,
-            NativeIdSchema.parse(nativeId),
-            SessionStateSchema.parse(state),
-          ),
-        ),
+        deliver(() => handlers?.background(provider, nativeId, count)),
+      session: (nativeId, state) => deliver(() => handlers?.session(provider, nativeId, state)),
       delta: (nativeId, turnId, itemId, text) =>
-        deliver(() => {
-          handlers?.delta(
-            provider,
-            NativeIdSchema.parse(nativeId),
-            NativeIdSchema.parse(turnId),
-            NativeIdSchema.parse(itemId),
-            z.string().max(MAX_FRAME_BYTES).parse(text),
-          );
-        }),
+        deliver(() => handlers?.delta(provider, nativeId, turnId, itemId, text)),
       prompt: (prompt) =>
         deliver(() => {
-          if (
-            prompt.provider !== provider ||
-            typeof prompt.reply !== 'function' ||
-            typeof prompt.reject !== 'function' ||
-            typeof prompt.validate !== 'function'
-          )
-            rejectProviderResponse();
-          NativeIdSchema.parse(prompt.nativeThreadId);
-          NativeIdSchema.parse(prompt.nativeTurnId);
-          ApprovalRecordSchema.shape.requestId.parse(prompt.requestId);
-          if (Buffer.byteLength(prompt.fingerprint) > MAX_FRAME_BYTES) rejectProviderResponse();
-          const normalized = {
+          const bound: INativePrompt = {
             ...prompt,
-            presentation: ApprovalPresentationSchema.parse(prompt.presentation),
-            validate(response: Parameters<typeof prompt.validate>[0]) {
+            validate(response) {
               try {
                 return prompt.validate(response);
               } catch (cause) {
-                throw normalizeProviderError(cause, entry.registration.isBuiltIn);
+                throw normalizeProviderError(cause);
               }
             },
-            async reply(response: unknown): Promise<void> {
+            async reply(response) {
               try {
                 await bounded(() => prompt.reply(response), lifetime.signal);
               } catch (cause) {
-                throw normalizeProviderError(cause, entry.registration.isBuiltIn);
+                throw normalizeProviderError(cause);
               }
             },
-            async reject(): Promise<void> {
+            async reject() {
               try {
                 await bounded(() => prompt.reject(), lifetime.signal);
               } catch (cause) {
-                throw normalizeProviderError(cause, entry.registration.isBuiltIn);
+                throw normalizeProviderError(cause);
               }
             },
           };
-          if (handlers) handlers.prompt(provider, normalized);
-          else void normalized.reject().catch((cause) => quarantine(entry, cause));
+          if (handlers) handlers.prompt(provider, bound);
+          else void bound.reject().catch((cause) => quarantine(entry, cause));
         }),
       unpresentable: (nativeId, reject) =>
         deliver(() => {
-          if (typeof reject !== 'function') rejectProviderResponse();
           const bound = async (): Promise<void> => {
             try {
               await bounded(() => reject(), lifetime.signal);
             } catch (cause) {
-              throw normalizeProviderError(cause, entry.registration.isBuiltIn);
+              throw normalizeProviderError(cause);
             }
           };
-          if (handlers) handlers.unpresentable(provider, NativeIdSchema.parse(nativeId), bound);
+          if (handlers) handlers.unpresentable(provider, nativeId, bound);
           else void bound().catch((cause) => quarantine(entry, cause));
         }),
-      resync: (nativeId, lost) =>
-        deliver(() =>
-          handlers?.resync(
-            provider,
-            nativeId === undefined ? undefined : NativeIdSchema.parse(nativeId),
-            ResyncLossSchema.parse(lost),
-          ),
-        ),
-      outcome: (input, thread) =>
+      resync: (nativeId, lost) => deliver(() => handlers?.resync(provider, nativeId, lost)),
+      // the action identity comes from the runtime-issued request identity the adapter echoes
+      outcome: (outcome, thread) =>
         deliver(() => {
-          const metadata = thread === undefined ? undefined : ProviderThreadSchema.parse(thread);
-          const outcome = parseProviderOutcome(input, metadata?.nativeLineage);
-          if (outcome.kind === 'created' || outcome.kind === 'resumed') {
-            if (
-              !metadata ||
-              metadata.nativeState !== 'idle' ||
-              (outcome.kind === 'created' && outcome.nativeId !== metadata.nativeId) ||
-              (outcome.kind === 'resumed' && outcome.nativeState !== metadata.nativeState)
-            )
-              rejectProviderResponse();
-          }
-          if (
-            (outcome.kind === 'reverted' && (!metadata || metadata.nativeState !== 'idle')) ||
-            (outcome.kind === 'unarchived' &&
-              (!metadata || !['idle', 'notLoaded'].includes(metadata.nativeState)))
-          )
-            rejectProviderResponse();
-          handlers?.outcome(provider, outcome, metadata);
-        }),
-      unavailable: (nativeId) =>
-        deliver(() =>
-          handlers?.unavailable(
+          const actionId = outcome.requestId.slice(0, 36);
+          handlers?.outcome(
             provider,
-            nativeId === undefined ? undefined : NativeIdSchema.parse(nativeId),
-          ),
-        ),
+            outcome.kind === 'created' || outcome.kind === 'resumed'
+              ? { ...outcome, actionId, nativeLineage: thread?.nativeLineage ?? null }
+              : { ...outcome, actionId },
+            thread,
+          );
+        }),
+      unavailable: (nativeId) => deliver(() => handlers?.unavailable(provider, nativeId)),
     };
   };
 
@@ -359,7 +217,7 @@ export const createProviderRegistry = (
       try {
         const adapter = await bounded(async (call) => {
           entry.opening = Promise.resolve(
-            entry.registration.factory.create({
+            entry.factory.create({
               allowedRoots: [...allowedRoots],
               runtimeEpoch,
               signal: call.signal,
@@ -379,9 +237,10 @@ export const createProviderRegistry = (
             if (entry.failure) throw entry.failure;
             return result;
           } catch (cause) {
-            throw normalizeProviderError(cause, entry.registration.isBuiltIn);
+            throw normalizeProviderError(cause);
           }
         };
+        // a control the adapter couldn't parse leaves its native state unknown, so it quarantines
         const invokeControl = async <T>(
           operation: (call: IProviderCall) => Promise<T>,
         ): Promise<T> =>
@@ -405,251 +264,40 @@ export const createProviderRegistry = (
             return adapter.version;
           },
           get isAvailable() {
-            if (entry.failure) return false;
-            try {
-              return z.boolean().parse(adapter.isAvailable);
-            } catch (cause) {
-              quarantine(entry, cause);
-              return false;
-            }
+            return !entry.failure && adapter.isAvailable;
           },
           readCapabilities: (nativeId) =>
-            invoke(async (call) => {
-              const result = await adapter.readCapabilities(nativeId, call);
-              if (Buffer.byteLength(JSON.stringify(result)) > 65_536) capabilityUnavailable();
-              return ProviderCapabilitySetSchema.parse(result);
-            }),
-          readLogin: (requestId) =>
-            invoke(async (call) =>
-              LoginObservationSchema.parse(await adapter.readLogin(requestId, call)),
-            ),
-          controlAccount: (requestId, command, loginRequestId) =>
-            invokeControl(async (call) =>
-              NativeControlResultSchema.parse(
-                await adapter.controlAccount(requestId, command, loginRequestId, call),
-              ),
-            ),
-          controlExtensions: (requestId, nativeId, workspaceRoot, command) =>
-            invokeControl(async (call) =>
-              NativeControlResultSchema.parse(
-                await adapter.controlExtensions(requestId, nativeId, workspaceRoot, command, call),
-              ),
-            ),
-          readAccount: () =>
-            invoke(async (call) => {
-              const result = AccountObservationSchema.parse(await adapter.readAccount(call));
-              if (result.provider !== provider) rejectProviderResponse();
-              return result;
-            }),
-          readMcpServers: (nativeId, limit, cursor) =>
-            invoke(async (call) => {
-              const raw = await adapter.readMcpServers(nativeId, limit, cursor, call);
-              if (Buffer.byteLength(JSON.stringify(raw)) > MAX_MCP_CATALOG_BYTES)
-                rejectProviderResponse();
-              const page = ProviderMcpServerPageSchema.parse(raw);
-              if (page.data.length > limit) rejectProviderResponse();
-              return page;
-            }),
-          readMcpTools: (nativeId, serverName) =>
-            invoke(async (call) => {
-              const raw = await adapter.readMcpTools(nativeId, serverName, call);
-              if (Buffer.byteLength(JSON.stringify(raw)) > MAX_MCP_CATALOG_BYTES)
-                rejectProviderResponse();
-              return ProviderMcpToolsSchema.parse(raw);
-            }),
-          readMcpResources: (nativeId, serverName) =>
-            invoke(async (call) => {
-              const raw = await adapter.readMcpResources(nativeId, serverName, call);
-              if (Buffer.byteLength(JSON.stringify(raw)) > MAX_MCP_CATALOG_BYTES)
-                rejectProviderResponse();
-              return ProviderMcpResourcesSchema.parse(raw);
-            }),
-          readHistory: (command) =>
-            invoke(async (call) =>
-              validateProviderHistory(await adapter.readHistory(command, call), command, provider),
-            ),
+            invoke((call) => adapter.readCapabilities(nativeId, call)),
+          readHistory: (command) => invoke((call) => adapter.readHistory(command, call)),
           ...(adapter.readObservedThread
             ? {
                 readObservedThread: (nativeId: string) =>
-                  invoke(async (call) => {
-                    const thread = ThreadSummarySchema.parse(
-                      await adapter.readObservedThread!(nativeId, call),
-                    );
-                    if (thread.provider !== provider || thread.nativeId !== nativeId)
-                      rejectProviderResponse();
-                    return thread;
-                  }),
+                  invoke((call) => adapter.readObservedThread!(nativeId, call)),
               }
             : {}),
-          readModels: (command) =>
-            invoke(async (call) => {
-              const page = ProviderModelPageSchema.parse(await adapter.readModels(command, call));
-              if (page.provider !== provider || page.data.length > command.limit)
-                rejectProviderResponse();
-              return page;
-            }),
-          forkThread: (requestId, nativeId, workspaceRoot) =>
-            invokeControl(async (call) => {
-              const parsed = ProviderThreadSchema.parse(
-                await adapter.forkThread(requestId, nativeId, workspaceRoot, call),
-              );
-              if (
-                parsed.nativeState !== 'idle' ||
-                parsed.nativeId === nativeId ||
-                parsed.nativeLineage?.forkedFromId !== nativeId
-              ) {
-                quarantine(
-                  entry,
-                  new Exception('The HQ provider integration failed', {
-                    code: 'JG_AGENT_HQ_PROVIDER_FAILED',
-                    data: { kind: 'agent-unavailable' },
-                  }),
-                );
-                throw entry.failure;
-              }
-              return parsed;
-            }),
-          archiveThread: (requestId, nativeId) =>
-            invokeControl((call) => adapter.archiveThread(requestId, nativeId, call)),
-          unarchiveThread: (requestId, nativeId) =>
-            invokeControl(async (call) => {
-              const thread = ProviderThreadSchema.refine(
-                (thread) =>
-                  thread.nativeId === nativeId &&
-                  ['idle', 'notLoaded'].includes(thread.nativeState),
-              ).parse(await adapter.unarchiveThread(requestId, nativeId, call));
-              return thread;
-            }),
-          revertThread: (requestId, nativeId, beforeTurnId) =>
-            invokeControl(async (call) => {
-              const thread = ProviderThreadSchema.refine(
-                (thread) => thread.nativeId === nativeId && thread.nativeState === 'idle',
-              ).parse(await adapter.revertThread(requestId, nativeId, beforeTurnId, call));
-              return thread;
-            }),
-          compactThread: (requestId, nativeId) =>
-            invokeControl(async (call) =>
-              z
-                .object({ id: NativeIdSchema.nullable() })
-                .parse(await adapter.compactThread(requestId, nativeId, call)),
-            ),
+          readModels: (command) => invoke((call) => adapter.readModels(command, call)),
           inspectThread: (nativeId, workspaceRoot) =>
-            invokeControl(async (call) => {
-              const result = ProviderInspectionSchema.parse(
-                await adapter.inspectThread(nativeId, workspaceRoot, call),
-              );
-              if (result.thread.provider !== provider || result.thread.nativeId !== nativeId) {
-                quarantine(
-                  entry,
-                  new Exception('The HQ provider integration failed', {
-                    code: 'JG_AGENT_HQ_PROVIDER_FAILED',
-                    data: { kind: 'agent-unavailable' },
-                  }),
-                );
-                throw entry.failure;
-              }
-              return result;
-            }),
+            invokeControl((call) => adapter.inspectThread(nativeId, workspaceRoot, call)),
           readConfiguration: (command, nativeId) =>
-            invoke(async (call) => {
-              const result = SessionConfigurationSchema.parse(
-                await adapter.readConfiguration(command, nativeId, call),
-              );
-              if (
-                result.provider !== provider ||
-                result.nativeId !== (nativeId ?? null) ||
-                result.workingDirectory !== command.workspaceRoot ||
-                (result.choices !== null && result.choices.length > command.limit)
-              )
-                rejectProviderResponse();
-              return result;
-            }),
-          readUsage: () =>
-            invoke(async (call) => {
-              const result = UsageSnapshotSchema.parse(await adapter.readUsage(call));
-              if (result.provider !== provider) rejectProviderResponse();
-              return result;
-            }),
+            invoke((call) => adapter.readConfiguration(command, nativeId, call)),
+          readUsage: () => invoke((call) => adapter.readUsage(call)),
           readSkills: (workspaceRoot, nativeId) =>
-            invoke(async (call) => {
-              const result = await adapter.readSkills(workspaceRoot, nativeId, call);
-              if (Buffer.byteLength(JSON.stringify(result)) > 1_048_576) capabilityUnavailable();
-              return ProviderSkillsSchema.parse(result);
-            }),
-          formatSkill(skill, argumentsText) {
-            try {
-              return z.string().max(65_536).parse(adapter.formatSkill(skill, argumentsText));
-            } catch (cause) {
-              throw normalizeProviderError(cause, entry.registration.isBuiltIn);
-            }
-          },
+            invoke((call) => adapter.readSkills(workspaceRoot, nativeId, call)),
+          formatSkill: (skill, argumentsText) => adapter.formatSkill(skill, argumentsText),
           startThread: (requestId, workspaceRoot, settings) =>
-            invokeControl(async (call) => {
-              const parsed = ProviderThreadSchema.safeParse(
-                await adapter.startThread(requestId, workspaceRoot, settings, call),
-              );
-              if (!parsed.success || parsed.data.nativeState !== 'idle') {
-                quarantine(
-                  entry,
-                  parsed.success
-                    ? new Exception('The HQ provider integration failed', {
-                        code: 'JG_AGENT_HQ_PROVIDER_FAILED',
-                        data: { kind: 'agent-unavailable' },
-                      })
-                    : parsed.error,
-                );
-                throw entry.failure;
-              }
-              return parsed.data;
-            }),
+            invokeControl((call) => adapter.startThread(requestId, workspaceRoot, settings, call)),
           resumeThread: (requestId, nativeId, workspaceRoot, name, settings) =>
-            invokeControl(async (call) => {
-              const parsed = ProviderThreadSchema.safeParse(
-                await adapter.resumeThread(
-                  requestId,
-                  nativeId,
-                  workspaceRoot,
-                  name,
-                  settings,
-                  call,
-                ),
-              );
-              if (
-                !parsed.success ||
-                parsed.data.nativeId !== nativeId ||
-                parsed.data.nativeState !== 'idle'
-              ) {
-                quarantine(
-                  entry,
-                  parsed.success
-                    ? new Exception('The HQ provider integration failed', {
-                        code: 'JG_AGENT_HQ_PROVIDER_FAILED',
-                        data: { kind: 'agent-unavailable' },
-                      })
-                    : parsed.error,
-                );
-                throw entry.failure;
-              }
-              return parsed.data;
-            }),
+            invokeControl((call) =>
+              adapter.resumeThread(requestId, nativeId, workspaceRoot, name, settings, call),
+            ),
           ...(adapter.readReattachment && adapter.reattachThread
             ? {
                 readReattachment: (nativeId: string, workspaceRoot: string) =>
-                  invokeControl(async (call) => {
-                    const result = ProviderReattachmentSchema.parse(
-                      await adapter.readReattachment!(nativeId, workspaceRoot, call),
-                    );
-                    if (result.thread.nativeId !== nativeId) rejectProviderResponse();
-                    return result;
-                  }),
+                  invokeControl((call) => adapter.readReattachment!(nativeId, workspaceRoot, call)),
                 reattachThread: (requestId: string, nativeId: string, workspaceRoot: string) =>
-                  invokeControl(async (call) => {
-                    const result = ProviderReattachmentSchema.parse(
-                      await adapter.reattachThread!(requestId, nativeId, workspaceRoot, call),
-                    );
-                    if (result.thread.nativeId !== nativeId) rejectProviderResponse();
-                    return result;
-                  }),
+                  invokeControl((call) =>
+                    adapter.reattachThread!(requestId, nativeId, workspaceRoot, call),
+                  ),
               }
             : {}),
           nameThread: (requestId, nativeId, name) =>
@@ -657,19 +305,11 @@ export const createProviderRegistry = (
           validateInput: (nativeId, input) =>
             invoke((call) => adapter.validateInput(nativeId, input, call)),
           startTurn: (requestId, nativeId, text, skill, settings, files) =>
-            invokeControl(async (call) =>
-              z
-                .object({ id: NativeIdSchema })
-                .parse(
-                  await adapter.startTurn(requestId, nativeId, text, skill, settings, files, call),
-                ),
+            invokeControl((call) =>
+              adapter.startTurn(requestId, nativeId, text, skill, settings, files, call),
             ),
           steer: (requestId, nativeId, expectedTurnId, text) =>
-            invokeControl(async (call) =>
-              NativeIdSchema.parse(
-                await adapter.steer(requestId, nativeId, expectedTurnId, text, call),
-              ),
-            ),
+            invokeControl((call) => adapter.steer(requestId, nativeId, expectedTurnId, text, call)),
           interrupt: (requestId, nativeId, nativeTurnId) =>
             invokeControl((call) => adapter.interrupt(requestId, nativeId, nativeTurnId, call)),
           cleanThread: (requestId, nativeId) =>
@@ -681,7 +321,7 @@ export const createProviderRegistry = (
           close: () => closeEntry(entry),
         } satisfies IBoundAgentProvider;
       } catch (cause) {
-        entry.failure ??= normalizeProviderError(cause, entry.registration.isBuiltIn);
+        entry.failure ??= normalizeProviderError(cause);
         throw entry.failure;
       }
     })());
@@ -689,9 +329,6 @@ export const createProviderRegistry = (
 
   return {
     get,
-    /** @returns Whether the provider's sessions outlive the runtime, which rejoins them. */
-    keepsSessions: (provider: IProviderId): boolean =>
-      entries.get(provider)?.registration.keepsSessions === true,
     /** Quarantines one provider after a source-specific lifecycle gap or invalid control response. */
     quarantine(provider: IProviderId, cause: unknown): void {
       const entry = entries.get(provider);
@@ -701,20 +338,13 @@ export const createProviderRegistry = (
     setEvents(events: IProviderRegistryEvents): void {
       handlers = events;
     },
-    /** @returns Bounded connection observations without native startup or inference. */
+    /** @returns Connection observations without native startup or inference. */
     statuses(): IProviderStatus[] {
-      return [...entries].map(([provider, entry]) => {
-        try {
-          return ProviderStatusSchema.parse({
-            provider,
-            state: entry.failure ? 'unavailable' : (entry.adapter?.state ?? 'idle'),
-            version: entry.adapter?.version ?? null,
-          });
-        } catch (cause) {
-          quarantine(entry, cause);
-          return { provider, state: 'unavailable' as const, version: null };
-        }
-      });
+      return [...entries].map(([provider, entry]) => ({
+        provider,
+        state: entry.failure ? 'unavailable' : (entry.adapter?.state ?? 'idle'),
+        version: entry.adapter?.version ?? null,
+      }));
     },
     /** @returns An explicit scoped capability observation, independently of other providers. */
     async capabilities(
@@ -737,9 +367,7 @@ export const createProviderRegistry = (
       };
     },
     /** @returns Native quota data, or an explicit unavailable observation when it cannot be read. */
-    async readUsage(
-      provider: IProviderId,
-    ): Promise<import('../../contracts/index.js').IUsageSnapshot> {
+    async readUsage(provider: IProviderId): Promise<IUsageSnapshot> {
       try {
         return await (await get(provider)).readUsage();
       } catch {
@@ -773,7 +401,7 @@ export const createProviderRegistry = (
         try {
           await bounded((call) => entry.adapter!.stopControl(nativeId, call));
         } catch (cause) {
-          entry.failure ??= normalizeProviderError(cause, entry.registration.isBuiltIn);
+          entry.failure ??= normalizeProviderError(cause);
           throw entry.failure;
         } finally {
           entry.stopping.delete(nativeId);
@@ -811,7 +439,7 @@ export const createProviderRegistry = (
           }),
         );
         const failed = results.find((result) => result.status === 'rejected');
-        if (failed?.status === 'rejected') throw normalizeProviderError(failed.reason, false);
+        if (failed?.status === 'rejected') throw normalizeProviderError(failed.reason);
       })());
     },
   };

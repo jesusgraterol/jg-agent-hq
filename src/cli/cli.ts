@@ -25,12 +25,8 @@ const main = async (): Promise<void> => {
       'text-limit': { type: 'string' },
       'evidence-kind': { type: 'string', multiple: true },
       'thread-id': { type: 'string' },
-      'server-name': { type: 'string' },
-      'skill-id': { type: 'string' },
-      arguments: { type: 'string' },
       'codex-extra-skill-root': { type: 'string', multiple: true },
       'claude-additional-directory': { type: 'string', multiple: true },
-      name: { type: 'string' },
       topic: { type: 'string' },
       cursor: { type: 'string' },
       limit: { type: 'string' },
@@ -44,7 +40,7 @@ const main = async (): Promise<void> => {
   const [kind] = positionals;
   if (values.help || !kind || kind === 'help') {
     process.stdout.write(
-      'jg-agent-hq serve|status|stop|capabilities|threads|thread|turns|items|item-detail|item-image|sessions|session-evidence|usage|account|models|configuration|mcp-servers|mcp-tools|mcp-resources|managed-thread-name|suggest-thread-name|skills|skill-preview|session-states|active-sessions|unstarted-threads|observation-pace|locks|request --state-root <path> [--provider <provider-id>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--name <name>] [--topic <topic>] [--thread-id <id>] [--server-name <name>] [--skill-id <id>] [--arguments <text>] [--after-sequence <sequence>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nsession-evidence accepts --native-item-id and repeated --evidence-kind.\nitems reads newest first and accepts --text-limit <1..65536>, and --native-item-id with --turn-id for one item.\nitem-detail reads the detail of one item and takes --native-item-id and --turn-id.\nitem-image reads one image of an item and also takes --index <0..63>.\nobservation-pace takes --pace <live|background>.\nlocks lists the jg-locks locks on this machine with their holders; HQ never takes them.\nrequest reads one validated HQ command as JSON from stdin, such as action-wait.\n',
+      'jg-agent-hq serve|status|stop|capabilities|threads|thread|items|item-detail|item-image|session-evidence|usage|models|configuration|suggest-thread-name|skills|session-states|active-sessions|unstarted-threads|observation-pace|locks|request --state-root <path> [--provider <codex|claude>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--topic <topic>] [--thread-id <id>] [--after-sequence <sequence>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nsession-evidence accepts --native-item-id and repeated --evidence-kind.\nitems reads newest first and accepts --text-limit <1..65536>, and --native-item-id with --turn-id for one item.\nitem-detail reads the detail of one item and takes --native-item-id and --turn-id.\nitem-image reads one image of an item and also takes --index <0..63>.\nobservation-pace takes --pace <live|background>.\nlocks lists the jg-locks locks on this machine with their holders; HQ never takes them.\nrequest reads one validated HQ command as JSON from stdin, such as action-wait.\n',
     );
     return;
   }
@@ -110,9 +106,6 @@ const main = async (): Promise<void> => {
       values['text-limit'] ||
       values['evidence-kind'] ||
       values['thread-id'] ||
-      values['skill-id'] ||
-      values.arguments ||
-      values.name ||
       values.topic ||
       values.cursor ||
       values.limit ||
@@ -222,19 +215,15 @@ const main = async (): Promise<void> => {
           'threads',
           'unstarted-threads',
           'thread',
-          'turns',
           'items',
           'item-detail',
           'item-image',
-          'sessions',
           'session-evidence',
           'usage',
           'capabilities',
           'models',
           'configuration',
           'skills',
-          'account',
-          'provider-actions',
         ].includes(kind)
           ? (values.provider ?? 'codex')
           : values.provider,
@@ -247,10 +236,6 @@ const main = async (): Promise<void> => {
       ['textLimit', values['text-limit'] === undefined ? undefined : Number(values['text-limit'])],
       ['kinds', values['evidence-kind']],
       ['threadId', values['thread-id']],
-      ['serverName', values['server-name']],
-      ['skillId', values['skill-id']],
-      ['arguments', values.arguments ?? (kind === 'skill-preview' ? '' : undefined)],
-      ['name', values.name],
       ['topic', values.topic],
       ['cursor', values.cursor],
       ['limit', values.limit === undefined ? undefined : Number(values.limit)],

@@ -397,7 +397,6 @@ test('history reads keep the first successful check instead of starting a claude
     for (const command of [
       { kind: 'threads', provider: 'claude', workspaceRoot },
       { kind: 'thread', provider: 'claude', workspaceRoot, nativeId },
-      { kind: 'turns', provider: 'claude', workspaceRoot, nativeId },
       { kind: 'items', provider: 'claude', workspaceRoot, nativeId },
       { kind: 'session-evidence', provider: 'claude', workspaceRoot, nativeId },
     ] as const)

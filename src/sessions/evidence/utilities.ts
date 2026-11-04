@@ -89,7 +89,7 @@ export const evidencePosition = (command: { cursor?: string }): IEvidencePositio
  * @throws
  * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
  */
-export const verifyEvidencePage = (position: IEvidencePosition, items: unknown[]): string => {
+const verifyEvidencePage = (position: IEvidencePosition, items: unknown[]): string => {
   const digest = evidenceHash(JSON.stringify(items));
   if (position.digest !== null && position.digest !== digest)
     throw new Exception('The HQ cursor does not match this request', {
@@ -109,7 +109,7 @@ export const verifyEvidencePage = (position: IEvidencePosition, items: unknown[]
  * @throws
  * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
  */
-export const evidenceCursor = (
+const evidenceCursor = (
   command: { cursor?: string },
   position: IEvidencePosition | null,
 ): string | null => {
@@ -126,7 +126,7 @@ export const evidenceCursor = (
 };
 
 /** Returns an exact UTF-8 prefix, leaving an incomplete code point for the next chunk. */
-export const utf8Chunk = (bytes: Buffer, offset: number, limit: number): string => {
+const utf8Chunk = (bytes: Buffer, offset: number, limit: number): string => {
   let end = Math.min(bytes.length, offset + limit);
   while (end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end -= 1;
   return new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(offset, end));

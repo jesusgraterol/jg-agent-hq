@@ -19,7 +19,6 @@ import {
   DispatchSchema,
   ManagedThreadPageSchema,
   ActionPageSchema,
-  LifecyclePageSchema,
   ApprovalIdentitySchema,
   ApprovalPageSchema,
   TurnRecordSchema,
@@ -44,7 +43,6 @@ export const createStore = async (
   databasePath: string,
   runtimeEpoch: string,
   actionKey: Uint8Array,
-  keepingProviders: string[],
 ): Promise<IStore> => {
   const worker = new Worker(new URL('./store.worker.js', import.meta.url), {
     // the worker loads a file, even when its caller used Node's string-input mode
@@ -56,7 +54,7 @@ export const createStore = async (
     ),
     // indexing a large transcript otherwise grows the young generation to V8's default maximum
     resourceLimits: { maxYoungGenerationSizeMb: 16 },
-    workerData: { databasePath, runtimeEpoch, actionKey, keepingProviders },
+    workerData: { databasePath, runtimeEpoch, actionKey },
   });
   let hasExited = false;
   const exited = new Promise<void>((resolve) =>
@@ -266,8 +264,6 @@ export const createStore = async (
       request({ kind: 'claude-transcript-root', nativeId }, z.string().nullable()),
     getAction: (id) => request({ kind: 'action-read', id }, ActionReceiptSchema.nullable()),
     getThread: (id) => request({ kind: 'thread-read', id }, ManagedThreadSchema.nullable()),
-    getThreadByName: (name) =>
-      request({ kind: 'thread-name-read', name }, ManagedThreadSchema.nullable()),
     suggestThreadName: (name) =>
       request({ kind: 'thread-name-suggest', name }, ManagedThreadSchema.shape.name),
     getThreadByNativeId: (provider, nativeId) =>
@@ -289,11 +285,8 @@ export const createStore = async (
         z.object({ data: z.array(ManagedThreadSchema).max(128), isTruncated: z.boolean() }),
       ),
     listActions: (threadId, page) => request({ kind: 'actions', threadId, page }, ActionPageSchema),
-    listProviderActions: (provider, page) =>
-      request({ kind: 'provider-actions', provider, page }, ActionPageSchema),
     listApprovals: (threadId, page) =>
       request({ kind: 'approvals', threadId, page }, ApprovalPageSchema),
-    listEvents: (page) => request({ kind: 'events', page }, LifecyclePageSchema),
     admit: (input) => request({ kind: 'admit', input }, AdmissionResultSchema),
     applyOutcome: (input) => request({ kind: 'outcome', input }, ActionReceiptSchema.nullable()),
     observe: (input) => request({ kind: 'observe', input }, ObservationResultSchema),

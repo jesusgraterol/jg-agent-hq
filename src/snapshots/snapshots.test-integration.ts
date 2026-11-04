@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
-import { createAgentHq, createHqSnapshot, inspectHqSnapshot, restoreHqSnapshot } from 'jg-agent-hq';
+import { createAgentHq, createHqSnapshot, restoreHqSnapshot } from 'jg-agent-hq';
 import { hashValue } from 'jg-crypto';
 import { expectToRejectCode } from 'jg-exception/testing';
 import { afterEach, expect, test, vi } from 'vitest';
@@ -67,7 +67,6 @@ test('WAL-aware capture includes host tables and key but no plan files; offline 
       expect(snapshot).toMatchObject({
         header: { sourceStateRoot: stateRoot, sourceAllowedRoots: [workspaceRoot] },
       });
-      expect(await inspectHqSnapshot(snapshot.directory)).toStrictEqual(snapshot);
       expect((await readdir(snapshot.directory)).sort()).toStrictEqual([
         'action.key',
         'complete.json',
@@ -90,6 +89,8 @@ test('WAL-aware capture includes host tables and key but no plan files; offline 
         snapshotDirectory: snapshot.directory,
         destination: join(root, 'recovery'),
       });
+      // restore inspects the snapshot again and finds it as capture reported it
+      expect(restored).toStrictEqual({ ...snapshot, stateRoot: join(root, 'recovery', 'state') });
       expect((await readdir(join(root, 'recovery'))).sort()).toStrictEqual([
         'recovered.json',
         'recovery.jsonl',
@@ -350,7 +351,6 @@ test('host maintenance excludes capture, while capture proceeds through a native
       },
     });
     const snapshot = await capture;
-    expect(await inspectHqSnapshot(snapshot.directory)).toStrictEqual(snapshot);
     await expect
       .poll(() => runtime.request({ kind: 'managed-thread', threadId }))
       .toMatchObject({ kind: 'managed-thread', result: { state: 'interrupted' } });
@@ -358,6 +358,7 @@ test('host maintenance excludes capture, while capture proceeds through a native
       snapshotDirectory: snapshot.directory,
       destination: join(root, 'recovery'),
     });
+    expect(restored).toStrictEqual({ ...snapshot, stateRoot: join(root, 'recovery', 'state') });
     const database = new DatabaseSync(join(restored.stateRoot, 'hq.sqlite'), { readOnly: true });
     try {
       expect({
@@ -407,10 +408,6 @@ test.each(['action.key', 'hq.sqlite', 'manifest.jsonl', 'complete.json'])(
         await writeFile(filename, 'corrupt', { mode: 0o600 });
       else await rm(filename);
       await expectToRejectCode(
-        inspectHqSnapshot(snapshot.directory),
-        'JG_AGENT_HQ_SNAPSHOT_INVALID',
-      );
-      await expectToRejectCode(
         restoreHqSnapshot({
           snapshotDirectory: snapshot.directory,
           destination: join(root, 'recovery'),
@@ -429,43 +426,41 @@ test.each([
   'extra-record',
   'bad-schema',
   'wrong-key-pair',
-])(
-  'inspection rejects %s even when the attacker recomputes manifest completion',
-  async (attack) => {
-    await withClaudeRuntime(async ({ runtime, root }) => {
-      const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
-      const entries = await readManifest(snapshot.directory);
-      if (attack === 'file-link') {
-        await rm(join(snapshot.directory, 'action.key'));
-        await symlink(
-          join(runtime.stateRoot, 'action.key'),
-          join(snapshot.directory, 'action.key'),
-        );
-      }
-      if (attack === 'shared-key') await chmod(join(snapshot.directory, 'action.key'), 0o644);
-      if (attack === 'omitted-record') entries.pop();
-      if (attack === 'extra-record') entries.push(entries[2]!);
-      if (attack === 'bad-schema') entries[0].schemaHash = '0'.repeat(64);
-      if (attack === 'wrong-key-pair') {
-        const key = Buffer.alloc(32);
-        await writeFile(join(snapshot.directory, 'action.key'), key, { mode: 0o600 });
-        entries[2].file = { bytes: 32, sha256: hashValue(key) };
-      }
-      const text = entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n';
-      await writeFile(join(snapshot.directory, 'manifest.jsonl'), text, { mode: 0o600 });
-      await writeFile(
-        join(snapshot.directory, 'complete.json'),
-        JSON.stringify({ manifestSha256: hashValue(text), records: entries.length }),
-        { mode: 0o600 },
-      );
-      // a header from another schema names the package version that claims to have written it
-      await expectToRejectCode(
-        inspectHqSnapshot(snapshot.directory),
-        attack === 'bad-schema' ? 'JG_AGENT_HQ_STORAGE_INVALID' : 'JG_AGENT_HQ_SNAPSHOT_INVALID',
-      );
-    });
-  },
-);
+])('restore rejects %s even when the attacker recomputes manifest completion', async (attack) => {
+  await withClaudeRuntime(async ({ runtime, root }) => {
+    const snapshot = await createHqSnapshot(runtime, join(root, 'snapshot'));
+    const entries = await readManifest(snapshot.directory);
+    if (attack === 'file-link') {
+      await rm(join(snapshot.directory, 'action.key'));
+      await symlink(join(runtime.stateRoot, 'action.key'), join(snapshot.directory, 'action.key'));
+    }
+    if (attack === 'shared-key') await chmod(join(snapshot.directory, 'action.key'), 0o644);
+    if (attack === 'omitted-record') entries.pop();
+    if (attack === 'extra-record') entries.push(entries[2]!);
+    if (attack === 'bad-schema') entries[0].schemaHash = '0'.repeat(64);
+    if (attack === 'wrong-key-pair') {
+      const key = Buffer.alloc(32);
+      await writeFile(join(snapshot.directory, 'action.key'), key, { mode: 0o600 });
+      entries[2].file = { bytes: 32, sha256: hashValue(key) };
+    }
+    const text = entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n';
+    await writeFile(join(snapshot.directory, 'manifest.jsonl'), text, { mode: 0o600 });
+    await writeFile(
+      join(snapshot.directory, 'complete.json'),
+      JSON.stringify({ manifestSha256: hashValue(text), records: entries.length }),
+      { mode: 0o600 },
+    );
+    // a header from another schema names the package version that claims to have written it
+    await expectToRejectCode(
+      restoreHqSnapshot({
+        snapshotDirectory: snapshot.directory,
+        destination: join(root, 'recovery'),
+      }),
+      attack === 'bad-schema' ? 'JG_AGENT_HQ_STORAGE_INVALID' : 'JG_AGENT_HQ_SNAPSHOT_INVALID',
+    );
+    await expect(lstat(join(root, 'recovery'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});
 
 test('occupied snapshot and restore targets, including a live state root, remain untouched', async () => {
   await withClaudeRuntime(async ({ runtime, root, workspaceRoot }) => {
@@ -601,7 +596,12 @@ assert.ok(hasErrorCode(failure, 'JG_AGENT_HQ_SNAPSHOT_INVALID'), 'Replaced sourc
       maxBuffer: 65_536,
     });
     await expect(lstat(destination)).rejects.toMatchObject({ code: 'ENOENT' });
-    expect((await inspectHqSnapshot(first.directory)).manifestSha256).toBe(second.manifestSha256);
+    // the source now holds the second snapshot, which restores as itself
+    const replaced = await restoreHqSnapshot({
+      snapshotDirectory: first.directory,
+      destination: join(root, 'replaced-recovery'),
+    });
+    expect(replaced.manifestSha256).toBe(second.manifestSha256);
   });
 });
 
@@ -773,17 +773,12 @@ test.each(['header', 'database'])(
         });
       const before = hashValue(await readFile(join(snapshot.directory, 'hq.sqlite')));
       await expectToRejectCode(
-        inspectHqSnapshot(snapshot.directory),
-        'JG_AGENT_HQ_STORAGE_INVALID',
-        'The HQ storage is invalid: written by jg-agent-hq 9.9.9',
-      );
-      await expectToRejectCode(
         restoreHqSnapshot({
           snapshotDirectory: snapshot.directory,
           destination: join(root, 'recovery'),
         }),
         'JG_AGENT_HQ_STORAGE_INVALID',
-        'written by jg-agent-hq 9.9.9',
+        'The HQ storage is invalid: written by jg-agent-hq 9.9.9',
       );
       await expect(lstat(join(root, 'recovery'))).rejects.toMatchObject({ code: 'ENOENT' });
       expect(hashValue(await readFile(join(snapshot.directory, 'hq.sqlite')))).toBe(before);
@@ -821,17 +816,12 @@ test("a snapshot with another schema's header fields and records is refused by n
       JSON.stringify({ manifestSha256: hashValue(text), records: entries.length }),
     );
     await expectToRejectCode(
-      inspectHqSnapshot(snapshot.directory),
-      'JG_AGENT_HQ_STORAGE_INVALID',
-      'The HQ storage is invalid: written by jg-agent-hq 8.0.2',
-    );
-    await expectToRejectCode(
       restoreHqSnapshot({
         snapshotDirectory: snapshot.directory,
         destination: join(root, 'recovery'),
       }),
       'JG_AGENT_HQ_STORAGE_INVALID',
-      'written by jg-agent-hq 8.0.2',
+      'The HQ storage is invalid: written by jg-agent-hq 8.0.2',
     );
     await expect(lstat(join(root, 'recovery'))).rejects.toMatchObject({ code: 'ENOENT' });
   });

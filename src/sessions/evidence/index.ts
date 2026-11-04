@@ -2,12 +2,9 @@
 export {
   buildEvidencePage,
   evidencePosition,
-  evidenceCursor,
-  verifyEvidencePage,
   evidenceHash,
   nativeProvenance,
   resetProvenance,
-  utf8Chunk,
   EVIDENCE_RESPONSE_BYTES,
   EVIDENCE_SOURCE_PAGE_SIZE,
 } from './utilities.js';

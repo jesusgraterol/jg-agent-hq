@@ -362,14 +362,6 @@ test('native files are paged by chain position with truthful unknown execution s
       'first question',
     ]);
     expect(final.result.nextCursor).toBeNull();
-    const turns = await request({ kind: 'turns', provider: 'claude', workspaceRoot, nativeId });
-    expect(
-      turns.kind === 'turns' &&
-        turns.result.data.map((turn) => [turn.nativeId, turn.state, turn.completedAt]),
-    ).toStrictEqual([
-      [first.uuid, 'unknown', null],
-      [second.uuid, 'unknown', null],
-    ]);
     const selected = await request({
       kind: 'items',
       provider: 'claude',
@@ -664,7 +656,7 @@ test('reads over unchanged transcripts write nothing to SQLite, while an append 
     const readAll = async () => {
       expect(await listed()).toStrictEqual(sessions.map(({ nativeId }) => nativeId).sort());
       for (const { nativeId } of sessions)
-        for (const kind of ['thread', 'turns', 'items', 'session-evidence'] as const)
+        for (const kind of ['thread', 'items', 'session-evidence'] as const)
           expect(
             await request({ kind, provider: 'claude', workspaceRoot, nativeId }),
           ).toMatchObject({ kind });
@@ -747,11 +739,10 @@ test('hidden native records preserve turn grouping and repeated message identiti
     );
     const replaced = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
     expect(
-      replaced.kind === 'items' && replaced.result.data.map((item) => item.text),
-    ).toStrictEqual(['final answer', 'prompt']);
-    const turns = await request({ kind: 'turns', provider: 'claude', workspaceRoot, nativeId });
-    expect(turns.kind === 'turns' && turns.result.data.map((turn) => turn.nativeId)).toStrictEqual([
-      prompt.uuid,
+      replaced.kind === 'items' && replaced.result.data.map((item) => [item.text, item.turnId]),
+    ).toStrictEqual([
+      ['final answer', prompt.uuid],
+      ['prompt', prompt.uuid],
     ]);
   });
 });
@@ -785,10 +776,6 @@ test('hidden records Claude Code writes before the records they follow keep the 
     ).toStrictEqual([
       ['answer', prompt.uuid],
       ['prompt', prompt.uuid],
-    ]);
-    const turns = await request({ kind: 'turns', provider: 'claude', workspaceRoot, nativeId });
-    expect(turns.kind === 'turns' && turns.result.data.map((turn) => turn.nativeId)).toStrictEqual([
-      prompt.uuid,
     ]);
   });
 });
@@ -2009,7 +1996,7 @@ test('an item image is a base64 image a record holds, in its message or a tool r
     );
     const image = (record: { uuid: string }, index: number) => ({
       kind: 'item-image' as const,
-      provider: 'claude',
+      provider: 'claude' as const,
       workspaceRoot,
       nativeId,
       turnId: prompt.uuid,
@@ -2211,12 +2198,6 @@ test('the index stores what the CLI shows: hidden thinking and notifications, pr
     ]);
     expect(JSON.stringify(all)).not.toContain(thinking.uuid);
     expect(JSON.stringify(all)).not.toContain(notification.uuid);
-    // only the operator's messages start turns
-    const turns = await request({ kind: 'turns', ...target });
-    expect(turns.kind === 'turns' && turns.result.data.map((turn) => turn.nativeId)).toStrictEqual([
-      prompt.uuid,
-      command.uuid,
-    ]);
     // a page past a hidden notification still fills its limit
     const first = await request({ kind: 'items', ...target, limit: 6 });
     if (first.kind !== 'items') throw new Error('wrong response');

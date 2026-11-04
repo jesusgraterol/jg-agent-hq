@@ -2,18 +2,15 @@
 import IconTile from 'jg-personal-astro-ui/icon-tile';
 import InlineCode from 'jg-personal-astro-ui/inline-code';
 import Section from 'jg-personal-astro-ui/section';
-import { AppWindow, Blocks, FileCheck, GitFork, Plug, SlidersHorizontal } from '@lucide/astro';
+import { AppWindow, FileCheck, SlidersHorizontal } from '@lucide/astro';
 
 import { HOME_CONTENT } from '../../content/index.ts';
 
 // the icon that identifies each smaller capability, by its id
 const ICONS = {
-  accounts: Plug,
   configuration: SlidersHorizontal,
   files: FileCheck,
   browser: AppWindow,
-  providers: Blocks,
-  'session-tools': GitFork,
 } as const satisfies Record<(typeof HOME_CONTENT.more.items)[number]['id'], unknown>;
 ---
 

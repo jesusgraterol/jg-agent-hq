@@ -145,7 +145,7 @@ const setup = async () => {
   }
 };
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   'native lineage for %s survives runtime restart from the HQ record, not the native session',
   async (provider) => {
     await withClaudeRuntime(async ({ runtime, stateRoot, workspaceRoot, root }) => {
@@ -230,243 +230,6 @@ test.each(['codex', 'claude'])(
   },
 );
 
-test.each(['codex', 'claude'])(
-  'forking %s preserves native lineage, source identity and replay safety',
-  async (provider) => {
-    await withClaudeRuntime(async ({ runtime, request, workspaceRoot, root }) => {
-      const status = await runtime.request({ kind: 'status' });
-      if (status.kind !== 'status') throw new Error('Missing runtime');
-      const submit = (id: string, command: IActionCommand) =>
-        request({
-          kind: 'action',
-          action: { id, runtimeEpoch: status.result.runtimeEpoch, command },
-        });
-      const createId = randomUUID();
-      const source = await submit(createId, {
-        kind: 'thread-create',
-        provider,
-        workspaceRoot,
-        name: 'fork-source',
-      });
-      if (source.kind !== 'action' || !source.result.threadId) throw new Error('Missing source');
-      await expect
-        .poll(() => request({ kind: 'receipt', actionId: createId }))
-        .toMatchObject({ kind: 'receipt', result: { delivery: 'acknowledged' } });
-      const messageId = randomUUID();
-      await submit(messageId, {
-        kind: 'message',
-        threadId: source.result.threadId,
-        input: { kind: 'text', text: 'Explore the source task' },
-      });
-      await expect
-        .poll(() => request({ kind: 'receipt', actionId: messageId }))
-        .toMatchObject({
-          kind: 'receipt',
-          result: { delivery: 'acknowledged', completion: 'completed' },
-        });
-      const parent = await request({ kind: 'managed-thread', threadId: source.result.threadId });
-      if (parent.kind !== 'managed-thread' || !parent.result) throw new Error('Missing parent');
-      const forkId = randomUUID();
-      const command: IActionCommand = {
-        kind: 'thread-fork',
-        threadId: parent.result.id,
-        name: 'fork-child',
-      };
-      const fork = await submit(forkId, command);
-      if (fork.kind !== 'action' || !fork.result.threadId) throw new Error('Missing fork');
-      await expect
-        .poll(() => request({ kind: 'receipt', actionId: forkId }))
-        .toMatchObject({ kind: 'receipt', result: { delivery: 'acknowledged' } });
-      const child = await request({ kind: 'managed-thread', threadId: fork.result.threadId });
-      expect(child).toMatchObject({
-        kind: 'managed-thread',
-        result: {
-          forkedFromThreadId: parent.result.id,
-          state: 'idle',
-          nativeLineage: { forkedFromId: parent.result.nativeId },
-        },
-      });
-      if (child.kind !== 'managed-thread' || !child.result) throw new Error('Missing child');
-      expect(child.result.nativeId).not.toBe(parent.result.nativeId);
-      expect(child.result.id).not.toBe(parent.result.id);
-      expect(
-        await request({
-          kind: 'thread',
-          provider,
-          nativeId: child.result.nativeId!,
-          workspaceRoot,
-        }),
-      ).toMatchObject({ kind: 'thread', result: { nativeLineage: child.result.nativeLineage } });
-      expect(await submit(forkId, command)).toMatchObject({
-        kind: 'action',
-        result: { threadId: child.result.id, delivery: 'acknowledged' },
-      });
-      expect(await request({ kind: 'managed-thread', threadId: parent.result.id })).toMatchObject({
-        kind: 'managed-thread',
-        result: { nativeId: parent.result.nativeId, state: 'completed' },
-      });
-      const calls = (
-        await readFile(
-          join(root, provider === 'codex' ? 'calls.jsonl' : 'claude-calls.jsonl'),
-          'utf8',
-        )
-      )
-        .trim()
-        .split('\n')
-        .map((line) =>
-          z
-            .object({
-              method: z.string().optional(),
-              type: z.string().optional(),
-              params: z
-                .object({ threadId: z.string().optional(), excludeTurns: z.boolean().optional() })
-                .optional(),
-            })
-            .parse(JSON.parse(line)),
-        );
-      expect(
-        calls.filter((call) =>
-          provider === 'codex' ? call.method === 'turn/start' : call.type === 'user',
-        ),
-      ).toHaveLength(1);
-      if (provider === 'codex')
-        expect(calls.filter((call) => call.method === 'thread/fork')).toStrictEqual([
-          {
-            method: 'thread/fork',
-            params: { threadId: parent.result.nativeId, excludeTurns: true },
-          },
-        ]);
-      else {
-        const starts = (await readFile(join(root, 'claude-starts.jsonl'), 'utf8'))
-          .trim()
-          .split('\n')
-          .map((line) => z.object({ args: z.array(z.string()) }).parse(JSON.parse(line)));
-        expect(starts.filter((start) => start.args.includes('--fork-session'))).toHaveLength(1);
-        expect(
-          await request({
-            kind: 'items',
-            provider,
-            nativeId: child.result.nativeId!,
-            workspaceRoot,
-          }),
-        ).toMatchObject({
-          kind: 'items',
-          result: {
-            data: expect.arrayContaining([
-              expect.objectContaining({ kind: 'user-message', text: 'Explore the source task' }),
-            ]),
-          },
-        });
-      }
-    });
-  },
-);
-
-test.each(['rejectFork', 'wrongForkSource'])(
-  'fork %s preserves uncertainty and never replays an admitted intent',
-  async (scenario) => {
-    const fixture = await setup();
-    try {
-      const { thread } = await fixture.create('fork-failure');
-      await fixture.control({
-        [scenario]: scenario === 'wrongForkSource' ? 'another-native-thread' : true,
-      });
-      const action = fixture.envelope({
-        kind: 'thread-fork',
-        threadId: thread.id,
-        name: 'fork-child',
-      });
-      const admitted = await fixture.submit(action);
-      await expect
-        .poll(() => fixture.receipt(action.id))
-        .toMatchObject({ delivery: scenario === 'rejectFork' ? 'failed' : 'uncertain' });
-      await fixture.submit(action);
-      expect((await fixture.calls()).filter((call) => call.method === 'thread/fork')).toHaveLength(
-        1,
-      );
-      expect(await fixture.thread(admitted.threadId!)).toMatchObject({
-        nativeId: null,
-        forkedFromThreadId: thread.id,
-      });
-      if (scenario === 'wrongForkSource')
-        await expect
-          .poll(() => fixture.thread(thread.id))
-          .toMatchObject({ ownership: 'uncertain', state: 'unknown' });
-      else
-        expect(await fixture.thread(thread.id)).toMatchObject({
-          ownership: 'managed',
-          state: 'idle',
-        });
-    } finally {
-      await fixture.close();
-    }
-  },
-);
-
-test('native archive, unarchive and revert retain identities and never resume implicitly', async () => {
-  const fixture = await setup();
-  try {
-    const { thread } = await fixture.create('lifecycle');
-    const message = fixture.envelope({
-      kind: 'message',
-      threadId: thread.id,
-      input: { kind: 'text', text: 'Prepare history' },
-    });
-    await fixture.submit(message);
-    await expect
-      .poll(() => fixture.receipt(message.id))
-      .toMatchObject({ delivery: 'acknowledged', completion: 'completed' });
-    const beforeTurnId = (await fixture.receipt(message.id)).nativeTurnId!;
-    const revert = fixture.envelope({ kind: 'thread-revert', threadId: thread.id, beforeTurnId });
-    await fixture.submit(revert);
-    await expect.poll(() => fixture.receipt(revert.id)).toMatchObject({ delivery: 'acknowledged' });
-    expect(await fixture.request({ kind: 'live-items', threadId: thread.id })).toMatchObject({
-      kind: 'live-items',
-      result: { data: [], hasGap: true },
-    });
-    const archive = fixture.envelope({ kind: 'thread-archive', threadId: thread.id });
-    await fixture.submit(archive);
-    await expect
-      .poll(() => fixture.thread(thread.id))
-      .toMatchObject({
-        nativeId: thread.nativeId,
-        state: 'inactive',
-        runtimeEpoch: null,
-        isArchived: true,
-      });
-    const resume = fixture.envelope({
-      kind: 'thread-resume',
-      threadId: thread.id,
-      operatorConfirmation: 'Native controller closed',
-    });
-    expect(await fixture.submit(resume)).toMatchObject({
-      delivery: 'failed',
-      failure: 'state-conflict',
-    });
-    const unarchive = fixture.envelope({ kind: 'thread-unarchive', threadId: thread.id });
-    await fixture.submit(unarchive);
-    await expect
-      .poll(() => fixture.receipt(unarchive.id))
-      .toMatchObject({ delivery: 'acknowledged' });
-    expect(await fixture.thread(thread.id)).toMatchObject({
-      nativeId: thread.nativeId,
-      state: 'inactive',
-      runtimeEpoch: null,
-      isArchived: false,
-    });
-    expect(await fixture.submit(unarchive)).toMatchObject({ delivery: 'acknowledged' });
-    const calls = await fixture.calls();
-    expect(calls.filter((call) => call.method === 'thread/unarchive')).toHaveLength(1);
-    expect(calls.filter((call) => call.method === 'thread/resume')).toHaveLength(0);
-    expect(calls.find((call) => call.method === 'thread/revert')).toStrictEqual({
-      method: 'thread/revert',
-      params: { threadId: thread.nativeId, beforeTurnId },
-    });
-  } finally {
-    await fixture.close();
-  }
-});
-
 test(
   'live Codex items take their running turn start as their time',
   { tags: ['full'] },
@@ -492,56 +255,6 @@ test(
       expect(live.result.data.map((item) => [item.text, item.createdAt])).toStrictEqual([
         ['Live response', (1_800_000_000 + turnNumber) * 1000],
       ]);
-    } finally {
-      await fixture.close();
-    }
-  },
-);
-
-test.each([false, true])(
-  'native compaction correlates its turn when acknowledgement arrives first: %s',
-  async (compactAckFirst) => {
-    const fixture = await setup();
-    try {
-      const { thread } = await fixture.create('compact');
-      const message = fixture.envelope({
-        kind: 'message',
-        threadId: thread.id,
-        input: { kind: 'text', text: 'Before compaction' },
-      });
-      await fixture.submit(message);
-      await expect
-        .poll(() => fixture.receipt(message.id))
-        .toMatchObject({ completion: 'completed' });
-      expect(await fixture.request({ kind: 'live-items', threadId: thread.id })).toMatchObject({
-        kind: 'live-items',
-        result: { data: [{ text: 'Live response' }] },
-      });
-      await fixture.control({ compactAckFirst });
-      const action = fixture.envelope({ kind: 'thread-compact', threadId: thread.id });
-      await fixture.submit(action);
-      await expect
-        .poll(() => fixture.receipt(action.id))
-        .toMatchObject({
-          delivery: 'acknowledged',
-          completion: 'completed',
-          nativeTurnId: expect.stringMatching(/^compact-/),
-        });
-      expect(await fixture.thread(thread.id)).toMatchObject({
-        state: 'completed',
-        activeTurnId: null,
-      });
-      expect(await fixture.request({ kind: 'live-items', threadId: thread.id })).toMatchObject({
-        kind: 'live-items',
-        result: { data: [], hasGap: true },
-      });
-      expect(await fixture.submit(action)).toMatchObject({
-        delivery: 'acknowledged',
-        completion: 'completed',
-      });
-      expect(
-        (await fixture.calls()).filter((call) => call.method === 'thread/compact/start'),
-      ).toHaveLength(1);
     } finally {
       await fixture.close();
     }
@@ -1257,7 +970,7 @@ test('Codex live items present what history will, leaving reasoning out', async 
   }
 });
 
-test('live items remain available through native flush; lifecycle replay is bounded and ordered', async () => {
+test('live items remain available through native flush', async () => {
   const fixture = await setup();
   try {
     const { thread } = await fixture.create('live-history');
@@ -1310,23 +1023,6 @@ test('live items remain available through native flush; lifecycle replay is boun
     expect(await fixture.request({ kind: 'live-items', threadId: thread.id })).toMatchObject({
       result: { data: [] },
     });
-    const seen: number[] = [];
-    let after = 0;
-    for (;;) {
-      const response = await fixture.request({
-        kind: 'events',
-        threadId: thread.id,
-        after,
-        limit: 2,
-      });
-      if (response.kind !== 'events') throw new Error('wrong response');
-      expect(response.result.data.length).toBeLessThanOrEqual(2);
-      seen.push(...response.result.data.map((event) => event.sequence));
-      if (!response.result.hasMore) break;
-      after = response.result.data.at(-1)!.sequence;
-    }
-    expect(new Set(seen).size).toBe(seen.length);
-    expect(seen).toStrictEqual([...seen].sort((left, right) => left - right));
     expect((await fixture.receipt(action.id)).completion).toBe('completed');
   } finally {
     await fixture.close();
@@ -1691,9 +1387,6 @@ test('native output loss keeps delivery uncertain and restart never resends its 
       ownership: 'uncertain',
       state: 'unknown',
     });
-    const events = await fixture.request({ kind: 'events', threadId: thread.id, limit: 128 });
-    if (events.kind !== 'events') throw new Error('wrong response');
-    expect(events.result.data.some((event) => event.kind === 'native-unavailable')).toBe(true);
     await fixture.submit(action);
     await fixture.runtime.close();
     await fixture.control({});
@@ -2601,7 +2294,7 @@ test('a ledger read failure during shutdown still stops the owned native process
   }
 });
 
-test('short names are suggested without reservation and resolved without replacing immutable IDs', async () => {
+test('short names are suggested without reservation and renamed without replacing immutable IDs', async () => {
   const fixture = await setup();
   try {
     const first = await fixture.create('build-usage');
@@ -2617,12 +2310,6 @@ test('short names are suggested without reservation and resolved without replaci
       'build-usage-3',
     ]);
     expect(new Set([first.thread.id, ...created.map(({ thread }) => thread.id)]).size).toBe(3);
-    expect(
-      await fixture.request({ kind: 'managed-thread-name', name: 'BUILD-USAGE' }),
-    ).toStrictEqual({ kind: 'managed-thread-name', result: await fixture.thread(first.thread.id) });
-    expect(
-      await fixture.request({ kind: 'managed-thread-name', name: 'missing-task' }),
-    ).toStrictEqual({ kind: 'managed-thread-name', result: null });
     const long = await fixture.create('a'.repeat(32));
     const collision = await fixture.create('a'.repeat(32));
     expect(long.thread.name).toHaveLength(32);
@@ -2634,39 +2321,15 @@ test('short names are suggested without reservation and resolved without replaci
       () => fixture.receipt(rename.id),
       (receipt) => receipt.delivery === 'acknowledged',
     );
-    expect(
-      await fixture.request({ kind: 'managed-thread-name', name: 'build-usage' }),
-    ).toMatchObject({ result: null });
-    expect(
-      await fixture.request({ kind: 'managed-thread-name', name: 'REVIEW-USAGE' }),
-    ).toMatchObject({ result: { id: first.thread.id, nativeId: first.thread.nativeId } });
+    expect(await fixture.thread(first.thread.id)).toMatchObject({
+      name: 'review-usage',
+      nativeId: first.thread.nativeId,
+    });
     const names = (await fixture.calls())
       .filter((call) => call.method === 'thread/name/set')
       .map((call) => call.params.name);
     expect(names).toContain('build-usage-2');
     expect(names).toContain('review-usage');
-  } finally {
-    await fixture.close();
-  }
-});
-
-test('readable lookup still authorizes the registered workspace and never adopts a native session', async () => {
-  const fixture = await setup();
-  try {
-    const created = await fixture.create('private-task');
-    await fixture.runtime.close();
-    const other = join(fixture.root, 'other-workspace');
-    await mkdir(other);
-    const runtime = await createAgentHq({ stateRoot: fixture.stateRoot, allowedRoots: [other] });
-    try {
-      await expectToRejectCode(
-        runtime.request({ kind: 'managed-thread-name', name: created.thread.name }),
-        'JG_AGENT_HQ_TARGET_FORBIDDEN',
-        'The HQ target is outside the allowed workspaces',
-      );
-    } finally {
-      await runtime.close();
-    }
   } finally {
     await fixture.close();
   }
@@ -2963,32 +2626,6 @@ test("a lost start of HQ's own Codex turn keeps its session managed, and the tur
       completion: 'completed',
       result: { state: 'completed' },
     });
-    expect(await fixture.thread(thread.id)).toMatchObject({ ownership: 'managed' });
-  } finally {
-    await fixture.close();
-  }
-});
-
-test('a compaction right after a lost Codex turn completion gets its own turn', async () => {
-  const fixture = await setup();
-  try {
-    const { thread, message, nativeId, turnId } = await startHeldTurn(fixture, 'compact-after');
-    await emit(fixture, reads(nativeId, { type: 'idle' }, turnId, 'completed'), [
-      lostCompletion(nativeId, turnId),
-    ]);
-    await fixture.until(
-      () => fixture.receipt(message.id),
-      (entry) => entry.completion !== null,
-    );
-    await fixture.control({});
-    const compaction = fixture.envelope({ kind: 'thread-compact', threadId: thread.id });
-    await fixture.submit(compaction);
-    expect(
-      await fixture.until(
-        () => fixture.receipt(compaction.id),
-        (entry) => entry.completion !== null,
-      ),
-    ).toMatchObject({ completion: 'completed', nativeTurnId: expect.stringMatching(/^compact-/) });
     expect(await fixture.thread(thread.id)).toMatchObject({ ownership: 'managed' });
   } finally {
     await fixture.close();

@@ -4,13 +4,6 @@ export {
   NativeSkillInputSchema,
   SkillSchema,
   SkillPageSchema,
-  SkillPreviewSchema,
   MessageInputSchema,
 } from './types.js';
-export type {
-  INativeSkillInput,
-  ISkill,
-  ISkillPage,
-  ISkillPreview,
-  IMessageInput,
-} from './types.js';
+export type { INativeSkillInput, ISkill, ISkillPage, IMessageInput } from './types.js';

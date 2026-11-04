@@ -95,7 +95,6 @@ else {
   let threadSequence = 0;
   let turnSequence = 0;
   const interrupts = [];
-  const logins=new Map();
   const complete = (threadId,status = 'completed') => {
     const thread = managed.get(threadId);
     if (!thread?.activeTurn) return;
@@ -152,38 +151,6 @@ else {
       });
       respond(request.id,{data:[{cwd:control.wrongSkillRoot??params.cwds[0],skills,errors:control.skillErrors?[{}]:[]}]});return;
     }
-    if(method==='account/login/start'||method==='mcpServer/oauth/login'){
-      if(control.rejectAuth){send(JSON.stringify({id:request.id,error:{code:-32603,message:'Sensitive native failure must not escape'}}));return;}
-      const loginId=control.sharedMcpLoginId&&method==='mcpServer/oauth/login'?'shared-native-login':'login-'+request.id;
-      const kind=method==='account/login/start'?'account':'mcp';
-      logins.set(loginId,{kind,threadId:params.threadId,name:params.name});
-      const completeLogin=()=>{notify(kind==='account'?'account/login/completed':'mcpServer/oauthLogin/completed',{loginId:control.wrongLoginId?'unrelated-login':loginId,success:control.loginFails?false:true,threadId:params.threadId,name:params.name});if(control.duplicateLoginCompletion)notify(kind==='account'?'account/login/completed':'mcpServer/oauthLogin/completed',{loginId,success:true,threadId:params.threadId,name:params.name});};
-      if(control.loginCompletesEarly)completeLogin();
-      const acknowledge=()=>respond(request.id,kind==='account'?{type:'chatgpt',loginId,authUrl:'https://auth.example.test/authorize?state=transient-challenge'}:{loginId,authorizationUrl:'https://mcp.example.test/authorize?state=transient-challenge'});if(control.lateAuth)setTimeout(acknowledge,31000);else acknowledge();
-      if(control.loginCompletes)setImmediate(completeLogin);
-      return;
-    }
-    if(method==='account/login/cancel'){
-      const login=logins.get(params.loginId);
-      if(login&&control.cancelNotifiesEarly)notify('account/login/completed',{loginId:params.loginId,success:false,error:'Canceled'});
-      respond(request.id,{status:login?'canceled':'notFound'});logins.delete(params.loginId);return;
-    }
-    if(method==='account/logout'){
-      writeFileSync(join(directory,'control.json'),JSON.stringify({...control,account:null}));
-      notify('account/updated',{authMode:null});respond(request.id,{});return;
-    }
-    if(method==='config/mcpServer/reload'){
-      if(control.rejectExtension){send(JSON.stringify({id:request.id,error:{code:-32602,message:'Sensitive native failure must not escape'}}));return;}
-      if(control.lateExtension)setTimeout(()=>respond(request.id,{}),31000);else respond(request.id,{});return;
-    }
-    if (method === 'account/read') {respond(request.id,control.accountUnavailable?{}:{account:Object.hasOwn(control,'account')?control.account:{type:'chatgpt',email:'fixture@example.com',planType:'pro',token:'credential-must-not-be-returned'},requiresOpenaiAuth:true,credential:'credential-must-not-be-returned'});return;}
-    if (method === 'mcpServerStatus/list') {
-      if(control.mcpFailure){send(JSON.stringify({id:request.id,error:{code:-32603,message:'Native catalog unavailable'}}));return;}
-      const servers=control.mcpServers??[{name:'fixture-server',runtimeStatus:'connected',authStatus:'oAuth',pluginId:null,serverInfo:{name:'Fixture MCP',version:'1'},tools:{inspect:{name:'inspect',description:'Fixture native tool',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true}}},toolsError:null,resources:[{uri:'fixture://readme',name:'Fixture readme',mimeType:'text/plain'}],resourceTemplates:[{uriTemplate:'fixture://{name}',name:'Fixture template'}],config:{headers:{authorization:'credential-must-not-be-returned'}}}];
-      const selected=params.serverName?servers.filter(server=>server.name===params.serverName):servers;
-      const offset=Number(params.cursor??0),limit=params.limit??32;
-      respond(request.id,{data:selected.slice(offset,offset+limit),nextCursor:offset+limit<selected.length?String(offset+limit):null});return;
-    }
     if (method === 'thread/start') {
       const nativeId='native-'+(++threadSequence);
       const thread = { ...threads[0],id:nativeId,sessionId:'session-for-'+nativeId,parentThreadId:null,forkedFromId:null,cwd:params.cwd,name:null,status:{type:'idle'},activeTurn:null };
@@ -191,13 +158,6 @@ else {
       managed.set(thread.id,thread);tiers.set(thread.id,params.serviceTier??null);
       if(control.suppressStartAck)return;
       respond(request.id,{thread,model:thread.model,reasoningEffort:thread.reasoningEffort,serviceTier:tiers.get(thread.id),approvalPolicy:params.approvalPolicy??'on-request',sandbox:{type:params.sandbox??'read-only'},instructionSources:[]});return;
-    }
-    if (method === 'thread/fork') {
-      if(control.rejectFork){send(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic fork rejection'}}));return;}
-      const source=managed.get(params.threadId)||{...threads[0],id:params.threadId};
-      const nativeId='native-'+(++threadSequence);
-      const thread={...source,id:nativeId,sessionId:'session-for-'+nativeId,forkedFromId:control.wrongForkSource??params.threadId,parentThreadId:null,status:{type:'idle'},activeTurn:null};
-      managed.set(nativeId,thread);respond(request.id,{thread});return;
     }
     if (method === 'thread/resume') {
       const thread = managed.get(params.threadId) || { ...threads[0],id:params.threadId,activeTurn:null };
@@ -211,16 +171,6 @@ else {
       return;
     }
     if (method === 'thread/name/set') { managed.get(params.threadId).name=params.name;respond(request.id,{});return; }
-    if (method === 'thread/archive') { const thread=managed.get(params.threadId);thread.isArchived=true;thread.status={type:'notLoaded'};respond(request.id,{});return; }
-    if (method === 'thread/unarchive') { const thread=managed.get(params.threadId);thread.isArchived=false;thread.status={type:'notLoaded'};respond(request.id,{thread});return; }
-    if (method === 'thread/revert') { const thread=managed.get(params.threadId);respond(request.id,{thread});return; }
-    if (method === 'thread/compact/start') {
-      const thread=managed.get(params.threadId);const turn={id:'compact-'+(++turnSequence),status:'inProgress'};thread.activeTurn=turn.id;
-      const started=()=>notify('turn/started',{threadId:thread.id,turn});
-      if(control.compactAckFirst){respond(request.id,{});setImmediate(()=>{started();complete(thread.id);});}
-      else {started();if(!control.holdTurn)complete(thread.id);respond(request.id,{});}
-      return;
-    }
     if (method === 'turn/start') {
       if (control.rejectTurn) { send(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic input rejection'}}));return; }
       const thread = managed.get(params.threadId);

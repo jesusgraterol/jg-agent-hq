@@ -8,7 +8,6 @@ import {
   type INativeSkillInput,
   type ISkill,
   type ISkillPage,
-  type ISkillPreview,
   type IProviderId,
 } from '../contracts/index.js';
 import type { IProviderSkills } from '../providers/index.js';
@@ -23,6 +22,16 @@ const PositionSchema = z.strictObject({
 });
 const digest = (input: object): string =>
   createHash('sha256').update(JSON.stringify(input)).digest('hex');
+
+// native inventories are unpaged, so one read accepts at most this many skills
+const MAX_CATALOG_SKILLS = 4096;
+
+// an invocation resolved from the catalog, with its exact native text only when it is ready
+type ISkillPreview = {
+  state: 'ready' | 'missing' | 'disabled' | 'unavailable';
+  skill: ISkill | null;
+  text: string | null;
+};
 
 // whose catalog a read takes: a managed session's, or the one a session started in a folder gets
 type ISkillTarget = { threadId: string } | { provider: IProviderId; workspaceRoot: string };
@@ -114,6 +123,7 @@ export const createSkills = (
       );
       skills.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
       if (
+        skills.length > MAX_CATALOG_SKILLS ||
         skills.some((skill, index) => index > 0 && skill.id === skills[index - 1]!.id) ||
         Buffer.byteLength(JSON.stringify(skills)) > 1_048_576
       )
@@ -133,10 +143,6 @@ export const createSkills = (
     }
   };
   return {
-    /** Stops new reads joining an observation started before a native change. */
-    invalidate(): void {
-      pending.clear();
-    },
     /** Resolves one unambiguous native name from a single bounded inventory read.
      * @returns An exact preview, or an explicit missing/disabled/unavailable state.
      * @throws

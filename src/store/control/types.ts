@@ -9,7 +9,6 @@ import {
   ManagedThreadSchema,
   NativeApprovalSchema,
   NativeApprovalSummarySchema,
-  LifecycleEventSchema,
   NativeLineageSchema,
 } from '../../contracts/index.js';
 
@@ -19,8 +18,6 @@ export const ThreadRowSchema = z.object({
   provider: ManagedThreadSchema.shape.provider,
   native_id: ManagedThreadSchema.shape.nativeId,
   native_lineage: z.string().nullable(),
-  fork_source_thread_id: z.uuid().nullable(),
-  is_archived: z.number().int().min(0).max(1),
   name: ManagedThreadSchema.shape.name,
   workspace_root: z.string(),
   ownership: ManagedThreadSchema.shape.ownership,
@@ -42,7 +39,6 @@ export const ActionRowSchema = z.object({
   runtime_epoch: z.uuid(),
   kind: ActionReceiptSchema.shape.kind,
   provider: ActionReceiptSchema.shape.provider,
-  control_state: ActionReceiptSchema.shape.controlState,
   thread_id: z.uuid().nullable(),
   expected_turn_id: ActionReceiptSchema.shape.nativeTurnId,
   native_turn_id: ActionReceiptSchema.shape.nativeTurnId,
@@ -83,14 +79,6 @@ export const NativeOutcomeSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('closed'), ...OutcomeFields }),
   z.strictObject({ kind: z.literal('cleaned'), ...OutcomeFields }),
   z.strictObject({ kind: z.literal('renamed'), ...OutcomeFields }),
-  z.strictObject({ kind: z.literal('archived'), ...OutcomeFields }),
-  z.strictObject({ kind: z.literal('unarchived'), ...OutcomeFields }),
-  z.strictObject({ kind: z.literal('reverted'), ...OutcomeFields }),
-  z.strictObject({
-    kind: z.literal('compaction-accepted'),
-    ...OutcomeFields,
-    nativeTurnId: NativeIdSchema.nullable(),
-  }),
   z.strictObject({
     kind: z.literal('turn-accepted'),
     ...OutcomeFields,
@@ -103,17 +91,6 @@ export const NativeOutcomeSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({ kind: z.literal('interrupt-accepted'), ...OutcomeFields }),
   z.strictObject({ kind: z.literal('reply-written'), ...OutcomeFields }),
-  z.strictObject({
-    kind: z.literal('control-accepted'),
-    ...OutcomeFields,
-    state: z.enum(['accepted', 'applied', 'held']),
-    completion: ActionReceiptSchema.shape.completion,
-  }),
-  z.strictObject({
-    kind: z.literal('control-completed'),
-    ...OutcomeFields,
-    completion: ActionReceiptSchema.shape.completion.unwrap(),
-  }),
   z.strictObject({ kind: z.literal('uncertain'), ...OutcomeFields }),
   z.strictObject({
     kind: z.literal('failed'),
@@ -130,12 +107,7 @@ const NativeTurnFields = {
   nativeTurnId: NativeIdSchema,
 };
 export const NativeObservationSchema = z.discriminatedUnion('kind', [
-  z.strictObject({
-    kind: z.literal('turn-started'),
-    ...NativeTurnFields,
-    // a turn the agent started without HQ input, which no waiting action may claim
-    isAgentInitiated: z.boolean().optional(),
-  }),
+  z.strictObject({ kind: z.literal('turn-started'), ...NativeTurnFields }),
   z.strictObject({
     kind: z.literal('turn-completed'),
     ...NativeTurnFields,
@@ -234,12 +206,6 @@ export const ApprovalPageRequestSchema = ControlPageSchema.extend({
   state: NativeApprovalSummarySchema.shape.state.optional(),
 });
 export type IApprovalPageRequest = z.infer<typeof ApprovalPageRequestSchema>;
-export const EventPageSchema = z.strictObject({
-  limit: z.number().int().min(1).max(128),
-  after: z.number().int().nonnegative(),
-  threadId: z.uuid(),
-});
-export type IEventPage = z.infer<typeof EventPageSchema>;
 
 export const ApprovalRecordSchema = z.strictObject({
   provider: ProviderSchema,
@@ -264,10 +230,6 @@ export const ActionPageSchema = z.object({
 });
 export const ApprovalPageSchema = z.object({
   data: z.array(NativeApprovalSummarySchema).max(128),
-  hasMore: z.boolean(),
-});
-export const LifecyclePageSchema = z.object({
-  data: z.array(LifecycleEventSchema).max(128),
   hasMore: z.boolean(),
 });
 export const ApprovalIdentitySchema = z.object({ id: z.uuid(), thread: ManagedThreadSchema });

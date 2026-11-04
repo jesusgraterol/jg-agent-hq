@@ -7,7 +7,7 @@ import {
 import { expect, test } from 'vitest';
 
 const minimal: IUsageSnapshot = {
-  provider: 'custom-provider',
+  provider: 'codex',
   source: 'native',
   state: 'available',
   observedAt: 1_000,

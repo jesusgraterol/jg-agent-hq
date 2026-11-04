@@ -1,11 +1,8 @@
 // @vitest-environment node
-import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import { expectToRejectCode } from 'jg-exception/testing';
 import { createAgentHq } from 'jg-agent-hq';
 import type {
@@ -84,16 +81,6 @@ const setup = async (fixture: IClaudeFixture, provider: 'codex' | 'claude') => {
     if (response.kind !== 'skills') throw new Error('Missing catalog');
     return response.result;
   };
-  const preview = async (skillId: string, skillArguments = 'example task') => {
-    const response = await fixture.request({
-      kind: 'skill-preview',
-      threadId: managed.id,
-      skillId,
-      arguments: skillArguments,
-    });
-    if (response.kind !== 'skill-preview') throw new Error('Missing preview');
-    return response.result;
-  };
   const calls = async () =>
     z
       .array(
@@ -157,7 +144,6 @@ const setup = async (fixture: IClaudeFixture, provider: 'codex' | 'claude') => {
     settled,
     managed,
     catalog,
-    preview,
     calls,
     inputs,
     control,
@@ -182,7 +168,7 @@ const folderCatalog = async (
 };
 
 test.each(['codex', 'claude'] as const)(
-  '%s catalog reads native metadata and its invocation prefix, and previews explicit invocation without inference',
+  '%s catalog reads native metadata and its invocation prefix without inference',
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
       const api = await setup(fixture, provider);
@@ -209,34 +195,7 @@ test.each(['codex', 'claude'] as const)(
               prerequisites: null,
             },
       );
-      const preview = await api.preview(skill.id, 'auto exact-plan');
-      expect(preview).toStrictEqual({
-        state: 'ready',
-        skill,
-        text: `${provider === 'codex' ? '$' : '/'}explicit-skill auto exact-plan`,
-      });
       expect(await api.inputs()).toStrictEqual([]);
-      const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
-      const result = await promisify(execFile)(
-        process.execPath,
-        [
-          cli,
-          'skill-preview',
-          '--state-root',
-          fixture.stateRoot,
-          '--thread-id',
-          api.managed.id,
-          '--skill-id',
-          skill.id,
-          '--arguments',
-          'auto exact-plan',
-        ],
-        { timeout: 5000 },
-      );
-      expect(JSON.parse(result.stdout)).toMatchObject({
-        kind: 'skill-preview',
-        result: { state: 'ready', text: preview.text },
-      });
     });
   },
 );
@@ -406,11 +365,6 @@ test.each(['codex', 'claude'] as const)(
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
       const api = await setup(fixture, provider);
-      expect(await api.preview('0'.repeat(64))).toStrictEqual({
-        state: 'missing',
-        skill: null,
-        text: null,
-      });
       await expectToRejectCode(
         api.submit(
           api.envelope({
@@ -435,11 +389,17 @@ test.each(['codex', 'claude'] as const)(
         unavailableCount: 0,
         nextCursor: null,
       });
-      expect(await api.preview('0'.repeat(64))).toStrictEqual({
-        state: 'unavailable',
-        skill: null,
-        text: null,
-      });
+      await expectToRejectCode(
+        api.submit(
+          api.envelope({
+            kind: 'message',
+            threadId: api.managed.id,
+            input: { kind: 'skill', skillId: '0'.repeat(64), arguments: '' },
+          }),
+        ),
+        'JG_AGENT_HQ_CLIENT_STATE_CONFLICT',
+        'State changed. Refresh before continuing.',
+      );
       expect(await api.inputs()).toStrictEqual([]);
     });
   },
@@ -452,7 +412,19 @@ test('Codex disabled skills and partial discovery remain distinguishable from mi
     const page = await api.catalog();
     expect(page).toMatchObject({ state: 'partial', unavailableCount: 1 });
     const skill = page.data.find((skill) => skill.name === 'explicit-skill')!;
-    expect(await api.preview(skill.id)).toStrictEqual({ state: 'disabled', skill, text: null });
+    expect(skill.isEnabled).toBe(false);
+    await expectToRejectCode(
+      api.submit(
+        api.envelope({
+          kind: 'message',
+          threadId: api.managed.id,
+          input: { kind: 'skill', skillId: skill.id, arguments: '' },
+        }),
+      ),
+      'JG_AGENT_HQ_CLIENT_STATE_CONFLICT',
+      'State changed. Refresh before continuing.',
+    );
+    expect(await api.inputs()).toStrictEqual([]);
     await api.control({ wrongSkillRoot: join(fixture.root, 'foreign') });
     expect((await api.catalog()).state).toBe('unavailable');
   });
@@ -629,7 +601,6 @@ test('trusted extra roots reach native loaders without becoming browser configur
         scope: 'host',
         isEnabled: true,
       });
-      expect((await codex.preview(rooted.id, 'plan')).text).toBe('$root-skill plan');
       const message = codex.envelope({
         kind: 'message',
         threadId: codex.managed.id,
@@ -760,10 +731,16 @@ test('Claude native command tokens retain provider syntax without a guessed skil
     await fixture.control({ symbolicCommand: true });
     const api = await setup(fixture, 'claude');
     const skill = (await api.catalog()).data.find((skill) => skill.name === 'native/command')!;
-    expect(await api.preview(skill.id, 'exact task')).toMatchObject({
-      state: 'ready',
-      text: '/native/command exact task',
+    const message = api.envelope({
+      kind: 'message',
+      threadId: api.managed.id,
+      input: { kind: 'skill', skillId: skill.id, arguments: 'exact task' },
     });
+    await api.submit(message);
+    await api.settled(message.id);
+    expect(await api.inputs()).toStrictEqual([
+      [{ type: 'text', text: '/native/command exact task' }],
+    ]);
   });
 });
 
@@ -898,7 +875,7 @@ test('a session catalog answers only for its own provider and folder, inside the
       { provider: 'codex', workspaceRoot: fixture.workspaceRoot, threadId: api.managed.id },
       { provider: 'claude', workspaceRoot: nested, threadId: api.managed.id },
       { provider: 'claude', workspaceRoot: fixture.workspaceRoot, threadId: randomUUID() },
-    ])
+    ] as const)
       await expectToRejectCode(
         fixture.request({ kind: 'skills', ...target }),
         'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',

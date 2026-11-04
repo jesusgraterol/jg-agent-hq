@@ -156,7 +156,7 @@ test('an unfinished message the provider finishes after its turn ended waits for
   ]);
 });
 
-test('the background command count is part of the window: a change invalidates the revision, and a reset keeps it', () => {
+test('the background command count is part of the window: a change invalidates the revision', () => {
   const live = new LiveItems();
   expect(live.read('thread').backgroundCommands).toBe(0);
   live.setBackgroundCommands('thread', 2);
@@ -165,11 +165,8 @@ test('the background command count is part of the window: a change invalidates t
   // the same count changes nothing
   live.setBackgroundCommands('thread', 2);
   expect(live.read('thread', started.revision).unchanged).toBe(true);
-  live.reset('thread');
-  const reset = live.read('thread', started.revision);
-  expect([reset.unchanged, reset.backgroundCommands, reset.hasGap]).toStrictEqual([false, 2, true]);
   live.setBackgroundCommands('thread', 0);
-  expect(live.read('thread', reset.revision)).toMatchObject({
+  expect(live.read('thread', started.revision)).toMatchObject({
     unchanged: false,
     backgroundCommands: 0,
   });

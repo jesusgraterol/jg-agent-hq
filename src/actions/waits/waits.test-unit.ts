@@ -12,7 +12,6 @@ const receipt = (fields: Partial<IActionReceipt> = {}): IActionReceipt => ({
   runtimeEpoch: randomUUID(),
   kind: 'thread-create',
   provider: 'codex',
-  controlState: null,
   threadId: 'thread-1',
   nativeThreadId: null,
   nativeTurnId: null,

@@ -205,11 +205,6 @@ test('native seek pages cover 1024 sessions with stable ties and filter-bound co
 test('authorized native history is re-read after a delayed flush and large frames are bounded for display', async () => {
   await withRuntime(async ({ root, workspaceRoot, control, request }) => {
     const target = { provider: 'codex' as const, workspaceRoot, nativeId: 'thread-1023' };
-    const turns = await request({ kind: 'turns', ...target });
-    expect(turns).toMatchObject({
-      kind: 'turns',
-      result: { data: [{ nativeId: 'turn-a', state: 'completed' }] },
-    });
     await control({ awaitingFlush: true });
     expect(await request({ kind: 'items', ...target })).toMatchObject({
       kind: 'items',

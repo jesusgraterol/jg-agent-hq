@@ -5,7 +5,6 @@ import {
   MAX_RESULT_BYTES,
   type IOutputSchema,
   type ISessionState,
-  type ITurnSummary,
   type ITurnUsage,
 } from '../../contracts/index.js';
 import { toTurnResult } from '../results/index.js';
@@ -14,7 +13,7 @@ import { NativeIdSchema } from '../../contracts/identities/index.js';
 import type { IAgentProviderOutcome, IAgentProviderEvents, IProviderThread } from '../index.js';
 
 import { LOST_NOTIFICATIONS, RUNNING_TURNS_CAPACITY } from './constants.js';
-import type { ICodexEvents, ICodexProvider, INativeThread } from './types.js';
+import type { ICodexEvents, ICodexProvider, INativeThread, ITurnSummary } from './types.js';
 import {
   NativeItemSchema,
   NativeThreadSchema,
@@ -35,9 +34,7 @@ const TargetSchema = z.object({ threadId: NativeIdSchema, turnId: NativeIdSchema
 const DeltaSchema = TargetSchema.extend({ itemId: NativeIdSchema, delta: z.string() });
 const PhaseIdSchema = z
   .string()
-  .regex(
-    /^[a-f0-9-]{36}:(create|fork|resume|name|turn|steer|interrupt|clean|close|archive|unarchive|revert|compact)$/,
-  );
+  .regex(/^[a-f0-9-]{36}:(create|resume|name|turn|steer|interrupt|clean|close)$/);
 
 /** @returns Exact native session metadata normalized to the common control boundary. */
 export const toProviderThread = (thread: INativeThread): IProviderThread => ({
@@ -72,8 +69,8 @@ export const createCodexEvents = (
   /**
    * Keeps HQ's result capture in step with a turn whose start or end failed validation: a lost
    * start still binds the capture prepared for HQ's input, and a lost end drops its turn's capture,
-   * which would otherwise refuse the session's next turn that HQ didn't prepare, such as a
-   * compaction.
+   * which would otherwise refuse the session's next turn that HQ didn't prepare, such as one
+   * another client starts.
    */
   const settleLostCapture = (method: string, params: unknown): void => {
     const lifecycle = z
@@ -223,7 +220,6 @@ export const createCodexEvents = (
     }
   };
   return {
-    controlOutcome: (outcome) => events.outcome(outcome),
     prepareTurn(nativeId, schema) {
       if (!turns.has(nativeId) && turns.size >= 32) parseNative(z.never(), nativeId);
       turns.set(nativeId, {
@@ -279,28 +275,13 @@ export const createCodexEvents = (
       let thread: IProviderThread | undefined;
       if (error !== undefined)
         outcome = { kind: 'failed', requestId, failure: 'agent-unavailable' };
-      else if (
-        requestId.endsWith(':create') ||
-        requestId.endsWith(':fork') ||
-        requestId.endsWith(':resume')
-      ) {
+      else if (requestId.endsWith(':create') || requestId.endsWith(':resume')) {
         thread = toProviderThread(
           parseNative(z.object({ thread: NativeThreadSchema }), result).thread,
         );
-        outcome =
-          requestId.endsWith(':create') || requestId.endsWith(':fork')
-            ? { kind: 'created', requestId, nativeId: thread.nativeId }
-            : { kind: 'resumed', requestId, nativeState: thread.nativeState };
-      } else if (requestId.endsWith(':unarchive') || requestId.endsWith(':revert')) {
-        thread = toProviderThread(
-          parseNative(z.object({ thread: NativeThreadSchema }), result).thread,
-        );
-        outcome = { kind: requestId.endsWith(':unarchive') ? 'unarchived' : 'reverted', requestId };
-      } else if (requestId.endsWith(':archive') || requestId.endsWith(':compact')) {
-        parseNative(z.object({}), result);
-        outcome = requestId.endsWith(':archive')
-          ? { kind: 'archived', requestId }
-          : { kind: 'compaction-accepted', requestId, nativeTurnId: null };
+        outcome = requestId.endsWith(':create')
+          ? { kind: 'created', requestId, nativeId: thread.nativeId }
+          : { kind: 'resumed', requestId, nativeState: thread.nativeState };
       } else if (requestId.endsWith(':turn'))
         outcome = {
           kind: 'turn-accepted',

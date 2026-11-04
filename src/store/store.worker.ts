@@ -32,12 +32,7 @@ const startWorker = async (): Promise<void> => {
     };
     const browser = new BrowserModel(database, options.runtimeEpoch, options.actionKey);
     const sessions = new SessionsModel(database);
-    const controls = new ControlModel(
-      database,
-      options.runtimeEpoch,
-      options.actionKey,
-      options.keepingProviders,
-    );
+    const controls = new ControlModel(database, options.runtimeEpoch, options.actionKey);
     const claudeHistory = new ClaudeHistoryModel(database);
     port.on('message', async (message: unknown) => {
       const parsed = StoreRequestSchema.safeParse(message);
@@ -113,9 +108,6 @@ const startWorker = async (): Promise<void> => {
           case 'thread-read':
             result = controls.getThread(command.id);
             break;
-          case 'thread-name-read':
-            result = controls.getThreadByName(command.name);
-            break;
           case 'thread-name-suggest':
             result = controls.suggestName(command.name);
             break;
@@ -142,16 +134,7 @@ const startWorker = async (): Promise<void> => {
             );
             break;
           case 'actions':
-          case 'provider-actions':
-            result = controls.listActions(
-              command.kind === 'actions'
-                ? { threadId: command.threadId }
-                : { provider: command.provider },
-              command.page,
-            );
-            break;
-          case 'events':
-            result = controls.listEvents(command.page);
+            result = controls.listActions(command.threadId, command.page);
             break;
           case 'approvals':
             result = controls.listApprovals(command.threadId, command.page);

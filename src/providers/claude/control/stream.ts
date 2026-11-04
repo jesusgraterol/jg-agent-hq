@@ -116,11 +116,7 @@ const acknowledge = (session: IClaudeSession, events: IClaudeControlEvents | und
   input.isAcknowledged = true;
   clearTimeout(input.timer);
   input.resolve({ id: input.id });
-  events?.outcome({
-    kind: input.requestId.endsWith(':compact') ? 'compaction-accepted' : 'turn-accepted',
-    requestId: input.requestId,
-    nativeTurnId: input.id,
-  });
+  events?.outcome({ kind: 'turn-accepted', requestId: input.requestId, nativeTurnId: input.id });
   events?.observe({
     kind: 'turn-started',
     provider: 'claude',
@@ -144,7 +140,6 @@ const startNativeTurn = (
     provider: 'claude',
     nativeThreadId: session.id,
     nativeTurnId: turn.id,
-    isAgentInitiated: true,
   });
   return turn;
 };
@@ -433,7 +428,7 @@ export const receiveClaudeMessage = (
       state,
       result.result ?? input.finalText,
       result.structured_output,
-      input.requestId.endsWith(':compact') ? undefined : session.settings.outputSchema,
+      session.settings.outputSchema,
       usage,
     );
     if (input.isOutputOversized) {

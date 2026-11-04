@@ -16,13 +16,6 @@ export type IClaudeSessions = {
 export type IHistoryRequest = Extract<
   IHqRequest,
   {
-    kind:
-      | 'threads'
-      | 'thread'
-      | 'turns'
-      | 'items'
-      | 'item-detail'
-      | 'item-image'
-      | 'session-evidence';
+    kind: 'threads' | 'thread' | 'items' | 'item-detail' | 'item-image' | 'session-evidence';
   }
 >;

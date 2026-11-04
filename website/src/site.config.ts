@@ -47,7 +47,7 @@ export const PAGE_RECORDS = [
     markdown: '/docs/index.md',
     title: 'Getting started | jg-agent-hq',
     description:
-      'Install the local controller and understand native sessions, skill previews and account observations.',
+      'Install the local controller and understand native sessions, skill catalogs and usage observations.',
   },
   {
     id: 'api',

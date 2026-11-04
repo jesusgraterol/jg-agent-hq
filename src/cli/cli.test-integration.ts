@@ -17,7 +17,7 @@ import {
   withClaudeRuntime,
 } from '../../scripts/test-support/index.js';
 
-test('dedicated CLI provider selection reads Claude capabilities and reports unavailable provider data', async () => {
+test('dedicated CLI provider selection reads Claude capabilities and refuses an unknown provider', async () => {
   await withClaudeRuntime(async ({ stateRoot }) => {
     const run = promisify(execFile);
     const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
@@ -44,30 +44,13 @@ test('dedicated CLI provider selection reads Claude capabilities and reports una
         operations: { steer: { state: 'supported' } },
       },
     });
-    const unavailable = await run(
-      process.execPath,
-      [cli, 'usage', '--state-root', stateRoot, '--provider', 'unregistered-provider'],
-      { timeout: 5000 },
-    );
-    expect(JSON.parse(unavailable.stdout)).toStrictEqual({
-      schemaVersion: 1,
-      kind: 'usage',
-      result: {
-        provider: 'unregistered-provider',
-        state: 'unavailable',
-        source: 'native',
-        observedAt: null,
-        ordinaryUsageAllowed: null,
-        windows: [],
-      },
-    });
-    await expect(
-      run(
-        process.execPath,
-        [cli, 'usage', '--state-root', stateRoot, '--provider', '../provider'],
-        { timeout: 5000 },
-      ),
-    ).rejects.toThrow();
+    // only the built-in providers exist
+    for (const provider of ['unregistered-provider', '../provider'])
+      await expect(
+        run(process.execPath, [cli, 'usage', '--state-root', stateRoot, '--provider', provider], {
+          timeout: 5000,
+        }),
+      ).rejects.toThrow();
   });
 });
 
@@ -126,15 +109,6 @@ test('stdin actions preserve split UTF-8 and return receipts without exposing me
       await wait(10);
     }
     const cli = fileURLToPath(new URL('../../dist/cli/cli.js', import.meta.url));
-    const named = await promisify(execFile)(
-      process.execPath,
-      [cli, 'managed-thread-name', '--state-root', runtime.stateRoot, '--name', 'STDIN-CHECK'],
-      { timeout: 5000 },
-    );
-    expect(JSON.parse(named.stdout)).toMatchObject({
-      kind: 'managed-thread-name',
-      result: { id: threadId, name: 'stdin-check' },
-    });
     const suggested = await promisify(execFile)(
       process.execPath,
       [cli, 'suggest-thread-name', '--state-root', runtime.stateRoot, '--topic', 'Stdin check'],

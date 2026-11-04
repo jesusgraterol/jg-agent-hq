@@ -3,7 +3,7 @@ import { lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hasErrorCode } from 'jg-exception';
-import { createAgentHq, requestAgentHq, type IAgentHq, type IAgentHqOptions } from 'jg-agent-hq';
+import { createAgentHq, requestAgentHq, type IAgentHq } from 'jg-agent-hq';
 import type { IHqRequestInput } from 'jg-agent-hq/contracts';
 import { expect, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
@@ -28,7 +28,6 @@ export type IClaudeFixture = {
 /** Runs the real runtime and verifies native process teardown before deleting its fixture. */
 export const withClaudeRuntime = async (
   run: (fixture: IClaudeFixture) => Promise<void>,
-  options: Pick<IAgentHqOptions, 'providerFactories'> = {},
 ): Promise<void> => {
   const root = await mkdtemp(join(tmpdir(), 'jg-hq-claude-'));
   const stateRoot = join(root, 'state');
@@ -92,7 +91,7 @@ export const withClaudeRuntime = async (
     vi.stubEnv('JG_HQ_FIXTURE_DIRECTORY', root);
     vi.stubEnv('JG_HQ_FIXTURE_WORKSPACE', workspaceRoot);
     vi.stubEnv('CLAUDE_CONFIG_DIR', configRoot);
-    runtime = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot], ...options });
+    runtime = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
     await run({
       root,
       stateRoot,

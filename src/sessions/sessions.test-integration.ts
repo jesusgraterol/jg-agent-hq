@@ -66,7 +66,7 @@ const submit = async (
   return response.result;
 };
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   'session-evidence(%s) is newest first, filters exact identities and treats quoted approvals as untrusted history',
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
@@ -135,7 +135,7 @@ test.each(['codex', 'claude'])(
   },
 );
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   'session-evidence(%s) reconstructs complete UTF-8 bodies within the serialized response budget',
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
@@ -204,7 +204,7 @@ test.each(['codex', 'claude'])(
   },
 );
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   'session-evidence(%s) rejects changed content and changed query scopes during continuation',
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
@@ -252,7 +252,7 @@ test.each(['codex', 'claude'])(
   },
 );
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   'session-evidence(%s) enforces workspace authorization before native content retrieval',
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
@@ -303,7 +303,7 @@ test.each(['codex', 'claude'])(
   },
 );
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   'exact native %s host inputs correlate with action receipts without granting authority',
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
@@ -394,7 +394,7 @@ test.each(['codex', 'claude'])(
   },
 );
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   "a %s host input sent with an attachment, and past a page's cut, still correlates with its action receipt",
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
@@ -727,45 +727,7 @@ test('a browser receipt cannot authenticate different text sent under its native
   });
 });
 
-test('session discovery preserves ambiguous native labels and exact identities within bounded pages', async () => {
-  await withClaudeRuntime(async (fixture) => {
-    const ids = [randomUUID(), randomUUID()];
-    for (const nativeId of ids)
-      await writeFile(
-        fixture.transcript(nativeId),
-        [
-          claudeRecord(fixture.workspaceRoot, nativeId),
-          { type: 'custom-title', sessionId: nativeId, customTitle: 'same-label' },
-        ]
-          .map((record) => JSON.stringify(record))
-          .join('\n') + '\n',
-      );
-    const command = {
-      kind: 'sessions',
-      provider: 'claude',
-      workspaceRoot: fixture.workspaceRoot,
-      search: 'same-label',
-      limit: 1,
-    } as const;
-    const first = await fixture.request(command);
-    if (first.kind !== 'sessions') throw new Error('Missing sessions');
-    const second = await fixture.request({ ...command, cursor: first.result.nextCursor! });
-    if (second.kind !== 'sessions') throw new Error('Missing sessions');
-    expect(
-      new Set([...first.result.data, ...second.result.data].map((thread) => thread.nativeId)),
-    ).toStrictEqual(new Set(ids));
-    expect(
-      [...first.result.data, ...second.result.data].map((thread) => thread.name),
-    ).toStrictEqual(['same-label', 'same-label']);
-    expect(second.result.nextCursor).toBeNull();
-    await expectToRejectCode(
-      fixture.request({ ...command, search: 'different', cursor: first.result.nextCursor! }),
-      'JG_AGENT_HQ_CLIENT_INVALID_REQUEST',
-    );
-  });
-});
-
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   'session-evidence(%s) paginates exact page boundaries without duplicate or missing items',
   async (provider) => {
     await withClaudeRuntime(async (fixture) => {
@@ -884,49 +846,6 @@ test('compacted Claude evidence excludes API diagnostics, identifies system summ
     );
     await expect(fixture.request({ ...command, nativeId: randomUUID() })).rejects.toThrow(
       'Coding agent is unavailable',
-    );
-  });
-});
-
-test('bounded discovery truncates display labels explicitly and continues Codex source pages', async () => {
-  await withClaudeRuntime(async (fixture) => {
-    const nativeId = randomUUID();
-    await writeFile(
-      fixture.transcript(nativeId),
-      [
-        claudeRecord(fixture.workspaceRoot, nativeId),
-        { type: 'custom-title', sessionId: nativeId, customTitle: '🧪'.repeat(1024) },
-      ]
-        .map((record) => JSON.stringify(record))
-        .join('\n') + '\n',
-    );
-    const page = await fixture.request({
-      kind: 'sessions',
-      provider: 'claude',
-      workspaceRoot: fixture.workspaceRoot,
-    });
-    expect(page.kind === 'sessions' && page.result.data[0]).toMatchObject({
-      name: '🧪'.repeat(256),
-      isNameTruncated: true,
-      nativeId,
-    });
-    const selected = {
-      kind: 'sessions',
-      provider: 'codex',
-      workspaceRoot: fixture.workspaceRoot,
-      limit: 4,
-    } as const;
-    let cursor: string | undefined;
-    const ids: string[] = [];
-    for (let index = 0; index < 4; index += 1) {
-      const response = await fixture.request({ ...selected, cursor });
-      if (response.kind !== 'sessions') throw new Error('Missing discovery');
-      expect(Buffer.byteLength(JSON.stringify(response))).toBeLessThanOrEqual(65_000);
-      ids.push(...response.result.data.map((item) => item.nativeId));
-      cursor = response.result.nextCursor ?? undefined;
-    }
-    expect(ids).toStrictEqual(
-      Array.from({ length: 16 }, (_, index) => `thread-${String(1023 - index).padStart(4, '0')}`),
     );
   });
 });

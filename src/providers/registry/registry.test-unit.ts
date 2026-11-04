@@ -4,11 +4,8 @@ import { expect, test } from 'vitest';
 test.each([
   ['codex', true],
   ['claude', true],
-  ['review-provider', true],
-  ['provider-' + 'a'.repeat(55), true],
-  ['provider-' + 'a'.repeat(56), false],
-  ['Provider', false],
-  ['../provider', false],
+  ['review-provider', false],
+  ['Codex', false],
   ['', false],
 ])('ProviderIdSchema(%s) -> accepted=%s', (provider, accepted) => {
   expect(ProviderIdSchema.safeParse(provider).success).toBe(accepted);

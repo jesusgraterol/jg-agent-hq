@@ -2,8 +2,6 @@ import { z } from 'zod';
 
 import { ProviderIdSchema } from '../providers/index.js';
 import { SessionSettingsSchema, TurnSettingsSchema } from '../configuration/index.js';
-import { AccountControlCommandSchema } from '../accounts/index.js';
-import { ExtensionControlCommandSchema } from '../extensions/index.js';
 
 import { MessageInputSchema, NativeSkillInputSchema } from '../skills/index.js';
 
@@ -27,8 +25,6 @@ const TextSchema = z.string().min(1).max(65_536);
 const ActiveTargetFields = { threadId: ThreadIdSchema, expectedTurnId: NativeIdSchema };
 
 export const ActionCommandSchema = z.discriminatedUnion('kind', [
-  ...AccountControlCommandSchema.options,
-  ...ExtensionControlCommandSchema.options,
   z.strictObject({
     kind: z.literal('thread-create'),
     provider: ProviderIdSchema,
@@ -52,15 +48,6 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
     settings: SessionSettingsSchema.optional(),
   }),
   z.strictObject({ kind: z.literal('thread-close'), threadId: ThreadIdSchema }),
-  z.strictObject({ kind: z.literal('thread-fork'), threadId: ThreadIdSchema, name: NameSchema }),
-  z.strictObject({ kind: z.literal('thread-archive'), threadId: ThreadIdSchema }),
-  z.strictObject({ kind: z.literal('thread-unarchive'), threadId: ThreadIdSchema }),
-  z.strictObject({ kind: z.literal('thread-compact'), threadId: ThreadIdSchema }),
-  z.strictObject({
-    kind: z.literal('thread-revert'),
-    threadId: ThreadIdSchema,
-    beforeTurnId: NativeIdSchema,
-  }),
   z.strictObject({
     kind: z.literal('thread-recover'),
     threadId: ThreadIdSchema,
@@ -143,7 +130,6 @@ export const ActionReceiptSchema = z.object({
   runtimeEpoch: z.uuid(),
   kind: z.enum(ActionCommandSchema.options.map((command) => command.shape.kind.value)),
   provider: ProviderIdSchema.nullable(),
-  controlState: z.enum(['accepted', 'applied', 'held']).nullable(),
   threadId: ThreadIdSchema.nullable(),
   // the native session of the action's thread, once HQ recorded it
   nativeThreadId: NativeIdSchema.nullable(),
@@ -186,8 +172,6 @@ export const ManagedThreadSchema = z.object({
   provider: ProviderIdSchema,
   nativeId: NativeIdSchema.nullable(),
   nativeLineage: NativeLineageSchema.nullable(),
-  forkedFromThreadId: ThreadIdSchema.nullable(),
-  isArchived: z.boolean(),
   name: NameSchema,
   workspaceRoot: z.string(),
   ownership: z.enum(['managed', 'uncertain']),
@@ -286,25 +270,3 @@ export const NativeApprovalSchema = NativeApprovalSummarySchema.extend({
   presentation: ApprovalPresentationSchema.nullable(),
 });
 export type INativeApproval = z.infer<typeof NativeApprovalSchema>;
-
-// lifecycle metadata provides reconnect ordering without mirroring token/tool output
-export const LifecycleEventSchema = z.object({
-  sequence: z.number().int().positive(),
-  runtimeEpoch: z.uuid(),
-  threadId: ThreadIdSchema.nullable(),
-  actionId: z.uuid().nullable(),
-  nativeTurnId: NativeIdSchema.nullable(),
-  nativeItemId: NativeIdSchema.nullable(),
-  kind: z.enum([
-    'action-admitted',
-    'action-updated',
-    'thread-updated',
-    'approval-opened',
-    'approval-resolved',
-    'item-started',
-    'item-completed',
-    'native-unavailable',
-  ]),
-  createdAt: z.number().int(),
-});
-export type ILifecycleEvent = z.infer<typeof LifecycleEventSchema>;

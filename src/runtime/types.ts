@@ -1,8 +1,6 @@
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 
-import { MAX_PROVIDERS, ProviderIdSchema } from '../contracts/index.js';
-
 import type {
   IHqRequestInput,
   IHqResponse,
@@ -10,19 +8,9 @@ import type {
   IBrowserReceipt,
 } from '../contracts/index.js';
 import type { IStorageDescriptor, IStorageMaintenanceOperation } from '../storage/index.js';
-import type { IAgentProviderFactory } from '../providers/index.js';
 
 // construction receives trusted operator configuration, never a browser-selected root
 export const AgentHqOptionsSchema = z.strictObject({
-  providerFactories: z
-    .array(
-      z.object({
-        id: ProviderIdSchema,
-        create: z.custom<IAgentProviderFactory['create']>((input) => typeof input === 'function'),
-      }),
-    )
-    .max(MAX_PROVIDERS)
-    .optional(),
   stateRoot: z.string().min(1).refine(isAbsolute),
   allowedRoots: z.array(z.string().min(1).refine(isAbsolute)).min(1).max(128),
   codexExtraSkillRoots: z.array(z.string().min(1).refine(isAbsolute)).max(128).optional(),

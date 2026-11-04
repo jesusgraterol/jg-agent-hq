@@ -10,7 +10,7 @@ import { z } from 'zod';
 
 import { withClaudeRuntime, writeFixtureControl } from '../../../scripts/test-support/index.js';
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   'native %s settings change on explicit input and an idle restart preserves identity',
   async (provider) => {
     await withClaudeRuntime(async ({ runtime, request, workspaceRoot, root }) => {
@@ -123,7 +123,7 @@ test.each(['codex', 'claude'])(
   },
 );
 
-test.each(['codex', 'claude'])(
+test.each(['codex', 'claude'] as const)(
   'native %s fast mode is sent with creation and input, off included, and read back',
   async (provider) => {
     await withClaudeRuntime(async ({ runtime, request, workspaceRoot, root }) => {
@@ -236,7 +236,12 @@ test.each(['codex', 'claude'])(
 test('configuration choices use bounded, revision-bound pages and reject changed scope', async () => {
   await withClaudeRuntime(async ({ request, workspaceRoot, root }) => {
     await writeFixtureControl(root, 'control.json', { profileCount: 256 });
-    const query = { kind: 'configuration' as const, provider: 'codex', workspaceRoot, limit: 128 };
+    const query = {
+      kind: 'configuration' as const,
+      provider: 'codex' as const,
+      workspaceRoot,
+      limit: 128,
+    };
     const first = await request(query);
     if (first.kind !== 'configuration') throw new Error('Missing configuration');
     expect(first.result.choices).toHaveLength(128);

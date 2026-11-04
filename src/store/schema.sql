@@ -10,8 +10,6 @@ CREATE TABLE hq_thread (
   provider TEXT NOT NULL CHECK (length(provider) > 0),
   native_id TEXT CHECK (native_id IS NULL OR length(native_id) > 0),
   native_lineage TEXT CHECK (native_lineage IS NULL OR json_valid(native_lineage)),
-  fork_source_thread_id TEXT,
-  is_archived INTEGER NOT NULL DEFAULT 0 CHECK (is_archived IN (0, 1)),
   name TEXT NOT NULL COLLATE NOCASE,
   workspace_root TEXT NOT NULL,
   ownership TEXT NOT NULL CHECK (ownership IN ('managed', 'uncertain')),
@@ -25,7 +23,6 @@ CREATE TABLE hq_thread (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   CONSTRAINT hq_pk_t__id PRIMARY KEY (id),
-  CONSTRAINT hq_fk_t__fork_source_thread_id FOREIGN KEY (fork_source_thread_id) REFERENCES hq_thread(id),
   CONSTRAINT hq_uq_t__provider_native_id UNIQUE (provider, native_id),
   CONSTRAINT hq_uq_t__name UNIQUE (name),
   CONSTRAINT hq_uq_t__pending_action_id UNIQUE (pending_action_id),
@@ -44,7 +41,6 @@ CREATE TABLE hq_action (
   runtime_epoch TEXT NOT NULL,
   kind TEXT NOT NULL,
   provider TEXT,
-  control_state TEXT CHECK (control_state IS NULL OR control_state IN ('accepted','applied','held')),
   thread_id TEXT,
   expected_turn_id TEXT,
   native_turn_id TEXT,
@@ -67,8 +63,6 @@ CREATE TABLE hq_action (
   CONSTRAINT hq_chk_a__queued_body_required CHECK (delivery != 'queued' OR (kind = 'queue' AND queued_input IS NOT NULL))
 ) STRICT;
 
-CREATE INDEX hq_idx_a__provider_created_at_id_desc ON hq_action (provider, created_at DESC, id DESC) WHERE thread_id IS NULL;
-CREATE INDEX hq_idx_a__provider_epoch_pending_control ON hq_action (provider, runtime_epoch) WHERE kind IN ('account-login','account-logout','mcp-reload') AND delivery IN ('submitted','uncertain','acknowledged') AND completion IS NULL;
 CREATE INDEX hq_idx_a__thread_id_created_at_id_desc ON hq_action (thread_id, created_at DESC, id DESC);
 CREATE INDEX hq_idx_a__thread_id_delivery_created_at_id ON hq_action (thread_id, delivery, created_at, id);
 CREATE INDEX hq_idx_a__native_turn_id ON hq_action (native_turn_id);
@@ -101,23 +95,14 @@ CREATE INDEX hq_idx_na__thread_id_state_created_at_id_desc ON hq_native_approval
 CREATE INDEX hq_idx_na__thread_id_created_at_id_desc ON hq_native_approval (thread_id, created_at DESC, id DESC);
 CREATE INDEX hq_idx_na__runtime_epoch_pending ON hq_native_approval (runtime_epoch) WHERE state = 'pending';
 
+-- each native observation a runtime applied, by its identity, so a repeated one is recognized
 CREATE TABLE hq_event (
   sequence INTEGER CONSTRAINT hq_pk_e__sequence PRIMARY KEY AUTOINCREMENT,
   runtime_epoch TEXT NOT NULL,
-  thread_id TEXT,
-  action_id TEXT,
-  native_turn_id TEXT,
-  native_item_id TEXT,
-  kind TEXT NOT NULL,
-  event_key TEXT,
-  digest TEXT,
-  created_at INTEGER NOT NULL,
-  CONSTRAINT hq_uq_e__runtime_epoch_event_key UNIQUE (runtime_epoch, event_key),
-  CONSTRAINT hq_fk_e__thread_id FOREIGN KEY (thread_id) REFERENCES hq_thread(id),
-  CONSTRAINT hq_fk_e__action_id FOREIGN KEY (action_id) REFERENCES hq_action(id)
+  event_key TEXT NOT NULL CHECK (length(event_key) = 64),
+  digest TEXT NOT NULL CHECK (length(digest) = 64),
+  CONSTRAINT hq_uq_e__runtime_epoch_event_key UNIQUE (runtime_epoch, event_key)
 ) STRICT;
-
-CREATE INDEX hq_idx_e__thread_id_sequence ON hq_event (thread_id, sequence);
 
 CREATE TABLE hq_browser_action (
   id TEXT CONSTRAINT hq_pk_ba__id PRIMARY KEY,
@@ -158,9 +143,6 @@ CREATE INDEX hq_idx_ce__workspace_native_offset_current
 ON hq_claude_entry(workspace_root, native_id, byte_offset) WHERE is_current = 1 AND is_visible = 1;
 CREATE INDEX hq_idx_ce__workspace_native_turn_offset_current
 ON hq_claude_entry(workspace_root, native_id, turn_id, byte_offset) WHERE is_current = 1 AND is_visible = 1;
-CREATE INDEX hq_idx_ce__workspace_native_turn_start_current
-ON hq_claude_entry(workspace_root, native_id, byte_offset)
-WHERE is_current = 1 AND is_visible = 1 AND byte_offset = turn_start_offset;
 CREATE INDEX hq_idx_ce__workspace_native_kind_offset_current
 ON hq_claude_entry(workspace_root, native_id, item_kind, byte_offset)
 WHERE is_current = 1 AND is_visible = 1;

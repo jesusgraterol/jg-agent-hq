@@ -9,7 +9,6 @@ import {
   type IItemImage,
   type INativeSkillInput,
   type IThreadSummary,
-  type ITurnSummary,
   type IUsageSnapshot,
   type IProviderModel,
   type IConfigurationRequest,
@@ -17,20 +16,9 @@ import {
   type ISessionSettings,
   type ITurnSettings,
   type IOutputSchema,
-  type IAccountObservation,
-  type IAccountControlCommand,
-  type IExtensionControlCommand,
-  type ILoginObservation,
-  type INativeControlResult,
 } from '../../contracts/index.js';
 import type { IProviderInputFile } from '../inputs/index.js';
-import type { IAgentProviderOutcome } from '../index.js';
 import type { IProviderSkills } from '../types.js';
-import type {
-  IProviderMcpServerPage,
-  IProviderMcpTools,
-  IProviderMcpResources,
-} from '../extensions/index.js';
 
 // a session's status, which may name one newer than this adapter knows
 export const NativeThreadStatusSchema = z.object({
@@ -58,6 +46,14 @@ export const NativeTurnSchema = z.object({
   startedAt: z.number().int().safe().nullable().optional(),
   completedAt: z.number().int().safe().nullable().optional(),
 });
+// a turn's state and times in Unix milliseconds, as HQ reads them from a native turn
+export const TurnSummarySchema = z.object({
+  nativeId: z.string().min(1).max(4096),
+  state: z.enum(['completed', 'interrupted', 'failed', 'inProgress', 'unknown']),
+  startedAt: z.number().int().nullable(),
+  completedAt: z.number().int().nullable(),
+});
+export type ITurnSummary = z.infer<typeof TurnSummarySchema>;
 export const NativeItemSchema = z.object({
   turnId: z.string().min(1).max(4096),
   item: z
@@ -110,7 +106,6 @@ export type INativePage<T> = { data: T[]; nextCursor: string | null };
 
 // callbacks are owned by the runtime, independently of connected clients
 export type ICodexEvents = {
-  controlOutcome(outcome: IAgentProviderOutcome): void;
   forgetTurn(nativeId: string): void;
   prepareTurn(nativeId: string, outputSchema: IOutputSchema | undefined): void;
   notify(method: string, params: unknown): void;
@@ -125,29 +120,6 @@ export type ICodexEvents = {
 
 // native read models and explicit control operations; execution settings remain with Codex
 export type ICodexProvider = {
-  /** @returns Safe native account metadata without refreshing tokens. */
-  readAccount(): Promise<IAccountObservation>;
-  /** @returns Live presentation for the exact native challenge. */
-  readLogin(requestId: string): Promise<ILoginObservation>;
-  /** @returns Native authentication admission without accepting raw credentials. */
-  controlAccount(
-    requestId: string,
-    command: IAccountControlCommand,
-    loginRequestId?: string,
-  ): Promise<INativeControlResult>;
-  /** @returns One concrete native extension-control acknowledgement. */
-  controlExtensions(
-    requestId: string,
-    nativeId: string,
-    workspaceRoot: string,
-    command: IExtensionControlCommand,
-  ): Promise<INativeControlResult>;
-  /** @returns A safe native MCP server page for the selected thread. */
-  readMcpServers(nativeId: string, limit: number, cursor?: string): Promise<IProviderMcpServerPage>;
-  /** @returns One bounded configured tool inventory. */
-  readMcpTools(nativeId: string, serverName: string): Promise<IProviderMcpTools>;
-  /** @returns One bounded configured resource inventory. */
-  readMcpResources(nativeId: string, serverName: string): Promise<IProviderMcpResources>;
   userAgent: string | null;
   readonly isAvailable: boolean;
   listThreads(
@@ -218,37 +190,6 @@ export type ICodexProvider = {
   ): Promise<ISessionConfiguration>;
   /** Records the service tier Codex reports a session HQ started or resumed now uses. */
   observeServiceTier(nativeId: string, serviceTier: string | null): void;
-  /**
-   * Forks stored history into a new native identity.
-   * @returns An idle native fork with its source identity.
-   * @throws
-   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
-   */
-  forkThread(requestId: string, nativeId: string): Promise<INativeThread>;
-  /**
-   * @returns Native archive acknowledgement.
-   * @throws
-   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
-   */
-  archiveThread(requestId: string, nativeId: string): Promise<void>;
-  /**
-   * @returns The exact restored native identity.
-   * @throws
-   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
-   */
-  unarchiveThread(requestId: string, nativeId: string): Promise<INativeThread>;
-  /**
-   * @returns Native compaction admission, independent of completion.
-   * @throws
-   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
-   */
-  compactThread(requestId: string, nativeId: string): Promise<void>;
-  /**
-   * @returns The native thread after history reversion, without changing files.
-   * @throws
-   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
-   */
-  revertThread(requestId: string, nativeId: string, beforeTurnId: string): Promise<INativeThread>;
   /**
    * Reads the native workspace inventory without loading skill content or starting inference.
    * @returns Bounded metadata and the count of native discovery failures.
