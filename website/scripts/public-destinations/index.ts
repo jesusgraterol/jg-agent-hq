@@ -2,6 +2,7 @@
 export {
   readDestination,
   verifyDeployment,
+  verifyDeploymentWhenLive,
   verifyPublicDestinations,
 } from './public-destinations.ts';
 // external HTTP boundary
