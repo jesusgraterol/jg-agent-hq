@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { ACTION_PHASES } from '../constants.js';
+import { ACTION_PHASES, MAX_ACTION_BYTES } from '../constants.js';
 import { ProviderIdSchema } from '../providers/index.js';
 import { SessionSettingsSchema, TurnSettingsSchema } from '../configuration/index.js';
 
@@ -26,12 +26,14 @@ const TextSchema = z.string().min(1).max(65_536);
 const ActiveTargetFields = { threadId: ThreadIdSchema, expectedTurnId: NativeIdSchema };
 
 export const ActionCommandSchema = z.discriminatedUnion('kind', [
+  // `input` is the session's first message, which the same action sends once the session is named
   z.strictObject({
     kind: z.literal('thread-create'),
     provider: ProviderIdSchema,
     workspaceRoot: z.string().min(1).max(4096),
     name: NameSchema,
     settings: SessionSettingsSchema.optional(),
+    input: MessageInputSchema.optional(),
   }),
   z.strictObject({
     kind: z.literal('thread-adopt'),
@@ -48,7 +50,19 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
     operatorConfirmation: z.string().trim().min(1).max(1024),
     settings: SessionSettingsSchema.optional(),
   }),
-  z.strictObject({ kind: z.literal('thread-close'), threadId: ThreadIdSchema }),
+  // `interrupt` stops a running turn first, instead of refusing a session that isn't idle
+  z.strictObject({
+    kind: z.literal('thread-close'),
+    threadId: ThreadIdSchema,
+    interrupt: z.boolean().optional(),
+  }),
+  // a session no process runs, by its native identity, whether HQ manages it or not
+  z.strictObject({
+    kind: z.literal('thread-delete'),
+    provider: ProviderIdSchema,
+    workspaceRoot: z.string().min(1).max(4096),
+    nativeId: NativeIdSchema,
+  }),
   z.strictObject({
     kind: z.literal('thread-recover'),
     threadId: ThreadIdSchema,
@@ -122,7 +136,7 @@ export const ActionEnvelopeSchema = z
     runtimeEpoch: z.uuid(),
     command: ActionCommandSchema,
   })
-  .refine((action) => new TextEncoder().encode(JSON.stringify(action)).length <= 32_768);
+  .refine((action) => new TextEncoder().encode(JSON.stringify(action)).length <= MAX_ACTION_BYTES);
 export type IActionEnvelope = z.infer<typeof ActionEnvelopeSchema>;
 
 export const ActionReceiptSchema = z.object({
@@ -151,11 +165,16 @@ export const ActionReceiptSchema = z.object({
 export type IActionReceipt = z.infer<typeof ActionReceiptSchema>;
 export type IActionPhase = NonNullable<IActionReceipt['phase']>;
 
-// collections omit queued input, final result bodies and the native thread; selected receipts retain them
+/*
+ * Collections omit queued input, final result bodies and the native thread, which selected
+ * receipts retain; `queuedText` is the text of undelivered queued input, cut to the read's limit.
+ */
 export const ActionSummarySchema = ActionReceiptSchema.omit({
   nativeThreadId: true,
   queuedInput: true,
   result: true,
+}).extend({
+  queuedText: z.object({ text: z.string(), isTruncated: z.boolean() }).nullable(),
 });
 export type IActionSummary = z.infer<typeof ActionSummarySchema>;
 

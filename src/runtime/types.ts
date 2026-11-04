@@ -3,10 +3,11 @@ import { z } from 'zod';
 
 import type {
   IHqRequestInput,
-  IHqResponse,
+  IHqResponseOf,
   IBrowserAction,
   IBrowserReceipt,
 } from '../contracts/index.js';
+import type { IHqSnapshotInspection } from '../snapshots/index.js';
 import type { IStorageDescriptor, IStorageMaintenanceOperation } from '../storage/index.js';
 
 // construction receives trusted operator configuration, never a browser-selected root
@@ -70,11 +71,28 @@ export type IAgentHq = {
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
   readBrowserAction(id: string, operatorId: string): Promise<IBrowserReceipt | null>;
+  /**
+   * Captures the running runtime, host tables and private key while agents keep working, under
+   * the state root's snapshot lock, into an absent destination under an existing canonical
+   * parent. Host connections must not write host tables until it resolves.
+   * @param destination The snapshot directory to create.
+   * @returns The verified snapshot's directory, manifest hash and header.
+   * @throws
+   * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
+   * - JG_AGENT_HQ_SNAPSHOT_INVALID: The HQ snapshot is invalid
+   * - JG_AGENT_HQ_SNAPSHOT_FAILED: The HQ snapshot operation failed
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   */
+  createSnapshot(destination: string): Promise<IHqSnapshotInspection>;
   stateRoot: string;
+  // the epoch this runtime binds each action and IPC request to, as `status` reports it
+  readonly runtimeEpoch: string;
   closed: Promise<void>;
   /**
-   * Performs a validated local command; native failures may retain diagnostic context.
-   * @returns A normalized response. Stop acknowledges admission, not completed shutdown.
+   * Performs a validated local command; native failures may retain diagnostic context. A deletion
+   * runs within the request and throws its failure.
+   * @returns The response to the command's kind. Stop acknowledges admission, not completed
+   * shutdown.
    * @throws
    * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
    * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
@@ -92,7 +110,9 @@ export type IAgentHq = {
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    * - LOCK_ROOT_INVALID: The locks folder must be an absolute path.
    */
-  request(command: IHqRequestInput): Promise<IHqResponse>;
+  request<TCommand extends IHqRequestInput>(
+    command: TCommand,
+  ): Promise<IHqResponseOf<TCommand['kind']>>;
   /**
    * Closes owned resources before releasing the runtime lock.
    * @returns A promise resolved after confirmed resource shutdown and lock release.

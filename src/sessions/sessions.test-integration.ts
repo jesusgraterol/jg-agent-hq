@@ -263,10 +263,25 @@ test.each(['codex', 'claude'] as const)(
         }),
         'JG_AGENT_HQ_TARGET_FORBIDDEN',
       );
-      const status = await fixture.request({ kind: 'status' });
-      expect(
-        status.kind === 'status' && status.result.providers.every((item) => item.state === 'idle'),
-      ).toBe(true);
+      // the denied read reached no native history of the folder outside the allowed workspaces
+      if (provider === 'codex')
+        expect(await readFile(join(fixture.root, 'calls.jsonl'), 'utf8')).not.toMatch(
+          /thread\/(read|items\/list|turns\/list)/,
+        );
+      else {
+        const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
+        try {
+          expect({
+            ...database
+              .prepare(
+                'SELECT count(*) AS count FROM agent_hq_claude_file WHERE workspace_root = ?',
+              )
+              .get(fixture.root),
+          }).toStrictEqual({ count: 0 });
+        } finally {
+          database.close();
+        }
+      }
       if (provider === 'codex') {
         await writeFixtureControl(fixture.root, 'control.json', { wrongRoot: fixture.root });
         await expectToRejectCode(

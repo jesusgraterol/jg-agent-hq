@@ -5,7 +5,13 @@ import type { createSkills } from '../skills/index.js';
 import type { IStore } from '../store/index.js';
 
 import type { LiveItems } from './live/index.js';
-import type { ActionWaits } from './waits/index.js';
+import type { ActionWaits, ChangeWaits } from './waits/index.js';
+
+/*
+ * The change a long-poll waits for: a new session transition, or a change of a live window, which
+ * can change the revision a thread without a window of its own reads
+ */
+export type IPollTopic = { kind: 'transitions' } | { kind: 'live' };
 
 // what the actions modules change as the runtime runs
 export type IActionsState = {
@@ -46,6 +52,8 @@ export type IActionsContext = {
   blockedProviders: Set<IManagedThread['provider']>;
   live: LiveItems;
   waits: ActionWaits;
+  // long-polls on session transitions and live windows, bounded like IPC connections
+  polls: ChangeWaits<IPollTopic>;
   // ends the waits of delayed re-checks and turn reads when the runtime closes
   resyncLifetime: AbortController;
   /** @returns The live key of a native session. */

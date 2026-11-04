@@ -208,7 +208,8 @@ export const createSkills = (
       };
     },
     /**
-     * Resolves an exact current selection and shows the native invocation without sending input.
+     * Resolves an exact current selection from a managed session's catalog, or a folder's for a
+     * session not yet created, and shows the native invocation without sending input.
      * @returns Ready, missing, disabled or unavailable state; never an inferred workflow.
      * @throws
      * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
@@ -217,17 +218,18 @@ export const createSkills = (
      * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
     async preview(
-      threadId: string,
+      target: ISkillTarget,
       skillId: string,
       skillArguments: string,
     ): Promise<ISkillPreview> {
-      const result = await scan({ threadId });
+      const result = await scan(target);
       if (!result) return { state: 'unavailable', skill: null, text: null };
       const skill = result.skills.find((skill) => skill.id === skillId);
       return toSkillPreview(result.formatSkill, skill, skillArguments);
     },
     /**
-     * Prepares one explicitly selected input while leaving skill contents and permissions native.
+     * Prepares one explicitly selected input while leaving skill contents and permissions native,
+     * from the target's catalog.
      * @returns Exact text and optional native skill selection for the existing action dispatcher.
      * @throws
      * - JG_AGENT_HQ_SKILL_UNAVAILABLE: The HQ skill is unavailable
@@ -237,11 +239,11 @@ export const createSkills = (
      * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
     async prepare(
-      threadId: string,
+      target: ISkillTarget,
       input: IMessageInput,
     ): Promise<{ text: string; skill: INativeSkillInput | null }> {
       if (input.kind === 'text') return { text: input.text, skill: null };
-      const preview = await this.preview(threadId, input.skillId, input.arguments);
+      const preview = await this.preview(target, input.skillId, input.arguments);
       if (preview.state !== 'ready' || !preview.skill || !preview.text)
         throw HQ_ERRORS.create('skillUnavailable', { data: { kind: 'state-conflict' } });
       return { text: preview.text, skill: { name: preview.skill.name, path: preview.skill.path } };

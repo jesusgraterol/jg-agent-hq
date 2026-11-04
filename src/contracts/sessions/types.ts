@@ -34,12 +34,14 @@ export type IObservationPace = z.infer<typeof ObservationPaceSchema>;
 /*
  * One recorded state change, in sequence order. A managed session carries its HQ thread ID and
  * may have no native ID while it is created; an observed session has only its native identity.
+ * `workspaceRoot` is the session's folder as HQ knew it then, or null when it knew none.
  */
 export const SessionTransitionSchema = z.object({
   sequence: z.number().int().positive(),
   provider: ProviderIdSchema,
   nativeId: NativeIdSchema.nullable(),
   threadId: z.uuid().nullable(),
+  workspaceRoot: z.string().nullable(),
   ownership: z.enum(['external', 'managed', 'uncertain']),
   previousState: SessionStateSchema.nullable(),
   state: SessionStateSchema,

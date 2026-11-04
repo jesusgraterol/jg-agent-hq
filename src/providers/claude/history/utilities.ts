@@ -7,9 +7,10 @@ import {
   readSync,
   realpathSync,
 } from 'node:fs';
+import { lstat, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
-import { hasErrorCode } from 'jg-exception';
+import { Exception, extractMessage, hasErrorCode } from 'jg-exception';
 import { isPathWithin } from 'jg-fs';
 import { z } from 'zod';
 
@@ -145,6 +146,48 @@ export const openTranscript = (directory: string, nativeId: string): number => {
       data: { kind: 'agent-unavailable' },
     });
   return openSync(join(directory, `${nativeId}.jsonl`), constants.O_RDONLY | constants.O_NOFOLLOW);
+};
+
+/**
+ * Deletes the files Claude Code keeps for one session in a workspace's project directory: its
+ * transcript and the folder beside it that holds its subagents and saved tool results. A link at
+ * either path is removed without following it, and a path that doesn't exist is already gone, as
+ * is every file of a workspace without a project directory.
+ * @param workspaceRoot The canonical workspace the session ran in.
+ * @param nativeId The session's ID, a UUID, which names both paths.
+ * @returns A promise that resolves once neither path exists.
+ * @throws
+ * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+ * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+ */
+export const deleteTranscript = async (workspaceRoot: string, nativeId: string): Promise<void> => {
+  if (!z.uuid().safeParse(nativeId).success)
+    throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
+  try {
+    let directory: string;
+    try {
+      directory = projectDirectory(workspaceRoot);
+    } catch (cause) {
+      if (hasErrorCode(cause, 'ENOENT')) return;
+      throw cause;
+    }
+    for (const path of [join(directory, `${nativeId}.jsonl`), join(directory, nativeId)]) {
+      let entry;
+      try {
+        entry = await lstat(path);
+      } catch (cause) {
+        if (hasErrorCode(cause, 'ENOENT')) continue;
+        throw cause;
+      }
+      await rm(path, { recursive: entry.isDirectory() });
+    }
+  } catch (cause) {
+    throw new Exception(`The HQ provider integration failed: ${extractMessage(cause)}`, {
+      code: 'JG_AGENT_HQ_PROVIDER_FAILED',
+      data: { kind: 'agent-unavailable' },
+      cause,
+    });
+  }
 };
 
 // the bytes at a transcript's end that a `continued-in` record is looked for in

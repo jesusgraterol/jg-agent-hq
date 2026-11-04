@@ -8,6 +8,9 @@ export type {
 } from './runtime/index.js';
 export { requestAgentHq } from './ipc/index.js';
 
+// safe error classification
+export { getErrorKind } from './errors/index.js';
+
 // provider identity, status and capabilities
 export type {
   IProviderId,
@@ -31,15 +34,11 @@ export type {
 export type { INativeLineage } from './contracts/identities/index.js';
 
 // trusted host storage
+export { openHostDatabase } from './storage/index.js';
 export type { IStorageDescriptor, IStorageMaintenanceOperation } from './storage/index.js';
 
-// trusted host snapshot and offline recovery
-export {
-  createHqSnapshot,
-  restoreHqSnapshot,
-  packHqSnapshot,
-  unpackHqSnapshot,
-} from './snapshots/index.js';
+// trusted host snapshot packing and offline recovery
+export { restoreHqSnapshot, packHqSnapshot, unpackHqSnapshot } from './snapshots/index.js';
 export type {
   IHqSnapshotInspection,
   IHqRestoreOptions,

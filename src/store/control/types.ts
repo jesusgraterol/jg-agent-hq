@@ -55,6 +55,10 @@ export type IActionRow = {
 };
 // an action row joined with its thread's native session, which its receipt carries
 export type IActionReceiptRow = IActionRow & { native_thread_id: string | null };
+// an action's metadata with the text of its undelivered queued input, which a page carries
+export type IActionSummaryRow = Omit<IActionRow, 'queued_input' | 'result'> & {
+  queued_text: string | null;
+};
 
 // an outcome answers the phase its action took; one for a phase the action has left is stale
 type IOutcomeFields = { actionId: string; phase: IActionPhase };
@@ -68,6 +72,8 @@ export type INativeOutcome = IOutcomeFields &
       }
     | { kind: 'closed' }
     | { kind: 'cleaned' }
+    // the native session named by its ID is gone, with its records
+    | { kind: 'deleted'; nativeId: string }
     | { kind: 'renamed' }
     | { kind: 'turn-accepted'; nativeTurnId: string }
     | { kind: 'steer-accepted'; nativeTurnId: string }
@@ -106,7 +112,15 @@ export type IAdmissionResult = {
   dispatchActionId: string | null;
 };
 export type IDispatch = { receipt: IActionReceipt; thread: IManagedThread; input: IPreparedInput };
-export type IObservationResult = { thread: IManagedThread | null; canDispatchQueued: boolean };
+/*
+ * The refreshed thread, whether its queue may advance, and an action the observation moved to
+ * its next phase, such as a close whose interrupted turn ended, which dispatch continues.
+ */
+export type IObservationResult = {
+  thread: IManagedThread | null;
+  canDispatchQueued: boolean;
+  continued?: IActionReceipt | null;
+};
 
 // a session another runtime left running, with its latest turn as its native process reports it
 export type IReattachment = {

@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { expectToRejectCode } from 'jg-exception/testing';
 import { createAgentHq } from 'jg-agent-hq';
-import { HqResponseSchema, type IHqRequestInput } from 'jg-agent-hq/contracts';
+import { HqResponseSchema, type IHqRequestInput, type IHqResponseOf } from 'jg-agent-hq/contracts';
 import { expect, onTestFinished, test, vi } from 'vitest';
 
 import { claudeRecord, withClaudeRuntime } from '../../../../scripts/test-support/index.js';
@@ -482,14 +482,14 @@ test('sessions last active at the same moment continue by native ID, each listed
     const listed: string[] = [];
     let cursor: string | null = null;
     for (let index = 0; index < 3; index += 1) {
-      const page = await request({
+      // annotated, since the cursor the loop reassigns from it shapes the command
+      const page: IHqResponseOf<'threads'> = await request({
         kind: 'threads',
         providers: ['claude'],
         workspaceRoots: [workspaceRoot],
         limit: 1,
         ...(cursor ? { cursor } : {}),
       });
-      if (page.kind !== 'threads') throw new Error('wrong response');
       listed.push(...page.result.data.map((thread) => thread.nativeId));
       cursor = page.result.nextCursor;
     }

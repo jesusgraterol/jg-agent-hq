@@ -85,7 +85,10 @@ export class ControlAdmission extends ControlModel {
           action.id,
         );
       const inputText = command.kind === 'steer' ? command.text : prepared.input?.text;
-      if (inputText !== undefined && ['message', 'queue', 'steer'].includes(command.kind)) {
+      if (
+        inputText !== undefined &&
+        ['message', 'queue', 'steer', 'thread-create'].includes(command.kind)
+      ) {
         const inputSha256 = hashValue(inputText);
         this._statements.run(
           'UPDATE agent_hq_action SET input_sha256 = ? WHERE id = ?',
@@ -197,8 +200,9 @@ export class ControlAdmission extends ControlModel {
     if (rule.takesSlot) this._availableSlot();
     let queued: IActionRow | null = null;
     let phase = rule.phase;
-    if (rule.target !== 'new')
+    if (rule.target === 'thread' || rule.target === 'queued')
       ({ queued, phase } = this.__admitToThread(action, prepared, rule, now));
+    else if (command.kind === 'thread-delete') phase = this.__admitDelete(action.id, prepared, now);
     else if (command.kind === 'thread-create' || command.kind === 'thread-adopt')
       this.__register(action.id, command, prepared, now);
     else this._conflict();
@@ -250,7 +254,12 @@ export class ControlAdmission extends ControlModel {
     if (!thread) this._conflict();
     this.__requireControl(rule.control, thread);
     if (rule.requiresNoPendingAction && thread.pending_action_id) this._conflict();
-    if (rule.requiresIdle) this.__requireIdle(thread);
+    // a close that interrupts a running turn first doesn't need an idle session
+    const isInterrupting =
+      command.kind === 'thread-close' &&
+      command.interrupt === true &&
+      thread.active_turn_id !== null;
+    if (rule.requiresIdle && !isInterrupting) this.__requireIdle(thread);
     const expectedTurnId = 'expectedTurnId' in command ? command.expectedTurnId : null;
     if (rule.requiresActiveTurn && thread.active_turn_id !== expectedTurnId) this._conflict();
     let phase = rule.phase;
@@ -301,6 +310,11 @@ export class ControlAdmission extends ControlModel {
         );
         break;
       case 'thread-close':
+        // the turn's end, once the interrupt stopped it, continues the close from clean
+        if (isInterrupting) {
+          if (thread.pending_action_id) this._conflict();
+          phase = 'interrupt';
+        }
         this._statements.run(
           'UPDATE agent_hq_thread SET pending_action_id = ? WHERE id = ?',
           action.id,
@@ -364,7 +378,72 @@ export class ControlAdmission extends ControlModel {
     this._statements.run('UPDATE agent_hq_action SET phase = ? WHERE id = ?', phase, actionId);
   }
 
-  /** Registers the new thread a create or adoption controls, before its native session exists. */
+  /**
+   * Admits the deletion of a native session no process runs. A session HQ runs is closed first,
+   * from clean, so it must be idle; a session HQ closed must have no action of this runtime in
+   * flight; and a session HQ doesn't manage has no record to check here.
+   * @returns The phase the deletion starts in.
+   * @throws
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   */
+  private __admitDelete(
+    actionId: string,
+    prepared: IAdmission['prepared'],
+    now: number,
+  ): IActionPhase {
+    const action = this._action(actionId)!;
+    if (!prepared.workspaceRoot || !prepared.nativeId || !action.provider) this._conflict();
+    const thread = this._nativeThread(action.provider, prepared.nativeId);
+    if (!thread) return 'delete';
+    if (thread.workspace_root !== prepared.workspaceRoot) this._conflict();
+    this._statements.run(
+      'UPDATE agent_hq_action SET thread_id = ? WHERE id = ?',
+      thread.id,
+      actionId,
+    );
+    if (thread.runtime_epoch === this._epoch) {
+      this.__requireControl('owned', thread);
+      this.__requireIdle(thread);
+      this._statements.run(
+        "UPDATE agent_hq_thread SET pending_action_id = ?, state = 'stopping', updated_at = ? WHERE id = ?",
+        actionId,
+        now,
+        thread.id,
+      );
+      this._statements.run(
+        "UPDATE agent_hq_action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
+        thread.id,
+      );
+      return 'clean';
+    }
+    if (
+      thread.ownership !== 'managed' ||
+      thread.state !== 'inactive' ||
+      thread.runtime_epoch !== null ||
+      this.__hasActionInFlight(thread)
+    )
+      this._conflict();
+    this._statements.run(
+      'UPDATE agent_hq_thread SET pending_action_id = ? WHERE id = ?',
+      actionId,
+      thread.id,
+    );
+    return 'delete';
+  }
+
+  /** Tells whether an action of this runtime holds a thread its runtime released. */
+  private __hasActionInFlight(thread: IThreadRow): boolean {
+    return (
+      thread.pending_action_id !== null &&
+      this._action(thread.pending_action_id)?.runtime_epoch === this._epoch
+    );
+  }
+
+  /**
+   * Registers the new thread a create or adoption controls, before its native session exists. A
+   * create's first input waits on the action as its queued input until its turn delivers it, and a
+   * browser submission of the create selected the session it makes.
+   */
   private __register(
     actionId: string,
     command: Extract<ICommand, { kind: 'thread-create' | 'thread-adopt' }>,
@@ -401,6 +480,20 @@ export class ControlAdmission extends ControlModel {
       provider,
       actionId,
     );
+    if (prepared.input) {
+      this._statements.run(
+        'UPDATE agent_hq_action SET queued_input = ? WHERE id = ?',
+        JSON.stringify(prepared.input),
+        actionId,
+      );
+      this._statements.run(
+        `UPDATE agent_hq_browser_action SET native_thread_id = ?, native_input_sha256 = coalesce(native_input_sha256, ?)
+        WHERE native_action_id = ? AND native_thread_id IS NULL`,
+        threadId,
+        hashValue(prepared.input.text),
+        actionId,
+      );
+    }
   }
 
   /** Requires the control the rule names over the thread. */
@@ -420,6 +513,8 @@ export class ControlAdmission extends ControlModel {
       return;
     }
     if (thread.pending_action_id && thread.runtime_epoch === this._epoch) this._conflict();
+    // a session HQ closed may be deleted by an action of this runtime
+    if (this.__hasActionInFlight(thread)) this._conflict();
     if (control === 'resumable') {
       if (
         thread.ownership !== 'managed' ||

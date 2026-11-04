@@ -100,10 +100,7 @@ test('owner-only IPC survives abandoned clients; shutdown releases SQLite and th
     expect(first.kind).toBe('status');
     if (first.kind !== 'status') throw new Error('wrong response');
     expect(first.result.store).toBe('ready');
-    expect(first.result.providers).toStrictEqual([
-      { provider: 'codex', state: 'idle', version: null },
-      { provider: 'claude', state: 'idle', version: null },
-    ]);
+    expect(first.result.runtimeEpoch).toBe(runtime.runtimeEpoch);
     const abandoned = connect(join(stateRoot, 'hq.sock'));
     await new Promise<void>((resolve, reject) => {
       abandoned.once('connect', resolve);

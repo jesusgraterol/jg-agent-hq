@@ -40,10 +40,13 @@ test('the shared-storage source preserves host schema ownership and verifies an 
         recovered.close();
       }
     }
-    expect(await fixture.request({ kind: 'status' })).toMatchObject({
-      kind: 'status',
-      result: { providers: [{ state: 'idle' }, { state: 'idle' }] },
-    });
+    // sharing storage starts no native session
+    expect(
+      (await fixture.request({ kind: 'managed-threads', workspaceRoot: fixture.workspaceRoot }))
+        .result.data,
+    ).toStrictEqual([]);
+    expect(await readFile(join(fixture.root, 'calls.jsonl'), 'utf8')).not.toContain('thread/start');
+    expect(await readFile(join(fixture.root, 'claude-starts.jsonl'), 'utf8')).toBe('');
   });
 });
 

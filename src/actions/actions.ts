@@ -10,17 +10,18 @@ import type {
   INativeApprovalSummary,
   ISessionTerminal,
 } from '../contracts/index.js';
+import { MAX_CONNECTIONS } from '../ipc/index.js';
 import type { createProviderRegistry } from '../providers/registry/index.js';
 import type { createSkills } from '../skills/index.js';
 import type { IStore } from '../store/index.js';
 
 import { LiveItems } from './live/index.js';
-import { ActionWaits } from './waits/index.js';
+import { ActionWaits, ChangeWaits } from './waits/index.js';
 import { createDispatch } from './dispatch/index.js';
 import { createEvents } from './events/index.js';
 import { createAdmission } from './admission/index.js';
 import { createReattach } from './reattach/index.js';
-import type { IActionsContext } from './types.js';
+import type { IActionsContext, IPollTopic } from './types.js';
 import { keepsSessions } from './utilities.js';
 
 /**
@@ -42,6 +43,8 @@ export const createActions = (
   const owned = createTaskRunner({ onError: (error) => events.failEvents(error) });
   const key = (provider: IManagedThread['provider'], nativeId: string) =>
     JSON.stringify([provider, nativeId]);
+  // over IPC each long-poll holds one of its connections, so as many may wait in process
+  const polls = new ChangeWaits<IPollTopic>(MAX_CONNECTIONS);
   const context: IActionsContext = {
     registry,
     store,
@@ -62,8 +65,9 @@ export const createActions = (
     controlled: new Map(),
     watched: new Set(),
     blockedProviders: new Set(),
-    live: new LiveItems(),
+    live: new LiveItems(() => polls.notify({ kind: 'live' })),
     waits: new ActionWaits((actionId) => store.call('reads', 'getAction', actionId)),
+    polls,
     resyncLifetime: new AbortController(),
     key,
     own(provider, nativeId) {
@@ -90,9 +94,11 @@ export const createActions = (
   return {
     live,
     waits,
+    polls,
     /**
-     * Returns after durable admission; the native operation outlives this client request.
-     * @returns The durable admission receipt after validation.
+     * Returns after durable admission; the native operation outlives this client request, except
+     * a deletion, which settles within it and throws its failure.
+     * @returns The durable admission receipt after validation, or a deletion's settled receipt.
      * @throws
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      * - JG_AGENT_HQ_SKILL_UNAVAILABLE: The HQ skill is unavailable
@@ -103,6 +109,7 @@ export const createActions = (
      * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
      * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+     * - JG_AGENT_HQ_RUNTIME_NOT_RUNNING: The HQ runtime is not running
      * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
      */
     async submit(action: IActionEnvelope): Promise<IActionReceipt> {

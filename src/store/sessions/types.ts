@@ -3,11 +3,15 @@ import type { INativeLineage, IProviderId, ISessionState } from '../../contracts
 // what the provider's first read of a session another client drives found, which its record keeps
 export type IObservedThread = { workspaceRoot: string; name: string | null; createdAt: number };
 
-// one observed session's state; Claude's poll reports no first read, since it names the workspace
+/*
+ * One observed session's state. Codex's adapter reports what its first read of the session found,
+ * and Claude's poll the folder it lists the session in.
+ */
 export type IObservedSession = {
   nativeId: string;
   state: ISessionState;
   thread?: IObservedThread;
+  workspaceRoot?: string;
 };
 
 /*

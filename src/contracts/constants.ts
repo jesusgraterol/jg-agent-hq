@@ -5,9 +5,17 @@ export const MAX_PAGE_SIZE = 128;
 // the most folders one `threads` read lists, so its cursor carries every source's continuation
 export const MAX_WORKSPACE_ROOTS = 64;
 
+// the largest action envelope HQ admits, in UTF-8 bytes of its JSON
+export const MAX_ACTION_BYTES = 32_768;
+
+// the longest a receipt wait or a long-poll waits for a change, in milliseconds
+export const MAX_WAIT_MS = 30_000;
+
 /*
- * The native steps an action takes, one at a time: a create continues with name, a clean with
- * close, and every other step is the action's only one.
+ * The native steps an action takes, one at a time: a create continues with name, then turn when
+ * it carries a first input; a close may start with interrupt, and continues from clean with close;
+ * a delete of a session HQ runs closes it the same way before delete. Every other step is the
+ * action's only one.
  */
 export const ACTION_PHASES = [
   'create',
@@ -18,6 +26,7 @@ export const ACTION_PHASES = [
   'interrupt',
   'clean',
   'close',
+  'delete',
   'reply',
 ] as const;
 

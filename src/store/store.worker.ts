@@ -56,6 +56,11 @@ const startWorker = async (): Promise<void> => {
     };
     const statements = createStatements(database);
     const { runtimeEpoch, actionKey } = options;
+    // AUTOINCREMENT keeps the highest transition sequence issued, read after every call
+    const readTransitionSequence = (): number =>
+      statements.get<{ seq: number }>(
+        "SELECT seq FROM sqlite_sequence WHERE name = 'agent_hq_session_transition'",
+      )?.seq ?? 0;
     // the lifecycle quarantines what another runtime left unsettled before anything is admitted
     const models: IStoreModels = {
       browser: new BrowserModel(statements, runtimeEpoch, actionKey),
@@ -72,9 +77,10 @@ const startWorker = async (): Promise<void> => {
       const { id } = request;
       try {
         if (request.kind === 'close') {
+          const transitionSequence = readTransitionSequence();
           models.claudeHistory.close();
           database.close();
-          post({ kind: 'result', id, result: null, error: null });
+          post({ kind: 'result', id, result: null, error: null, transitionSequence });
           port.close();
           return;
         }
@@ -82,12 +88,24 @@ const startWorker = async (): Promise<void> => {
         const operation: unknown = Reflect.get(model, request.method);
         if (typeof operation !== 'function') throw HQ_ERRORS.create('storeFailed');
         const result: unknown = await operation.apply(model, request.args);
-        post({ kind: 'result', id, result, error: null });
+        post({
+          kind: 'result',
+          id,
+          result,
+          error: null,
+          transitionSequence: readTransitionSequence(),
+        });
       } catch (error) {
-        post({ kind: 'result', id, result: null, error: toStoreError(error) });
+        post({
+          kind: 'result',
+          id,
+          result: null,
+          error: toStoreError(error),
+          transitionSequence: readTransitionSequence(),
+        });
       }
     });
-    post({ kind: 'ready', storage });
+    post({ kind: 'ready', storage, transitionSequence: readTransitionSequence() });
   } catch (error) {
     database.close();
     throw error;

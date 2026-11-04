@@ -27,3 +27,6 @@ export const KNOWN_NATIVE_STATES = ['notLoaded', 'idle', 'systemError', 'active'
 // the service tiers Codex names Fast and standard; a turn's tier also applies to the turns after it
 export const CODEX_FAST_SERVICE_TIER = 'priority';
 export const CODEX_STANDARD_SERVICE_TIER = 'default';
+
+// the start of Codex's error for a session it never saved a rollout of, which it can't delete
+export const NO_ROLLOUT_MESSAGE = 'no rollout found for thread id';

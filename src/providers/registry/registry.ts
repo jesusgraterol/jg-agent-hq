@@ -311,6 +311,8 @@ export const createProviderRegistry = (
             invokeControl((call) => adapter.cleanThread(requestId, nativeId, call)),
           releaseThread: (requestId, nativeId) =>
             invokeControl((call) => adapter.releaseThread(requestId, nativeId, call)),
+          deleteThread: (requestId, nativeId, workspaceRoot) =>
+            invokeControl((call) => adapter.deleteThread(requestId, nativeId, workspaceRoot, call)),
           prepareShutdown: (nativeId) => invoke((call) => adapter.prepareShutdown(nativeId, call)),
           stopControl: (nativeId) => invoke((call) => adapter.stopControl(nativeId, call)),
           close: () => closeEntry(entry),

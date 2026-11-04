@@ -11,7 +11,7 @@ import { ACTION_METADATA_COLUMNS, THREAD_COLUMNS, UNSTARTED_CONDITION } from '..
 import { toActionSummary, toManagedThread } from '../transformers.js';
 import type {
   IActionPage,
-  IActionRow,
+  IActionSummaryRow,
   IApprovalPage,
   IApprovalPageRequest,
   IControlPage,
@@ -199,8 +199,8 @@ export class ControlReads extends ControlModel {
     const seek = page.position
       ? 'AND (agent_hq_action.created_at, agent_hq_action.id) < (?, ?)'
       : '';
-    const rows = this._statements.all<Omit<IActionRow, 'queued_input' | 'result'>>(
-      `SELECT ${ACTION_METADATA_COLUMNS} FROM agent_hq_action
+    const rows = this._statements.all<IActionSummaryRow>(
+      `SELECT ${ACTION_METADATA_COLUMNS}, json_extract(queued_input, '$.text') AS queued_text FROM agent_hq_action
       WHERE thread_id = ? ${seek}
       ORDER BY agent_hq_action.created_at DESC, agent_hq_action.id DESC LIMIT ?`,
       threadId,

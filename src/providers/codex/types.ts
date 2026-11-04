@@ -281,6 +281,15 @@ export type ICodexProvider = {
    */
   unsubscribe(requestId: string, nativeId: string): Promise<void>;
   /**
+   * Deletes a session from Codex's storage through the daemon, which also forgets it; a session
+   * that never saved a rollout, such as one created without a turn, counts as deleted.
+   * @returns A promise resolved once Codex confirms the deletion.
+   * @throws
+   * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   */
+  deleteThread(requestId: string, nativeId: string): Promise<void>;
+  /**
    * Writes an exact native request response; resolution arrives separately.
    * @returns A promise resolved after the native transport accepts the response.
    * @throws

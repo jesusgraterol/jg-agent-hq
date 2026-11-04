@@ -32,6 +32,7 @@ const main = async (): Promise<void> => {
       cursor: { type: 'string' },
       limit: { type: 'string' },
       'after-sequence': { type: 'string' },
+      'wait-ms': { type: 'string' },
       pace: { type: 'string' },
       search: { type: 'string' },
       'exclude-continued': { type: 'boolean' },
@@ -42,7 +43,7 @@ const main = async (): Promise<void> => {
   const [kind] = positionals;
   if (values.help || !kind || kind === 'help') {
     process.stdout.write(
-      'jg-agent-hq serve|status|stop|capabilities|threads|thread|items|item-detail|item-image|session-evidence|usage|models|configuration|suggest-thread-name|skills|session-states|active-sessions|observation-pace|locks|request --state-root <path> [--provider <codex|claude>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--topic <topic>] [--thread-id <id>] [--after-sequence <sequence>]\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nthreads lists sessions across repeated --workspace-root and --provider, both providers by default, and accepts --search and --exclude-continued.\nsession-evidence accepts --native-item-id and repeated --evidence-kind.\nitems reads newest first and accepts --text-limit <1..65536>, and --native-item-id with --turn-id for one item.\nitem-detail reads the detail of one item and takes --native-item-id and --turn-id.\nitem-image reads one image of an item and also takes --index <0..63>.\nobservation-pace takes --pace <live|background>.\nlocks lists the jg-locks locks on this machine with their holders; HQ never takes them.\nrequest reads one validated HQ command as JSON from stdin, such as action-wait.\n',
+      'jg-agent-hq serve|status|stop|capabilities|threads|thread|items|item-detail|item-image|session-evidence|usage|models|configuration|suggest-thread-name|skills|session-states|active-sessions|observation-pace|locks|request --state-root <path> [--provider <codex|claude>] [--workspace-root <path>] [--native-id <id>] [--limit <1..128>] [--cursor <cursor>] [--topic <topic>] [--thread-id <id>] [--after-sequence <sequence>]\nsession-states also accepts --wait-ms <1..30000>, which waits for a transition after --after-sequence.\nserve accepts repeated --codex-extra-skill-root and --claude-additional-directory.\nthreads lists sessions across repeated --workspace-root and --provider, both providers by default, and accepts --search and --exclude-continued.\nsession-evidence accepts --native-item-id and repeated --evidence-kind.\nitems reads newest first and accepts --text-limit <1..65536>, and --native-item-id with --turn-id for one item.\nitem-detail reads the detail of one item and takes --native-item-id and --turn-id.\nitem-image reads one image of an item and also takes --index <0..63>.\nobservation-pace takes --pace <live|background>.\nlocks lists the jg-locks locks on this machine with their holders; HQ never takes them.\nrequest reads one validated HQ command as JSON from stdin, such as action-wait.\n',
     );
     return;
   }
@@ -166,13 +167,14 @@ const main = async (): Promise<void> => {
   if (roots.length > 1 || (values.provider?.length ?? 0) > 1)
     throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
   if (kind === 'session-states') {
-    const allowed = new Set(['state-root', 'after-sequence', 'limit']);
+    const allowed = new Set(['state-root', 'after-sequence', 'limit', 'wait-ms']);
     if (Object.keys(values).some((key) => !allowed.has(key)))
       throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
     const parsed = HqRequestSchema.safeParse({
       kind: 'session-states',
       afterSequence: values['after-sequence'] === undefined ? 0 : Number(values['after-sequence']),
       limit: values.limit === undefined ? 32 : Number(values.limit),
+      ...(values['wait-ms'] === undefined ? {} : { waitMs: Number(values['wait-ms']) }),
     });
     if (!parsed.success)
       throw HQ_ERRORS.create('requestInvalid', {
@@ -201,7 +203,7 @@ const main = async (): Promise<void> => {
     );
     return;
   }
-  if (values['after-sequence'] || values.pace || values['exclude-continued'])
+  if (values['after-sequence'] || values['wait-ms'] || values.pace || values['exclude-continued'])
     throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
   const provider = values.provider?.[0];
   const payload = Object.fromEntries(

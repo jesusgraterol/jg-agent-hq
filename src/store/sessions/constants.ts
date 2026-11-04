@@ -28,7 +28,7 @@ SELECT provider, native_id, state, changed_at, thread, observed_thread, history 
   SELECT observed.provider, observed.native_id,
     EXISTS (SELECT 1 FROM included WHERE included.provider = observed.provider AND included.native_id = observed.native_id),
     observed.state, observed.observed_at, NULL,
-    CASE WHEN observed.workspace_root IS NOT NULL THEN json_object('workspaceRoot', observed.workspace_root,
+    CASE WHEN observed.provider = 'codex' AND observed.workspace_root IS NOT NULL THEN json_object('workspaceRoot', observed.workspace_root,
       'name', observed.name, 'createdAt', observed.created_at) END,
     CASE WHEN observed.provider = 'claude' THEN (
       SELECT json_object('name', name, 'createdAt', created_at, 'updatedAt', updated_at,

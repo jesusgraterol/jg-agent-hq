@@ -581,7 +581,15 @@ test('trusted extra roots reach native loaders without becoming browser configur
         if (Date.now() > deadline) throw new Error('Creation timed out');
         await wait(10);
       }
-      expect(await readFile(join(fixture.root, 'calls.jsonl'), 'utf8')).toBe('');
+      // a Claude session makes no Codex call beyond the connection the runtime opens as it starts
+      const connection = ['initialize', 'initialized', 'thread/loaded/list'];
+      expect(
+        (await readFile(join(fixture.root, 'calls.jsonl'), 'utf8'))
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => z.object({ method: z.string() }).parse(JSON.parse(line)).method)
+          .filter((method) => !connection.includes(method)),
+      ).toStrictEqual([]);
       // Codex roots belong to the thread HQ starts, never to the shared daemon
       const codex = await setup(fixture, 'codex');
       const calls = await codex.calls();

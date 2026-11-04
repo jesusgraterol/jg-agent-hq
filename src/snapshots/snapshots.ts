@@ -6,7 +6,6 @@ import { ERRORS as FS_ERRORS } from 'jg-fs';
 import { withLock } from 'jg-locks';
 import { z } from 'zod';
 
-import type { IAgentHq } from '../runtime/index.js';
 import { SNAPSHOT_LOCK, toLocksRoot } from '../runtime/state/index.js';
 import { toWorkerExecArgv } from '../store/index.js';
 import { HQ_ERRORS } from '../errors/index.js';
@@ -21,13 +20,6 @@ import {
   type IHqRestoreResult,
   type ISnapshotContext,
 } from './types.js';
-
-const contexts = new WeakMap<IAgentHq, ISnapshotContext>();
-
-/** Binds trusted Node runtime state without adding worker handles or backup commands to RPC. */
-export const registerSnapshotContext = (context: ISnapshotContext): void => {
-  contexts.set(context.runtime, context);
-};
 
 /**
  * Runs full SQLite verification/restoration off the caller's event loop and confirms worker exit.
@@ -96,7 +88,10 @@ const SNAPSHOT_LOCK_WAIT_SECONDS = 120;
 /**
  * Captures a running HQ, host tables and private key while agents keep working, under the state
  * root's snapshot lock. The host must keep its own connections from writing host tables until the
- * capture resolves. The destination must be absent under an existing canonical parent.
+ * capture resolves. The destination must be absent under an existing canonical parent. The
+ * runtime's own state stays private to it, so no worker handle or backup command reaches RPC.
+ * @param context The running runtime's state.
+ * @param destination The snapshot directory to create.
  * @returns A fully verified local snapshot; remote durability remains the host's responsibility.
  * @throws
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
@@ -104,13 +99,11 @@ const SNAPSHOT_LOCK_WAIT_SECONDS = 120;
  * - JG_AGENT_HQ_SNAPSHOT_FAILED: The HQ snapshot operation failed
  * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
  */
-export const createHqSnapshot = async (
-  runtime: IAgentHq,
+export const captureHqSnapshot = async (
+  context: ISnapshotContext,
   destination: string,
 ): Promise<IHqSnapshotInspection> => {
-  const context = contexts.get(runtime);
   if (
-    !context ||
     context.isClosing() ||
     typeof destination !== 'string' ||
     !isAbsolute(destination) ||

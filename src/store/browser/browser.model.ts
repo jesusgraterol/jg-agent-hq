@@ -89,12 +89,15 @@ export class BrowserModel {
       native: null,
     };
     const native = action.command.kind === 'native' ? action.command.action.command : null;
+    // a create's first input is sent to the session it makes, which its native admission records
     const nativeText =
       native?.kind === 'steer'
         ? native.text
         : native &&
-            (native.kind === 'message' || native.kind === 'queue') &&
-            native.input.kind === 'text'
+            (native.kind === 'message' ||
+              native.kind === 'queue' ||
+              native.kind === 'thread-create') &&
+            native.input?.kind === 'text'
           ? native.input.text
           : null;
     this.__statements.run(

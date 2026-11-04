@@ -49,6 +49,9 @@ export const createStore = async (
   let readyResolve: () => void = () => undefined;
   let readyReject: (error: unknown) => void = () => undefined;
   let storage: IStorageDescriptor | undefined;
+  // the highest session transition sequence the worker reported, and who hears of a new one
+  let transitionSequence = 0;
+  let onTransition: (() => void) | undefined;
   const ready = new Promise<void>((resolve, reject) => {
     readyResolve = resolve;
     readyReject = reject;
@@ -66,6 +69,7 @@ export const createStore = async (
   worker.on('message', (response: IStoreResponse) => {
     if (response.kind === 'ready') {
       storage = response.storage;
+      transitionSequence = response.transitionSequence;
       readyResolve();
       return;
     }
@@ -78,6 +82,10 @@ export const createStore = async (
         }),
       );
       return;
+    }
+    if (response.transitionSequence !== transitionSequence) {
+      transitionSequence = response.transitionSequence;
+      onTransition?.();
     }
     if (response.error)
       pending.reject(
@@ -172,6 +180,9 @@ export const createStore = async (
         { kind: 'call', id: admit(), model, method: String(method), args },
         model === 'snapshot' ? undefined : 5000,
       )) as IStoreResult<typeof model, typeof method>,
+    onTransition: (listener) => {
+      onTransition = listener;
+    },
     close: (): Promise<void> =>
       (closing ??= (async () => {
         try {

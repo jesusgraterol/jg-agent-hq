@@ -2,8 +2,11 @@ import type { IActionPhase } from '../../../contracts/index.js';
 
 // what one action kind needs from its thread, and how admission hands it to native dispatch
 export type IAdmissionRule = {
-  // a new thread, the thread the command names, or the thread of the queued action it names
-  target: 'new' | 'thread' | 'queued';
+  /*
+   * A new thread, the thread the command names, the thread of the queued action it names, or the
+   * native session the command names, which HQ may or may not manage.
+   */
+  target: 'new' | 'thread' | 'queued' | 'session';
   /*
    * The control the thread must be under: owned by this runtime, attached to this runtime however
    * its ownership stands, closed and resumable, or uncertain and recoverable by this runtime. A
@@ -20,7 +23,10 @@ export type IAdmissionRule = {
   takesSlot: boolean;
   // the thread stops: its state becomes stopping and its queued input waits
   stops: boolean;
-  // the native step the dispatched action takes; a create recovery takes create instead
+  /*
+   * The native step the dispatched action takes: a create recovery takes create instead, a close
+   * that interrupts a running turn takes interrupt, and a delete of a session HQ runs takes clean.
+   */
   phase: IActionPhase | null;
   /*
    * Dispatches the action itself, holds it as the thread's queued input, settles it at once

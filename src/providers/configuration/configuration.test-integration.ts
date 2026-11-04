@@ -8,7 +8,11 @@ import type { IActionCommand } from 'jg-agent-hq/contracts';
 import { expect, test } from 'vitest';
 import { z } from 'zod';
 
-import { withClaudeRuntime, writeFixtureControl } from '../../../scripts/test-support/index.js';
+import {
+  waitForWarmUp,
+  withClaudeRuntime,
+  writeFixtureControl,
+} from '../../../scripts/test-support/index.js';
 
 test.each(['codex', 'claude'] as const)(
   'native %s settings change on explicit input and an idle restart preserves identity',
@@ -341,6 +345,12 @@ test.each(['settings', 'initialization'])(
   'runtime shutdown confirms the workspace configuration process has exited before releasing ownership: %s',
   async (stage) => {
     await withClaudeRuntime(async ({ runtime, workspaceRoot, root }) => {
+      // the read process the runtime starts for itself has initialized before the read's starts
+      await waitForWarmUp(runtime);
+      const calls = async (subtype: string) =>
+        (await readFile(join(root, 'claude-calls.jsonl'), 'utf8')).split(`"${subtype}"`).length - 1;
+      const subtype = stage === 'settings' ? 'get_settings' : 'initialize';
+      const before = await calls(subtype);
       await writeFixtureControl(
         root,
         'claude-control.json',
@@ -348,13 +358,7 @@ test.each(['settings', 'initialization'])(
       );
       const read = runtime.request({ kind: 'configuration', provider: 'claude', workspaceRoot });
       const settled = read.catch(() => null);
-      await expect
-        .poll(async () =>
-          (await readFile(join(root, 'claude-calls.jsonl'), 'utf8')).includes(
-            stage === 'settings' ? 'get_settings' : 'initialize',
-          ),
-        )
-        .toBe(true);
+      await expect.poll(() => calls(subtype)).toBe(before + 1);
       const { pid } = z
         .object({ pid: z.number().int().positive() })
         .parse(JSON.parse(await readFile(join(root, 'claude-pid.json'), 'utf8')));
@@ -386,6 +390,11 @@ test.each(['settings', 'initialization'])(
 
 test('workspace configuration reads bound process growth and shutdown closes every accepted lane', async () => {
   await withClaudeRuntime(async ({ runtime, workspaceRoot, root }) => {
+    // the read process the runtime starts for itself is not one of the four
+    await waitForWarmUp(runtime);
+    const started = async () =>
+      (await readFile(join(root, 'claude-read-pids.jsonl'), 'utf8')).trim().split('\n').length;
+    const before = await started();
     await writeFixtureControl(root, 'claude-control.json', { holdConfiguration: true });
     const reads = Array.from({ length: 4 }, () =>
       runtime
@@ -403,9 +412,7 @@ test('workspace configuration reads bound process growth and shutdown closes eve
       runtime.request({ kind: 'configuration', provider: 'claude', workspaceRoot }),
       'JG_AGENT_HQ_CLAUDE_FAILED',
     );
-    expect(
-      (await readFile(join(root, 'claude-read-pids.jsonl'), 'utf8')).trim().split('\n'),
-    ).toHaveLength(4);
+    expect(await started()).toBe(before + 4);
     await runtime.close();
     await Promise.all(reads);
   });

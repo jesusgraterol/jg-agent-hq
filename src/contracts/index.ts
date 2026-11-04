@@ -5,7 +5,9 @@ export {
   MAX_ITEM_IMAGE_BYTES,
   MAX_ITEM_IMAGES,
   MAX_ITEM_TEXT_LENGTH,
+  MAX_ACTION_BYTES,
   MAX_PAGE_SIZE,
+  MAX_WAIT_MS,
   MAX_WORKSPACE_ROOTS,
   PUBLIC_ERROR_CODES,
   PUBLIC_ERROR_MESSAGES,
@@ -69,6 +71,7 @@ export type {
   IUsageWindowScope,
   IRuntimeStatus,
   IHqResponse,
+  IHqResponseOf,
   IErrorKind,
   IIpcResponse,
 } from './types.js';

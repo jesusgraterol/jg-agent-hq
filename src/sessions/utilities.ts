@@ -96,11 +96,15 @@ export const encodeHistoryCursor = (nativeCursor: string | null, filters: object
 /**
  * Cuts each item's text to a limit on a code-point boundary, marking the items it cut, after
  * everything that compares the persisted text, such as live-item reconciliation, has read it.
+ * Live items and queued input text are cut the same way.
  * @param items The items as their provider presents them.
  * @param textLimit The most UTF-16 code units of text an item keeps.
  * @returns The items with their text cut.
  */
-export const limitItemText = (items: IHistoryItem[], textLimit: number): IHistoryItem[] =>
+export const limitItemText = <TItem extends Pick<IHistoryItem, 'text' | 'isTruncated'>>(
+  items: TItem[],
+  textLimit: number,
+): TItem[] =>
   items.map((item) => {
     if (item.text.length <= textLimit) return item;
     const end = /[\uD800-\uDBFF]/.test(item.text.charAt(textLimit - 1)) ? textLimit - 1 : textLimit;

@@ -10,7 +10,7 @@ import {
   PUBLIC_ERROR_CODES,
   PUBLIC_ERROR_MESSAGES,
   type IHqRequestInput,
-  type IHqResponse,
+  type IHqResponseOf,
 } from '../contracts/index.js';
 import { isPrivateOwner, readRuntimeOwner } from '../runtime/state/index.js';
 import { HQ_ERRORS } from '../errors/index.js';
@@ -20,7 +20,8 @@ import { createLineDecoder } from './framing.js';
 
 /**
  * Runs one validated local command and closes only its client connection.
- * @returns The matching normalized response; stopping requires subsequent shutdown confirmation.
+ * @returns The response to the command's kind; stopping requires subsequent shutdown
+ * confirmation.
  * @throws
  * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
  * - JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE: The HQ state directory is unsafe
@@ -37,11 +38,11 @@ import { createLineDecoder } from './framing.js';
  * - JG_AGENT_HQ_CLIENT_OPERATION_FAILED: Operation could not be completed.
  * - JG_AGENT_HQ_CLIENT_IMAGE_UNAVAILABLE: Image is unavailable.
  */
-export const requestAgentHq = async (
+export const requestAgentHq = async <TCommand extends IHqRequestInput>(
   stateRoot: string,
-  command: IHqRequestInput,
+  command: TCommand,
   signal?: AbortSignal,
-): Promise<IHqResponse> => {
+): Promise<IHqResponseOf<TCommand['kind']>> => {
   const input = HqRequestSchema.safeParse(command);
   if (!input.success || !isAbsolute(stateRoot))
     throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
@@ -57,7 +58,7 @@ export const requestAgentHq = async (
   const socket = createConnection(path);
   let onAbort: (() => void) | undefined;
   try {
-    return await new Promise<IHqResponse>((resolve, reject) => {
+    return await new Promise<IHqResponseOf<TCommand['kind']>>((resolve, reject) => {
       onAbort = () => {
         socket.destroy();
         reject(HQ_ERRORS.create('transportFailed', { data: { kind: 'agent-unavailable' } }));
@@ -99,7 +100,8 @@ export const requestAgentHq = async (
         }
         if (response.response.kind !== input.data.kind)
           throw HQ_ERRORS.create('transportFailed', { data: { kind: 'agent-unavailable' } });
-        resolve(response.response);
+        // the kind check above narrows the response, which TypeScript can't follow to the generic
+        resolve(response.response as IHqResponseOf<TCommand['kind']>);
       });
       socket.on('data', (chunk: Buffer) => {
         try {

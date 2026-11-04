@@ -8,7 +8,7 @@ import { expectToRejectCode } from 'jg-exception/testing';
 import { hasErrorCode } from 'jg-exception';
 import { hashValue } from 'jg-crypto';
 import { inspectLock } from 'jg-locks';
-import { createAgentHq, type IStorageDescriptor } from 'jg-agent-hq';
+import { createAgentHq, openHostDatabase, type IStorageDescriptor } from 'jg-agent-hq';
 import type { IBrowserAction } from 'jg-agent-hq/contracts';
 import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
@@ -115,6 +115,55 @@ test('shared storage retains application tables and user_version across current-
     } finally {
       await reopened.close();
     }
+  });
+});
+
+test('openHostDatabase applies the connection settings and keeps host statements out of the reserved prefix', async () => {
+  await withClaudeRuntime(async ({ runtime }) => {
+    await runtime.withStorageMaintenance(async (storage) => {
+      const database = openHostDatabase(storage);
+      try {
+        const read = (pragma: string) => ({ ...database.prepare(`PRAGMA ${pragma}`).get() });
+        expect(read('foreign_keys')).toStrictEqual({ foreign_keys: 1 });
+        expect(read('busy_timeout')).toStrictEqual({ timeout: 5000 });
+        // FULL is 2
+        expect(read('synchronous')).toStrictEqual({ synchronous: 2 });
+        expect(read('journal_size_limit')).toStrictEqual({ journal_size_limit: 16_777_216 });
+        expect(read('journal_mode')).toStrictEqual({ journal_mode: 'wal' });
+        database.exec(
+          'CREATE TABLE app_note (id INTEGER PRIMARY KEY, text TEXT NOT NULL) STRICT; CREATE INDEX app_idx_note__text ON app_note (text); PRAGMA user_version = 3;',
+        );
+        database.prepare('INSERT INTO app_note (id, text) VALUES (?, ?)').run(1, 'Host-owned');
+        database.prepare('UPDATE app_note SET text = ? WHERE id = ?').run('Host-owned note', 1);
+        expect({ ...database.prepare('SELECT text FROM app_note').get() }).toStrictEqual({
+          text: 'Host-owned note',
+        });
+        // HQ's tables stay readable
+        expect({
+          ...database.prepare('SELECT count(*) AS count FROM agent_hq_thread').get(),
+        }).toStrictEqual({
+          count: 0,
+        });
+        for (const statement of [
+          'CREATE TABLE agent_hq_note (id INTEGER PRIMARY KEY) STRICT',
+          'CREATE INDEX app_idx_thread__name ON agent_hq_thread (name)',
+          'CREATE TRIGGER app_trg_thread AFTER DELETE ON agent_hq_thread BEGIN SELECT 1; END',
+          'CREATE VIEW agent_hq_view AS SELECT 1',
+          "UPDATE agent_hq_schema SET package_version = 'host'",
+          'DELETE FROM agent_hq_event',
+          "INSERT INTO agent_hq_observed_session (provider, native_id, state, observed_at) VALUES ('codex', 'x', 'idle', 0)",
+          'ALTER TABLE agent_hq_thread ADD COLUMN app_note TEXT',
+          'DROP INDEX agent_hq_idx_a__native_turn_id',
+          'DROP TABLE agent_hq_event',
+        ])
+          expect(() => database.exec(statement), statement).toThrow('not authorized');
+        expect({ ...database.prepare('PRAGMA user_version').get() }).toStrictEqual({
+          user_version: 3,
+        });
+      } finally {
+        database.close();
+      }
+    });
   });
 });
 

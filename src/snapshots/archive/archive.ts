@@ -98,7 +98,7 @@ const readEntries = async function* (directory: string): AsyncGenerator<Buffer> 
  * Encrypts a verified snapshot into one new private file with AES-256-GCM: a format identifier,
  * a fresh 12-byte IV, the ciphertext of every snapshot file in manifest order with its path and
  * length, and the authentication tag. The caller keeps the 32-byte key.
- * @param snapshotDirectory A snapshot from createHqSnapshot.
+ * @param snapshotDirectory A snapshot from the runtime's createSnapshot.
  * @param archivePath An absent absolute path beneath an existing canonical parent.
  * @param key The 32-byte encryption key.
  * @returns The inspection of the snapshot that was packed.

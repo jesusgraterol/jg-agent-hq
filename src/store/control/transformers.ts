@@ -7,7 +7,7 @@ import type {
   ITurnResult,
 } from '../../contracts/index.js';
 
-import type { IActionReceiptRow, IActionRow, IThreadRow } from './types.js';
+import type { IActionReceiptRow, IActionRow, IActionSummaryRow, IThreadRow } from './types.js';
 
 /*
  * HQ writes its JSON columns from values it validated at their boundary, such as native lineage
@@ -31,10 +31,10 @@ export const toManagedThread = (thread: IThreadRow): IManagedThread => ({
   updatedAt: thread.updated_at,
 });
 
-/** Converts bounded action metadata without loading its pending message body. */
-export const toActionSummary = (
+/** Converts the action metadata receipts and summaries share. */
+const toActionMetadata = (
   action: Omit<IActionRow, 'queued_input' | 'result'>,
-): IActionSummary => ({
+): Omit<IActionSummary, 'queuedText'> => ({
   id: action.id,
   digest: action.digest,
   runtimeEpoch: action.runtime_epoch,
@@ -51,12 +51,18 @@ export const toActionSummary = (
   updatedAt: action.updated_at,
 });
 
+/** Converts bounded action metadata with the text of its undelivered queued input, uncut. */
+export const toActionSummary = (action: IActionSummaryRow): IActionSummary => ({
+  ...toActionMetadata(action),
+  queuedText: action.queued_text === null ? null : { text: action.queued_text, isTruncated: false },
+});
+
 /**
  * Includes the thread's native session, recoverable queued input and complete native output only
  * for a selected receipt.
  */
 export const toActionReceipt = (action: IActionReceiptRow): IActionReceipt => ({
-  ...toActionSummary(action),
+  ...toActionMetadata(action),
   nativeThreadId: action.native_thread_id,
   queuedInput:
     action.queued_input === null ? null : (JSON.parse(action.queued_input) as IPreparedInput),

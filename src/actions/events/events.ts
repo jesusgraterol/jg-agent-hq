@@ -33,7 +33,7 @@ export const createEvents = (
   const { registry, store, epoch, actionKey, runBackground, state, prompts, controlled, live } =
     context;
   const { watched, waits, resyncLifetime, key, own, runOwned } = context;
-  const { verifyThread, advanceQueue, apply, continuePhases } = dispatcher;
+  const { verifyThread, advanceQueue, apply, dispatch } = dispatcher;
   const eventCounts = new Map<IManagedThread['provider'], number>();
   // providers whose connection reports the sessions other clients drive
   const observingProviders = new Set<IManagedThread['provider']>();
@@ -226,6 +226,12 @@ export const createEvents = (
           prompts.delete(id);
     if (result.canDispatchQueued && result.thread)
       advanceQueue(result.thread.id, result.thread.provider);
+    // a close whose interrupted turn ended continues from clean
+    const { continued, thread } = result;
+    if (continued && thread)
+      runOwned(async () => {
+        await dispatch(continued, thread);
+      });
   };
   /** Orders one observation about a controlled session behind the events before it. */
   const receiveObservation = (
@@ -423,13 +429,12 @@ export const createEvents = (
           if (outcome.kind === 'created') own(provider, verified.nativeId);
         }
         const updated = await apply(verifiedOutcome);
-        if (updated && (outcome.kind === 'created' || outcome.kind === 'cleaned'))
-          runNativeOwned(
-            provider,
-            nativeThread?.nativeId ?? thread.nativeId ?? undefined,
-            async () =>
-              continuePhases(updated, (await store.call('reads', 'getThread', thread.id))!),
-          );
+        // a late answer that moved its action to its next phase continues it
+        if (updated?.delivery === 'submitted' && updated.phase !== outcome.phase)
+          runOwned(async () => {
+            const current = await store.call('reads', 'getThread', thread.id);
+            if (current) await dispatch(updated, current);
+          });
       });
     },
     unavailable(provider, nativeId) {

@@ -218,14 +218,19 @@ export type IAgentProvider = {
   /** @returns Native acknowledgement of the selected session's name change. */
   nameThread(requestId: string, nativeId: string, name: string, call: IProviderCall): Promise<void>;
   /**
-   * Checks media and output options before action admission and dispatch.
+   * Checks media and output options before action admission and dispatch, without a session for
+   * a create's first input.
    * @returns Confirmation that the selected native control supports the input.
    * @throws
    * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
    * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
    * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
    */
-  validateInput(nativeId: string, input: IPreparedInput, call: IProviderCall): Promise<void>;
+  validateInput(
+    nativeId: string | undefined,
+    input: IPreparedInput,
+    call: IProviderCall,
+  ): Promise<void>;
   /**
    * Starts one native turn; completion arrives separately.
    * @returns The acknowledged native turn identity.
@@ -265,6 +270,22 @@ export type IAgentProvider = {
   cleanThread(requestId: string, nativeId: string, call: IProviderCall): Promise<void>;
   /** @returns Confirmed cleanup and release of the selected owned native controller. */
   releaseThread(requestId: string, nativeId: string, call: IProviderCall): Promise<void>;
+  /**
+   * Deletes a session no process runs from the provider's storage, in the workspace it ran in. A
+   * session already gone counts as deleted.
+   * @returns Confirmation that the provider holds the session no more.
+   * @throws
+   * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+   * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  deleteThread(
+    requestId: string,
+    nativeId: string,
+    workspaceRoot: string,
+    call: IProviderCall,
+  ): Promise<void>;
   /** @returns Confirmed native background cleanup before the runtime closes its transports. */
   prepareShutdown(nativeId: string, call: IProviderCall): Promise<void>;
   /** @returns Confirmed shutdown of the affected native control connection. */

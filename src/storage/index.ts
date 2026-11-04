@@ -6,3 +6,6 @@ export { STORAGE_CONNECTION_SETTINGS } from './constants.js';
 
 // runtime maintenance admission
 export { createStorage } from './storage.js';
+
+// host connections
+export { openHostDatabase } from './database.js';

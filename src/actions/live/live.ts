@@ -14,11 +14,20 @@ type ILiveThread = {
 // serialized accounting includes escaping/identifiers and leaves space inside the IPC frame
 const MAX_LIVE_BYTES = 4 * 1024 * 1024;
 
-/** Keeps a bounded presentation window until matching native history has been flushed. */
+/**
+ * Keeps a bounded presentation window until matching native history has been flushed. Every
+ * change takes a new revision and is reported.
+ */
 export class LiveItems {
   private readonly __threads = new Map<string, ILiveThread>();
+  private readonly __onChange: () => void;
   private __bytes = 0;
   private __revision = 0;
+
+  /** Reports each change, such as to wake the long-polls on live windows. */
+  public constructor(onChange: () => void = () => undefined) {
+    this.__onChange = onChange;
+  }
 
   /** Starts a known presentation window without discarding retained awaiting-flush items. */
   public open(nativeId: string): void {
@@ -27,7 +36,7 @@ export class LiveItems {
     this.__threads.set(nativeId, {
       items: new Map(),
       hasGap: false,
-      revision: ++this.__revision,
+      revision: this.__change(),
       backgroundCommands: 0,
     });
   }
@@ -40,12 +49,12 @@ export class LiveItems {
       thread = {
         items: new Map(),
         hasGap: true,
-        revision: ++this.__revision,
+        revision: this.__change(),
         backgroundCommands: 0,
       };
       this.__threads.set(nativeId, thread);
     }
-    thread.revision = ++this.__revision;
+    thread.revision = this.__change();
     const key = JSON.stringify([item.turnId, item.nativeId]);
     const previous = thread.items.get(key);
     if (previous) this.__bytes -= previous.bytes;
@@ -66,7 +75,7 @@ export class LiveItems {
     const thread = this.__threads.get(nativeId)!;
     if (thread.backgroundCommands === count) return;
     thread.backgroundCommands = count;
-    thread.revision = ++this.__revision;
+    thread.revision = this.__change();
   }
 
   /**
@@ -93,7 +102,7 @@ export class LiveItems {
     const thread = this.__threads.get(nativeId);
     if (thread) {
       thread.hasGap = true;
-      thread.revision = ++this.__revision;
+      thread.revision = this.__change();
     }
   }
 
@@ -105,7 +114,7 @@ export class LiveItems {
     if (!thread || !entry) return;
     this.__bytes -= entry.bytes;
     thread.items.delete(key);
-    thread.revision = ++this.__revision;
+    thread.revision = this.__change();
   }
 
   /** Appends bounded text; a truncated prefix is never presented as the complete item. */
@@ -115,7 +124,7 @@ export class LiveItems {
     if (!entry || entry.isComplete) {
       if (thread) {
         thread.hasGap = true;
-        thread.revision = ++this.__revision;
+        thread.revision = this.__change();
       }
       return;
     }
@@ -176,7 +185,7 @@ export class LiveItems {
       if (entry.isUnfinished && turns.has(entry.item.turnId)) {
         this.__bytes -= entry.bytes;
         thread.items.delete(key);
-        thread.revision = ++this.__revision;
+        thread.revision = this.__change();
       }
     for (const item of persisted) {
       const key = JSON.stringify([item.turnId, item.nativeId]);
@@ -190,7 +199,7 @@ export class LiveItems {
       ) {
         this.__bytes -= entry.bytes;
         thread.items.delete(key);
-        thread.revision = ++this.__revision;
+        thread.revision = this.__change();
       }
     }
   }
@@ -213,7 +222,7 @@ export class LiveItems {
   public completeTurn(nativeId: string, turnId: string): void {
     const thread = this.__threads.get(nativeId);
     if (!thread) return;
-    thread.revision = ++this.__revision;
+    thread.revision = this.__change();
     for (const entry of thread.items.values())
       if (entry.item.turnId === turnId && !entry.isComplete) {
         entry.isComplete = true;
@@ -226,22 +235,31 @@ export class LiveItems {
     const thread = this.__threads.get(nativeId);
     if (thread) for (const entry of thread.items.values()) this.__bytes -= entry.bytes;
     this.__threads.delete(nativeId);
-    this.__revision += 1;
+    // a window without an entry reads the runtime's latest revision, which this changes
+    this.__change();
   }
 
   /** Releases every retained body when the owning runtime has stopped. */
   public clear(): void {
     this.__threads.clear();
-    this.__revision += 1;
+    this.__change();
     this.__bytes = 0;
   }
 
+  /** Drops a window's oldest item when a bound requires it, which leaves a gap. */
   private __drop(thread: ILiveThread, key: string): void {
     const entry = thread.items.get(key);
     if (!entry) return;
     this.__bytes -= entry.bytes;
     thread.items.delete(key);
-    thread.revision = ++this.__revision;
+    thread.revision = this.__change();
     thread.hasGap = true;
+  }
+
+  /** Takes the next revision and reports the change. */
+  private __change(): number {
+    this.__revision += 1;
+    this.__onChange();
+    return this.__revision;
   }
 }

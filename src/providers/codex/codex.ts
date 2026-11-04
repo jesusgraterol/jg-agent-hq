@@ -1,3 +1,4 @@
+import { Exception, extractMessage, isException } from 'jg-exception';
 import { runInOrder } from 'jg-utilities';
 import { z } from 'zod';
 
@@ -14,6 +15,7 @@ import { HQ_ERRORS } from '../../errors/index.js';
 import {
   LOADED_THREADS_PAGE_SIZE,
   MAX_TURN_TIME_PAGES,
+  NO_ROLLOUT_MESSAGE,
   SKILL_HINT_READ_CONCURRENCY,
   TURN_TIMES_PAGE_SIZE,
 } from './constants.js';
@@ -587,6 +589,21 @@ export const createCodexProvider = async (
       } finally {
         releaseControlState(nativeId);
       }
+    },
+    async deleteThread(requestId, nativeId) {
+      let result: unknown;
+      try {
+        result = await connection.request('thread/delete', { threadId: nativeId }, requestId);
+      } catch (cause) {
+        // Codex 0.166 refuses this way a session it never saved, as one created without a turn
+        if (isException(cause) && cause.message.includes(NO_ROLLOUT_MESSAGE)) return;
+        throw new Exception(`The HQ provider integration failed: ${extractMessage(cause)}`, {
+          code: 'JG_AGENT_HQ_PROVIDER_FAILED',
+          data: { kind: 'agent-unavailable' },
+          cause,
+        });
+      }
+      parseNative(z.object({}), result);
     },
     reply: connection.reply,
     reject: connection.reject,

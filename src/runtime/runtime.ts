@@ -4,7 +4,12 @@ import { Exception, extractMessage } from 'jg-exception';
 import { listLocks } from 'jg-locks';
 import { z } from 'zod';
 
-import { HqRequestSchema, type IHqRequestInput, type IHqResponse } from '../contracts/index.js';
+import {
+  HqRequestSchema,
+  type IHqRequestInput,
+  type IHqResponse,
+  type IHqResponseOf,
+} from '../contracts/index.js';
 import { createActions, readControl } from '../actions/index.js';
 import { CONTROL_SOCKET, createIpcServer, removeLeftoverSocket } from '../ipc/index.js';
 import {
@@ -24,7 +29,7 @@ import { suggestThreadName } from '../sessions/names/index.js';
 import { createSkills } from '../skills/index.js';
 import { createStore } from '../store/index.js';
 import { createStorage } from '../storage/index.js';
-import { registerSnapshotContext } from '../snapshots/index.js';
+import { captureHqSnapshot } from '../snapshots/index.js';
 import { HQ_ERRORS, isCleanupUnconfirmed } from '../errors/index.js';
 
 import {
@@ -37,10 +42,12 @@ import {
   resolveWorkspaceTarget,
 } from './state/index.js';
 import { createBrowserActions } from './browser/index.js';
+import { startWarmUp } from './warm-up/index.js';
 import { AgentHqOptionsSchema, type IAgentHq, type IAgentHqOptions } from './types.js';
 
 /**
- * Starts one local controller with private IPC, a SQLite worker and lazy native providers.
+ * Starts one local controller with private IPC, a SQLite worker and native providers, which it
+ * connects in the background without waiting for them.
  * @returns The owned runtime. Client disconnects do not close it.
  * @throws
  * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
@@ -132,6 +139,8 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     storage.background,
     (nativeId) => claudeAgents.terminalOf(nativeId),
   );
+  // a long-poll on session states reads again once a worker call recorded a new transition
+  projection.onTransition(() => actions.polls.notify({ kind: 'transitions' }));
   /*
    * What session reads join to each summary: the poll's listing and, for a session HQ runs, the
    * background commands its live window holds, the larger count winning for a session in both.
@@ -167,12 +176,17 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   // close() still reports errors; the lifetime promise may be awaited later by its owner
   void closed.catch(() => undefined);
   let closing: Promise<void> | undefined;
+  let warmUp: ReturnType<typeof startWarmUp> | undefined;
   const close = (): Promise<void> =>
     (closing ??= (async () => {
       try {
-        // receipt waits end first, so none holds up closing for its remaining time
+        // receipt waits and long-polls end first, so none holds up closing for its remaining time
         actions.waits.close();
+        actions.polls.close();
+        // the warm-up stops at once, and host work closes before it is awaited
+        const warmUpStopped = warmUp?.close();
         await browser.close();
+        await warmUpStopped;
         await claudeAgents.close();
         const results = await Promise.allSettled([ipc?.close(), actions.close()]);
         const storeCleanup = await Promise.allSettled([projection.close()]);
@@ -294,16 +308,20 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       case 'approvals':
       case 'live-items':
         return readControl(command, projection, actions, allowedRoots);
-      case 'session-states':
-        return {
-          kind: 'session-states',
-          result: await projection.call(
-            'sessions',
-            'transitions',
-            command.afterSequence,
-            command.limit,
-          ),
-        };
+      case 'session-states': {
+        const read = () =>
+          projection.call('sessions', 'transitions', command.afterSequence, command.limit);
+        // a page with no transition waits for one, unless the reader can't continue from here
+        let page = await read();
+        if (!page.data.length && !page.isReset && command.waitMs !== undefined)
+          ({ value: page } = await actions.polls.wait(
+            read,
+            (current) => current.data.length > 0 || current.isReset,
+            (topic) => topic.kind === 'transitions',
+            command.waitMs,
+          ));
+        return { kind: 'session-states', result: page };
+      }
       case 'active-sessions':
         return {
           kind: 'active-sessions',
@@ -346,16 +364,28 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       }
     }
   };
-  const request = (input: IHqRequestInput): Promise<IHqResponse> =>
-    storage.run(() => handleRequest(input));
+  // each case answers with its command's kind, which TypeScript can't follow through the switch
+  const request = <TCommand extends IHqRequestInput>(
+    input: TCommand,
+  ): Promise<IHqResponseOf<TCommand['kind']>> =>
+    storage.run(() => handleRequest(input)) as Promise<IHqResponseOf<TCommand['kind']>>;
   try {
     ipc = await createIpcServer(join(stateRoot, CONTROL_SOCKET), ownership.epoch, request);
   } catch (error) {
     await close();
     throw error;
   }
+  const snapshotContext = {
+    stateRoot,
+    actionKeyHash: hashValue(actionKey),
+    allowedRoots,
+    store: projection,
+    admit: storage.run,
+    isClosing: () => Boolean(closing),
+  };
   const runtime: IAgentHq = {
     stateRoot,
+    runtimeEpoch: ownership.epoch,
     closed,
     request,
     get storage() {
@@ -370,15 +400,8 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     performBrowserAction: (input, operatorId, execute) =>
       storage.run(() => browser.perform(input, operatorId, execute)),
     readBrowserAction: (id, operatorId) => storage.run(() => browser.read(id, operatorId)),
+    createSnapshot: (destination) => captureHqSnapshot(snapshotContext, destination),
   };
-  registerSnapshotContext({
-    runtime,
-    stateRoot,
-    actionKeyHash: hashValue(actionKey),
-    allowedRoots,
-    store: projection,
-    admit: storage.run,
-    isClosing: () => Boolean(closing),
-  });
+  warmUp = startWarmUp(providers, projection, allowedRoots, storage.background);
   return runtime;
 };

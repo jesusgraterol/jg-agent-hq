@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -10,6 +10,7 @@ import { hasErrorCode } from 'jg-exception';
 import { inspectLock } from 'jg-locks';
 import { createAgentHq, requestAgentHq, type IAgentHq } from 'jg-agent-hq';
 import type {
+  IHqRequestInput,
   IActionCommand,
   IActionEnvelope,
   IActionReceipt,
@@ -20,6 +21,7 @@ import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
+  claudeRecord,
   countHeldDelays,
   installCodexFixture,
   releaseHeldDelays,
@@ -52,7 +54,7 @@ const setup = async () => {
     const status = await runtime.request({ kind: 'status' });
     if (status.kind !== 'status') throw new Error('wrong response');
     const runtimeEpoch = status.result.runtimeEpoch;
-    const request = (command: Parameters<typeof requestAgentHq>[1]) =>
+    const request = <TCommand extends IHqRequestInput>(command: TCommand) =>
       requestAgentHq(stateRoot, command);
     const envelope = (command: IActionCommand): IActionEnvelope => ({
       id: randomUUID(),
@@ -1560,7 +1562,7 @@ test('explicit resume cannot acquire an active native thread or an already contr
   }
 });
 
-test('control seek pages preserve tied ordering, reject changed filters and omit queued bodies', async () => {
+test('control seek pages preserve tied ordering, reject changed filters and carry queued text cut to their limit', async () => {
   const fixture = await setup();
   try {
     const first = (await fixture.create('page-one')).thread;
@@ -1612,8 +1614,35 @@ test('control seek pages preserve tied ordering, reject changed filters and omit
         input: { kind: 'text', text: 'A selected queue body' },
       }),
     );
-    const actions = await fixture.request({ kind: 'actions', threadId: first.id, limit: 128 });
-    expect(JSON.stringify(actions)).not.toContain('A selected queue body');
+    // a page carries each queued input's text, cut to its limit, but never the input itself
+    const cut = await fixture.request({
+      kind: 'actions',
+      threadId: first.id,
+      limit: 1,
+      textLimit: 10,
+    });
+    expect(cut.result.data).toStrictEqual([
+      expect.objectContaining({
+        id: queued.id,
+        queuedText: { text: 'A selected', isTruncated: true },
+      }),
+    ]);
+    expect(cut.result.data[0]).not.toHaveProperty('queuedInput');
+    // the text limit cuts a page's text only, so its continuation may change it
+    const rest = await fixture.request({
+      kind: 'actions',
+      threadId: first.id,
+      limit: 1,
+      cursor: cut.result.nextCursor!,
+    });
+    expect(rest.result.data.map((action) => [action.kind, action.queuedText])).toStrictEqual([
+      ['message', null],
+    ]);
+    const whole = await fixture.request({ kind: 'actions', threadId: first.id, limit: 1 });
+    expect(whole.result.data[0]!.queuedText).toStrictEqual({
+      text: 'A selected queue body',
+      isTruncated: false,
+    });
     expect((await fixture.receipt(queued.id)).queuedInput?.text).toBe('A selected queue body');
     const cancel = await fixture.submit(
       fixture.envelope({ kind: 'queue-cancel', queuedActionId: queued.id }),
@@ -1623,6 +1652,8 @@ test('control seek pages preserve tied ordering, reject changed filters and omit
       delivery: 'canceled',
       queuedInput: null,
     });
+    const canceled = await fixture.request({ kind: 'actions', threadId: first.id, limit: 128 });
+    expect(canceled.result.data.every((action) => action.queuedText === null)).toBe(true);
   } finally {
     await fixture.close();
   }
@@ -3322,3 +3353,496 @@ test.each(['codex', 'claude'] as const)(
     });
   },
 );
+
+test('a create with a first input sends it as the same action, which settles once the input is acknowledged', async () => {
+  const fixture = await setup();
+  try {
+    const action = fixture.envelope({
+      kind: 'thread-create',
+      provider: 'codex',
+      workspaceRoot: fixture.workspaceRoot,
+      name: 'first-input',
+      input: { kind: 'text', text: 'Start with this task' },
+    });
+    const admitted = await fixture.submit(action);
+    expect(admitted).toMatchObject({
+      kind: 'thread-create',
+      phase: 'create',
+      delivery: 'submitted',
+    });
+    const { receipt } = await fixture.actionWait(action.id, 'settled');
+    expect(receipt).toMatchObject({
+      delivery: 'acknowledged',
+      phase: 'turn',
+      nativeThreadId: 'native-1',
+      nativeTurnId: expect.stringMatching(/^native-turn-/),
+      queuedInput: null,
+    });
+    const completed = await fixture.until(
+      () => fixture.receipt(action.id),
+      (entry) => entry.completion === 'completed' && entry.result !== null,
+    );
+    expect(completed.result).toMatchObject({ state: 'completed', text: 'Live response' });
+    const methods = (await fixture.calls()).map((call) => call.method);
+    expect(
+      methods.filter((method) =>
+        ['thread/start', 'thread/name/set', 'turn/start'].includes(method),
+      ),
+    ).toStrictEqual(['thread/start', 'thread/name/set', 'turn/start']);
+    expect(
+      JSON.stringify((await fixture.calls()).find((call) => call.method === 'turn/start')),
+    ).toContain('Start with this task');
+    const thread = await fixture.thread(admitted.threadId!);
+    expect(thread).toMatchObject({ name: 'first-input', state: 'completed', nativeId: 'native-1' });
+    // one action holds the whole start
+    const actions = await fixture.request({ kind: 'actions', threadId: thread.id });
+    expect(actions.result.data.map((entry) => entry.id)).toStrictEqual([action.id]);
+    const transitions = (await fixture.request({ kind: 'session-states', limit: 128 })).result.data
+      .filter((transition) => transition.threadId === thread.id)
+      .map((transition) => transition.reason);
+    expect(transitions).toStrictEqual(['opened', 'turn-started', 'turn-completed']);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('a first input Codex refuses leaves its session created and named, needing recovery as a refused message does', async () => {
+  const fixture = await setup();
+  try {
+    await fixture.control({ rejectTurn: true });
+    const action = fixture.envelope({
+      kind: 'thread-create',
+      provider: 'codex',
+      workspaceRoot: fixture.workspaceRoot,
+      name: 'refused-input',
+      input: { kind: 'text', text: 'A refused first input' },
+    });
+    const admitted = await fixture.submit(action);
+    const { receipt } = await fixture.actionWait(action.id, 'settled');
+    expect(receipt).toMatchObject({
+      delivery: 'failed',
+      failure: 'agent-unavailable',
+      phase: 'turn',
+      nativeThreadId: 'native-1',
+      nativeTurnId: null,
+      queuedInput: { text: 'A refused first input' },
+    });
+    expect(await fixture.thread(admitted.threadId!)).toMatchObject({
+      name: 'refused-input',
+      nativeId: 'native-1',
+      ownership: 'managed',
+      state: 'unknown',
+    });
+    await fixture.control({});
+    const further = await fixture.submit(
+      fixture.envelope({
+        kind: 'message',
+        threadId: admitted.threadId!,
+        input: { kind: 'text', text: 'Input after the refusal' },
+      }),
+    );
+    expect(further).toMatchObject({ delivery: 'failed', failure: 'state-conflict' });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('a create refuses a first input whose skill the folder does not list, before any session starts', async () => {
+  const fixture = await setup();
+  try {
+    await expectToRejectCode(
+      fixture.runtime.request({
+        kind: 'action',
+        action: fixture.envelope({
+          kind: 'thread-create',
+          provider: 'codex',
+          workspaceRoot: fixture.workspaceRoot,
+          name: 'missing-skill',
+          input: { kind: 'skill', skillId: 'a'.repeat(64), arguments: '' },
+        }),
+      }),
+      'JG_AGENT_HQ_SKILL_UNAVAILABLE',
+    );
+    expect((await fixture.calls()).map((call) => call.method)).not.toContain('thread/start');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('a close with interrupt stops the running turn and closes in one action, and closes an idle session as before', async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('closing-turn');
+    await fixture.control({ holdTurn: true });
+    const message = await fixture.submit(
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'A long task' },
+      }),
+    );
+    const running = await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.state === 'running',
+    );
+    const close = fixture.envelope({ kind: 'thread-close', threadId: thread.id, interrupt: true });
+    expect(await fixture.submit(close)).toMatchObject({
+      phase: 'interrupt',
+      delivery: 'submitted',
+    });
+    const { receipt } = await fixture.actionWait(close.id, 'settled');
+    expect(receipt).toMatchObject({ delivery: 'acknowledged', phase: 'close' });
+    expect(await fixture.thread(thread.id)).toMatchObject({
+      state: 'inactive',
+      activeTurnId: null,
+    });
+    expect(await fixture.receipt(message.id)).toMatchObject({ completion: 'interrupted' });
+    const calls = (await fixture.calls()).map((call) => call.method);
+    const order = ['turn/interrupt', 'thread/backgroundTerminals/clean', 'thread/unsubscribe'];
+    expect(calls.filter((method) => order.includes(method))).toStrictEqual(order);
+    expect(
+      (await fixture.calls()).find((call) => call.method === 'turn/interrupt')?.params,
+    ).toMatchObject({ threadId: thread.nativeId, turnId: running.activeTurnId });
+    const reasons = (await fixture.request({ kind: 'session-states', limit: 128 })).result.data
+      .filter((transition) => transition.threadId === thread.id)
+      .map((transition) => transition.reason);
+    expect(reasons.slice(-2)).toStrictEqual(['operator-stopped', 'closed']);
+
+    const idle = (await fixture.create('closing-idle')).thread;
+    const before = (await fixture.calls()).length;
+    const idleClose = fixture.envelope({
+      kind: 'thread-close',
+      threadId: idle.id,
+      interrupt: true,
+    });
+    expect(await fixture.submit(idleClose)).toMatchObject({ phase: 'clean' });
+    expect((await fixture.actionWait(idleClose.id, 'settled')).receipt).toMatchObject({
+      delivery: 'acknowledged',
+      phase: 'close',
+    });
+    expect((await fixture.calls()).slice(before).map((call) => call.method)).not.toContain(
+      'turn/interrupt',
+    );
+    expect(await fixture.thread(idle.id)).toMatchObject({ state: 'inactive' });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('thread-delete deletes a Codex session through the daemon with its records, closing one HQ runs first', async () => {
+  const fixture = await setup();
+  try {
+    const remove = (nativeId: string) =>
+      fixture.envelope({
+        kind: 'thread-delete',
+        provider: 'codex',
+        workspaceRoot: fixture.workspaceRoot,
+        nativeId,
+      });
+    // a session HQ closed
+    const { action: created, thread: closed } = await fixture.create('closed-session');
+    const message = await fixture.submit(
+      fixture.envelope({
+        kind: 'message',
+        threadId: closed.id,
+        input: { kind: 'text', text: 'Some work' },
+      }),
+    );
+    await fixture.until(
+      () => fixture.receipt(message.id),
+      (entry) => entry.completion === 'completed',
+    );
+    const close = fixture.envelope({ kind: 'thread-close', threadId: closed.id });
+    await fixture.submit(close);
+    await fixture.actionWait(close.id, 'settled');
+    const deletion = remove(closed.nativeId!);
+    const deleted = await fixture.submit(deletion);
+    expect(deleted).toMatchObject({
+      kind: 'thread-delete',
+      provider: 'codex',
+      phase: 'delete',
+      delivery: 'acknowledged',
+      threadId: null,
+      nativeThreadId: null,
+    });
+    // a repeated request returns its receipt
+    expect(await fixture.submit(deletion)).toStrictEqual(deleted);
+    expect(
+      (await fixture.calls())
+        .filter((call) => call.method === 'thread/delete')
+        .map((call) => call.params),
+    ).toStrictEqual([{ threadId: closed.nativeId }]);
+    expect(
+      (await fixture.request({ kind: 'managed-thread', threadId: closed.id })).result,
+    ).toBeNull();
+    for (const id of [created.id, message.id, close.id])
+      expect((await fixture.request({ kind: 'receipt', actionId: id })).result).toBeNull();
+
+    // a session HQ runs is cleaned and closed by the same action, then deleted
+    const { thread: running } = await fixture.create('running-session');
+    const before = (await fixture.calls()).length;
+    expect(await fixture.submit(remove(running.nativeId!))).toMatchObject({
+      phase: 'delete',
+      delivery: 'acknowledged',
+    });
+    expect((await fixture.calls()).slice(before).map((call) => call.method)).toStrictEqual([
+      'thread/backgroundTerminals/clean',
+      'thread/backgroundTerminals/list',
+      'thread/unsubscribe',
+      'thread/delete',
+    ]);
+    expect(
+      (await fixture.request({ kind: 'managed-thread', threadId: running.id })).result,
+    ).toBeNull();
+
+    // a session HQ doesn't manage, which Codex reads to check its folder
+    const external = await fixture.submit(remove('thread-1023'));
+    expect(external).toMatchObject({ delivery: 'acknowledged', threadId: null });
+    const listed = await fixture.request({
+      kind: 'threads',
+      providers: ['codex'],
+      workspaceRoots: [fixture.workspaceRoot],
+      limit: 1,
+    });
+    expect(listed.result.data[0]?.nativeId).toBe('thread-1022');
+    // the transition log keeps what the deleted sessions went through
+    expect(
+      (await fixture.request({ kind: 'session-states', limit: 128 })).result.data.some(
+        (transition) => transition.threadId === closed.id,
+      ),
+    ).toBe(true);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('thread-delete refuses a running session, a folder outside the allowed roots and a session in another folder', async () => {
+  const fixture = await setup();
+  const outside = await mkdtemp(join(tmpdir(), 'jg-hq-outside-'));
+  try {
+    const { thread } = await fixture.create('busy-session');
+    await fixture.control({ holdTurn: true });
+    await fixture.submit(
+      fixture.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Keep working' },
+      }),
+    );
+    await fixture.until(
+      () => fixture.thread(thread.id),
+      (entry) => entry.state === 'running',
+    );
+    const remove = (workspaceRoot: string) =>
+      fixture.runtime.request({
+        kind: 'action',
+        action: fixture.envelope({
+          kind: 'thread-delete',
+          provider: 'codex',
+          workspaceRoot,
+          nativeId: thread.nativeId!,
+        }),
+      });
+    await expectToRejectCode(remove(fixture.workspaceRoot), 'JG_AGENT_HQ_REQUEST_INVALID');
+    await expectToRejectCode(remove(outside), 'JG_AGENT_HQ_TARGET_FORBIDDEN');
+    const nested = join(fixture.workspaceRoot, 'nested');
+    await mkdir(nested);
+    await expectToRejectCode(remove(nested), 'JG_AGENT_HQ_REQUEST_INVALID');
+    // nothing was recorded or sent for the refusals
+    expect((await fixture.calls()).map((call) => call.method)).not.toContain('thread/delete');
+    expect(
+      (await fixture.request({ kind: 'actions', threadId: thread.id })).result.data.map(
+        (action) => action.kind,
+      ),
+    ).not.toContain('thread-delete');
+  } finally {
+    await fixture.close();
+    await rm(outside, { recursive: true });
+  }
+});
+
+test('a Codex deletion that fails reports PROVIDER_FAILED, records its failure and leaves the session to delete again', async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('failing-deletion');
+    const close = fixture.envelope({ kind: 'thread-close', threadId: thread.id });
+    await fixture.submit(close);
+    await fixture.actionWait(close.id, 'settled');
+    await fixture.control({ deleteFailure: true });
+    const deletion = fixture.envelope({
+      kind: 'thread-delete',
+      provider: 'codex',
+      workspaceRoot: fixture.workspaceRoot,
+      nativeId: thread.nativeId!,
+    });
+    await expectToRejectCode(
+      fixture.runtime.request({ kind: 'action', action: deletion }),
+      'JG_AGENT_HQ_PROVIDER_FAILED',
+      'The HQ provider integration failed: The Codex integration failed: Synthetic delete failure',
+    );
+    expect(await fixture.receipt(deletion.id)).toMatchObject({
+      delivery: 'failed',
+      phase: 'delete',
+      threadId: thread.id,
+    });
+    expect(await fixture.thread(thread.id)).toMatchObject({ state: 'inactive' });
+    // a session Codex never saved, as one created without a turn, counts as deleted
+    await fixture.control({ noRollout: [thread.nativeId] });
+    expect(
+      await fixture.submit(
+        fixture.envelope({
+          kind: 'thread-delete',
+          provider: 'codex',
+          workspaceRoot: fixture.workspaceRoot,
+          nativeId: thread.nativeId!,
+        }),
+      ),
+    ).toMatchObject({ delivery: 'acknowledged', threadId: null });
+    expect(
+      (await fixture.request({ kind: 'managed-thread', threadId: thread.id })).result,
+    ).toBeNull();
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('thread-delete removes a Claude transcript with its folder and records, and refuses a session a terminal runs', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const remove = (nativeId: string) =>
+      fixture.runtime.request({
+        kind: 'action',
+        action: {
+          id: randomUUID(),
+          runtimeEpoch: fixture.runtime.runtimeEpoch,
+          command: {
+            kind: 'thread-delete',
+            provider: 'claude',
+            workspaceRoot: fixture.workspaceRoot,
+            nativeId,
+          },
+        },
+      });
+    const listed = async () =>
+      (
+        await fixture.runtime.request({
+          kind: 'threads',
+          providers: ['claude'],
+          workspaceRoots: [fixture.workspaceRoot],
+        })
+      ).result.data.map((session) => session.nativeId);
+    // a session HQ doesn't manage, with the folder beside its transcript
+    const external = randomUUID();
+    await writeFile(
+      fixture.transcript(external),
+      `${JSON.stringify(claudeRecord(fixture.workspaceRoot, external))}\n`,
+    );
+    await mkdir(join(fixture.projectRoot, external, 'subagents'), { recursive: true });
+    await writeFile(join(fixture.projectRoot, external, 'subagents', 'agent.jsonl'), '{}\n');
+    expect(await listed()).toContain(external);
+    expect((await remove(external)).result).toMatchObject({
+      kind: 'thread-delete',
+      delivery: 'acknowledged',
+    });
+    await expect(readFile(fixture.transcript(external))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readdir(join(fixture.projectRoot, external))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect(await listed()).not.toContain(external);
+
+    // a session HQ runs, idle, is closed and deleted with its records
+    const created = await fixture.runtime.request({
+      kind: 'action',
+      action: {
+        id: randomUUID(),
+        runtimeEpoch: fixture.runtime.runtimeEpoch,
+        command: {
+          kind: 'thread-create',
+          provider: 'claude',
+          workspaceRoot: fixture.workspaceRoot,
+          name: 'claude-deletion',
+        },
+      },
+    });
+    await fixture.runtime.request({
+      kind: 'action-wait',
+      actionId: created.result.id,
+      until: 'settled',
+      timeoutMs: 10_000,
+    });
+    const thread = (
+      await fixture.runtime.request({ kind: 'managed-thread', threadId: created.result.threadId! })
+    ).result!;
+    await expect(readFile(fixture.transcript(thread.nativeId!))).resolves.toBeDefined();
+    expect((await remove(thread.nativeId!)).result).toMatchObject({ delivery: 'acknowledged' });
+    await expect(readFile(fixture.transcript(thread.nativeId!))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect(
+      (await fixture.runtime.request({ kind: 'managed-thread', threadId: thread.id })).result,
+    ).toBeNull();
+
+    // a session a terminal runs stays
+    const terminal = randomUUID();
+    await writeFile(
+      fixture.transcript(terminal),
+      `${JSON.stringify(claudeRecord(fixture.workspaceRoot, terminal))}\n`,
+    );
+    await writeFixtureControl(fixture.root, 'claude-agents.json', {
+      agents: [
+        {
+          sessionId: terminal,
+          cwd: fixture.workspaceRoot,
+          kind: 'interactive',
+          status: 'idle',
+          pid: process.pid,
+        },
+      ],
+    });
+    await fixture.runtime.request({ kind: 'observation-pace', pace: 'live' });
+    await expect
+      .poll(
+        async () =>
+          (await fixture.runtime.request({ kind: 'active-sessions' })).result.data.length +
+          (
+            await fixture.runtime.request({ kind: 'session-states', limit: 128 })
+          ).result.data.filter((transition) => transition.nativeId === terminal).length,
+      )
+      .toBeGreaterThan(0);
+    await expectToRejectCode(remove(terminal), 'JG_AGENT_HQ_REQUEST_INVALID');
+    await expect(readFile(fixture.transcript(terminal))).resolves.toBeDefined();
+  });
+});
+
+test('a Claude transcript that cannot be deleted reports PROVIDER_FAILED and stays listed', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const nativeId = randomUUID();
+    await writeFile(
+      fixture.transcript(nativeId),
+      `${JSON.stringify(claudeRecord(fixture.workspaceRoot, nativeId))}\n`,
+    );
+    await chmod(fixture.projectRoot, 0o500);
+    try {
+      const deletion = {
+        id: randomUUID(),
+        runtimeEpoch: fixture.runtime.runtimeEpoch,
+        command: {
+          kind: 'thread-delete' as const,
+          provider: 'claude' as const,
+          workspaceRoot: fixture.workspaceRoot,
+          nativeId,
+        },
+      };
+      await expectToRejectCode(
+        fixture.runtime.request({ kind: 'action', action: deletion }),
+        'JG_AGENT_HQ_PROVIDER_FAILED',
+        'The HQ provider integration failed: EACCES',
+      );
+      expect(
+        (await fixture.runtime.request({ kind: 'receipt', actionId: deletion.id })).result,
+      ).toMatchObject({ delivery: 'failed', phase: 'delete' });
+      await expect(readFile(fixture.transcript(nativeId))).resolves.toBeDefined();
+    } finally {
+      await chmod(fixture.projectRoot, 0o700);
+    }
+  });
+});

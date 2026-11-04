@@ -45,8 +45,8 @@ CREATE TABLE agent_hq_action (
   thread_id TEXT,
   expected_turn_id TEXT,
   native_turn_id TEXT,
-  -- the native step the action takes now; a create continues with name, a clean with close
-  phase TEXT CHECK (phase IS NULL OR phase IN ('create', 'resume', 'name', 'turn', 'steer', 'interrupt', 'clean', 'close', 'reply')),
+  -- the native step the action takes now, such as a create's name and first turn after create
+  phase TEXT CHECK (phase IS NULL OR phase IN ('create', 'resume', 'name', 'turn', 'steer', 'interrupt', 'clean', 'close', 'delete', 'reply')),
   delivery TEXT NOT NULL CHECK (delivery IN ('queued', 'submitted', 'acknowledged', 'uncertain', 'failed', 'canceled')),
   completion TEXT CHECK (completion IS NULL OR completion IN ('completed', 'failed', 'interrupted')),
   failure TEXT CHECK (failure IS NULL OR failure IN ('state-conflict', 'access-denied', 'agent-unavailable', 'operation-failed')),
@@ -61,7 +61,8 @@ CREATE TABLE agent_hq_action (
   CONSTRAINT agent_hq_pk_a__id PRIMARY KEY (id),
   CONSTRAINT agent_hq_fk_a__thread_id FOREIGN KEY (thread_id) REFERENCES agent_hq_thread(id),
   CONSTRAINT agent_hq_fk_a__related_action_id FOREIGN KEY (related_action_id) REFERENCES agent_hq_action(id),
-  CONSTRAINT agent_hq_chk_a__queued_input_kind CHECK (queued_input IS NULL OR kind = 'queue'),
+  -- a queued entry's input, or a create's first input, until it is delivered
+  CONSTRAINT agent_hq_chk_a__queued_input_kind CHECK (queued_input IS NULL OR kind IN ('queue', 'thread-create')),
   CONSTRAINT agent_hq_chk_a__queued_body_required CHECK (delivery != 'queued' OR (kind = 'queue' AND queued_input IS NOT NULL))
 ) STRICT;
 
@@ -159,7 +160,7 @@ ON agent_hq_claude_entry(workspace_root, native_id, turn_id, item_kind, byte_off
 WHERE is_current = 1 AND is_visible = 1;
 
 -- sessions another client drives, with the live state HQ last observed and what its first read of
--- a Codex session found; Claude's poll reports a session's workspace instead
+-- a Codex session found; a Claude session's workspace is the folder its poll last listed it in
 CREATE TABLE agent_hq_observed_session (
   provider TEXT NOT NULL CHECK (length(provider) BETWEEN 1 AND 64),
   native_id TEXT NOT NULL CHECK (length(native_id) > 0),
@@ -171,12 +172,13 @@ CREATE TABLE agent_hq_observed_session (
   CONSTRAINT agent_hq_pk_os__provider_native_id PRIMARY KEY (provider, native_id)
 ) STRICT;
 
--- ordered state changes of managed and observed sessions, kept for seven days
+-- ordered state changes of managed and observed sessions, with their folder, kept for seven days
 CREATE TABLE agent_hq_session_transition (
   sequence INTEGER CONSTRAINT agent_hq_pk_st__sequence PRIMARY KEY AUTOINCREMENT,
   provider TEXT NOT NULL,
   native_id TEXT,
   thread_id TEXT,
+  workspace_root TEXT,
   ownership TEXT NOT NULL CHECK (ownership IN ('external', 'managed', 'uncertain')),
   previous_state TEXT CHECK (previous_state IS NULL OR previous_state IN ('running', 'waiting', 'idle', 'closed', 'failed', 'unknown')),
   state TEXT NOT NULL CHECK (state IN ('running', 'waiting', 'idle', 'closed', 'failed', 'unknown')),
@@ -207,8 +209,8 @@ INSERT INTO agent_hq_session_state_map (thread_state, session_state) VALUES
 CREATE TRIGGER agent_hq_trg_t__transition AFTER UPDATE OF state ON agent_hq_thread
 WHEN old.state != new.state AND (SELECT session_state FROM agent_hq_session_state_map WHERE thread_state = new.state) IS NOT NULL
 BEGIN
-  INSERT INTO agent_hq_session_transition (provider, native_id, thread_id, ownership, previous_state, state, reason, recorded_at)
-  SELECT new.provider, new.native_id, new.id, new.ownership, previous.state, next.session_state,
+  INSERT INTO agent_hq_session_transition (provider, native_id, thread_id, workspace_root, ownership, previous_state, state, reason, recorded_at)
+  SELECT new.provider, new.native_id, new.id, new.workspace_root, new.ownership, previous.state, next.session_state,
     CASE
       WHEN next.session_state = 'running' THEN 'turn-started'
       WHEN next.session_state = 'waiting' THEN 'waiting-for-input'
@@ -229,15 +231,15 @@ END;
 -- an observed session that leaves while it runs or waits disappeared; leaving while idle closed it
 CREATE TRIGGER agent_hq_trg_os__insert AFTER INSERT ON agent_hq_observed_session
 BEGIN
-  INSERT INTO agent_hq_session_transition (provider, native_id, thread_id, ownership, previous_state, state, reason, recorded_at)
-  VALUES (new.provider, new.native_id, NULL, 'external', NULL, new.state,
+  INSERT INTO agent_hq_session_transition (provider, native_id, thread_id, workspace_root, ownership, previous_state, state, reason, recorded_at)
+  VALUES (new.provider, new.native_id, NULL, new.workspace_root, 'external', NULL, new.state,
     CASE new.state WHEN 'running' THEN 'turn-started' WHEN 'waiting' THEN 'waiting-for-input' WHEN 'idle' THEN 'opened' WHEN 'failed' THEN 'failed' WHEN 'closed' THEN 'closed' ELSE 'disappeared' END,
     new.observed_at);
 END;
 CREATE TRIGGER agent_hq_trg_os__state AFTER UPDATE OF state ON agent_hq_observed_session WHEN old.state != new.state
 BEGIN
-  INSERT INTO agent_hq_session_transition (provider, native_id, thread_id, ownership, previous_state, state, reason, recorded_at)
-  VALUES (new.provider, new.native_id, NULL, 'external', old.state, new.state,
+  INSERT INTO agent_hq_session_transition (provider, native_id, thread_id, workspace_root, ownership, previous_state, state, reason, recorded_at)
+  VALUES (new.provider, new.native_id, NULL, new.workspace_root, 'external', old.state, new.state,
     CASE
       WHEN new.state = 'running' THEN 'turn-started'
       WHEN new.state = 'waiting' THEN 'waiting-for-input'

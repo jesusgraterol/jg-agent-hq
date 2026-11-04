@@ -84,8 +84,10 @@ export class ControlObservations extends ControlModel {
   }
 
   /**
-   * Applies ordered native lifecycle evidence and deduplicates repeated observations.
-   * @returns The refreshed thread and whether its next-turn queue may advance.
+   * Applies ordered native lifecycle evidence and deduplicates repeated observations. The end of
+   * a turn a close interrupts moves the close on to clean, for dispatch to continue.
+   * @returns The refreshed thread, whether its next-turn queue may advance, and the action it
+   * moved to its next phase, if any.
    * @throws
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    */
@@ -127,6 +129,7 @@ export class ControlObservations extends ControlModel {
       const thread = this._nativeThread(observation.provider, observation.nativeThreadId);
       if (!thread || thread.runtime_epoch !== this._epoch)
         return { thread: null, canDispatchQueued: false };
+      let continued: string | null = null;
       const tuple = [
         observation.provider,
         observation.kind,
@@ -150,7 +153,7 @@ export class ControlObservations extends ControlModel {
         if (prior.digest !== digest && observation.kind !== 'turn-completed') this._conflict();
         if (prior.digest !== digest && observation.kind === 'turn-completed' && observation.result)
           this._statements.run(
-            "UPDATE agent_hq_action SET result = ?, updated_at = ? WHERE thread_id = ? AND native_turn_id = ? AND kind IN ('message', 'queue') AND result IS NULL",
+            "UPDATE agent_hq_action SET result = ?, updated_at = ? WHERE thread_id = ? AND native_turn_id = ? AND kind IN ('message', 'queue', 'thread-create') AND result IS NULL",
             JSON.stringify(observation.result),
             now,
             thread.id,
@@ -177,7 +180,7 @@ export class ControlObservations extends ControlModel {
         if (observation.result) {
           const encoded = JSON.stringify(observation.result);
           this._statements.run(
-            "UPDATE agent_hq_action SET result = ?, updated_at = ? WHERE thread_id = ? AND kind IN ('message', 'queue') AND (native_turn_id = ? OR (id = ? AND native_turn_id IS NULL AND ? = ?))",
+            "UPDATE agent_hq_action SET result = ?, updated_at = ? WHERE thread_id = ? AND kind IN ('message', 'queue', 'thread-create') AND (native_turn_id = ? OR (id = ? AND native_turn_id IS NULL AND ? = ?))",
             encoded,
             now,
             thread.id,
@@ -207,6 +210,19 @@ export class ControlObservations extends ControlModel {
           observation.nativeTurnId,
         );
         if (thread.active_turn_id === observation.nativeTurnId) {
+          const closing = thread.pending_action_id ? this._action(thread.pending_action_id) : null;
+          if (
+            closing?.kind === 'thread-close' &&
+            closing.phase === 'interrupt' &&
+            closing.delivery === 'submitted'
+          ) {
+            this._statements.run(
+              "UPDATE agent_hq_action SET phase = 'clean', updated_at = ? WHERE id = ?",
+              now,
+              closing.id,
+            );
+            continued = closing.id;
+          }
           const mayAdvance =
             observation.state === 'completed' &&
             thread.state !== 'stopping' &&
@@ -297,6 +313,7 @@ export class ControlObservations extends ControlModel {
           current.state === 'completed' &&
           current.active_turn_id === null &&
           current.pending_action_id === null,
+        continued: continued === null ? null : this._receipt(continued),
       };
     });
   }

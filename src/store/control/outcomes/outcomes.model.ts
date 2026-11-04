@@ -9,7 +9,10 @@ export class ControlOutcomes extends ControlModel {
   /**
    * Applies an exact native request outcome without downgrading a known acknowledgement. An
    * outcome answers the phase its action takes now; one for a phase the action has left, or from
-   * another runtime, is stale and changes nothing.
+   * another runtime, is stale and changes nothing. A phase that continues the same action moves
+   * it to its next phase: a named session with a first input to turn, a closed session being
+   * deleted to delete. A close that interrupts its session's turn continues on the turn's end, so
+   * the interrupt's acknowledgement changes nothing.
    * @returns The current receipt, or null for an unrecognized/stale response.
    * @throws
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
@@ -51,7 +54,7 @@ export class ControlOutcomes extends ControlModel {
         if (!ownsThread || thread.pending_action_id !== action.id) this._conflict();
         // a cleaned session is closed next
         this._statements.run(
-          "UPDATE agent_hq_action SET phase = 'close', updated_at = ? WHERE id = ?",
+          "UPDATE agent_hq_action SET delivery = 'submitted', phase = 'close', updated_at = ? WHERE id = ?",
           now,
           action.id,
         );
@@ -63,7 +66,21 @@ export class ControlOutcomes extends ControlModel {
           now,
           action.id,
         );
-        if (ownsThread && thread.pending_action_id === action.id) {
+        /*
+         * A close whose interrupt didn't go leaves the turn running, stopping as an interrupt's
+         * would, and a deletion that didn't go leaves the closed session as it was; either way the
+         * session is released for the next action.
+         */
+        const isReleased =
+          (action.kind === 'thread-close' && action.phase === 'interrupt') ||
+          (action.kind === 'thread-delete' && action.phase === 'delete');
+        if (isReleased && thread?.pending_action_id === action.id)
+          this._statements.run(
+            'UPDATE agent_hq_thread SET pending_action_id = NULL, updated_at = ? WHERE id = ?',
+            now,
+            thread.id,
+          );
+        else if (ownsThread && thread.pending_action_id === action.id) {
           if (action.kind === 'thread-rename' && outcome.kind === 'failed')
             this._statements.run(
               'UPDATE agent_hq_thread SET pending_action_id = NULL, updated_at = ? WHERE id = ?',
@@ -79,6 +96,61 @@ export class ControlOutcomes extends ControlModel {
         }
       } else if (outcome.kind === 'reply-written') {
         // a successful pipe write is not a native resolution acknowledgement
+      } else if (outcome.kind === 'interrupt-accepted' && action.kind === 'thread-close') {
+        // the interrupted turn's end continues the close
+      } else if (
+        outcome.kind === 'renamed' &&
+        action.kind === 'thread-create' &&
+        action.queued_input !== null
+      ) {
+        if (!ownsThread || thread.pending_action_id !== action.id || !action.requested_name)
+          this._conflict();
+        // the session opens with its name, then its first turn starts under the same action
+        this._statements.run(
+          "UPDATE agent_hq_thread SET name = ?, state = 'idle', updated_at = ? WHERE id = ?",
+          action.requested_name,
+          now,
+          thread.id,
+        );
+        this._statements.run(
+          "UPDATE agent_hq_thread SET state = 'starting', updated_at = ? WHERE id = ?",
+          now,
+          thread.id,
+        );
+        this._statements.run(
+          "UPDATE agent_hq_action SET delivery = 'submitted', phase = 'turn', updated_at = ? WHERE id = ?",
+          now,
+          action.id,
+        );
+      } else if (outcome.kind === 'closed' && action.kind === 'thread-delete') {
+        if (!ownsThread || thread.pending_action_id !== action.id) this._conflict();
+        // the closed session stays held by its deletion, which continues with delete
+        this._statements.run(
+          "UPDATE agent_hq_thread SET runtime_epoch = NULL, active_turn_id = NULL, state = 'inactive', updated_at = ? WHERE id = ?",
+          now,
+          thread.id,
+        );
+        this._statements.run(
+          "UPDATE agent_hq_action SET delivery = 'submitted', phase = 'delete', updated_at = ? WHERE id = ?",
+          now,
+          action.id,
+        );
+      } else if (outcome.kind === 'deleted') {
+        if (thread) {
+          if (thread.pending_action_id !== action.id) this._conflict();
+          this.__deleteThread(thread.id, action.id);
+        }
+        this._statements.run(
+          'DELETE FROM agent_hq_observed_session WHERE provider = ? AND native_id = ?',
+          action.provider,
+          outcome.nativeId,
+        );
+        // the deletion's own receipt stays, without the thread it deleted
+        this._statements.run(
+          "UPDATE agent_hq_action SET delivery = 'acknowledged', failure = NULL, thread_id = NULL, updated_at = ? WHERE id = ?",
+          now,
+          action.id,
+        );
       } else {
         let nativeTurnId = action.native_turn_id;
         if (outcome.kind === 'turn-accepted' || outcome.kind === 'steer-accepted')
@@ -143,5 +215,34 @@ export class ControlOutcomes extends ControlModel {
       }
       return this._receipt(action.id);
     });
+  }
+
+  /**
+   * Deletes a managed thread with its actions, approvals and host receipts, except the action
+   * deleting it. The thread and its registration action name each other, so its actions leave it
+   * before it goes, and then go themselves; the transition log keeps its entries.
+   */
+  private __deleteThread(threadId: string, actionId: string): void {
+    const actionIds = JSON.stringify(
+      this._statements
+        .all<{
+          id: string;
+        }>('SELECT id FROM agent_hq_action WHERE thread_id = ? AND id != ?', threadId, actionId)
+        .map(({ id }) => id),
+    );
+    this._statements.run('DELETE FROM agent_hq_native_approval WHERE thread_id = ?', threadId);
+    this._statements.run(
+      'DELETE FROM agent_hq_browser_action WHERE native_action_id IN (SELECT value FROM json_each(?))',
+      actionIds,
+    );
+    this._statements.run(
+      'UPDATE agent_hq_action SET thread_id = NULL WHERE thread_id = ?',
+      threadId,
+    );
+    this._statements.run('DELETE FROM agent_hq_thread WHERE id = ?', threadId);
+    this._statements.run(
+      'DELETE FROM agent_hq_action WHERE id IN (SELECT value FROM json_each(?))',
+      actionIds,
+    );
   }
 }

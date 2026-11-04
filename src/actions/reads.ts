@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import type { IHqRequest, IHqResponse, IManagedThread } from '../contracts/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
-import { createRequestCursors } from '../sessions/index.js';
+import { createRequestCursors, limitItemText } from '../sessions/index.js';
 import type { IStore } from '../store/index.js';
 import { HQ_ERRORS } from '../errors/index.js';
 
@@ -39,7 +39,9 @@ const nextPageCursor = (
 };
 
 /**
- * Authorizes bounded control reads and binds seek positions to their exact query.
+ * Authorizes bounded control reads and binds seek positions to their exact query. A live window
+ * read with `waitMs` answers once the window changed after `afterRevision`, or with none when the
+ * time runs out.
  * @returns The selected record or bounded page, or a receipt once its wait ends.
  * @throws
  * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
@@ -82,7 +84,8 @@ export const readControl = async (
     };
   }
   if (command.kind === 'actions') {
-    const { cursor, ...filters } = command;
+    // the text limit cuts the page's queued text, so a continuation may change it
+    const { cursor, textLimit, ...filters } = command;
     await authorize(await store.call('reads', 'getThread', command.threadId));
     const page = await store.call('reads', 'listActions', command.threadId, {
       limit: command.limit,
@@ -90,7 +93,13 @@ export const readControl = async (
     });
     return {
       kind: 'actions',
-      result: { data: page.data, nextCursor: nextPageCursor(page, filters) },
+      result: {
+        data: page.data.map((action) => ({
+          ...action,
+          queuedText: action.queuedText && limitItemText([action.queuedText], textLimit)[0]!,
+        })),
+        nextCursor: nextPageCursor(page, filters),
+      },
     };
   }
   const thread = await store.call('reads', 'getThread', command.threadId);
@@ -115,16 +124,30 @@ export const readControl = async (
       },
     };
   }
+  // a thread whose session doesn't exist yet has no window, so it answers at once
+  if (!thread.nativeId)
+    return {
+      kind: 'live-items',
+      result: {
+        data: [],
+        hasGap: false,
+        revision: 0,
+        unchanged: command.afterRevision === 0,
+        backgroundCommands: 0,
+      },
+    };
+  const liveKey = JSON.stringify([thread.provider, thread.nativeId]);
+  const read = async () => actions.live.read(liveKey, command.afterRevision);
+  let items = await read();
+  if (items.unchanged && command.waitMs !== undefined)
+    ({ value: items } = await actions.polls.wait(
+      read,
+      (current) => !current.unchanged,
+      (topic) => topic.kind === 'live',
+      command.waitMs,
+    ));
   return {
     kind: 'live-items',
-    result: thread.nativeId
-      ? actions.live.read(JSON.stringify([thread.provider, thread.nativeId]), command.afterRevision)
-      : {
-          data: [],
-          hasGap: false,
-          revision: 0,
-          unchanged: command.afterRevision === 0,
-          backgroundCommands: 0,
-        },
+    result: { ...items, data: limitItemText(items.data, command.textLimit) },
   };
 };

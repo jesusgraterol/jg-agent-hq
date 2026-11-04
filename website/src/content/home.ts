@@ -54,7 +54,7 @@ export const HOME_CONTENT = {
       id: 'storage',
       title: 'Local, private and recoverable',
       text: 'HQ keeps its records in one private SQLite file you can share, snapshot while agents work and restore.',
-      commands: ['hq.storage', 'createHqSnapshot', 'restoreHqSnapshot'],
+      commands: ['hq.storage', 'createSnapshot', 'restoreHqSnapshot'],
       link: null,
     },
   ],

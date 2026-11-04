@@ -19,6 +19,7 @@ import {
   MAX_ITEM_IMAGES,
   MAX_ITEM_TEXT_LENGTH,
   MAX_PAGE_SIZE,
+  MAX_WAIT_MS,
   MAX_WORKSPACE_ROOTS,
   PUBLIC_ERROR_MESSAGES,
 } from './constants.js';
@@ -52,6 +53,15 @@ const TargetFields = {
   workspaceRoot: z.string().min(1).max(4096),
   nativeId: NativeIdSchema,
 };
+// how many UTF-16 code units of text each item, or queued input, keeps
+const TextLimitSchema = z
+  .number()
+  .int()
+  .min(1)
+  .max(MAX_ITEM_TEXT_LENGTH)
+  .default(MAX_ITEM_TEXT_LENGTH);
+// how long a long-poll waits for a change before it answers with none
+const WaitSchema = z.number().int().min(1).max(MAX_WAIT_MS).optional();
 
 // only implemented operations can be admitted; native RPC is never exposed
 export const HqRequestSchema = z.discriminatedUnion('kind', [
@@ -98,7 +108,7 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
       ...TargetFields,
       turnId: NativeIdSchema.optional(),
       nativeItemId: NativeIdSchema.optional(),
-      textLimit: z.number().int().min(1).max(MAX_ITEM_TEXT_LENGTH).default(MAX_ITEM_TEXT_LENGTH),
+      textLimit: TextLimitSchema,
       ...PageFields,
     })
     .refine(
@@ -143,7 +153,7 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
     kind: z.literal('action-wait'),
     actionId: z.uuid(),
     until: z.enum(['native', 'settled']),
-    timeoutMs: z.number().int().min(1).max(30_000),
+    timeoutMs: z.number().int().min(1).max(MAX_WAIT_MS),
   }),
   z.strictObject({
     kind: z.literal('managed-threads'),
@@ -152,22 +162,32 @@ export const HqRequestSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({ kind: z.literal('managed-thread'), threadId: z.uuid() }),
   z.strictObject({ kind: z.literal('suggest-thread-name'), topic: z.string().min(1).max(1024) }),
-  z.strictObject({ kind: z.literal('actions'), threadId: z.uuid(), ...PageFields }),
+  z.strictObject({
+    kind: z.literal('actions'),
+    threadId: z.uuid(),
+    textLimit: TextLimitSchema,
+    ...PageFields,
+  }),
   z.strictObject({
     kind: z.literal('approvals'),
     threadId: z.uuid(),
     state: NativeApprovalSchema.shape.state.optional(),
     ...PageFields,
   }),
+  // with `waitMs`, waits for the window to change after `afterRevision`
   z.strictObject({
     kind: z.literal('live-items'),
     threadId: z.uuid(),
     afterRevision: z.number().int().nonnegative().optional(),
+    waitMs: WaitSchema,
+    textLimit: TextLimitSchema,
   }),
+  // with `waitMs`, waits for a transition after `afterSequence`
   z.strictObject({
     kind: z.literal('session-states'),
     afterSequence: z.number().int().nonnegative().default(0),
     limit: z.number().int().min(1).max(128).default(32),
+    waitMs: WaitSchema,
   }),
   z.strictObject({ kind: z.literal('active-sessions') }),
   z.strictObject({ kind: z.literal('observation-pace'), pace: ObservationPaceSchema }),
@@ -454,6 +474,8 @@ export const HqResponseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('locks'), result: LocksSchema }),
 ]);
 export type IHqResponse = z.infer<typeof HqResponseSchema>;
+// the response to a command of one kind, which always carries that kind
+export type IHqResponseOf<TKind extends IHqRequest['kind']> = Extract<IHqResponse, { kind: TKind }>;
 
 export const ErrorKindSchema = z.enum(
   Object.keys(PUBLIC_ERROR_MESSAGES) as [

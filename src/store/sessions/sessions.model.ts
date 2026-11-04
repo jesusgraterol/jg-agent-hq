@@ -22,6 +22,7 @@ type ITransitionRow = {
   provider: ISessionTransition['provider'];
   native_id: string | null;
   thread_id: string | null;
+  workspace_root: string | null;
   ownership: ISessionTransition['ownership'];
   previous_state: ISessionTransition['previousState'];
   state: ISessionTransition['state'];
@@ -42,8 +43,10 @@ export class SessionsModel {
 
   /**
    * Records the states of sessions HQ doesn't manage, and on a session's first record what its
-   * provider's first read of it found; the schema's triggers append the transitions. A complete
-   * observation also closes every open session of that provider it omits.
+   * provider's first read of it found; the schema's triggers append the transitions, each with the
+   * session's folder. A Claude session's folder follows the poll's listing, while a Codex session
+   * keeps the one its first read found. A complete observation also closes every open session of
+   * that provider it omits.
    */
   public observe(provider: IProviderId, sessions: IObservedSession[], isComplete: boolean): void {
     const now = Date.now();
@@ -79,12 +82,12 @@ export class SessionsModel {
         )
           continue;
         this.__statements.run(
-          'INSERT INTO agent_hq_observed_session (provider, native_id, state, observed_at, workspace_root, name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (provider, native_id) DO UPDATE SET state = excluded.state, observed_at = excluded.observed_at WHERE agent_hq_observed_session.state != excluded.state',
+          'INSERT INTO agent_hq_observed_session (provider, native_id, state, observed_at, workspace_root, name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (provider, native_id) DO UPDATE SET state = excluded.state, observed_at = excluded.observed_at, workspace_root = coalesce(excluded.workspace_root, agent_hq_observed_session.workspace_root) WHERE agent_hq_observed_session.state != excluded.state',
           provider,
           session.nativeId,
           session.state,
           now,
-          session.thread?.workspaceRoot ?? null,
+          session.thread?.workspaceRoot ?? session.workspaceRoot ?? null,
           session.thread?.name ?? null,
           session.thread?.createdAt ?? null,
         );
@@ -213,7 +216,7 @@ export class SessionsModel {
           afterSequence,
         ));
     const rows = this.__statements.all<ITransitionRow>(
-      'SELECT sequence, provider, native_id, thread_id, ownership, previous_state, state, reason, recorded_at FROM agent_hq_session_transition WHERE sequence > ? ORDER BY sequence LIMIT ?',
+      'SELECT sequence, provider, native_id, thread_id, workspace_root, ownership, previous_state, state, reason, recorded_at FROM agent_hq_session_transition WHERE sequence > ? ORDER BY sequence LIMIT ?',
       afterSequence,
       limit + 1,
     );
@@ -223,6 +226,7 @@ export class SessionsModel {
         provider: row.provider,
         nativeId: row.native_id,
         threadId: row.thread_id,
+        workspaceRoot: row.workspace_root,
         ownership: row.ownership,
         previousState: row.previous_state,
         state: row.state,

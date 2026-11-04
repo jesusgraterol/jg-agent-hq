@@ -37,6 +37,10 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
   let opening: Promise<Awaited<ReturnType<typeof createClaudeRpc>>> | undefined;
   const metadataReads = new Set<Promise<Awaited<ReturnType<typeof createClaudeRpc>>>>();
   let isClosing = false;
+  // ends a read process that is still starting when the adapter closes
+  const lifetime = new AbortController();
+  // the read process failed to start, which leaves Claude unavailable until the host restarts
+  let hasFailed = false;
   let generation = 0;
   let reads = 0;
   let idleClose: AbortController | undefined;
@@ -75,13 +79,18 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
     return latest;
   };
   const connect = async () => {
-    connection = await createClaudeRpc((reason) => {
-      expireUsage();
-      if (reason === 'account') {
-        generation += 1;
-        latest = unavailable();
-      } else latest = { ...latest, state: latest.observedAt === null ? 'unavailable' : 'stale' };
-    });
+    connection = await createClaudeRpc(
+      (reason) => {
+        expireUsage();
+        if (reason === 'account') {
+          generation += 1;
+          latest = unavailable();
+        } else latest = { ...latest, state: latest.observedAt === null ? 'unavailable' : 'stale' };
+      },
+      undefined,
+      undefined,
+      lifetime.signal,
+    );
     version = connection.version;
     isVerified = true;
     return connection;
@@ -91,7 +100,10 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
       return Promise.reject(
         HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } }),
       );
-    return (opening ??= connect());
+    return (opening ??= connect().catch((cause: unknown) => {
+      hasFailed = true;
+      throw cause;
+    }));
   };
   /** Closes the read process once it has gone unused, so the next read opens a fresh one. */
   const retire = (): void => {
@@ -243,8 +255,10 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
     get isAvailable() {
       return connection?.isAvailable ?? false;
     },
+    // a read process still starting reports idle, and one that failed or stopped unavailable
     get state(): 'idle' | 'ready' | 'unavailable' {
-      return connection?.isAvailable ? 'ready' : opening === undefined ? 'idle' : 'unavailable';
+      if (connection?.isAvailable) return 'ready';
+      return connection || hasFailed ? 'unavailable' : 'idle';
     },
     /**
      * Reads only a verified local transcript capability without resuming a session.
@@ -339,6 +353,7 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
      */
     async close(): Promise<void> {
       isClosing = true;
+      lifetime.abort();
       idleClose?.abort();
       idleClose = undefined;
       const results = await Promise.allSettled([

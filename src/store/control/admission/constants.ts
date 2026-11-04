@@ -53,6 +53,7 @@ export const ADMISSION_RULES: Record<IActionReceipt['kind'], IAdmissionRule> = {
     phase: 'name',
     delivery: 'dispatch',
   },
+  // with `interrupt`, a running turn is interrupted first instead of requiring an idle session
   'thread-close': {
     ...NONE,
     target: 'thread',
@@ -60,6 +61,13 @@ export const ADMISSION_RULES: Record<IActionReceipt['kind'], IAdmissionRule> = {
     requiresIdle: true,
     stops: true,
     phase: 'clean',
+    delivery: 'dispatch',
+  },
+  // a session HQ runs is closed first, from clean; one it doesn't is deleted at once
+  'thread-delete': {
+    ...NONE,
+    target: 'session',
+    phase: 'delete',
     delivery: 'dispatch',
   },
   message: {

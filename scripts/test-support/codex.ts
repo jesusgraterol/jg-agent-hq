@@ -1,6 +1,8 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { installClaudeFixture } from './claude.js';
+
 // a synthetic external CLI boundary; the actual runtime/IPC/worker remain real in tests
 const FIXTURE_SOURCE = String.raw`#!/usr/bin/env node
 import { spawn } from 'node:child_process';
@@ -90,6 +92,8 @@ else {
   const respond = (id,result) => send(JSON.stringify({ id,result }));
   const notify = (method,params) => send(JSON.stringify({ method,params }));
   const managed = new Map();
+  // sessions thread/delete removed, which reads and lists no longer find
+  const deleted = new Set();
   // each thread's service tier, which Codex reports with its start and resume but not its record
   const tiers = new Map();
   let threadSequence = 0;
@@ -219,6 +223,13 @@ else {
     if (method === 'thread/backgroundTerminals/clean') { respond(request.id,{});return; }
     if (method === 'thread/backgroundTerminals/list') { respond(request.id,{data:control.backgroundRemaining?[{id:'remaining-task'}]:[],nextCursor:null});return; }
     if (method === 'thread/unsubscribe') { managed.get(params.threadId).status={type:control.unsubscribeState??'notLoaded'};respond(request.id,{status:'unsubscribed'});return; }
+    // deleteFailure refuses deletions, and noRollout lists sessions Codex never saved, as it answers for them
+    if (method === 'thread/delete') {
+      if (control.deleteFailure) { send(JSON.stringify({id:request.id,error:{code:-32603,message:'Synthetic delete failure'}}));return; }
+      if (control.noRollout?.includes(params.threadId) || deleted.has(params.threadId)) { send(JSON.stringify({id:request.id,error:{code:-32600,message:'no rollout found for thread id '+params.threadId}}));return; }
+      deleted.add(params.threadId);managed.delete(params.threadId);
+      respond(request.id,{});notify('thread/deleted',{threadId:params.threadId});return;
+    }
     if (method === 'thread/list') {
       if (control.mode === 'exit-on-list') { process.stdout.end();return; }
       if (control.notifyUsage) {
@@ -229,7 +240,7 @@ else {
       if (control.accountChanged) send(JSON.stringify({ method: 'account/updated', params: {} }));
       // listedThreads replaces the sessions with ones per folder, as { id, cwd, name, updatedAt }
       const listed = control.listedThreads ? control.listedThreads.filter((thread) => thread.cwd === params.cwd).map((thread) => ({ ...threads[0],createdAt: thread.updatedAt,...thread })) : threads;
-      const named = params.searchTerm ? listed.filter((thread) => thread.name.includes(params.searchTerm)) : listed;
+      const named = (params.searchTerm ? listed.filter((thread) => thread.name.includes(params.searchTerm)) : listed).filter((thread) => !deleted.has(thread.id));
       // last activity first, ties by ascending ID unlike HQ's list, continuing after the last session's "updatedAt|id"
       const isBefore = (left,right) => left.updatedAt > right.updatedAt || (left.updatedAt === right.updatedAt && left.id < right.id);
       const selected = [...named].sort((left,right) => isBefore(left,right) ? -1 : isBefore(right,left) ? 1 : 0);
@@ -246,6 +257,7 @@ else {
     // loadedThreads lists the threads the daemon has loaded, for every client
     if (method === 'thread/loaded/list') { respond(request.id,{ data: control.loadedThreads ?? [], nextCursor: null });return; }
     // failRead refuses a session read; holdReadThread answers that session's read only once the control drops it
+    if (method === 'thread/read' && deleted.has(params.threadId)) { send(JSON.stringify({id:request.id,error:{code:-32600,message:'no rollout found for thread id '+params.threadId}}));return; }
     if (method === 'thread/read' && control.failRead) { send(JSON.stringify({id:request.id,error:{code:-32603,message:'Synthetic read failure'}}));return; }
     if (method === 'thread/read' && control.holdReadThread === params.threadId) { const answer = () => controls().holdReadThread === params.threadId ? setTimeout(answer,25) : handle(line,true); setTimeout(answer,25);return; }
     if (method === 'thread/read') { respond(request.id,{ thread: { ...threads[0],...managed.get(params.threadId),...(control.ephemeralThreads?.includes(params.threadId) ? { ephemeral: true } : {}),status: statusOf({ id: params.threadId,status: managed.get(params.threadId)?.status ?? threads[0].status }),...(control.unavailableSettings?{model:null,reasoningEffort:null}:{}),id: params.threadId,cwd: control.wrongRoot || managed.get(params.threadId)?.cwd || workspaceRoot } });return; }
@@ -278,12 +290,17 @@ else {
 }
 `;
 
-/** Installs one disposable native-boundary fixture in a caller-owned test directory. */
+/**
+ * Installs one disposable native-boundary fixture in a caller-owned test directory, with the
+ * Claude fixture beside it: a runtime starts both CLIs as it starts, and the one it finds must be
+ * a fixture, never an installed CLI.
+ */
 export const installCodexFixture = async (directory: string): Promise<string> => {
   const bin = join(directory, 'bin');
   await mkdir(bin, { recursive: true });
   await writeFile(join(directory, 'control.json'), '{}');
   await writeFile(join(directory, 'calls.jsonl'), '');
   await writeFile(join(bin, 'codex'), FIXTURE_SOURCE, { mode: 0o755 });
+  await installClaudeFixture(directory);
   return bin;
 };

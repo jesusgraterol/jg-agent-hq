@@ -19,6 +19,7 @@ import {
 import { HQ_ERRORS } from '../../errors/index.js';
 import { createClaudeProvider } from './claude.js';
 import { createClaudeControl } from './control/index.js';
+import { deleteTranscript } from './history/index.js';
 
 /**
  * Combines native Claude reads and persistent controls behind the provider boundary.
@@ -152,7 +153,8 @@ export const createClaudeProviderFactory = (
       },
       nameThread: (requestId, nativeId, name) => control.nameThread(requestId, nativeId, name),
       async validateInput(nativeId, input) {
-        control.validateInput(nativeId, input.settings);
+        // a first input has no session yet, and Claude accepts every media type HQ does
+        if (nativeId) control.validateInput(nativeId, input.settings);
       },
       startTurn: (requestId, nativeId, text, _skill, settings, files, call) =>
         control.startTurn(requestId, nativeId, text, settings, call.signal, files),
@@ -162,6 +164,11 @@ export const createClaudeProviderFactory = (
         control.interrupt(requestId, nativeId, nativeTurnId),
       cleanThread: (requestId, nativeId) => control.stopSession(requestId, nativeId),
       releaseThread: (requestId, nativeId) => control.releaseSession(requestId, nativeId),
+      // a session's files go before its index rows, so no scan indexes them again once forgotten
+      async deleteThread(_requestId, nativeId, workspaceRoot) {
+        await deleteTranscript(workspaceRoot, nativeId);
+        await store.call('claudeHistory', 'forget', nativeId);
+      },
       prepareShutdown: (nativeId) =>
         control.stopSession(`${randomUUID()}:shutdown-clean`, nativeId),
       async stopControl(nativeId) {

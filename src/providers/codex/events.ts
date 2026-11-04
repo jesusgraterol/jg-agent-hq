@@ -268,9 +268,12 @@ export const createCodexEvents = (
       });
     },
     lateResponse(requestId, result, error) {
-      // a reply's request ID is the native approval's, and answers no action phase
+      /*
+       * A reply's request ID is the native approval's, and answers no action phase. A deletion
+       * runs within its request, which records its outcome, so a late answer to it changes nothing.
+       */
       const request = parseActionRequest(requestId);
-      if (!request || request.phase === 'reply') return;
+      if (!request || request.phase === 'reply' || request.phase === 'delete') return;
       let outcome: IAgentProviderOutcome;
       let thread: IProviderThread | undefined;
       if (error !== undefined)

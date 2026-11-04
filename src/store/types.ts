@@ -58,10 +58,17 @@ export type IStoreRequest =
   | { kind: 'call'; id: number; model: IStoreModelName; method: string; args: unknown[] }
   | { kind: 'close'; id: number };
 export type IStoreError = { code: string; message: string; kind: IErrorKind };
+// each response carries the highest session transition sequence issued, which long-polls wait on
 export type IStoreResponse =
-  | { kind: 'ready'; storage: IStorageDescriptor }
+  | { kind: 'ready'; storage: IStorageDescriptor; transitionSequence: number }
   | { kind: 'startup-error'; error: IStoreError }
-  | { kind: 'result'; id: number; result: unknown; error: IStoreError | null };
+  | {
+      kind: 'result';
+      id: number;
+      result: unknown;
+      error: IStoreError | null;
+      transitionSequence: number;
+    };
 
 // the worker owns persistence; callers cannot submit arbitrary statements
 export type IStore = {
@@ -85,6 +92,8 @@ export type IStore = {
     method: TMethod,
     ...args: IStoreArguments<TModel, TMethod>
   ): Promise<IStoreResult<TModel, TMethod>>;
+  /** Calls the listener after each worker call that recorded a new session transition. */
+  onTransition(listener: () => void): void;
   /**
    * Closes SQLite and waits for the worker to exit.
    * @returns A promise resolved after SQLite closes and the worker exits.

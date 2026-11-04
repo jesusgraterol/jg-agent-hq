@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { hasErrorCode } from 'jg-exception';
 import { inspectLock } from 'jg-locks';
 import { createAgentHq, requestAgentHq, type IAgentHq } from 'jg-agent-hq';
-import type { IHqRequestInput } from 'jg-agent-hq/contracts';
+import type { IHqRequestInput, IHqResponseOf } from 'jg-agent-hq/contracts';
 import { expect, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -22,7 +22,9 @@ export type IClaudeFixture = {
   projectRoot: string;
   configRoot: string;
   runtime: IAgentHq;
-  request(command: IHqRequestInput): ReturnType<typeof requestAgentHq>;
+  request<TCommand extends IHqRequestInput>(
+    command: TCommand,
+  ): Promise<IHqResponseOf<TCommand['kind']>>;
   control(settings: object): Promise<void>;
   transcript(nativeId: string): string;
 };
@@ -104,6 +106,19 @@ export const withClaudeRuntime = async (
   } finally {
     await cleanup();
   }
+};
+
+/**
+ * Waits until the runtime connected both providers, as it does once it starts, so a test that
+ * counts native processes or calls counts only its own.
+ * @returns A promise resolved once status reports both providers ready.
+ */
+export const waitForWarmUp = async (runtime: IAgentHq): Promise<void> => {
+  await expect
+    .poll(async () =>
+      (await runtime.request({ kind: 'status' })).result.providers.map(({ state }) => state),
+    )
+    .toStrictEqual(['ready', 'ready']);
 };
 
 /** Makes one supported top-level native record while keeping all transcript fields realistic. */

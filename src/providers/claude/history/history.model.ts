@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, fstatSync, opendirSync, readSync, type Dir } from 'node:fs';
+import { closeSync, fstatSync, opendirSync, readSync, statSync, type Dir } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 import { hashValue } from 'jg-crypto';
 import { Exception, extractMessage, hasErrorCode, isException } from 'jg-exception';
@@ -125,10 +125,13 @@ export class ClaudeHistoryModel {
     string,
     { fileSize: number; modifiedAt: number | null; continuedIn: string | null }
   >();
-  // each workspace's open directory scan, with the transcripts it has inspected so far
+  /*
+   * Each workspace's open directory scan, with the transcripts it has inspected so far and the
+   * directory's modification time when it opened, which an added or removed transcript changes.
+   */
   private readonly __scans = new Map<
     string,
-    { entries: Dir; seen: Set<string>; pending: string | null }
+    { entries: Dir; seen: Set<string>; pending: string | null; changedAt: number }
   >();
   private readonly __statements: IStatements;
 
@@ -205,6 +208,32 @@ export class ClaudeHistoryModel {
           rows.length > page.limit && last ? `${last.updated_at}:${last.native_id}` : null,
       };
     });
+  }
+
+  /**
+   * Lists the workspaces the index holds transcripts of, by their latest activity, newest first.
+   * @param limit The most workspaces to list.
+   * @returns Their roots.
+   */
+  public indexedRoots(limit: number): string[] {
+    return this.__statements
+      .all<{
+        workspace_root: string;
+      }>(
+        'SELECT workspace_root FROM agent_hq_claude_file GROUP BY workspace_root ORDER BY max(updated_at) DESC LIMIT ?',
+        limit,
+      )
+      .map((row) => row.workspace_root);
+  }
+
+  /**
+   * Forgets a deleted session's transcript: its rows leave the index, and directory scans in
+   * progress start over, so none reads the transcript that is gone.
+   * @param nativeId The session's ID.
+   */
+  public forget(nativeId: string): void {
+    this.close();
+    this.__statements.run('DELETE FROM agent_hq_claude_file WHERE native_id = ?', nativeId);
   }
 
   /** Releases incomplete discovery iterators before the worker closes SQLite. */
@@ -583,15 +612,30 @@ export class ClaudeHistoryModel {
     return `${HISTORY_PROJECTION_VERSION}:${stat.dev}:${stat.ino}:${stat.birthtimeMs}:${hashValue(bytes)}`;
   }
 
+  /**
+   * Indexes one budgeted piece of a workspace's directory scan, continuing the scan a call before
+   * it left open. A directory whose transcripts were added or removed since its scan opened is
+   * scanned again from its start, since a directory iterator may skip entries added after it
+   * opened, so a scan that completes saw every transcript the directory held as it did.
+   * @returns Whether the scan completed.
+   * @throws
+   * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+   */
   private __refresh(directory: string, root: string): boolean {
+    const changedAt = statSync(directory).mtimeMs;
     let scan = this.__scans.get(root);
+    if (scan && scan.changedAt !== changedAt) {
+      scan.entries.closeSync();
+      this.__scans.delete(root);
+      scan = undefined;
+    }
     if (!scan) {
       if (this.__scans.size >= 4) {
         const oldest = this.__scans.entries().next().value!;
         oldest[1].entries.closeSync();
         this.__scans.delete(oldest[0]);
       }
-      scan = { entries: opendirSync(directory), seen: new Set(), pending: null };
+      scan = { entries: opendirSync(directory), seen: new Set(), pending: null, changedAt };
       this.__scans.set(root, scan);
     }
     const { seen } = scan;

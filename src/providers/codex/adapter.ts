@@ -332,6 +332,8 @@ export const createCodexProviderFactory = (
         await native.verifyTerminalsClosed(nativeId);
         await native.unsubscribe(requestId, nativeId);
       },
+      // the daemon owns Codex's rollouts and its index of them, so it deletes the session
+      deleteThread: (requestId, nativeId) => native.deleteThread(requestId, nativeId),
       async prepareShutdown(nativeId) {
         await native.cleanTerminals(`${randomUUID()}:shutdown-clean`, nativeId);
         await native.verifyTerminalsClosed(nativeId);
