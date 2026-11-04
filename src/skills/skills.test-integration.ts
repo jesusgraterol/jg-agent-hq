@@ -470,6 +470,11 @@ test("Codex reports each listed skill's argument hint from its file, and a file 
       `---\nname: ${name}\ndescription: The ${name} skill\n${extra}---\n\nBody.\n`;
     await write('hinted', frontmatter('hinted', "argument-hint: '[auto] [plan-path]'\n"));
     await write('plain', frontmatter('plain'));
+    // Codex lists a skill whose description is a YAML block, so its single-line hint still counts
+    await write(
+      'folded',
+      '---\nname: folded\ndescription: >-\n  The folded skill,\n  over two lines\nargument-hint: "[task]"\n---\n',
+    );
     await write(
       'oversized',
       frontmatter('oversized', 'argument-hint: [task]\n') + 'x'.repeat(65_536),
@@ -483,7 +488,9 @@ test("Codex reports each listed skill's argument hint from its file, and a file 
       join(fixture.root, 'outside.md'),
       join(fixture.root, 'skills', 'linked', 'SKILL.md'),
     );
-    await api.control({ skillNames: ['hinted', 'plain', 'oversized', 'linked', 'missing'] });
+    await api.control({
+      skillNames: ['hinted', 'plain', 'folded', 'oversized', 'linked', 'missing'],
+    });
 
     const page = await api.catalog();
     expect(page).toMatchObject({ state: 'available', unavailableCount: 0 });
@@ -493,6 +500,7 @@ test("Codex reports each listed skill's argument hint from its file, and a file 
     expect(hints).toStrictEqual({
       hinted: '[auto] [plan-path]',
       plain: null,
+      folded: '[task]',
       oversized: null,
       linked: null,
       missing: null,

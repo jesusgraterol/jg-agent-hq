@@ -11,6 +11,26 @@ import {
 } from './constants.js';
 import type { IRootSkill, ISkillFrontmatter } from './types.js';
 
+// a skill file's frontmatter block, or undefined when the file has none
+const readFrontmatter = (source: string): string | undefined =>
+  /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(source)?.[1];
+
+// a frontmatter key's single-line value without its quotes, or null when the key is missing
+const readField = (block: string, key: string): string | null => {
+  const value = new RegExp(`^${key}:[ \\t]*(.*?)[ \\t]*$`, 'm').exec(block)?.[1];
+  if (value === undefined) return null;
+  return /^(['"])(.*)\1$/.exec(value)?.[2] ?? value;
+};
+
+/*
+ * A frontmatter block's `argument-hint`, or null when it is missing, empty, a block scalar or over
+ * MAX_ARGUMENT_HINT_LENGTH characters. It never depends on the block's other fields.
+ */
+const readArgumentHint = (block: string): string | null => {
+  const hint = readField(block, 'argument-hint');
+  return !hint || hint.length > MAX_ARGUMENT_HINT_LENGTH || /^[>|]/.test(hint) ? null : hint;
+};
+
 /**
  * Reads a skill's single-line `name`, `description` and `argument-hint` frontmatter, the only
  * fields HQ takes from skill files. A hint that is missing, empty, a block scalar or over
@@ -18,15 +38,10 @@ import type { IRootSkill, ISkillFrontmatter } from './types.js';
  * @returns The skill's frontmatter, or null when its identity is missing or not plain single-line.
  */
 export const parseSkillFrontmatter = (source: string): ISkillFrontmatter | null => {
-  const block = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(source)?.[1];
+  const block = readFrontmatter(source);
   if (block === undefined) return null;
-  const read = (key: string): string | null => {
-    const value = new RegExp(`^${key}:[ \\t]*(.*?)[ \\t]*$`, 'm').exec(block)?.[1];
-    if (value === undefined) return null;
-    return /^(['"])(.*)\1$/.exec(value)?.[2] ?? value;
-  };
-  const name = read('name');
-  const description = read('description');
+  const name = readField(block, 'name');
+  const description = readField(block, 'description');
   if (
     !name ||
     name.length > 256 ||
@@ -36,10 +51,7 @@ export const parseSkillFrontmatter = (source: string): ISkillFrontmatter | null 
     /^[>|]/.test(description)
   )
     return null;
-  const hint = read('argument-hint');
-  const argumentHint =
-    !hint || hint.length > MAX_ARGUMENT_HINT_LENGTH || /^[>|]/.test(hint) ? null : hint;
-  return { name, description, argumentHint };
+  return { name, description, argumentHint: readArgumentHint(block) };
 };
 
 /**
@@ -72,8 +84,10 @@ const readSkillFile = async (path: string): Promise<string | null> => {
 
 /**
  * Reads the `argument-hint` of the skill file at an absolute path, such as one native discovery
- * lists, as `readSkillRoots` reads its files. A file that can't be read leaves the skill without
- * a hint, never without its listing.
+ * lists, as `readSkillRoots` reads its files. The catalog that lists the skill supplies its
+ * identity, so the hint counts whatever form the file's other fields take, such as a description
+ * written as a YAML block. A file that can't be read leaves the skill without a hint, never
+ * without its listing.
  * @returns A promise that resolves to the hint, or null when there is none or the file can't be
  * read.
  */
@@ -81,7 +95,8 @@ export const readSkillHint = async (path: string): Promise<string | null> => {
   if (!isAbsolute(path)) return null;
   try {
     const source = await readSkillFile(path);
-    return source === null ? null : (parseSkillFrontmatter(source)?.argumentHint ?? null);
+    const block = source === null ? undefined : readFrontmatter(source);
+    return block === undefined ? null : readArgumentHint(block);
   } catch {
     return null;
   }
