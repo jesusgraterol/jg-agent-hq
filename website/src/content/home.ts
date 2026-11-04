@@ -15,7 +15,7 @@ export const HOME_CONTENT = {
     },
     agents: ['Claude Code', 'Codex'],
     agentDetail: 'Native sign-in, tools and skills',
-    // the app-to-HQ link, then the HQ-to-agents link
+    // the app-to-controller link, then the controller-to-agents link
     links: [
       {
         down: { label: 'Commands', items: ['thread-create', 'message', 'native-reply'] },
@@ -32,8 +32,16 @@ export const HOME_CONTENT = {
     {
       id: 'sessions',
       title: 'Drive native sessions',
-      text: 'Create, resume or close sessions, and steer, queue or interrupt the running turn.',
-      commands: ['thread-create', 'message', 'steer', 'queue', 'interrupt', 'thread-close'],
+      text: 'Create, resume, close or delete sessions, and steer, queue or interrupt the running turn.',
+      commands: [
+        'thread-create',
+        'message',
+        'steer',
+        'queue',
+        'interrupt',
+        'thread-close',
+        'thread-delete',
+      ],
       link: { href: '/examples/#control-session', label: 'Session walkthrough' },
     },
     {
@@ -46,15 +54,15 @@ export const HOME_CONTENT = {
     {
       id: 'observe',
       title: 'See output, history and usage',
-      text: 'Follow live output, browse past sessions and read each account’s real quota, credits and earned resets.',
-      commands: ['live-items', 'threads', 'session-evidence', 'usage', 'models'],
+      text: 'Follow live output and session states, list sessions across folders and read each account’s real quota, credits and earned resets.',
+      commands: ['live-items', 'session-states', 'threads', 'session-evidence', 'usage', 'models'],
       link: null,
     },
     {
       id: 'storage',
       title: 'Local, private and recoverable',
-      text: 'HQ keeps its records in one private SQLite file you can share, snapshot while agents work and restore.',
-      commands: ['hq.storage', 'createSnapshot', 'restoreHqSnapshot'],
+      text: 'jg-agent-hq keeps its records in one private SQLite file you can share, snapshot while agents work and restore.',
+      commands: ['hq.storage', 'openHostDatabase', 'createSnapshot', 'restoreHqSnapshot'],
       link: null,
     },
   ],

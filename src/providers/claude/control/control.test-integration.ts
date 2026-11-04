@@ -968,7 +968,7 @@ test.each([{ requires_user_interaction: true }, { subtype: 'unknown-request' }])
       expect(await api.approvals(thread.id)).toStrictEqual([]);
       expect(
         (await api.calls()).find((call) => call.type === 'control_response')?.response,
-      ).toMatchObject({ subtype: 'error', error: "HQ couldn't present this request" });
+      ).toMatchObject({ subtype: 'error', error: "jg-agent-hq couldn't present this request" });
     });
   },
 );

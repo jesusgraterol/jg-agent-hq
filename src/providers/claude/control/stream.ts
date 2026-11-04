@@ -483,7 +483,7 @@ export const receiveClaudeMessage = (
           response: {
             subtype: 'error',
             request_id: request.request_id,
-            error: "HQ couldn't present this request",
+            error: "jg-agent-hq couldn't present this request",
           },
         })
         .catch(() => events?.unavailable(session.id));

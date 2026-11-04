@@ -167,22 +167,22 @@ importers:
   .:
     dependencies:
       jg-crypto:
-        specifier: 0.3.0
+        specifier: ^0.3.0
         version: 0.3.0
       jg-exception:
-        specifier: ^1.7.0
-        version: 1.7.0
+        specifier: ^1.7.1
+        version: 1.7.1
       jg-fs:
-        specifier: 1.7.0
+        specifier: ^1.7.0
         version: 1.7.0
       jg-locks:
         specifier: ^1.0.0
         version: 1.0.0
       jg-utilities:
-        specifier: 1.8.0
+        specifier: ^1.8.0
         version: 1.8.0
       zod:
-        specifier: ^4.3.6
+        specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
       '@types/node':
@@ -246,8 +246,8 @@ importers:
         specifier: 17.9.0
         version: 17.9.0
       jg-exception:
-        specifier: 1.7.0
-        version: 1.7.0
+        specifier: 1.7.1
+        version: 1.7.1
       jg-personal-astro-ui:
         specifier: 0.5.0
         version: 0.5.0(astro@7.4.0(@types/node@24.12.0)(jiti@2.7.0)(yaml@2.9.1))(tailwindcss@4.3.3)
@@ -282,8 +282,8 @@ importers:
         specifier: 4.1.12
         version: 4.1.12(@types/node@24.12.0)(vite@8.2.1(@types/node@24.12.0)(jiti@2.7.0)(yaml@2.9.1))
       zod:
-        specifier: 4.3.6
-        version: 4.3.6
+        specifier: 4.6.7
+        version: 4.6.7
 
 packages:
 
@@ -1683,10 +1683,6 @@ packages:
     resolution: {integrity: sha512-S7Bq9kmAK43xZeNQ41iubJ2LYxxyW3yMEoh2ciFkmm0/LAD3i2OgKOV4YPUL4j8NVGdjFuyJ5L8Ew6ti3wwVIQ==}
     engines: {node: '>=22.17.0'}
 
-  jg-exception@1.7.0:
-    resolution: {integrity: sha512-EmhkDdWxunZdYt+xjqe1G9tPbaSkVqF6xu/TxxChz7yVI+vXiWk8K5D+0J+masNL4MJwJv1sTDPC2x3QYMbJxA==}
-    engines: {node: '>=22.17.0'}
-
   jg-exception@1.7.1:
     resolution: {integrity: sha512-bi5yn3rtvFLlhjOiJJAREVE1mYXnENW3zoRcMOymNlgr09Z+Hy7ECgqGvIkqvINy+QDpki0u8XbmWSZpWpuwVQ==}
     engines: {node: '>=22.17.0'}
@@ -2840,9 +2836,6 @@ packages:
     resolution: {integrity: sha512-4LCcse/U2MHZ63HAJVE+v71o7yOdIe4cZ70Wpf8D/IyjDKYQLV5GD46B+hSTjJsvV5PztjvHoU580EftxjDZFQ==}
     engines: {node: '>=12.20'}
 
-  zod@4.3.6:
-    resolution: {integrity: sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==}
-
   zod@4.6.7:
     resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
 
@@ -2975,7 +2968,7 @@ snapshots:
     dependencies:
       sitemap: 9.0.1
       stream-replace-string: 2.0.0
-      zod: 4.3.6
+      zod: 4.6.7
 
   '@astrojs/telemetry@3.4.0':
     dependencies:
@@ -4224,19 +4217,17 @@ snapshots:
 
   jg-clipboard@0.3.0:
     dependencies:
-      jg-exception: 1.7.0
+      jg-exception: 1.7.1
 
   jg-crypto@0.3.0:
     dependencies:
-      jg-exception: 1.7.0
-
-  jg-exception@1.7.0: {}
+      jg-exception: 1.7.1
 
   jg-exception@1.7.1: {}
 
   jg-fs@1.7.0:
     dependencies:
-      jg-exception: 1.7.0
+      jg-exception: 1.7.1
       jg-utilities: 1.8.0
 
   jg-locks@1.0.0:
@@ -4261,7 +4252,7 @@ snapshots:
   jg-playwright@0.1.0(@axe-core/playwright@4.13.0(playwright-core@1.62.1))(@playwright/test@1.62.1):
     dependencies:
       '@playwright/test': 1.62.1
-      jg-exception: 1.7.0
+      jg-exception: 1.7.1
     optionalDependencies:
       '@axe-core/playwright': 4.13.0(playwright-core@1.62.1)
 
@@ -5167,8 +5158,6 @@ snapshots:
   yocto-queue@0.1.0: {}
 
   yocto-queue@1.2.2: {}
-
-  zod@4.3.6: {}
 
   zod@4.6.7: {}
 

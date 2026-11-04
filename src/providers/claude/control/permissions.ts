@@ -187,7 +187,8 @@ export const createClaudePrompt = (
           : { behavior: 'deny', message: 'The operator declined this request' };
       },
       reply: respond,
-      reject: () => respond({ behavior: 'deny', message: 'HQ cannot answer this request' }),
+      reject: () =>
+        respond({ behavior: 'deny', message: 'jg-agent-hq cannot answer this request' }),
     },
   };
 };

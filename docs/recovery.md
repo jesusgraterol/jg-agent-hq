@@ -1,12 +1,12 @@
 # Snapshot recovery
 
-HQ supplies local capture, encrypted packing and offline restore primitives, each of which inspects the complete snapshot. The Node signatures and inventory contract live in [the API reference](../api/README.md#snapshot-and-restore).
+The runtime supplies local capture, encrypted packing and offline restore primitives, each of which inspects the complete snapshot. The Node signatures and inventory contract live in [the API reference](../api/README.md#snapshot-and-restore).
 
 ## Capture
 
 Capture runs while agents keep working, under the state root's `snapshot` lock. Keep the host's own connections from writing host tables until capture resolves. Capture includes committed WAL data, application tables and action.key.
 
-Capture leaves out the index HQ keeps of Claude transcripts, the `agent_hq_claude_file` and `agent_hq_claude_entry` rows, which make up most of a database that has read Claude sessions, and compacts the copy with `VACUUM INTO`, which keeps the rowids of every table, including application tables. The snapshot of such a database is a small fraction of its size.
+Capture leaves out the index the runtime keeps of Claude transcripts, the `agent_hq_claude_file` and `agent_hq_claude_entry` rows, which make up most of a database that has read Claude sessions, and compacts the copy with `VACUUM INTO`, which keeps the rowids of every table, including application tables. The snapshot of such a database is a small fraction of its size.
 
 A successful snapshot has exact file hashes and a final completion marker. The header records the package version that captured it, and the database stamp binds its schema, action-key fingerprint and writing package version; restore and runtime startup reject a mismatched key or another schema. Keep it private. It excludes repositories and other workspace files, native transcripts/authentication, external references and transient runtime credentials. Inspection establishes complete local file/database evidence; hashes provide integrity rather than sender authentication.
 
@@ -14,7 +14,7 @@ A successful snapshot has exact file hashes and a final completion marker. The h
 
 Stop all connections to the proposed destination and choose a new recovery workspace. Restore validates source and staged copies and refuses every existing target. It creates the recovered state directory, a recovery.jsonl copy of the source manifest and a recovered.json completion record. Never use output left incomplete by a crash. Caught failures clean only the output that operation created.
 
-Start HQ with the returned stateRoot and explicit allowedRoots. Source root permissions are not imported. The runtime gets a new epoch; approvals expire, queued input waits and native ownership is uncertain. Inspect uncertain receipts without replaying input.
+Start the runtime with the returned stateRoot and explicit allowedRoots. Source root permissions are not imported. The runtime gets a new epoch; approvals expire, queued input waits and native ownership is uncertain. Inspect uncertain receipts without replaying input.
 
 The recovered runtime rebuilds the Claude history index from the transcripts on its first Claude history read, as a fresh state root does. With many transcripts, that indexing can outlast one read's 30-second budget; such a read reports the history unavailable and later reads continue it. A Claude session is listed again only once its transcript is back in Claude's own folder.
 
@@ -22,7 +22,7 @@ Recover repositories and native files separately. Source paths are retained as e
 
 ## Rollback
 
-Roll back by restoring an earlier snapshot into a new recovery workspace; never overwrite the current state root. A snapshot from another schema is refused with an error naming the package version that wrote it, so restore it with that version. Rollback accepts losing every change made after that snapshot, including host changes and later HQ receipts. Reconcile native ownership before enabling work.
+Roll back by restoring an earlier snapshot into a new recovery workspace; never overwrite the current state root. A snapshot from another schema is refused with an error naming the package version that wrote it, so restore it with that version. Rollback accepts losing every change made after that snapshot, including host changes and later runtime receipts. Reconcile native ownership before enabling work.
 
 ## Off-machine durability
 

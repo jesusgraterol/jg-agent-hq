@@ -12,7 +12,7 @@ export const CONTROL_EXAMPLE = {
   category: 'Session control',
   title: 'Start and follow a native session',
   goal: 'Open a Codex session, send it a task and read what comes back.',
-  install: `npm install jg-agent-hq@${SITE_CONFIG.version} jg-utilities@1.7.0`,
+  install: `npm install jg-agent-hq@${SITE_CONFIG.version} jg-utilities@1.8.0`,
   prerequisites: [
     'Node.js 24.15+ on Linux or macOS',
     'Codex installed and signed in',

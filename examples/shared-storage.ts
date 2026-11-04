@@ -5,8 +5,8 @@ import { openHostDatabase, restoreHqSnapshot, type IAgentHq } from 'jg-agent-hq'
 /**
  * Saves one application preference, captures shared storage and verifies an offline restore.
  * Keep other host connections from writing host tables until it returns; agents may keep
- * working. Both output directories must be absent. The caller owns HQ; this helper closes
- * its SQL connections.
+ * working. Both output directories must be absent. The caller owns the runtime; this helper
+ * closes its SQL connections.
  * The application transaction commits before capture and is not rolled back if capture fails.
  * Capture returns verified metadata; restore independently validates the staged copy.
  * @returns The inspected snapshot, its restored state root and the exact restored preference.

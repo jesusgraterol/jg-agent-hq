@@ -75,13 +75,15 @@ The candidate archive must still match its raw SHA-512 receipt. A differing publ
 
 ## Measured integration cost
 
-On Linux with Node.js 24.15.0 and Vitest 5.0.3 (2026-10-30), the same 482 cases across 27 files ran with retries disabled and no membership exclusions:
+On 2026-10-30, on Linux with Node.js 24.15.0 and Vitest 5.0.3, the same 482 cases across 27 files ran with retries disabled and no membership exclusions, before and after the test-owned wait controls and parallel files:
 
 | Selection                                        | Workers | Test time                          |
 | ------------------------------------------------ | ------- | ---------------------------------- |
 | Original intervals and serial files              | 1       | 543.13 seconds                     |
 | Controlled observer intervals and parallel files | 2       | 274.65, 229.46, and 236.47 seconds |
 
-The median is 236.47 seconds, about 56% below baseline. The agents file fell from 92.19 seconds to roughly 23 seconds while keeping its real native timeout checks. All 482 cases were selected in this comparison; this gain comes from test-owned wait controls and independent files. The clean package build took 3.92 seconds separately. These measurements exclude dependency installation and website work, and remain local evidence until observed in Actions.
+The median was 236.47 seconds, about 56% below baseline, and the agents file fell from 92.19 seconds to roughly 23 seconds while keeping its real native timeout checks. The original intervals no longer exist, so that baseline cannot be measured again.
 
-After classification, the essential native selection retains 150 of 165 unit cases and 481 of 482 integration cases. The latter passed in 207.57 seconds in the final local run, with retries disabled. The 16 full-only native cases cover timestamps and extra history presentation examples; consequential integration families remain selected. Website essential selects 14 unit and 4 integration cases; complete categories retain 42 unit, 16 integration, and 26 browser E2E cases. The mixed output test was split without removing its privacy or image-dimension assertions.
+On 2026-11-04, for 12.0.0, the complete integration category, 544 cases across 35 files, ran three times on the same platform and versions with `pnpm test:integration --retry=0` after one clean build, on 2 workers and with no membership exclusions. Vitest reported 235.90, 241.60, and 275.19 seconds, a median of 241.60 seconds; the slowest run shared the host with light editing tools. The agents file alone took 25.04 seconds. The clean package build took 3.44 seconds separately. These measurements exclude dependency installation and website work, and remain local evidence until observed in Actions.
+
+The essential native selection retains 323 of 338 unit cases and 543 of 544 integration cases. The essential integration selection passed in 230.84 seconds, with retries disabled. The 16 full-only native cases cover timestamps and extra history presentation examples; consequential integration families remain selected. Website essential selects 14 unit and 4 integration cases; complete categories retain 42 unit, 16 integration, and 26 browser E2E cases. The mixed output test was split without removing its privacy or image-dimension assertions.

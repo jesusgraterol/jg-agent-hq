@@ -5,8 +5,8 @@ import PreviewFrame from '../preview-frame/preview-frame.astro';
 import ProviderMark from '../provider-mark/provider-mark.astro';
 
 /*
- * Static meters, credits and session rows. HQ reads each from native accounts and storage:
- * Claude's windows keep their model scope, and Codex reports credits and earned resets
+ * Static meters, credits and session rows. The runtime reads each from native accounts and
+ * storage: Claude's windows keep their model scope, and Codex reports credits and earned resets
  * separately from its windows, without any redemption or purchase operation.
  */
 const ACCOUNTS = [

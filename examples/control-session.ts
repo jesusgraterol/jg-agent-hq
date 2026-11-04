@@ -18,16 +18,13 @@ export const controlSession = async (input: {
 }) => {
   const { stateRoot } = input;
   const status = await requestAgentHq(stateRoot, { kind: 'status' });
-  if (status.kind !== 'status') throw new Error('Expected runtime status');
   const runtimeEpoch = status.result.runtimeEpoch;
 
   /** Reads the same admitted action; it never retries its native effect. */
   const acknowledged = (actionId: string): Promise<IActionReceipt> =>
     waitUntil(
       async () => {
-        const response = await requestAgentHq(stateRoot, { kind: 'receipt', actionId });
-        if (response.kind !== 'receipt') throw new Error('Expected action receipt');
-        const receipt = response.result;
+        const receipt = (await requestAgentHq(stateRoot, { kind: 'receipt', actionId })).result;
         if (!receipt || ['queued', 'submitted'].includes(receipt.delivery)) return;
         if (receipt.delivery !== 'acknowledged')
           throw new Error(`Inspect action ${actionId}: ${receipt.delivery}`);
@@ -54,11 +51,11 @@ export const controlSession = async (input: {
   const threadId = created.threadId;
   const thread = await waitUntil(
     async () => {
-      const response = await requestAgentHq(stateRoot, { kind: 'managed-thread', threadId });
-      if (response.kind !== 'managed-thread') throw new Error('Expected managed thread');
-      if (response.result?.ownership === 'uncertain' || response.result?.state === 'failed')
+      const managed = (await requestAgentHq(stateRoot, { kind: 'managed-thread', threadId }))
+        .result;
+      if (managed?.ownership === 'uncertain' || managed?.state === 'failed')
         throw new Error(`Inspect thread ${threadId} before sending input`);
-      return response.result?.state === 'idle' ? response.result : undefined;
+      return managed?.state === 'idle' ? managed : undefined;
     },
     { timeoutSeconds: 30, intervalSeconds: 0.1 },
   );
@@ -77,8 +74,6 @@ export const controlSession = async (input: {
     requestAgentHq(stateRoot, { kind: 'approvals', threadId, state: 'pending' }),
     requestAgentHq(stateRoot, { kind: 'usage', provider: input.provider }),
   ]);
-  if (liveItems.kind !== 'live-items' || approvals.kind !== 'approvals' || usage.kind !== 'usage')
-    throw new Error('Expected session observations');
   return {
     thread,
     receipt,

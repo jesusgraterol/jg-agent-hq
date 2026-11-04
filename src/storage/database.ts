@@ -34,9 +34,9 @@ const WRITE_ACTIONS: ReadonlySet<number> = new Set([
 /**
  * Opens a host connection to the database a runtime's storage descriptor names, with the settings
  * the storage contract requires: foreign keys, the busy timeout, full synchronization and the WAL
- * size limit. The connection may read HQ's tables but not change them or define objects under the
- * reserved prefix: SQLite refuses such a statement with its authorization error. The host owns the
- * connection, and closes it.
+ * size limit. The connection may read the runtime's tables but not change them or define objects
+ * under the reserved prefix: SQLite refuses such a statement with its authorization error. The host
+ * owns the connection, and closes it.
  * @param storage The runtime's storage descriptor, from `hq.storage`.
  * @returns The open connection.
  * @throws

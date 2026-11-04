@@ -37,9 +37,9 @@ export type IPreviousRuntimeCheck = (owner: IPreviousRuntimeOwner) => Promise<bo
 export type IAgentHq = {
   readonly storage: IStorageDescriptor;
   /**
-   * Drains admitted HQ work and runs a host callback under exclusive maintenance admission.
-   * The callback owns its SQLite connection; its errors propagate unchanged.
-   * It must not call HQ or resume native work. Conflicting requests are rejected.
+   * Drains the runtime's admitted work and runs a host callback under exclusive maintenance
+   * admission. The callback owns its SQLite connection; its errors propagate unchanged.
+   * It must not call the runtime or resume native work. Conflicting requests are rejected.
    * @returns The callback result after maintenance is released.
    * @throws
    * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
