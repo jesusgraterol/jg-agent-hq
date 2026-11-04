@@ -1,5 +1,10 @@
 # Changelog
 
+## 11.1.1
+
+- Report the argument hint of every listed Codex skill whose `SKILL.md` declares a single-line `argument-hint`, whatever form its other frontmatter fields take. 11.1.0 read a listed skill's hint only when its `name` and `description` were single lines too, so a skill whose description is a YAML block, such as `description: >-`, showed no hint. A skill in the operator's extra roots still needs single-line `name` and `description` fields, which are its identity there.
+- Store nothing new: the schema and existing databases are unchanged.
+
 ## 11.1.0
 
 - Report each Codex skill's `argumentHint` from the `argument-hint` its `SKILL.md` declares. Codex's native skill list carries no hints, so a catalog read now reads the single-line frontmatter of the file at each listed skill's path, 8 files at a time, and of each skill in the operator's extra roots: a regular file of at most 65,536 bytes, without following a link at that path. A hint that is missing, empty, a block scalar or over 1,024 characters stays null, and a file that can't be read leaves only the hint null, without counting toward `unavailableCount`. Session and folder catalogs give a skill the same hint.
