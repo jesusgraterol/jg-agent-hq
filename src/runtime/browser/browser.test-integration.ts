@@ -202,9 +202,7 @@ test('startup quarantines a submitted receipt and never dispatches it automatica
     const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'));
     try {
       database
-        .prepare(
-          "UPDATE hq_browser_action SET receipt = json_set(receipt, '$.state', 'submitted') WHERE id = ?",
-        )
+        .prepare("UPDATE agent_hq_browser_action SET state = 'submitted' WHERE id = ?")
         .run(input.id);
     } finally {
       database.close();

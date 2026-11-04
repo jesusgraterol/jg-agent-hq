@@ -69,10 +69,10 @@ export type IResyncLoss = z.infer<typeof ResyncLossSchema>;
 // adapters must honor cancellation and keep delivery uncertain when native consumption is unproven
 export type IProviderCall = { signal: AbortSignal };
 
-// adapters echo the opaque request identity; the runtime derives its own action identity
+// adapters name the action and phase the native request answers; the registry adds the lineage
 export type IAgentProviderOutcome = INativeOutcome extends infer TOutcome
   ? TOutcome extends unknown
-    ? Omit<TOutcome, 'actionId' | 'nativeLineage'>
+    ? Omit<TOutcome, 'nativeLineage'>
     : never
   : never;
 

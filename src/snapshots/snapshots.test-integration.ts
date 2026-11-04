@@ -157,7 +157,7 @@ test('a snapshot leaves out the Claude history index and keeps host rowids; a re
         return {
           ...database
             .prepare(
-              'SELECT (SELECT count(*) FROM hq_claude_file) AS files, (SELECT count(*) FROM hq_claude_entry) AS entries',
+              'SELECT (SELECT count(*) FROM agent_hq_claude_file) AS files, (SELECT count(*) FROM agent_hq_claude_entry) AS entries',
             )
             .get(),
           events: database
@@ -363,7 +363,9 @@ test('host maintenance excludes capture, while capture proceeds through a native
     const database = new DatabaseSync(join(restored.stateRoot, 'hq.sqlite'), { readOnly: true });
     try {
       expect({
-        ...database.prepare('SELECT ownership, state FROM hq_thread WHERE id = ?').get(threadId),
+        ...database
+          .prepare('SELECT ownership, state FROM agent_hq_thread WHERE id = ?')
+          .get(threadId),
       }).toStrictEqual({ ownership: 'uncertain', state: 'unknown' });
     } finally {
       database.close();
@@ -675,7 +677,7 @@ test(
         try {
           const now = Date.now();
           db.prepare(
-            'INSERT INTO hq_action (id,digest,requested_runtime_epoch,runtime_epoch,kind,thread_id,delivery,created_at,updated_at) VALUES (?,?,?,?,?,?,?, ?,?)',
+            'INSERT INTO agent_hq_action (id,digest,requested_runtime_epoch,runtime_epoch,kind,thread_id,delivery,created_at,updated_at) VALUES (?,?,?,?,?,?,?, ?,?)',
           ).run(
             actionId,
             'a'.repeat(64),
@@ -688,7 +690,7 @@ test(
             now,
           );
           db.prepare(
-            "INSERT INTO hq_action (id,digest,requested_runtime_epoch,runtime_epoch,kind,thread_id,delivery,queued_input,queue_ready,created_at,updated_at) VALUES (?,?,?,?,?,?,'queued',?,1,?,?)",
+            "INSERT INTO agent_hq_action (id,digest,requested_runtime_epoch,runtime_epoch,kind,thread_id,delivery,queued_input,queue_ready,created_at,updated_at) VALUES (?,?,?,?,?,?,'queued',?,1,?,?)",
           ).run(
             queueId,
             'b'.repeat(64),
@@ -701,7 +703,7 @@ test(
             now,
           );
           db.prepare(
-            "INSERT INTO hq_native_approval (id,thread_id,native_turn_id,runtime_epoch,native_request_id,digest,kind,is_blocking,state,created_at,updated_at) VALUES (?,?,?,?,?,?,'command',1,'pending',?,?)",
+            "INSERT INTO agent_hq_native_approval (id,thread_id,native_turn_id,runtime_epoch,native_request_id,digest,kind,is_blocking,state,created_at,updated_at) VALUES (?,?,?,?,?,?,'command',1,'pending',?,?)",
           ).run(
             approvalId,
             threadId,
@@ -724,13 +726,11 @@ test(
       const db = new DatabaseSync(join(restored.stateRoot, 'hq.sqlite'));
       try {
         expect(
-          db
-            .prepare('SELECT delivery, native_request_id FROM hq_action WHERE id = ?')
-            .get(actionId),
-        ).toMatchObject({ delivery: 'uncertain', native_request_id: null });
+          db.prepare('SELECT delivery, phase FROM agent_hq_action WHERE id = ?').get(actionId),
+        ).toMatchObject({ delivery: 'uncertain', phase: null });
         expect(
           db
-            .prepare('SELECT delivery, queued_input, queue_ready FROM hq_action WHERE id = ?')
+            .prepare('SELECT delivery, queued_input, queue_ready FROM agent_hq_action WHERE id = ?')
             .get(queueId),
         ).toMatchObject({
           delivery: 'queued',
@@ -738,7 +738,8 @@ test(
           queue_ready: 0,
         });
         expect(
-          db.prepare('SELECT state FROM hq_native_approval WHERE id = ?').get(approvalId)?.state,
+          db.prepare('SELECT state FROM agent_hq_native_approval WHERE id = ?').get(approvalId)
+            ?.state,
         ).toBe('expired');
       } finally {
         db.close();
@@ -789,7 +790,7 @@ test.each(['header', 'database'])(
         const database = new DatabaseSync(join(snapshot.directory, 'hq.sqlite'));
         try {
           database
-            .prepare('UPDATE hq_schema SET schema_hash = ?, package_version = ?')
+            .prepare('UPDATE agent_hq_schema SET schema_hash = ?, package_version = ?')
             .run('f'.repeat(64), '9.9.9');
         } finally {
           database.close();

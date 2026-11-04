@@ -182,18 +182,17 @@ export const createProviderRegistry = (
           else void bound().catch((cause) => quarantine(entry, cause));
         }),
       resync: (nativeId, lost) => deliver(() => handlers?.resync(provider, nativeId, lost)),
-      // the action identity comes from the runtime-issued request identity the adapter echoes
+      // a created or resumed session's lineage comes from the native thread the adapter read
       outcome: (outcome, thread) =>
-        deliver(() => {
-          const actionId = outcome.requestId.slice(0, 36);
+        deliver(() =>
           handlers?.outcome(
             provider,
             outcome.kind === 'created' || outcome.kind === 'resumed'
-              ? { ...outcome, actionId, nativeLineage: thread?.nativeLineage ?? null }
-              : { ...outcome, actionId },
+              ? { ...outcome, nativeLineage: thread?.nativeLineage ?? null }
+              : outcome,
             thread,
-          );
-        }),
+          ),
+        ),
       unavailable: (nativeId) => deliver(() => handlers?.unavailable(provider, nativeId)),
     };
   };

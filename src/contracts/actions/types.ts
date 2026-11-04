@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { ACTION_PHASES } from '../constants.js';
 import { ProviderIdSchema } from '../providers/index.js';
 import { SessionSettingsSchema, TurnSettingsSchema } from '../configuration/index.js';
 
@@ -134,7 +135,8 @@ export const ActionReceiptSchema = z.object({
   // the native session of the action's thread, once HQ recorded it
   nativeThreadId: NativeIdSchema.nullable(),
   nativeTurnId: NativeIdSchema.nullable(),
-  nativeRequestId: z.string().nullable(),
+  // the native step the action takes now
+  phase: z.enum(ACTION_PHASES).nullable(),
   delivery: z.enum(['queued', 'submitted', 'acknowledged', 'uncertain', 'failed', 'canceled']),
   completion: z.enum(['completed', 'failed', 'interrupted']).nullable(),
   failure: z
@@ -147,6 +149,7 @@ export const ActionReceiptSchema = z.object({
   updatedAt: z.number().int(),
 });
 export type IActionReceipt = z.infer<typeof ActionReceiptSchema>;
+export type IActionPhase = NonNullable<IActionReceipt['phase']>;
 
 // collections omit queued input, final result bodies and the native thread; selected receipts retain them
 export const ActionSummarySchema = ActionReceiptSchema.omit({

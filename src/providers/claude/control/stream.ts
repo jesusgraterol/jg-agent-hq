@@ -2,9 +2,10 @@ import { randomUUID } from 'node:crypto';
 
 import { z } from 'zod';
 
-import { RecordSchema, toClaudeItem } from '../history/index.js';
+import { toClaudeItem } from '../history/index.js';
 import { MAX_RESULT_BYTES, type ITurnUsage } from '../../../contracts/index.js';
 import { toTurnResult } from '../../results/index.js';
+import { parseActionRequest } from '../../utilities.js';
 import { HQ_ERRORS } from '../../../errors/index.js';
 
 import type {
@@ -54,27 +55,47 @@ const CancelSchema = z.object({ request_id: z.string().min(1).max(4096) });
 const ToolResultsSchema = z.array(
   z.object({ type: z.string(), tool_use_id: z.string().optional() }),
 );
-const PartialSchema = z.object({ event: z.object({ type: z.string() }) });
-const MessageStartSchema = z.object({
-  event: z.object({ message: z.object({ id: z.string().min(1).max(256) }) }),
-});
-const BlockStartSchema = z.object({
-  event: z.object({
-    index: z.number().int().min(0).max(127),
-    content_block: z.object({
-      type: z.string(),
-      id: z.string().optional(),
-      name: z.string().optional(),
-      text: z.string().optional(),
+// the streamed events of a turn's answer HQ reads; others, such as a block's stop, carry nothing it uses
+const STREAM_EVENT_TYPES: ReadonlySet<string> = new Set([
+  'message_start',
+  'content_block_start',
+  'content_block_delta',
+]);
+const StreamEventSchema = z.union([
+  z.discriminatedUnion('type', [
+    z.object({
+      type: z.literal('message_start'),
+      message: z.object({ id: z.string().min(1).max(256) }),
     }),
-  }),
-});
-const BlockDeltaSchema = z.object({
-  event: z.object({
-    index: z.number().int().min(0).max(127),
-    delta: z.object({ type: z.string(), text: z.string().optional() }),
-  }),
-});
+    z.object({
+      type: z.literal('content_block_start'),
+      index: z.number().int().min(0).max(127),
+      content_block: z.object({
+        type: z.string(),
+        id: z.string().optional(),
+        name: z.string().optional(),
+        text: z.string().optional(),
+      }),
+    }),
+    z.object({
+      type: z.literal('content_block_delta'),
+      index: z.number().int().min(0).max(127),
+      delta: z.object({ type: z.string(), text: z.string().optional() }),
+    }),
+  ]),
+  z
+    .object({ type: z.string() })
+    .refine((event) => !STREAM_EVENT_TYPES.has(event.type))
+    .transform(() => ({ type: 'other' as const })),
+]);
+/*
+ * A native frame, parsed once: a streamed event of a turn's answer with its event, or any other
+ * frame by its type, whose own schema its handler applies.
+ */
+const ClaudeFrameSchema = z.union([
+  FrameSchema.extend({ type: z.literal('stream_event'), event: StreamEventSchema }),
+  FrameSchema.refine((frame) => frame.type !== 'stream_event'),
+]);
 // Claude's list of the background commands still running, sent whenever one starts or ends
 const BackgroundTasksSchema = z.object({
   subtype: z.literal('background_tasks_changed'),
@@ -114,7 +135,8 @@ const acknowledge = (session: IClaudeSession, events: IClaudeControlEvents | und
   input.isAcknowledged = true;
   clearTimeout(input.timer);
   input.resolve({ id: input.id });
-  events?.outcome({ kind: 'turn-accepted', requestId: input.requestId, nativeTurnId: input.id });
+  const request = parseActionRequest(input.requestId);
+  if (request) events?.outcome({ kind: 'turn-accepted', ...request, nativeTurnId: input.id });
   events?.observe({
     kind: 'turn-started',
     provider: 'claude',
@@ -263,7 +285,7 @@ export const receiveClaudeMessage = (
   raw: unknown,
   events: IClaudeControlEvents | undefined,
 ): void => {
-  const frame = FrameSchema.parse(raw);
+  const frame = ClaudeFrameSchema.parse(raw);
   if (frame.session_id && frame.session_id !== session.id) unavailable();
   /*
    * A subagent's frames name the Agent call that started it. History leaves its sidechain out, so
@@ -302,14 +324,14 @@ export const receiveClaudeMessage = (
     const item = message.isSynthetic
       ? null
       : toClaudeItem(
-          RecordSchema.parse({
+          {
             type: frame.type,
             uuid: message.uuid,
             message: message.message,
             toolUseResult: message.tool_use_result,
             // a live item is timed when its frame arrives
             timestamp: new Date().toISOString(),
-          }),
+          },
           turn.id,
         );
     // final wrappers may share an API message ID while containing different content blocks
@@ -346,38 +368,34 @@ export const receiveClaudeMessage = (
       }
     if (item) events?.item(session.id, item, true, replacedIds);
     if (frame.type === 'user') resolveRequests(session, message, events);
-  } else if (frame.type === 'stream_event') {
+  } else if ('event' in frame) {
     const turn = getActiveTurn(session) ?? startNativeTurn(session, events);
-    const event = PartialSchema.parse(raw).event;
+    const { event } = frame;
     if (event.type === 'message_start') {
       if (session.previews.size) events?.gap(session.id);
-      session.apiMessageId = MessageStartSchema.parse(raw).event.message.id;
+      session.apiMessageId = event.message.id;
       session.previews.clear();
     } else if (event.type === 'content_block_start') {
-      const block = BlockStartSchema.parse(raw).event;
       if (!session.apiMessageId) unavailable();
-      const id = `live:${turn.id}:${session.apiMessageId}:${block.index}`;
+      const id = `live:${turn.id}:${session.apiMessageId}:${event.index}`;
       const preview = toClaudeItem(
         {
           type: 'assistant',
           uuid: id,
-          message: { role: 'assistant', content: [block.content_block] },
+          message: { role: 'assistant', content: [event.content_block] },
           timestamp: new Date().toISOString(),
         },
         turn.id,
       );
       // a block the CLI leaves out, such as thinking, has no preview to show or replace
       if (preview) {
-        session.previews.set(block.index, { id, type: block.content_block.type });
+        session.previews.set(event.index, { id, type: event.content_block.type });
         events?.item(session.id, preview, false);
       }
-    } else if (event.type === 'content_block_delta') {
-      const block = BlockDeltaSchema.parse(raw).event;
-      if (block.delta.type === 'text_delta') {
-        const preview = session.previews.get(block.index);
-        if (!preview || block.delta.text === undefined) unavailable();
-        events?.delta(session.id, turn.id, preview.id, block.delta.text);
-      }
+    } else if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+      const preview = session.previews.get(event.index);
+      if (!preview || event.delta.text === undefined) unavailable();
+      events?.delta(session.id, turn.id, preview.id, event.delta.text);
     }
   } else if (frame.type === 'result') {
     const result = ResultSchema.parse(raw);

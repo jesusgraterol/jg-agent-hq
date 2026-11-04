@@ -3,19 +3,43 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { extractMessage, isException } from 'jg-exception';
 
 import { HQ_ERRORS, getErrorKind } from '../errors/index.js';
-import { STORAGE_CONNECTION_SETTINGS } from '../storage/index.js';
+import { STORAGE_CONNECTION_SETTINGS, type IStorageDescriptor } from '../storage/index.js';
 import { ClaudeHistoryModel } from '../providers/claude/history/index.js';
 
 import { BrowserModel } from './browser/index.js';
-import { ControlModel } from './control/index.js';
+import {
+  ControlAdmission,
+  ControlLifecycle,
+  ControlObservations,
+  ControlOutcomes,
+  ControlReads,
+} from './control/index.js';
 import { SessionsModel } from './sessions/index.js';
-import { StoreRequestSchema, StoreWorkerSchema } from './types.js';
+import type {
+  IStoreError,
+  IStoreModels,
+  IStoreRequest,
+  IStoreResponse,
+  IStoreWorkerData,
+} from './types.js';
 import { openDatabase } from './schema.js';
-import { backupForSnapshot } from './snapshot.js';
+import { SnapshotModel } from './snapshot.js';
+import { createStatements } from './utilities.js';
 
-const options = StoreWorkerSchema.parse(workerData);
+// the main thread built these options
+const options = workerData as IStoreWorkerData;
 if (!parentPort) throw HQ_ERRORS.create('storeFailed');
 const port = parentPort;
+const post = (response: IStoreResponse): void => port.postMessage(response);
+/** Describes a failure by its code, message and kind, as the main thread rethrows it. */
+const toStoreError = (error: unknown): IStoreError => ({
+  code: isException(error) ? error.code : 'JG_AGENT_HQ_STORE_FAILED',
+  message: isException(error)
+    ? extractMessage(error)
+    : `The HQ store failed: ${extractMessage(error)}`,
+  kind: getErrorKind(error),
+});
+
 /** Starts the owned worker and reports typed startup failures before closing it. */
 const startWorker = async (): Promise<void> => {
   const { database, schemaHash } = openDatabase(
@@ -24,162 +48,46 @@ const startWorker = async (): Promise<void> => {
     options.actionKey,
   );
   try {
-    const storage = {
+    const storage: IStorageDescriptor = {
       databasePath: options.databasePath,
       schemaHash,
-      reservedPrefix: 'hq_',
+      reservedPrefix: 'agent_hq_',
       connectionSettings: STORAGE_CONNECTION_SETTINGS,
     };
-    const browser = new BrowserModel(database, options.runtimeEpoch, options.actionKey);
-    const sessions = new SessionsModel(database);
-    const controls = new ControlModel(database, options.runtimeEpoch, options.actionKey);
-    const claudeHistory = new ClaudeHistoryModel(database);
-    port.on('message', async (message: unknown) => {
-      const parsed = StoreRequestSchema.safeParse(message);
-      if (!parsed.success) throw HQ_ERRORS.create('storeFailed', { cause: parsed.error });
-      const { id, command } = parsed.data;
+    const statements = createStatements(database);
+    const { runtimeEpoch, actionKey } = options;
+    // the lifecycle quarantines what another runtime left unsettled before anything is admitted
+    const models: IStoreModels = {
+      browser: new BrowserModel(statements, runtimeEpoch, actionKey),
+      sessions: new SessionsModel(database, statements),
+      lifecycle: new ControlLifecycle(database, statements, runtimeEpoch, actionKey),
+      reads: new ControlReads(database, statements, runtimeEpoch, actionKey),
+      admission: new ControlAdmission(database, statements, runtimeEpoch, actionKey),
+      outcomes: new ControlOutcomes(database, statements, runtimeEpoch, actionKey),
+      observations: new ControlObservations(database, statements, runtimeEpoch, actionKey),
+      claudeHistory: new ClaudeHistoryModel(database, statements),
+      snapshot: new SnapshotModel(database),
+    };
+    port.on('message', async (request: IStoreRequest) => {
+      const { id } = request;
       try {
-        if (command.kind === 'close') {
-          claudeHistory.close();
+        if (request.kind === 'close') {
+          models.claudeHistory.close();
           database.close();
-          port.postMessage({ kind: 'result', id, result: null, error: null });
+          post({ kind: 'result', id, result: null, error: null });
           port.close();
           return;
         }
-        let result: unknown = null;
-        switch (command.kind) {
-          case 'snapshot-backup':
-            await backupForSnapshot(database, command.destination);
-            break;
-          case 'evidence-origins':
-            result = controls.getEvidenceOrigins(command.request);
-            break;
-          case 'storage-maintenance': {
-            const activeThread = database
-              .prepare(
-                "SELECT 1 FROM hq_thread WHERE runtime_epoch IS NOT NULL AND (active_turn_id IS NOT NULL OR pending_action_id IS NOT NULL OR state NOT IN ('inactive', 'idle', 'completed', 'failed', 'interrupted')) LIMIT 1",
-              )
-              .get();
-            const activeAction = database
-              .prepare(
-                "SELECT 1 FROM hq_action WHERE runtime_epoch = ? AND delivery = 'submitted' LIMIT 1",
-              )
-              .get(options.runtimeEpoch);
-            result = !activeThread && !activeAction;
-            break;
-          }
-          case 'browser-read':
-            result = browser.get(command.id, command.operatorId);
-            break;
-          case 'browser-admit':
-            result = browser.admit(command.action, command.operatorId);
-            break;
-          case 'browser-settle':
-            result = browser.settle(command.id, command.operatorId, command.state);
-            break;
-          case 'sessions-observe':
-            sessions.observe(command.provider, command.sessions, command.isComplete);
-            break;
-          case 'sessions-unknown':
-            sessions.markUnknown(command.provider);
-            break;
-          case 'sessions-states':
-            result = sessions.states(command.provider, command.nativeIds);
-            break;
-          case 'session-transitions':
-            result = sessions.transitions(command.afterSequence, command.limit);
-            break;
-          case 'sessions-active':
-            result = sessions.active(command.limit, command.includedKeys);
-            break;
-          case 'claude-transcript-root':
-            result = sessions.claudeTranscriptRoot(command.nativeId);
-            break;
-          case 'claude-history':
-            result = claudeHistory.read(command.request);
-            break;
-          case 'action-read':
-            result = controls.getAction(command.id);
-            break;
-          case 'thread-read':
-            result = controls.getThread(command.id);
-            break;
-          case 'thread-name-suggest':
-            result = controls.suggestName(command.name);
-            break;
-          case 'native-thread-read':
-            result = controls.getThreadByNativeId(command.provider, command.nativeId);
-            break;
-          case 'turn-record':
-            result = controls.getTurnRecord(command.provider, command.nativeId);
-            break;
-          case 'native-threads':
-            result = controls.getNativeThreads(command.provider, command.nativeIds);
-            break;
-          case 'threads':
-            result = controls.listThreads(command.workspaceRoot, command.page);
-            break;
-          case 'thread-unstarted':
-            result = controls.getUnstartedThread(command.provider, command.nativeId);
-            break;
-          case 'threads-unstarted':
-            result = controls.listUnstartedThreads(
-              command.provider,
-              command.workspaceRoot,
-              command.limit,
-            );
-            break;
-          case 'actions':
-            result = controls.listActions(command.threadId, command.page);
-            break;
-          case 'approvals':
-            result = controls.listApprovals(command.threadId, command.page);
-            break;
-          case 'admit':
-            result = controls.admit(command.input);
-            break;
-          case 'outcome':
-            result = controls.applyOutcome(command.input);
-            break;
-          case 'observe':
-            result = controls.observe(command.input);
-            break;
-          case 'claim-queue':
-            result = controls.claimQueued(command.threadId);
-            break;
-          case 'approval':
-            result = controls.openApproval(command.input);
-            break;
-          case 'release':
-            controls.releaseControls();
-            break;
-          case 'reattachable':
-            result = controls.listReattachable();
-            break;
-          case 'reattach':
-            result = controls.reattach(command.input);
-            break;
-          case 'quarantine':
-            controls.quarantineThread(command.threadId);
-            break;
-        }
-        port.postMessage({ kind: 'result', id, result, error: null });
+        const model: object = models[request.model];
+        const operation: unknown = Reflect.get(model, request.method);
+        if (typeof operation !== 'function') throw HQ_ERRORS.create('storeFailed');
+        const result: unknown = await operation.apply(model, request.args);
+        post({ kind: 'result', id, result, error: null });
       } catch (error) {
-        port.postMessage({
-          kind: 'result',
-          id,
-          result: null,
-          error: {
-            code: isException(error) ? error.code : 'JG_AGENT_HQ_STORE_FAILED',
-            message: isException(error)
-              ? extractMessage(error)
-              : `The HQ store failed: ${extractMessage(error)}`,
-            kind: getErrorKind(error),
-          },
-        });
+        post({ kind: 'result', id, result: null, error: toStoreError(error) });
       }
     });
-    port.postMessage({ kind: 'ready', storage });
+    post({ kind: 'ready', storage });
   } catch (error) {
     database.close();
     throw error;
@@ -188,15 +96,6 @@ const startWorker = async (): Promise<void> => {
 try {
   await startWorker();
 } catch (error) {
-  port.postMessage({
-    kind: 'startup-error',
-    error: {
-      code: isException(error) ? error.code : 'JG_AGENT_HQ_STORE_FAILED',
-      message: isException(error)
-        ? extractMessage(error)
-        : `The HQ store failed: ${extractMessage(error)}`,
-      kind: getErrorKind(error),
-    },
-  });
+  post({ kind: 'startup-error', error: toStoreError(error) });
   port.close();
 }

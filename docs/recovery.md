@@ -6,7 +6,7 @@ HQ supplies local capture, encrypted packing and offline restore primitives, eac
 
 Capture runs while agents keep working, under the state root's `snapshot` lock. Keep the host's own connections from writing host tables until capture resolves. Capture includes committed WAL data, application tables and action.key.
 
-Capture leaves out the index HQ keeps of Claude transcripts, the `hq_claude_file` and `hq_claude_entry` rows, which make up most of a database that has read Claude sessions, and compacts the copy with `VACUUM INTO`, which keeps the rowids of every table, including application tables. The snapshot of such a database is a small fraction of its size.
+Capture leaves out the index HQ keeps of Claude transcripts, the `agent_hq_claude_file` and `agent_hq_claude_entry` rows, which make up most of a database that has read Claude sessions, and compacts the copy with `VACUUM INTO`, which keeps the rowids of every table, including application tables. The snapshot of such a database is a small fraction of its size.
 
 A successful snapshot has exact file hashes and a final completion marker. The header records the package version that captured it, and the database stamp binds its schema, action-key fingerprint and writing package version; restore and runtime startup reject a mismatched key or another schema. Keep it private. It excludes repositories and other workspace files, native transcripts/authentication, external references and transient runtime credentials. Inspection establishes complete local file/database evidence; hashes provide integrity rather than sender authentication.
 

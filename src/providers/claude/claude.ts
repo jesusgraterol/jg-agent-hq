@@ -262,7 +262,7 @@ export const createClaudeProvider = (store: IStore, additionalDirectories: strin
       const deadline = Date.now() + 30_000;
       await verify();
       while (!isClosing && Date.now() < deadline) {
-        const result = await store.readClaudeHistory(command);
+        const result = await store.call('claudeHistory', 'read', command);
         if (result.kind !== 'indexing') return result;
         await scheduler.yield();
       }

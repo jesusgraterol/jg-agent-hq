@@ -327,7 +327,7 @@ test.each(['codex', 'claude'] as const)(
               turnId: sent.nativeTurnId,
               item: {
                 id: 'host-item',
-                clientId: sent.nativeRequestId,
+                clientId: `${sent.id}:${sent.phase}`,
                 type: 'userMessage',
                 content: [{ type: 'text', text }],
               },
@@ -352,11 +352,11 @@ test.each(['codex', 'claude'] as const)(
       const database = new DatabaseSync(fixture.runtime.storage.databasePath, { readOnly: true });
       try {
         expect(
-          database.prepare('SELECT input_sha256 FROM hq_action WHERE id = ?').get(sent.id)
+          database.prepare('SELECT input_sha256 FROM agent_hq_action WHERE id = ?').get(sent.id)
             ?.input_sha256,
         ).toBe(createHash('sha256').update(text).digest('hex'));
         expect(
-          database.prepare('SELECT queued_input FROM hq_action WHERE id = ?').get(sent.id)
+          database.prepare('SELECT queued_input FROM agent_hq_action WHERE id = ?').get(sent.id)
             ?.queued_input,
         ).toBeNull();
       } finally {
@@ -372,7 +372,7 @@ test.each(['codex', 'claude'] as const)(
           );
         expect(
           calls.find((call) => call.method === 'turn/start')?.params?.clientUserMessageId,
-        ).toBe(sent.nativeRequestId);
+        ).toBe(`${sent.id}:${sent.phase}`);
         await writeFixtureControl(fixture.root, 'control.json', {
           items: [
             {
@@ -421,7 +421,7 @@ test.each(['codex', 'claude'] as const)(
               turnId: sent.nativeTurnId,
               item: {
                 id: 'host-item',
-                clientId: sent.nativeRequestId,
+                clientId: `${sent.id}:${sent.phase}`,
                 type: 'userMessage',
                 content: [
                   { type: 'text', text },
@@ -618,14 +618,16 @@ test('cold Claude indexing, exact item queries and kind seeks avoid whole-histor
     try {
       const plan = database
         .prepare(
-          'EXPLAIN QUERY PLAN SELECT uuid FROM hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND item_kind = ? AND byte_offset < ? ORDER BY byte_offset DESC LIMIT 9',
+          'EXPLAIN QUERY PLAN SELECT uuid FROM agent_hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND item_kind = ? AND byte_offset < ? ORDER BY byte_offset DESC LIMIT 9',
         )
         .all(fixture.workspaceRoot, nativeId, 'agent-message', Number.MAX_SAFE_INTEGER);
-      expect(JSON.stringify(plan)).toContain('hq_idx_ce__workspace_native_kind_offset_current');
+      expect(JSON.stringify(plan)).toContain(
+        'agent_hq_idx_ce__workspace_native_kind_offset_current',
+      );
       expect(JSON.stringify(plan)).not.toContain('TEMP B-TREE');
       const turnPlan = database
         .prepare(
-          'EXPLAIN QUERY PLAN SELECT uuid FROM hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND turn_id = ? AND item_kind = ? AND byte_offset < ? ORDER BY byte_offset DESC LIMIT 9',
+          'EXPLAIN QUERY PLAN SELECT uuid FROM agent_hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND turn_id = ? AND item_kind = ? AND byte_offset < ? ORDER BY byte_offset DESC LIMIT 9',
         )
         .all(
           fixture.workspaceRoot,
@@ -635,12 +637,12 @@ test('cold Claude indexing, exact item queries and kind seeks avoid whole-histor
           Number.MAX_SAFE_INTEGER,
         );
       expect(JSON.stringify(turnPlan)).toContain(
-        'hq_idx_ce__workspace_native_turn_kind_offset_current',
+        'agent_hq_idx_ce__workspace_native_turn_kind_offset_current',
       );
       expect(JSON.stringify(turnPlan)).not.toContain('TEMP B-TREE');
       expect(
         database
-          .prepare('SELECT count(*) AS count FROM hq_claude_entry WHERE native_id = ?')
+          .prepare('SELECT count(*) AS count FROM agent_hq_claude_entry WHERE native_id = ?')
           .get(nativeId)?.count,
       ).toBe(1024);
     } finally {
@@ -1006,7 +1008,7 @@ test('active sessions return the newest 128 of more, in running and waiting stat
       const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { timeout: 5_000 });
       try {
         const insert = database.prepare(
-          'INSERT INTO hq_observed_session (provider, native_id, state, observed_at) VALUES (?, ?, ?, ?)',
+          'INSERT INTO agent_hq_observed_session (provider, native_id, state, observed_at) VALUES (?, ?, ?, ?)',
         );
         for (let index = 0; index < 130; index += 1)
           insert.run(

@@ -472,7 +472,7 @@ test('approval state survives answer resolution and runtime restart without reta
     const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
     try {
       expect(
-        JSON.stringify(database.prepare('SELECT * FROM hq_native_approval').all()),
+        JSON.stringify(database.prepare('SELECT * FROM agent_hq_native_approval').all()),
       ).not.toContain('private-prompt-marker');
     } finally {
       database.close();
@@ -496,7 +496,7 @@ test('approval history uses indexed, query-bound seek pages and expires requests
     );
     try {
       const insert = database.prepare(
-        "INSERT INTO hq_native_approval (id, thread_id, native_turn_id, runtime_epoch, native_request_id, digest, kind, is_blocking, state, created_at, updated_at) VALUES (?, ?, 'fixture-turn', ?, ?, ?, 'question', 1, ?, 100, 100)",
+        "INSERT INTO agent_hq_native_approval (id, thread_id, native_turn_id, runtime_epoch, native_request_id, digest, kind, is_blocking, state, created_at, updated_at) VALUES (?, ?, 'fixture-turn', ?, ?, ?, 'question', 1, ?, 100, 100)",
       );
       for (const [index, id] of ids.entries())
         insert.run(
@@ -510,13 +510,13 @@ test('approval history uses indexed, query-bound seek pages and expires requests
       for (const state of [false, true]) {
         const plan = database
           .prepare(
-            `EXPLAIN QUERY PLAN SELECT id FROM hq_native_approval WHERE thread_id = ? ${state ? "AND state = 'answered'" : ''} AND (created_at, id) < (100, ?) ORDER BY created_at DESC, id DESC LIMIT 3`,
+            `EXPLAIN QUERY PLAN SELECT id FROM agent_hq_native_approval WHERE thread_id = ? ${state ? "AND state = 'answered'" : ''} AND (created_at, id) < (100, ?) ORDER BY created_at DESC, id DESC LIMIT 3`,
           )
           .all(thread.id, ids[3]!);
         expect(JSON.stringify(plan)).toContain(
           state
-            ? 'hq_idx_na__thread_id_state_created_at_id_desc'
-            : 'hq_idx_na__thread_id_created_at_id_desc',
+            ? 'agent_hq_idx_na__thread_id_state_created_at_id_desc'
+            : 'agent_hq_idx_na__thread_id_created_at_id_desc',
         );
         expect(JSON.stringify(plan)).not.toContain('TEMP B-TREE');
       }
@@ -745,7 +745,7 @@ test('queued text cannot answer native questions; secret answers are absent from
     const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
     try {
       const saved = JSON.stringify(
-        database.prepare('SELECT id, digest, queued_input FROM hq_action').all(),
+        database.prepare('SELECT id, digest, queued_input FROM agent_hq_action').all(),
       );
       expect(saved).not.toContain('fictional-answer-for-the-test');
       expect(saved).toContain('Next task after the question');
@@ -1852,10 +1852,10 @@ test('shutdown waits for admission and leaves a Codex session bound, unless its 
     const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
     try {
       const saved = database
-        .prepare('SELECT state, runtime_epoch, pending_action_id FROM hq_thread WHERE id = ?')
+        .prepare('SELECT state, runtime_epoch, pending_action_id FROM agent_hq_thread WHERE id = ?')
         .get(thread.id);
       const message = database
-        .prepare('SELECT delivery FROM hq_action WHERE id = ?')
+        .prepare('SELECT delivery FROM agent_hq_action WHERE id = ?')
         .get(action.id);
       // a message shutdown refused to send leaves its action pending, which releases the session
       if (message?.delivery === 'failed')
@@ -1935,7 +1935,7 @@ test('shutdown interrupts every active Claude session at once and leaves Codex t
       const saved = (name: string) =>
         database
           .prepare(
-            'SELECT ownership, state, runtime_epoch, active_turn_id FROM hq_thread WHERE id = ?',
+            'SELECT ownership, state, runtime_epoch, active_turn_id FROM agent_hq_thread WHERE id = ?',
           )
           .get(threadIds[name]!);
       for (const name of ['stop-one', 'stop-two', 'stop-three', 'stop-four'])
@@ -2279,7 +2279,7 @@ test('admission records a coded failure as a failed action, and rethrows a defec
     const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
     try {
       database.exec(
-        "CREATE TRIGGER app_injected_defect BEFORE UPDATE OF pending_action_id ON hq_thread BEGIN SELECT RAISE(ABORT, 'injected admission defect'); END",
+        "CREATE TRIGGER app_injected_defect BEFORE UPDATE OF pending_action_id ON agent_hq_thread BEGIN SELECT RAISE(ABORT, 'injected admission defect'); END",
       );
     } finally {
       database.close();
@@ -2333,7 +2333,7 @@ test('a ledger read failure during shutdown still stops the owned native process
       enableForeignKeyConstraints: false,
     });
     try {
-      database.exec('DROP TABLE hq_thread');
+      database.exec('DROP TABLE agent_hq_thread');
     } finally {
       database.close();
     }

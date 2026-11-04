@@ -17,6 +17,7 @@ export type {
   IActionCommand,
   IActionEnvelope,
   IActionReceipt,
+  IActionPhase,
   IActionSummary,
   IActionWait,
   IManagedThread,

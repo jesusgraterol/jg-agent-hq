@@ -58,7 +58,7 @@ test('shared storage retains application tables and user_version across current-
     const descriptor = runtime.storage;
     expect(descriptor).toMatchObject({
       databasePath: join(stateRoot, 'hq.sqlite'),
-      reservedPrefix: 'hq_',
+      reservedPrefix: 'agent_hq_',
       connectionSettings: {
         foreignKeys: true,
         busyTimeoutMs: 5000,
@@ -78,10 +78,10 @@ test('shared storage retains application tables and user_version across current-
           .all();
         expect(objects.length).toBeGreaterThan(16);
         expect(
-          objects.every((row) => typeof row.name === 'string' && row.name.startsWith('hq_')),
+          objects.every((row) => typeof row.name === 'string' && row.name.startsWith('agent_hq_')),
         ).toBe(true);
         expect(
-          database.prepare('SELECT schema_hash FROM hq_schema WHERE id = 1').get(),
+          database.prepare('SELECT schema_hash FROM agent_hq_schema WHERE id = 1').get(),
         ).toMatchObject({ schema_hash: descriptor.schemaHash });
         database.exec(
           'CREATE TABLE app_note (id INTEGER PRIMARY KEY, text TEXT NOT NULL) STRICT; PRAGMA user_version = 37;',
@@ -160,10 +160,11 @@ test.each(['mismatched', 'missing', 'malformed'])(
       const database = openStorage(storage);
       try {
         if (kind === 'mismatched')
-          database.prepare('UPDATE hq_schema SET schema_hash = ?').run('0'.repeat(64));
+          database.prepare('UPDATE agent_hq_schema SET schema_hash = ?').run('0'.repeat(64));
         else {
-          database.exec('DROP TABLE hq_schema');
-          if (kind === 'malformed') database.exec('CREATE TABLE hq_schema (unrelated TEXT) STRICT');
+          database.exec('DROP TABLE agent_hq_schema');
+          if (kind === 'malformed')
+            database.exec('CREATE TABLE agent_hq_schema (unrelated TEXT) STRICT');
         }
       } finally {
         database.close();
@@ -201,7 +202,7 @@ test('initialization rolls back all HQ objects when its schema execution fails',
     const schemaPath = join(packageRoot, 'dist', 'store', 'schema.sql');
     await writeFile(
       schemaPath,
-      `${await readFile(schemaPath, 'utf8')}\nCREATE TABLE hq_broken (\n`,
+      `${await readFile(schemaPath, 'utf8')}\nCREATE TABLE agent_hq_broken (\n`,
     );
     const isolated = (await import(
       pathToFileURL(join(packageRoot, 'dist', 'index.js')).href
@@ -238,7 +239,7 @@ test('an invalid stamp in an uncheckpointed WAL is rejected without changing dat
         import { DatabaseSync } from 'node:sqlite';
         const database = new DatabaseSync(process.argv[1]);
         database.exec('PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0');
-        database.prepare('UPDATE hq_schema SET schema_hash = ?').run('0'.repeat(64));
+        database.prepare('UPDATE agent_hq_schema SET schema_hash = ?').run('0'.repeat(64));
         process.stdout.write('written\\n');
         process.kill(process.pid, 'SIGKILL');
       `,
@@ -314,9 +315,7 @@ test('maintenance drains admitted host effects including their nested HQ calls b
       const database = openStorage(storage);
       try {
         return database
-          .prepare(
-            "SELECT json_extract(receipt, '$.state') AS state FROM hq_browser_action WHERE id = ?",
-          )
+          .prepare('SELECT state FROM agent_hq_browser_action WHERE id = ?')
           .get(action.id);
       } finally {
         database.close();
@@ -572,7 +571,7 @@ test('native transport failure during maintenance is retained and persisted afte
       const database = openStorage(storage);
       try {
         expect(
-          database.prepare('SELECT state FROM hq_thread WHERE id = ?').get(threadId),
+          database.prepare('SELECT state FROM agent_hq_thread WHERE id = ?').get(threadId),
         ).toMatchObject({ state: 'idle' });
       } finally {
         database.close();

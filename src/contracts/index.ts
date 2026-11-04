@@ -1,5 +1,6 @@
 // constants
 export {
+  ACTION_PHASES,
   DEFAULT_PAGE_SIZE,
   MAX_ITEM_IMAGE_BYTES,
   MAX_ITEM_IMAGES,
@@ -102,6 +103,7 @@ export type {
   IActionCommand,
   IActionEnvelope,
   IActionReceipt,
+  IActionPhase,
   IActionSummary,
   IActionWait,
   IManagedThread,

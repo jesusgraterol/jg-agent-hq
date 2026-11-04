@@ -9,6 +9,7 @@ import type {
   ITurnSettings,
 } from '../../../contracts/index.js';
 import type { IProviderInputFile } from '../../inputs/index.js';
+import { parseActionRequest } from '../../utilities.js';
 import { capabilityUnavailable } from '../../registry/index.js';
 import { toClaudeConfiguration } from '../configuration/index.js';
 
@@ -240,17 +241,15 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
           else if (wasBusy && !isBusy(session)) scheduleIdleStop(session);
         },
         lateResponse(id, _result, error) {
-          if (!/^[a-f0-9-]{36}:(name|interrupt)$/.test(id)) return;
+          // only a name or an interrupt is a control request an action phase sends
+          const request = parseActionRequest(id);
+          if (request?.phase !== 'name' && request?.phase !== 'interrupt') return;
           if (error !== undefined)
-            events?.outcome({
-              kind: 'failed',
-              requestId: id,
-              failure: 'agent-unavailable',
-            });
+            events?.outcome({ kind: 'failed', ...request, failure: 'agent-unavailable' });
           else
             events?.outcome({
-              kind: id.endsWith(':name') ? 'renamed' : 'interrupt-accepted',
-              requestId: id,
+              kind: request.phase === 'name' ? 'renamed' : 'interrupt-accepted',
+              ...request,
             });
         },
       },

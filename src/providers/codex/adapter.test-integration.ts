@@ -433,10 +433,10 @@ test(
       const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { timeout: 5_000 });
       try {
         const insert = database.prepare(
-          `INSERT INTO hq_thread (id, provider, native_id, name, workspace_root, ownership, state,
+          `INSERT INTO agent_hq_thread (id, provider, native_id, name, workspace_root, ownership, state,
           registration_action_id, created_at, updated_at)
           SELECT ?, provider, ?, ?, workspace_root, ownership, state, registration_action_id, ?, ?
-          FROM hq_thread WHERE id = ?`,
+          FROM agent_hq_thread WHERE id = ?`,
         );
         for (let index = 0; index < 32; index += 1)
           insert.run(
@@ -450,10 +450,10 @@ test(
         // a session whose creation Codex never acknowledged has no native ID yet
         database
           .prepare(
-            `INSERT INTO hq_thread (id, provider, native_id, name, workspace_root, ownership, state,
+            `INSERT INTO agent_hq_thread (id, provider, native_id, name, workspace_root, ownership, state,
             registration_action_id, created_at, updated_at)
             SELECT ?, provider, NULL, 'unacknowledged', workspace_root, ownership, 'creating',
-            registration_action_id, ?, ? FROM hq_thread WHERE id = ?`,
+            registration_action_id, ?, ? FROM agent_hq_thread WHERE id = ?`,
           )
           .run(randomUUID(), Date.now() + 64, Date.now() + 64, fresh.id);
       } finally {

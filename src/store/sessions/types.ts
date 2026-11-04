@@ -1,10 +1,4 @@
-import { z } from 'zod';
-
-import {
-  NativeLineageSchema,
-  ProviderIdSchema,
-  SessionStateSchema,
-} from '../../contracts/index.js';
+import type { INativeLineage, IProviderId, ISessionState } from '../../contracts/index.js';
 
 /*
  * One running or waiting session as the store knows it, or an idle one that runs background
@@ -12,33 +6,24 @@ import {
  * and an observed Claude session its history index entry when its transcript is indexed; an
  * observed session's workspace is resolved outside the store.
  */
-export const ActiveSessionRecordSchema = z.object({
-  provider: ProviderIdSchema,
-  nativeId: z.string(),
-  state: SessionStateSchema.extract(['running', 'waiting', 'idle']),
-  changedAt: z.number().int(),
-  thread: z
-    .object({
-      id: z.uuid(),
-      ownership: z.enum(['managed', 'uncertain']),
-      name: z.string(),
-      workspaceRoot: z.string(),
-      nativeLineage: NativeLineageSchema.nullable(),
-      createdAt: z.number().int(),
-      updatedAt: z.number().int(),
-    })
-    .nullable(),
-  history: z
-    .object({
-      name: z.string().nullable(),
-      createdAt: z.number().int(),
-      updatedAt: z.number().int(),
-      isSupported: z.boolean(),
-    })
-    .nullable(),
-});
-export type IActiveSessionRecord = z.infer<typeof ActiveSessionRecordSchema>;
-export const ActiveSessionRecordsSchema = z.object({
-  data: z.array(ActiveSessionRecordSchema).max(128),
-  isTruncated: z.boolean(),
-});
+export type IActiveSessionRecord = {
+  provider: IProviderId;
+  nativeId: string;
+  state: Extract<ISessionState, 'running' | 'waiting' | 'idle'>;
+  changedAt: number;
+  thread: {
+    id: string;
+    ownership: 'managed' | 'uncertain';
+    name: string;
+    workspaceRoot: string;
+    nativeLineage: INativeLineage | null;
+    createdAt: number;
+    updatedAt: number;
+  } | null;
+  history: {
+    name: string | null;
+    createdAt: number;
+    updatedAt: number;
+    isSupported: boolean;
+  } | null;
+};

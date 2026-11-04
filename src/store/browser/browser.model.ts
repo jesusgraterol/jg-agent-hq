@@ -1,43 +1,61 @@
 import { randomUUID } from 'node:crypto';
-import type { DatabaseSync } from 'node:sqlite';
 import { hashValue, signHmac } from 'jg-crypto';
 
-import { z } from 'zod';
-
-import {
-  BrowserReceiptSchema,
-  type IBrowserAction,
-  type IBrowserReceipt,
-} from '../../contracts/index.js';
+import type { IBrowserAction, IBrowserReceipt } from '../../contracts/index.js';
 import { HQ_ERRORS } from '../../errors/index.js';
 
-const RecordSchema = z.object({ digest: z.string(), operator_id: z.string(), receipt: z.string() });
+import type { IStatements } from '../utilities.js';
+
+// a receipt's columns, which mirror its public fields without the native action's own receipt
+type IReceiptRow = {
+  id: string;
+  runtime_epoch: string;
+  kind: IBrowserReceipt['kind'];
+  state: IBrowserReceipt['state'];
+  native_action_id: string;
+  created_at: number;
+  updated_at: number;
+};
+const RECEIPT_COLUMNS = 'id, runtime_epoch, kind, state, native_action_id, created_at, updated_at';
+
+/** Converts a stored receipt; the native action's own receipt is read separately. */
+const toReceipt = (row: IReceiptRow): IBrowserReceipt => ({
+  id: row.id,
+  runtimeEpoch: row.runtime_epoch,
+  kind: row.kind,
+  state: row.state,
+  nativeActionId: row.native_action_id,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+  native: null,
+});
 
 /** Owns host-action nonces on the existing SQLite worker, without retaining message bodies. */
 export class BrowserModel {
-  private readonly __database: DatabaseSync;
+  private readonly __statements: IStatements;
   private readonly __epoch: string;
   private readonly __key: Uint8Array;
 
   /** Quarantines work whose former process can no longer establish its outcome. */
-  public constructor(database: DatabaseSync, epoch: string, key: Uint8Array) {
-    this.__database = database;
+  public constructor(statements: IStatements, epoch: string, key: Uint8Array) {
+    this.__statements = statements;
     this.__epoch = epoch;
     this.__key = key;
-    database
-      .prepare(
-        `UPDATE hq_browser_action SET receipt = json_set(receipt, '$.state', 'uncertain', '$.updatedAt', ?)
-      WHERE json_extract(receipt, '$.runtimeEpoch') != ? AND json_extract(receipt, '$.state') = 'submitted'`,
-      )
-      .run(Date.now(), epoch);
+    statements.run(
+      "UPDATE agent_hq_browser_action SET state = 'uncertain', updated_at = ? WHERE runtime_epoch != ? AND state = 'submitted'",
+      Date.now(),
+      epoch,
+    );
   }
 
   /** Reads only the authenticated operator's selected receipt. */
   public get(id: string, operatorId: string): IBrowserReceipt | null {
-    const row = this.__database
-      .prepare('SELECT receipt FROM hq_browser_action WHERE id = ? AND operator_id = ?')
-      .get(id, operatorId);
-    return row ? BrowserReceiptSchema.parse(JSON.parse(z.string().parse(row.receipt))) : null;
+    const row = this.__statements.get<IReceiptRow>(
+      `SELECT ${RECEIPT_COLUMNS} FROM agent_hq_browser_action WHERE id = ? AND operator_id = ?`,
+      id,
+      operatorId,
+    );
+    return row ? toReceipt(row) : null;
   }
 
   /**
@@ -50,13 +68,13 @@ export class BrowserModel {
     operatorId: string,
   ): { receipt: IBrowserReceipt; isNew: boolean } {
     const digest = signHmac(JSON.stringify(action), this.__key);
-    const previous = this.__database
-      .prepare('SELECT digest, operator_id, receipt FROM hq_browser_action WHERE id = ?')
-      .get(action.id);
+    const previous = this.__statements.get<IReceiptRow & { digest: string; operator_id: string }>(
+      `SELECT ${RECEIPT_COLUMNS}, digest, operator_id FROM agent_hq_browser_action WHERE id = ?`,
+      action.id,
+    );
     if (previous) {
-      const record = RecordSchema.parse(previous);
-      if (record.digest !== digest || record.operator_id !== operatorId) this.__conflict();
-      return { receipt: BrowserReceiptSchema.parse(JSON.parse(record.receipt)), isNew: false };
+      if (previous.digest !== digest || previous.operator_id !== operatorId) this.__conflict();
+      return { receipt: toReceipt(previous), isNew: false };
     }
     if (action.runtimeEpoch !== this.__epoch) this.__conflict();
     const now = Date.now();
@@ -79,18 +97,20 @@ export class BrowserModel {
             native.input.kind === 'text'
           ? native.input.text
           : null;
-    this.__database
-      .prepare(
-        'INSERT INTO hq_browser_action (id, operator_id, digest, receipt, native_thread_id, native_input_sha256) VALUES (?, ?, ?, ?, ?, ?)',
-      )
-      .run(
-        action.id,
-        operatorId,
-        digest,
-        JSON.stringify(receipt),
-        native && 'threadId' in native ? native.threadId : null,
-        nativeText === null ? null : hashValue(nativeText),
-      );
+    this.__statements.run(
+      'INSERT INTO agent_hq_browser_action (id, operator_id, digest, runtime_epoch, kind, state, native_action_id, native_thread_id, native_input_sha256, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      action.id,
+      operatorId,
+      digest,
+      receipt.runtimeEpoch,
+      receipt.kind,
+      receipt.state,
+      receipt.nativeActionId,
+      native && 'threadId' in native ? native.threadId : null,
+      nativeText === null ? null : hashValue(nativeText),
+      now,
+      now,
+    );
     return { receipt, isNew: true };
   }
 
@@ -100,12 +120,13 @@ export class BrowserModel {
     operatorId: string,
     state: 'acknowledged' | 'uncertain',
   ): IBrowserReceipt | null {
-    this.__database
-      .prepare(
-        `UPDATE hq_browser_action SET receipt = json_set(receipt, '$.state', ?, '$.updatedAt', ?)
-      WHERE id = ? AND operator_id = ? AND json_extract(receipt, '$.state') = 'submitted'`,
-      )
-      .run(state, Date.now(), id, operatorId);
+    this.__statements.run(
+      "UPDATE agent_hq_browser_action SET state = ?, updated_at = ? WHERE id = ? AND operator_id = ? AND state = 'submitted'",
+      state,
+      Date.now(),
+      id,
+      operatorId,
+    );
     return this.get(id, operatorId);
   }
 

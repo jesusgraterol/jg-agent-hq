@@ -264,7 +264,7 @@ test.each(['codex', 'claude'] as const)(
               turnId: sent.nativeTurnId,
               item: {
                 id: 'operator-skill',
-                clientId: sent.nativeRequestId,
+                clientId: `${sent.id}:${sent.phase}`,
                 type: 'userMessage',
                 content: [
                   { type: 'text', text },

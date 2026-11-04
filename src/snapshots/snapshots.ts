@@ -130,7 +130,7 @@ export const createHqSnapshot = async (
               allowedRoots: context.allowedRoots,
               actionKeyHash: context.actionKeyHash,
               schemaHash: context.store.storage.schemaHash,
-              backupDatabase: (path) => context.store.snapshotBackup(path),
+              backupDatabase: (path) => context.store.call('snapshot', 'backup', path),
               verify: inspectHqSnapshot,
             },
             destination,

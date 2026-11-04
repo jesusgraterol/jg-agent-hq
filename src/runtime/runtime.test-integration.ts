@@ -139,7 +139,7 @@ test('owner-only IPC survives abandoned clients; shutdown releases SQLite and th
     try {
       expect(
         database
-          .prepare("SELECT name FROM sqlite_schema WHERE name LIKE 'hq_native_history%'")
+          .prepare("SELECT name FROM sqlite_schema WHERE name LIKE 'agent_hq_native_history%'")
           .all(),
       ).toStrictEqual([]);
     } finally {

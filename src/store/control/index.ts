@@ -1,39 +1,17 @@
 // worker-owned control contracts
-export {
-  ThreadRowSchema,
-  ActionRowSchema,
-  NativeOutcomeSchema,
-  NativeObservationSchema,
-  AdmissionSchema,
-  AdmissionResultSchema,
-  DispatchSchema,
-  ObservationResultSchema,
-  ReattachmentSchema,
-  TurnRecordSchema,
-  ControlPageSchema,
-  ApprovalPageRequestSchema,
-  ApprovalPageSchema,
-  ApprovalRecordSchema,
-  ManagedThreadPageSchema,
-  ActionPageSchema,
-} from './types.js';
-export type {
-  IThreadRow,
-  IActionRow,
-  INativeOutcome,
-  INativeObservation,
-  IAdmission,
-  IAdmissionResult,
-  IDispatch,
-  IObservationResult,
-  IReattachment,
-  ITurnRecord,
-  IControlPage,
-  IApprovalPageRequest,
-  IApprovalRecord,
-} from './types.js';
-export { ApprovalIdentitySchema } from './types.js';
-export { ControlModel } from './control.model.js';
-// selected worker-only thread projections
-export { THREAD_COLUMNS } from './constants.js';
-export { toManagedThread } from './transformers.js';
+export type { INativeOutcome, INativeObservation, IAdmission, ITurnRecord } from './types.js';
+
+// control reads
+export { ControlReads } from './reads/index.js';
+
+// control admission
+export { ControlAdmission } from './admission/index.js';
+
+// native request outcomes
+export { ControlOutcomes } from './outcomes/index.js';
+
+// native evidence
+export { ControlObservations } from './observations/index.js';
+
+// runtime-bound control lifecycle
+export { ControlLifecycle } from './lifecycle/index.js';

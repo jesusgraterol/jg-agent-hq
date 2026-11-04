@@ -58,8 +58,9 @@ export const readControl = async (
     if (thread) await resolveWorkspaceTarget(thread.workspaceRoot, roots);
   };
   if (command.kind === 'receipt' || command.kind === 'action-wait') {
-    const receipt = await store.getAction(command.actionId);
-    if (receipt?.threadId) await authorize(await store.getThread(receipt.threadId));
+    const receipt = await store.call('reads', 'getAction', command.actionId);
+    if (receipt?.threadId)
+      await authorize(await store.call('reads', 'getThread', receipt.threadId));
     if (command.kind === 'receipt') return { kind: 'receipt', result: receipt };
     // an unknown action has nothing to wait for
     if (!receipt) return { kind: 'action-wait', result: { receipt: null, isTimedOut: false } };
@@ -71,7 +72,7 @@ export const readControl = async (
   if (command.kind === 'managed-threads') {
     const { cursor, ...filters } = command;
     filters.workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, roots);
-    const page = await store.listThreads(filters.workspaceRoot, {
+    const page = await store.call('reads', 'listThreads', filters.workspaceRoot, {
       limit: command.limit,
       position: positions.decode(cursor, filters) ?? null,
     });
@@ -82,8 +83,8 @@ export const readControl = async (
   }
   if (command.kind === 'actions') {
     const { cursor, ...filters } = command;
-    await authorize(await store.getThread(command.threadId));
-    const page = await store.listActions(command.threadId, {
+    await authorize(await store.call('reads', 'getThread', command.threadId));
+    const page = await store.call('reads', 'listActions', command.threadId, {
       limit: command.limit,
       position: positions.decode(cursor, filters) ?? null,
     });
@@ -92,7 +93,7 @@ export const readControl = async (
       result: { data: page.data, nextCursor: nextPageCursor(page, filters) },
     };
   }
-  const thread = await store.getThread(command.threadId);
+  const thread = await store.call('reads', 'getThread', command.threadId);
   await authorize(thread);
   if (command.kind === 'managed-thread') return { kind: command.kind, result: thread };
   if (!thread)
@@ -101,7 +102,7 @@ export const readControl = async (
     });
   if (command.kind === 'approvals') {
     const { cursor, ...filters } = command;
-    const page = await store.listApprovals(thread.id, {
+    const page = await store.call('reads', 'listApprovals', thread.id, {
       limit: command.limit,
       position: positions.decode(cursor, filters) ?? null,
       ...(command.state ? { state: command.state } : {}),

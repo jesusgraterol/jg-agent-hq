@@ -31,13 +31,15 @@ export const readStorageStamp = (
   try {
     if (!database.prepare('SELECT 1 FROM sqlite_schema LIMIT 1').get()) return null;
     const columns = database
-      .prepare('PRAGMA table_xinfo(hq_schema)')
+      .prepare('PRAGMA table_xinfo(agent_hq_schema)')
       .all()
       .map((column) => column.name);
     // a stamp without the package version comes from an earlier package
     if (columns.length && !columns.includes('package_version')) rejectStorage(null);
     const rows = database
-      .prepare('SELECT id, schema_hash, action_key_hash, package_version FROM hq_schema LIMIT 2')
+      .prepare(
+        'SELECT id, schema_hash, action_key_hash, package_version FROM agent_hq_schema LIMIT 2',
+      )
       .all();
     const parsed = StorageStampSchema.safeParse(rows.length === 1 ? rows[0] : null);
     if (!parsed.success)

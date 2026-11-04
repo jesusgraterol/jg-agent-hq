@@ -117,9 +117,10 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const skills = createSkills(providers, projection, allowedRoots);
   // terminal and background Claude sessions are observed while the runtime runs
   const claudeAgents = observeClaudeAgents(
-    (sessions) => storage.background(() => projection.observeSessions('claude', sessions, true)),
+    (sessions) =>
+      storage.background(() => projection.call('sessions', 'observe', 'claude', sessions, true)),
     allowedRoots,
-    (nativeId) => projection.getClaudeTranscriptRoot(nativeId),
+    (nativeId) => projection.call('sessions', 'claudeTranscriptRoot', nativeId),
   );
   const actions = createActions(
     providers,
@@ -220,7 +221,9 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
         return { kind: 'stop', result: { accepted: true, runtimeEpoch: ownership.epoch } };
       }
       case 'capabilities': {
-        const thread = command.threadId ? await projection.getThread(command.threadId) : undefined;
+        const thread = command.threadId
+          ? await projection.call('reads', 'getThread', command.threadId)
+          : undefined;
         if (command.threadId && (!thread || thread.provider !== command.provider))
           throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
         if (thread) await resolveWorkspaceTarget(thread.workspaceRoot, allowedRoots);
@@ -241,7 +244,9 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
         };
       case 'configuration': {
         const workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, allowedRoots);
-        const thread = command.threadId ? await projection.getThread(command.threadId) : null;
+        const thread = command.threadId
+          ? await projection.call('reads', 'getThread', command.threadId)
+          : null;
         if (
           command.threadId &&
           (!thread ||
@@ -260,7 +265,9 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       case 'skills': {
         const workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, allowedRoots);
         // a session's catalog answers only for the provider and folder the session runs in
-        const thread = command.threadId ? await projection.getThread(command.threadId) : null;
+        const thread = command.threadId
+          ? await projection.call('reads', 'getThread', command.threadId)
+          : null;
         if (
           command.threadId &&
           (!thread ||
@@ -275,7 +282,9 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       case 'suggest-thread-name':
         return {
           kind: command.kind,
-          result: { name: await projection.suggestThreadName(suggestThreadName(command.topic)) },
+          result: {
+            name: await projection.call('reads', 'suggestName', suggestThreadName(command.topic)),
+          },
         };
       case 'receipt':
       case 'action-wait':
@@ -288,7 +297,12 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       case 'session-states':
         return {
           kind: 'session-states',
-          result: await projection.listSessionTransitions(command.afterSequence, command.limit),
+          result: await projection.call(
+            'sessions',
+            'transitions',
+            command.afterSequence,
+            command.limit,
+          ),
         };
       case 'active-sessions':
         return {

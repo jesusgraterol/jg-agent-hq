@@ -82,7 +82,7 @@ export const createSkills = (
   const scan = async (target: ISkillTarget) => {
     let source: { key: string; provider: IProviderId; workspaceRoot: string; nativeId?: string };
     if ('threadId' in target) {
-      const thread = await store.getThread(target.threadId);
+      const thread = await store.call('reads', 'getThread', target.threadId);
       if (!thread) return null;
       await resolveWorkspaceTarget(thread.workspaceRoot, roots);
       if (

@@ -2,6 +2,22 @@
 export const DEFAULT_PAGE_SIZE = 32;
 export const MAX_PAGE_SIZE = 128;
 
+/*
+ * The native steps an action takes, one at a time: a create continues with name, a clean with
+ * close, and every other step is the action's only one.
+ */
+export const ACTION_PHASES = [
+  'create',
+  'resume',
+  'name',
+  'turn',
+  'steer',
+  'interrupt',
+  'clean',
+  'close',
+  'reply',
+] as const;
+
 // the most text one history item carries, in UTF-16 code units
 export const MAX_ITEM_TEXT_LENGTH = 65_536;
 

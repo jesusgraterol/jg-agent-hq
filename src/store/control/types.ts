@@ -1,235 +1,153 @@
-import { z } from 'zod';
-
-import {
-  ActionEnvelopeSchema,
-  PreparedInputSchema,
-  TurnResultSchema,
-  ActionReceiptSchema,
-  ActionSummarySchema,
-  ManagedThreadSchema,
-  NativeApprovalSchema,
-  NativeApprovalSummarySchema,
-  NativeLineageSchema,
+import type {
+  IActionEnvelope,
+  IActionPhase,
+  IActionReceipt,
+  IActionSummary,
+  IManagedThread,
+  INativeApproval,
+  INativeApprovalSummary,
+  INativeLineage,
+  IPreparedInput,
+  IProviderId,
+  ITurnResult,
 } from '../../contracts/index.js';
 
 // these shapes mirror SQLite columns; transformations retain the public camelCase contracts
-export const ThreadRowSchema = z.object({
-  id: ManagedThreadSchema.shape.id,
-  provider: ManagedThreadSchema.shape.provider,
-  native_id: ManagedThreadSchema.shape.nativeId,
-  native_lineage: z.string().nullable(),
-  name: ManagedThreadSchema.shape.name,
-  workspace_root: z.string(),
-  ownership: ManagedThreadSchema.shape.ownership,
-  runtime_epoch: z.uuid().nullable(),
-  active_turn_id: ManagedThreadSchema.shape.activeTurnId,
-  last_turn_id: ManagedThreadSchema.shape.activeTurnId,
-  last_turn_state: ActionReceiptSchema.shape.completion,
-  pending_action_id: z.uuid().nullable(),
-  state: ManagedThreadSchema.shape.state,
-  registration_action_id: z.uuid(),
-  created_at: z.number().int(),
-  updated_at: z.number().int(),
-});
-export type IThreadRow = z.infer<typeof ThreadRowSchema>;
-export const ActionRowSchema = z.object({
-  id: z.uuid(),
-  digest: ActionReceiptSchema.shape.digest,
-  requested_runtime_epoch: z.uuid(),
-  runtime_epoch: z.uuid(),
-  kind: ActionReceiptSchema.shape.kind,
-  provider: ActionReceiptSchema.shape.provider,
-  thread_id: z.uuid().nullable(),
-  expected_turn_id: ActionReceiptSchema.shape.nativeTurnId,
-  native_turn_id: ActionReceiptSchema.shape.nativeTurnId,
-  native_request_id: z.string().nullable(),
-  delivery: ActionReceiptSchema.shape.delivery,
-  completion: ActionReceiptSchema.shape.completion,
-  failure: ActionReceiptSchema.shape.failure,
-  related_action_id: z.uuid().nullable(),
-  queued_input: z.string().nullable(),
-  result: z.string().nullable(),
-  requested_name: ManagedThreadSchema.shape.name.nullable(),
-  queue_ready: z.number().int().min(0).max(1),
-  created_at: z.number().int(),
-  updated_at: z.number().int(),
-});
-export type IActionRow = z.infer<typeof ActionRowSchema>;
-// an action row joined with its thread's native session, which its receipt carries
-export const ActionReceiptRowSchema = ActionRowSchema.extend({
-  native_thread_id: ActionReceiptSchema.shape.nativeThreadId,
-});
-export type IActionReceiptRow = z.infer<typeof ActionReceiptRowSchema>;
-
-const NativeIdSchema = ManagedThreadSchema.shape.nativeId.unwrap();
-const OutcomeFields = { actionId: z.uuid(), requestId: z.string().min(1).max(256) };
-export const NativeOutcomeSchema = z.discriminatedUnion('kind', [
-  z.strictObject({
-    kind: z.literal('created'),
-    ...OutcomeFields,
-    nativeId: NativeIdSchema,
-    nativeLineage: NativeLineageSchema.nullable(),
-  }),
-  z.strictObject({
-    kind: z.literal('resumed'),
-    ...OutcomeFields,
-    nativeState: z.enum(['notLoaded', 'idle', 'systemError', 'active', 'unknown']),
-    nativeLineage: NativeLineageSchema.nullable(),
-  }),
-  z.strictObject({ kind: z.literal('closed'), ...OutcomeFields }),
-  z.strictObject({ kind: z.literal('cleaned'), ...OutcomeFields }),
-  z.strictObject({ kind: z.literal('renamed'), ...OutcomeFields }),
-  z.strictObject({
-    kind: z.literal('turn-accepted'),
-    ...OutcomeFields,
-    nativeTurnId: NativeIdSchema,
-  }),
-  z.strictObject({
-    kind: z.literal('steer-accepted'),
-    ...OutcomeFields,
-    nativeTurnId: NativeIdSchema,
-  }),
-  z.strictObject({ kind: z.literal('interrupt-accepted'), ...OutcomeFields }),
-  z.strictObject({ kind: z.literal('reply-written'), ...OutcomeFields }),
-  z.strictObject({ kind: z.literal('uncertain'), ...OutcomeFields }),
-  z.strictObject({
-    kind: z.literal('failed'),
-    ...OutcomeFields,
-    failure: ActionReceiptSchema.shape.failure.unwrap(),
-  }),
-]);
-export type INativeOutcome = z.infer<typeof NativeOutcomeSchema>;
-
-const ProviderSchema = ManagedThreadSchema.shape.provider;
-const NativeTurnFields = {
-  provider: ProviderSchema,
-  nativeThreadId: NativeIdSchema,
-  nativeTurnId: NativeIdSchema,
+export type IThreadRow = {
+  id: string;
+  provider: IManagedThread['provider'];
+  native_id: string | null;
+  native_lineage: string | null;
+  name: string;
+  workspace_root: string;
+  ownership: IManagedThread['ownership'];
+  runtime_epoch: string | null;
+  active_turn_id: string | null;
+  last_turn_id: string | null;
+  last_turn_state: IActionReceipt['completion'];
+  pending_action_id: string | null;
+  state: IManagedThread['state'];
+  registration_action_id: string;
+  created_at: number;
+  updated_at: number;
 };
-export const NativeObservationSchema = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('turn-started'), ...NativeTurnFields }),
-  z.strictObject({
-    kind: z.literal('turn-completed'),
-    ...NativeTurnFields,
-    state: ActionReceiptSchema.shape.completion.unwrap(),
-    result: TurnResultSchema.optional(),
-  }),
-  z.strictObject({
-    kind: z.literal('item-started'),
-    ...NativeTurnFields,
-    nativeItemId: NativeIdSchema,
-  }),
-  z.strictObject({
-    kind: z.literal('item-completed'),
-    ...NativeTurnFields,
-    nativeItemId: NativeIdSchema,
-  }),
-  z.strictObject({
-    kind: z.literal('name-updated'),
-    provider: ProviderSchema,
-    nativeThreadId: NativeIdSchema,
-    name: z.string().nullable(),
-  }),
-  z.strictObject({
-    kind: z.enum(['request-resolved', 'request-canceled']),
-    provider: ProviderSchema,
-    nativeThreadId: NativeIdSchema,
-    requestId: z.string().min(1).max(8192),
-  }),
-  z.strictObject({
-    kind: z.literal('native-unavailable'),
-    provider: ProviderSchema,
-    nativeThreadId: NativeIdSchema.optional(),
-  }),
-]);
-export type INativeObservation = z.infer<typeof NativeObservationSchema>;
+export type IActionRow = {
+  id: string;
+  digest: string;
+  requested_runtime_epoch: string;
+  runtime_epoch: string;
+  kind: IActionReceipt['kind'];
+  provider: IActionReceipt['provider'];
+  thread_id: string | null;
+  expected_turn_id: string | null;
+  native_turn_id: string | null;
+  phase: IActionPhase | null;
+  delivery: IActionReceipt['delivery'];
+  completion: IActionReceipt['completion'];
+  failure: IActionReceipt['failure'];
+  related_action_id: string | null;
+  queued_input: string | null;
+  result: string | null;
+  requested_name: string | null;
+  queue_ready: number;
+  created_at: number;
+  updated_at: number;
+};
+// an action row joined with its thread's native session, which its receipt carries
+export type IActionReceiptRow = IActionRow & { native_thread_id: string | null };
 
-// only validated derivations of trusted configuration/native metadata cross this worker boundary
-export const AdmissionSchema = z.strictObject({
-  action: ActionEnvelopeSchema,
-  prepared: z.strictObject({
-    workspaceRoot: z.string().optional(),
-    nativeId: NativeIdSchema.optional(),
-    input: PreparedInputSchema.optional(),
-  }),
-});
-export type IAdmission = z.infer<typeof AdmissionSchema>;
-export const AdmissionResultSchema = z.object({
-  receipt: ActionReceiptSchema,
-  thread: ManagedThreadSchema.nullable(),
-  isNew: z.boolean(),
-  dispatchActionId: z.uuid().nullable(),
-});
-export type IAdmissionResult = z.infer<typeof AdmissionResultSchema>;
-export const DispatchSchema = z.object({
-  receipt: ActionReceiptSchema,
-  thread: ManagedThreadSchema,
-  input: PreparedInputSchema,
-});
-export type IDispatch = z.infer<typeof DispatchSchema>;
-export const ObservationResultSchema = z.object({
-  thread: ManagedThreadSchema.nullable(),
-  canDispatchQueued: z.boolean(),
-});
-export type IObservationResult = z.infer<typeof ObservationResultSchema>;
+// an outcome answers the phase its action took; one for a phase the action has left is stale
+type IOutcomeFields = { actionId: string; phase: IActionPhase };
+export type INativeOutcome = IOutcomeFields &
+  (
+    | { kind: 'created'; nativeId: string; nativeLineage: INativeLineage | null }
+    | {
+        kind: 'resumed';
+        nativeState: 'notLoaded' | 'idle' | 'systemError' | 'active' | 'unknown';
+        nativeLineage: INativeLineage | null;
+      }
+    | { kind: 'closed' }
+    | { kind: 'cleaned' }
+    | { kind: 'renamed' }
+    | { kind: 'turn-accepted'; nativeTurnId: string }
+    | { kind: 'steer-accepted'; nativeTurnId: string }
+    | { kind: 'interrupt-accepted' }
+    | { kind: 'reply-written' }
+    | { kind: 'uncertain' }
+    | { kind: 'failed'; failure: NonNullable<IActionReceipt['failure']> }
+  );
+
+type INativeTurnFields = { provider: IProviderId; nativeThreadId: string; nativeTurnId: string };
+export type INativeObservation =
+  | ({ kind: 'turn-started' } & INativeTurnFields)
+  | ({
+      kind: 'turn-completed';
+      state: NonNullable<IActionReceipt['completion']>;
+      result?: ITurnResult;
+    } & INativeTurnFields)
+  | ({ kind: 'item-started'; nativeItemId: string } & INativeTurnFields)
+  | ({ kind: 'item-completed'; nativeItemId: string } & INativeTurnFields)
+  | { kind: 'name-updated'; provider: IProviderId; nativeThreadId: string; name: string | null }
+  | {
+      kind: 'request-resolved' | 'request-canceled';
+      provider: IProviderId;
+      nativeThreadId: string;
+      requestId: string;
+    }
+  | { kind: 'native-unavailable'; provider: IProviderId; nativeThreadId?: string };
+
+// only validated derivations of trusted configuration/native metadata reach admission
+export type IAdmission = {
+  action: IActionEnvelope;
+  prepared: { workspaceRoot?: string; nativeId?: string; input?: IPreparedInput };
+};
+export type IAdmissionResult = {
+  receipt: IActionReceipt;
+  thread: IManagedThread | null;
+  isNew: boolean;
+  dispatchActionId: string | null;
+};
+export type IDispatch = { receipt: IActionReceipt; thread: IManagedThread; input: IPreparedInput };
+export type IObservationResult = { thread: IManagedThread | null; canDispatchQueued: boolean };
 
 // a session another runtime left running, with its latest turn as its native process reports it
-export const ReattachmentSchema = z.strictObject({
-  threadId: z.uuid(),
-  latestTurn: z
-    .strictObject({
-      nativeTurnId: NativeIdSchema,
-      state: z.enum(['running', 'completed', 'failed', 'interrupted']),
-    })
-    .nullable(),
-});
-export type IReattachment = z.infer<typeof ReattachmentSchema>;
+export type IReattachment = {
+  threadId: string;
+  latestTurn: {
+    nativeTurnId: string;
+    state: 'running' | 'completed' | 'failed' | 'interrupted';
+  } | null;
+};
 
 // the turns a session recorded, which a live re-check compares with what its native process reports
-export const TurnRecordSchema = z.strictObject({
-  threadId: z.uuid(),
-  workspaceRoot: ManagedThreadSchema.shape.workspaceRoot,
-  activeTurnId: NativeIdSchema.nullable(),
-  lastTurnId: NativeIdSchema.nullable(),
+export type ITurnRecord = {
+  threadId: string;
+  workspaceRoot: string;
+  activeTurnId: string | null;
+  lastTurnId: string | null;
   // an action is in flight, so the session's newest turn may not be recorded yet
-  hasPendingAction: z.boolean(),
-});
-export type ITurnRecord = z.infer<typeof TurnRecordSchema>;
+  hasPendingAction: boolean;
+};
 
 // public cursors are decoded and query-bound before these trusted seek positions are sent
-export const ControlPageSchema = z.strictObject({
-  limit: z.number().int().min(1).max(128),
-  position: z.strictObject({ createdAt: z.number().int(), id: z.uuid() }).nullable(),
-});
-export type IControlPage = z.infer<typeof ControlPageSchema>;
-export const ApprovalPageRequestSchema = ControlPageSchema.extend({
-  state: NativeApprovalSummarySchema.shape.state.optional(),
-});
-export type IApprovalPageRequest = z.infer<typeof ApprovalPageRequestSchema>;
+export type IControlPage = {
+  limit: number;
+  position: { createdAt: number; id: string } | null;
+};
+export type IApprovalPageRequest = IControlPage & { state?: INativeApprovalSummary['state'] };
 
-export const ApprovalRecordSchema = z.strictObject({
-  provider: ProviderSchema,
-  id: z.uuid(),
-  nativeThreadId: NativeIdSchema,
-  nativeTurnId: NativeIdSchema,
-  requestId: z.string().min(1).max(8192),
-  kind: NativeApprovalSchema.shape.kind,
-  digest: ActionReceiptSchema.shape.digest,
-  isBlocking: z.boolean(),
-});
-export type IApprovalRecord = z.infer<typeof ApprovalRecordSchema>;
+export type IApprovalRecord = {
+  provider: IProviderId;
+  id: string;
+  nativeThreadId: string;
+  nativeTurnId: string;
+  requestId: string;
+  kind: INativeApproval['kind'];
+  digest: string;
+  isBlocking: boolean;
+};
 
 // bounded read results omit queued bodies in collection responses
-export const ManagedThreadPageSchema = z.object({
-  data: z.array(ManagedThreadSchema).max(128),
-  hasMore: z.boolean(),
-});
-export const ActionPageSchema = z.object({
-  data: z.array(ActionSummarySchema).max(128),
-  hasMore: z.boolean(),
-});
-export const ApprovalPageSchema = z.object({
-  data: z.array(NativeApprovalSummarySchema).max(128),
-  hasMore: z.boolean(),
-});
-export const ApprovalIdentitySchema = z.object({ id: z.uuid(), thread: ManagedThreadSchema });
+export type IThreadPage = { data: IManagedThread[]; hasMore: boolean };
+export type IActionPage = { data: IActionSummary[]; hasMore: boolean };
+export type IApprovalPage = { data: INativeApprovalSummary[]; hasMore: boolean };

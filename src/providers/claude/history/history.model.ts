@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { closeSync, fstatSync, opendirSync, readSync, type Dir } from 'node:fs';
-import type { DatabaseSync, SQLOutputValue, StatementSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 import { hashValue } from 'jg-crypto';
 import { Exception, extractMessage, hasErrorCode, isException } from 'jg-exception';
 import { z } from 'zod';
 
 import {
-  HqResponseSchema,
   type IHqRequest,
   type IItemDetail,
   type IItemImage,
@@ -26,14 +25,14 @@ import {
   EVIDENCE_SOURCE_PAGE_SIZE,
 } from '../../../sessions/evidence/index.js';
 import { HQ_ERRORS } from '../../../errors/index.js';
+import type { IStatements } from '../../../store/index.js';
 
 import {
-  EntryRowSchema,
   EntrySeekSchema,
-  FileRowSchema,
   RecordSchema,
   ApiRequestMetadataSchema,
   SeekSchema,
+  type IEntryRow,
   type IFileRow,
   type IClaudeHistoryRead,
   type IRecord,
@@ -69,15 +68,40 @@ const MAX_PAGE_BYTES = 4_194_304;
 const MAX_HELD_BACK_RECORDS = 64;
 // the ancestors a result's call is looked for in, enough for 16 parallel calls and their results
 const MAX_CALL_DISTANCE = 32;
+// the statements indexing runs for every record, which the worker's statement cache prepares once
+const PARENT_TURN = `SELECT turn_id, turn_start_offset, anchor_id, is_current FROM agent_hq_claude_entry
+WHERE workspace_root = ? AND native_id = ? AND uuid = ?`;
+const RECORDED_PARENT =
+  'SELECT parent_uuid FROM agent_hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?';
+const UPSERT_ENTRY = `INSERT INTO agent_hq_claude_entry (workspace_root, native_id, uuid, parent_uuid, turn_id, byte_offset,
+  byte_length, created_at, is_visible, is_current, turn_start_offset, anchor_id, item_kind)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(workspace_root, native_id, uuid) DO UPDATE SET parent_uuid = excluded.parent_uuid,
+turn_id = excluded.turn_id, byte_offset = excluded.byte_offset, byte_length = excluded.byte_length,
+created_at = excluded.created_at, is_visible = excluded.is_visible, is_current = excluded.is_current,
+turn_start_offset = excluded.turn_start_offset, anchor_id = excluded.anchor_id, item_kind = excluded.item_kind`;
+const HAS_ENTRY =
+  'SELECT 1 FROM agent_hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?';
+// the current chain runs from a leaf back through its parents
 const CHAIN = `WITH RECURSIVE current_chain AS (
   SELECT workspace_root, native_id, uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible
-  FROM hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?
-  UNION SELECT hq_claude_entry.workspace_root, hq_claude_entry.native_id, hq_claude_entry.uuid, hq_claude_entry.parent_uuid,
-  hq_claude_entry.turn_id, hq_claude_entry.byte_offset, hq_claude_entry.byte_length, hq_claude_entry.created_at, hq_claude_entry.is_visible
-  FROM hq_claude_entry JOIN current_chain
-  ON hq_claude_entry.workspace_root = current_chain.workspace_root AND hq_claude_entry.native_id = current_chain.native_id
-  AND hq_claude_entry.uuid = current_chain.parent_uuid
+  FROM agent_hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?
+  UNION SELECT agent_hq_claude_entry.workspace_root, agent_hq_claude_entry.native_id, agent_hq_claude_entry.uuid, agent_hq_claude_entry.parent_uuid,
+  agent_hq_claude_entry.turn_id, agent_hq_claude_entry.byte_offset, agent_hq_claude_entry.byte_length, agent_hq_claude_entry.created_at, agent_hq_claude_entry.is_visible
+  FROM agent_hq_claude_entry JOIN current_chain
+  ON agent_hq_claude_entry.workspace_root = current_chain.workspace_root AND agent_hq_claude_entry.native_id = current_chain.native_id
+  AND agent_hq_claude_entry.uuid = current_chain.parent_uuid
 )`;
+const CURRENT_CHAIN = `${CHAIN} UPDATE agent_hq_claude_entry
+SET is_current = CASE WHEN uuid IN (SELECT uuid FROM current_chain) THEN 1 ELSE 0 END
+WHERE workspace_root = ? AND native_id = ?`;
+// the turn, start and anchor an indexed entry gives the records that follow it
+type IParentTurnRow = {
+  turn_id: string;
+  turn_start_offset: number | null;
+  anchor_id: string | null;
+  is_current: number;
+};
 
 /**
  * Owns a replaceable metadata/byte-location projection, never conversation bodies.
@@ -95,43 +119,11 @@ export class ClaudeHistoryModel {
     string,
     { entries: Dir; seen: Set<string>; pending: string | null }
   >();
-  // the statements indexing runs for every record, prepared once
-  private readonly __recordStatements: {
-    parentTurn: StatementSync;
-    recordedParent: StatementSync;
-    upsert: StatementSync;
-    currentChain: StatementSync;
-    hasEntry: StatementSync;
-  };
+  private readonly __statements: IStatements;
 
-  public constructor(database: DatabaseSync) {
+  public constructor(database: DatabaseSync, statements: IStatements) {
     this.__database = database;
-    this.__recordStatements = {
-      parentTurn: database.prepare(
-        `SELECT turn_id, turn_start_offset, anchor_id, is_current FROM hq_claude_entry
-      WHERE workspace_root = ? AND native_id = ? AND uuid = ?`,
-      ),
-      recordedParent: database.prepare(
-        'SELECT parent_uuid FROM hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?',
-      ),
-      upsert: database.prepare(
-        `INSERT INTO hq_claude_entry (workspace_root, native_id, uuid, parent_uuid, turn_id, byte_offset,
-          byte_length, created_at, is_visible, is_current, turn_start_offset, anchor_id, item_kind)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(workspace_root, native_id, uuid) DO UPDATE SET parent_uuid = excluded.parent_uuid,
-      turn_id = excluded.turn_id, byte_offset = excluded.byte_offset, byte_length = excluded.byte_length,
-      created_at = excluded.created_at, is_visible = excluded.is_visible, is_current = excluded.is_current,
-      turn_start_offset = excluded.turn_start_offset, anchor_id = excluded.anchor_id, item_kind = excluded.item_kind`,
-      ),
-      currentChain: database.prepare(
-        `${CHAIN} UPDATE hq_claude_entry
-        SET is_current = CASE WHEN uuid IN (SELECT uuid FROM current_chain) THEN 1 ELSE 0 END
-        WHERE workspace_root = ? AND native_id = ?`,
-      ),
-      hasEntry: database.prepare(
-        'SELECT 1 FROM hq_claude_entry WHERE workspace_root = ? AND native_id = ? AND uuid = ?',
-      ),
-    };
+    this.__statements = statements;
   }
 
   /**
@@ -198,25 +190,21 @@ export class ClaudeHistoryModel {
       if (!seek && !this.__refresh(directory, root)) return { kind: 'indexing' };
       // a row-value seek, so a continuation starts in the index rather than scanning earlier pages
       const after = seek ? 'AND (updated_at, native_id) < (?, ?)' : '';
-      const rows = this.__database
-        .prepare(
-          `SELECT native_id, workspace_root, identity, file_size, modified_at, byte_offset, revision,
-        leaf_id, name, created_at, updated_at, supported, workspace_state FROM hq_claude_file
+      const rows = this.__statements.all<IFileRow>(
+        `SELECT native_id, workspace_root, identity, file_size, modified_at, byte_offset, revision,
+        leaf_id, name, created_at, updated_at, supported, workspace_state FROM agent_hq_claude_file
         WHERE workspace_root = ? AND workspace_state = 'matching' ${after}
         AND (? IS NULL OR instr(lower(coalesce(name, '')), lower(?)) > 0)
         ORDER BY updated_at DESC, native_id DESC LIMIT ?`,
-        )
-        .all(
-          root,
-          ...(seek ? [seek.updatedAt, seek.nativeId] : []),
-          command.search ?? null,
-          command.search ?? null,
-          command.limit + 1,
-        )
-        .map((row) => FileRowSchema.parse(row));
+        root,
+        ...(seek ? [seek.updatedAt, seek.nativeId] : []),
+        command.search ?? null,
+        command.search ?? null,
+        command.limit + 1,
+      );
       const page = rows.slice(0, command.limit);
       const last = page.at(-1);
-      return HqResponseSchema.parse({
+      return {
         kind: 'threads',
         result: {
           data: page.map((row) => this.__summary(row, directory)),
@@ -228,7 +216,7 @@ export class ClaudeHistoryModel {
             filters,
           ),
         },
-      });
+      };
     }
     let budget = MAX_REFRESH_BYTES;
     const isIndexed = this.__inspect(
@@ -250,15 +238,15 @@ export class ClaudeHistoryModel {
     if (command.kind === 'session-evidence')
       return { kind: 'session-evidence', result: this.__evidence(command, row, directory) };
     if (command.kind === 'item-detail')
-      return HqResponseSchema.parse({
+      return {
         kind: 'item-detail',
         result: this.__itemDetail(command, row, directory),
-      });
+      };
     if (command.kind === 'item-image')
-      return HqResponseSchema.parse({
+      return {
         kind: 'item-image',
         result: this.__itemImage(command, row, directory),
-      });
+      };
     const seek = itemSeek;
     if (seek && seek.revision !== row.revision)
       throw HQ_ERRORS.create('cursorInvalid', {
@@ -266,30 +254,28 @@ export class ClaudeHistoryModel {
       });
     // items read newest first, the cursor holding the oldest offset read; one item is read by its UUID
     const before = seek?.offset ?? Number.MAX_SAFE_INTEGER;
-    const entries = (
+    const entries =
       command.nativeItemId === undefined
-        ? this.__database
-            .prepare(
-              `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM hq_claude_entry
+        ? this.__statements.all<IEntryRow>(
+            `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM agent_hq_claude_entry
       WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND byte_offset < ?
       ${command.turnId === undefined ? '' : 'AND turn_id = ?'}
       ORDER BY byte_offset DESC LIMIT ?`,
-            )
-            .all(
-              root,
-              command.nativeId,
-              before,
-              ...(command.turnId === undefined ? [] : [command.turnId]),
-              command.limit + 1,
-            )
-        : this.__database
-            .prepare(
-              `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM hq_claude_entry
+            root,
+            command.nativeId,
+            before,
+            ...(command.turnId === undefined ? [] : [command.turnId]),
+            command.limit + 1,
+          )
+        : this.__statements.all<IEntryRow>(
+            `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM agent_hq_claude_entry
       WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND uuid = ? AND turn_id = ?
       LIMIT 1`,
-            )
-            .all(root, command.nativeId, command.nativeItemId, command.turnId ?? null)
-    ).map((entry) => EntryRowSchema.parse(entry));
+            root,
+            command.nativeId,
+            command.nativeItemId,
+            command.turnId ?? null,
+          );
     const page = entries.slice(0, command.limit);
     const fd = openTranscript(directory, command.nativeId);
     try {
@@ -319,7 +305,7 @@ export class ClaudeHistoryModel {
         lastOffset = entry.byte_offset;
         items.push(item);
       }
-      return HqResponseSchema.parse({
+      return {
         kind: 'items',
         result: {
           data: items,
@@ -330,7 +316,7 @@ export class ClaudeHistoryModel {
             filters,
           ),
         },
-      });
+      };
     } finally {
       closeSync(fd);
     }
@@ -406,22 +392,19 @@ export class ClaudeHistoryModel {
   }
 
   // one current entry of a session's index, visible or not
-  private __entry(
-    root: string,
-    nativeId: string,
-    uuid: string,
-  ): z.infer<typeof EntryRowSchema> | null {
-    const entry = this.__database
-      .prepare(
-        `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM hq_claude_entry
+  private __entry(root: string, nativeId: string, uuid: string): IEntryRow | null {
+    const entry = this.__statements.get<IEntryRow>(
+      `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM agent_hq_claude_entry
       WHERE workspace_root = ? AND native_id = ? AND uuid = ? AND is_current = 1`,
-      )
-      .get(root, nativeId, uuid);
-    return entry === undefined ? null : EntryRowSchema.parse(entry);
+      root,
+      nativeId,
+      uuid,
+    );
+    return entry ?? null;
   }
 
   // reads an entry's record, which must still be the one the index found there
-  private __readEntry(fd: number, entry: z.infer<typeof EntryRowSchema>, root: string): IRecord {
+  private __readEntry(fd: number, entry: IEntryRow, root: string): IRecord {
     const bytes = Buffer.alloc(entry.byte_length);
     if (readSync(fd, bytes, 0, bytes.length, entry.byte_offset) !== bytes.length)
       this.__unavailable();
@@ -480,25 +463,21 @@ export class ClaudeHistoryModel {
     const kinds = command.kinds === undefined ? [undefined] : [...new Set(command.kinds)];
     const entries = kinds
       .flatMap((kind) =>
-        this.__database
-          .prepare(
-            `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM hq_claude_entry
+        this.__statements.all<IEntryRow>(
+          `SELECT uuid, parent_uuid, turn_id, byte_offset, byte_length, created_at, is_visible FROM agent_hq_claude_entry
       WHERE workspace_root = ? AND native_id = ? AND is_current = 1 AND is_visible = 1 AND byte_offset < ?
       ${command.turnId === undefined ? '' : 'AND turn_id = ?'}
       ${command.nativeItemId === undefined ? '' : 'AND uuid = ?'}
       ${kind === undefined ? '' : 'AND item_kind = ?'}
       ORDER BY byte_offset DESC LIMIT ?`,
-          )
-          .all(
-            command.workspaceRoot,
-            command.nativeId,
-            seek?.offset ?? Number.MAX_SAFE_INTEGER,
-            ...(command.turnId === undefined ? [] : [command.turnId]),
-            ...(command.nativeItemId === undefined ? [] : [command.nativeItemId]),
-            ...(kind === undefined ? [] : [kind]),
-            EVIDENCE_SOURCE_PAGE_SIZE + 1,
-          )
-          .map((entry) => EntryRowSchema.parse(entry)),
+          command.workspaceRoot,
+          command.nativeId,
+          seek?.offset ?? Number.MAX_SAFE_INTEGER,
+          ...(command.turnId === undefined ? [] : [command.turnId]),
+          ...(command.nativeItemId === undefined ? [] : [command.nativeItemId]),
+          ...(kind === undefined ? [] : [kind]),
+          EVIDENCE_SOURCE_PAGE_SIZE + 1,
+        ),
       )
       .sort((left, right) => right.byte_offset - left.byte_offset)
       .slice(0, EVIDENCE_SOURCE_PAGE_SIZE + 1);
@@ -550,13 +529,13 @@ export class ClaudeHistoryModel {
   }
 
   private __file(root: string, nativeId: string): IFileRow | undefined {
-    const row = this.__database
-      .prepare(
-        `SELECT native_id, workspace_root, identity, file_size, modified_at, byte_offset, revision,
-      leaf_id, name, created_at, updated_at, supported, workspace_state FROM hq_claude_file WHERE workspace_root = ? AND native_id = ?`,
-      )
-      .get(root, nativeId);
-    return row ? FileRowSchema.parse(row) : undefined;
+    const row = this.__statements.get<IFileRow>(
+      `SELECT native_id, workspace_root, identity, file_size, modified_at, byte_offset, revision,
+      leaf_id, name, created_at, updated_at, supported, workspace_state FROM agent_hq_claude_file WHERE workspace_root = ? AND native_id = ?`,
+      root,
+      nativeId,
+    );
+    return row;
   }
 
   private __identity(fd: number): string {
@@ -627,18 +606,22 @@ export class ClaudeHistoryModel {
       this.__scans.delete(root);
       // transcripts the scan didn't see were removed, so they leave the index with their entries;
       // finding them with a read first keeps a scan of unchanged transcripts from writing
-      const removed = this.__database
-        .prepare('SELECT native_id FROM hq_claude_file WHERE workspace_root = ?')
-        .all(root)
-        .map((row) => z.object({ native_id: z.string() }).parse(row).native_id)
+      const removed = this.__statements
+        .all<{ native_id: string }>(
+          'SELECT native_id FROM agent_hq_claude_file WHERE workspace_root = ?',
+          root,
+        )
+        .map((row) => row.native_id)
         .filter((nativeId) => !seen.has(nativeId));
       if (removed.length) {
-        const remove = this.__database.prepare(
-          'DELETE FROM hq_claude_file WHERE workspace_root = ? AND native_id = ?',
-        );
         this.__database.exec('BEGIN IMMEDIATE');
         try {
-          for (const nativeId of removed) remove.run(root, nativeId);
+          for (const nativeId of removed)
+            this.__statements.run(
+              'DELETE FROM agent_hq_claude_file WHERE workspace_root = ? AND native_id = ?',
+              root,
+              nativeId,
+            );
           this.__database.exec('COMMIT');
         } catch (cause) {
           this.__database.exec('ROLLBACK');
@@ -646,11 +629,10 @@ export class ClaudeHistoryModel {
         }
       }
       if (
-        this.__database
-          .prepare(
-            "SELECT native_id FROM hq_claude_file WHERE workspace_root = ? AND workspace_state = 'unknown' LIMIT 1",
-          )
-          .get(root)
+        this.__statements.get(
+          "SELECT native_id FROM agent_hq_claude_file WHERE workspace_root = ? AND workspace_state = 'unknown' LIMIT 1",
+          root,
+        )
       )
         this.__unavailable();
     }
@@ -685,24 +667,23 @@ export class ClaudeHistoryModel {
         return true;
       if (!row || row.identity !== identity || stat.size < row.file_size) {
         const revision = randomUUID();
-        this.__database
-          .prepare('DELETE FROM hq_claude_file WHERE workspace_root = ? AND native_id = ?')
-          .run(root, nativeId);
-        this.__database
-          .prepare(
-            `INSERT INTO hq_claude_file (workspace_root, native_id, identity, file_size, modified_at, byte_offset,
+        this.__statements.run(
+          'DELETE FROM agent_hq_claude_file WHERE workspace_root = ? AND native_id = ?',
+          root,
+          nativeId,
+        );
+        this.__statements.run(
+          `INSERT INTO agent_hq_claude_file (workspace_root, native_id, identity, file_size, modified_at, byte_offset,
             revision, leaf_id, name, created_at, updated_at, supported, workspace_state)
             VALUES (?, ?, ?, ?, NULL, 0, ?, NULL, NULL, ?, ?, 0, 'unknown')`,
-          )
-          .run(
-            root,
-            nativeId,
-            identity,
-            stat.size,
-            revision,
-            Math.trunc(stat.birthtimeMs),
-            Math.trunc(stat.mtimeMs),
-          );
+          root,
+          nativeId,
+          identity,
+          stat.size,
+          revision,
+          Math.trunc(stat.birthtimeMs),
+          Math.trunc(stat.mtimeMs),
+        );
         row = this.__file(root, nativeId)!;
       }
       if (row.supported === -1) return true;
@@ -793,34 +774,32 @@ export class ClaudeHistoryModel {
             true,
           );
         row.byte_offset = lineStart;
-        this.__database
-          .prepare(
-            `UPDATE hq_claude_file SET byte_offset = ?, file_size = ?, modified_at = ?, leaf_id = ?, name = ?,
+        this.__statements.run(
+          `UPDATE agent_hq_claude_file SET byte_offset = ?, file_size = ?, modified_at = ?, leaf_id = ?, name = ?,
           created_at = ?, updated_at = ?, supported = ?, revision = ?, workspace_state = ? WHERE workspace_root = ? AND native_id = ?`,
-          )
-          .run(
-            lineStart,
-            stat.size,
-            // an index the budget stopped short of the end has more to read
-            position < stat.size ? null : stat.mtimeMs,
-            row.leaf_id,
-            row.name,
-            row.created_at,
-            row.updated_at,
-            row.supported,
-            row.revision,
-            row.workspace_state,
-            root,
-            nativeId,
-          );
+          lineStart,
+          stat.size,
+          // an index the budget stopped short of the end has more to read
+          position < stat.size ? null : stat.mtimeMs,
+          row.leaf_id,
+          row.name,
+          row.created_at,
+          row.updated_at,
+          row.supported,
+          row.revision,
+          row.workspace_state,
+          root,
+          nativeId,
+        );
         this.__database.exec('COMMIT');
       } catch (cause) {
         this.__database.exec('ROLLBACK');
-        this.__database
-          .prepare(
-            'UPDATE hq_claude_file SET supported = -1, workspace_state = ? WHERE workspace_root = ? AND native_id = ?',
-          )
-          .run(row.workspace_state, root, nativeId);
+        this.__statements.run(
+          'UPDATE agent_hq_claude_file SET supported = -1, workspace_state = ? WHERE workspace_root = ? AND native_id = ?',
+          row.workspace_state,
+          root,
+          nativeId,
+        );
         if (isException(cause)) throw cause;
         this.__unavailable();
       }
@@ -895,10 +874,9 @@ export class ClaudeHistoryModel {
     )
       this.__unavailable();
     const createdAt = Date.parse(record.timestamp);
-    const statements = this.__recordStatements;
     const nativeParentUuid = readClaudeParentUuid(record);
     const nativeParent = nativeParentUuid
-      ? statements.parentTurn.get(root, nativeId, nativeParentUuid)
+      ? this.__statements.get<IParentTurnRow>(PARENT_TURN, root, nativeId, nativeParentUuid)
       : undefined;
     // the CLI's presentation decides what is shown, the kind evidence filters on and where turns start
     const item =
@@ -915,7 +893,12 @@ export class ClaudeHistoryModel {
        */
       if (!isOrphanAllowed && record.parentUuid != null) return nativeParentUuid;
     }
-    const previous = statements.recordedParent.get(root, nativeId, record.uuid);
+    const previous = this.__statements.get<{ parent_uuid: string | null }>(
+      RECORDED_PARENT,
+      root,
+      nativeId,
+      record.uuid,
+    );
     const isCallResult =
       item?.nativeType === 'tool-result' &&
       nativeParentUuid !== null &&
@@ -930,7 +913,7 @@ export class ClaudeHistoryModel {
     const parent =
       parentUuid === nativeParentUuid
         ? nativeParent
-        : statements.parentTurn.get(root, nativeId, parentUuid!);
+        : this.__statements.get<IParentTurnRow>(PARENT_TURN, root, nativeId, parentUuid!);
     const textPrompt = item?.kind === 'user-message';
     const turnId = textPrompt
       ? record.uuid
@@ -953,7 +936,8 @@ export class ClaudeHistoryModel {
       : typeof parent?.anchor_id === 'string'
         ? parent.anchor_id
         : null;
-    statements.upsert.run(
+    this.__statements.run(
+      UPSERT_ENTRY,
       root,
       nativeId,
       record.uuid,
@@ -970,7 +954,7 @@ export class ClaudeHistoryModel {
     );
     if (visible) {
       if (!isAppend && !isSameLeaf)
-        statements.currentChain.run(root, nativeId, record.uuid, root, nativeId);
+        this.__statements.run(CURRENT_CHAIN, root, nativeId, record.uuid, root, nativeId);
       row.leaf_id = record.uuid;
       row.supported = 1;
     }
@@ -992,7 +976,7 @@ export class ClaudeHistoryModel {
     nativeId: string,
     row: IFileRow,
     callUuid: string,
-    call: Record<string, SQLOutputValue> | undefined,
+    call: IParentTurnRow | undefined,
   ): string {
     if (
       row.leaf_id === null ||
@@ -1001,12 +985,12 @@ export class ClaudeHistoryModel {
       call.anchor_id === row.leaf_id
     )
       return callUuid;
-    const leaf = this.__recordStatements.parentTurn.get(root, nativeId, row.leaf_id);
+    const leaf = this.__statements.get<IParentTurnRow>(PARENT_TURN, root, nativeId, row.leaf_id);
     return leaf?.is_current === 1 && leaf.turn_id === call.turn_id ? row.leaf_id : callUuid;
   }
 
   private __hasEntry(root: string, nativeId: string, uuid: string): boolean {
-    return this.__recordStatements.hasEntry.get(root, nativeId, uuid) !== undefined;
+    return this.__statements.get(HAS_ENTRY, root, nativeId, uuid) !== undefined;
   }
 
   private __unavailable(): never {

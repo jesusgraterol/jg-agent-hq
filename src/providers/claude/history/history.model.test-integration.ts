@@ -487,14 +487,14 @@ test('the thread list seeks its last-activity index instead of sorting transcrip
         const plan = JSON.stringify(
           database
             .prepare(
-              `EXPLAIN QUERY PLAN SELECT native_id FROM hq_claude_file
+              `EXPLAIN QUERY PLAN SELECT native_id FROM agent_hq_claude_file
               WHERE workspace_root = ? AND workspace_state = 'matching' ${after}
               AND (? IS NULL OR instr(lower(coalesce(name, '')), lower(?)) > 0)
               ORDER BY updated_at DESC, native_id DESC LIMIT ?`,
             )
             .all('/workspace', ...(after ? [100, 'native'] : []), null, null, 51),
         );
-        expect(plan).toContain('hq_idx_cf__workspace_root_updated_at_native_id_desc');
+        expect(plan).toContain('agent_hq_idx_cf__workspace_root_updated_at_native_id_desc');
         expect(plan).not.toContain('TEMP B-TREE');
       }
     } finally {
@@ -706,7 +706,7 @@ test('reads over unchanged transcripts write nothing to SQLite, while an append 
       expect({
         ...database
           .prepare(
-            'SELECT (SELECT count(*) FROM hq_claude_file WHERE native_id = ?) AS files, (SELECT count(*) FROM hq_claude_entry WHERE native_id = ?) AS entries',
+            'SELECT (SELECT count(*) FROM agent_hq_claude_file WHERE native_id = ?) AS files, (SELECT count(*) FROM agent_hq_claude_entry WHERE native_id = ?) AS entries',
           )
           .get(removed!.nativeId, removed!.nativeId),
       }).toStrictEqual({ files: 0, entries: 0 });
@@ -930,7 +930,7 @@ const readEntries = (stateRoot: string, nativeId: string) => {
   try {
     return database
       .prepare(
-        'SELECT uuid, byte_offset, byte_length FROM hq_claude_entry WHERE native_id = ? ORDER BY byte_offset',
+        'SELECT uuid, byte_offset, byte_length FROM agent_hq_claude_entry WHERE native_id = ? ORDER BY byte_offset',
       )
       .all(nativeId)
       .map((row) => ({ ...row }));
@@ -1190,7 +1190,7 @@ test('history qualification refreshes a rejected projection after runtime restar
     const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'));
     try {
       database
-        .prepare('UPDATE hq_claude_file SET identity = ?, supported = -1 WHERE native_id = ?')
+        .prepare('UPDATE agent_hq_claude_file SET identity = ?, supported = -1 WHERE native_id = ?')
         .run(fileIdentity, nativeId);
     } finally {
       database.close();
@@ -1517,7 +1517,7 @@ test('a transcript the previous projection marked foreign is indexed again and r
     try {
       database
         .prepare(
-          `UPDATE hq_claude_file SET identity = '5' || substr(identity, instr(identity, ':')),
+          `UPDATE agent_hq_claude_file SET identity = '5' || substr(identity, instr(identity, ':')),
           supported = -1, workspace_state = 'foreign' WHERE native_id = ?`,
         )
         .run(nativeId);

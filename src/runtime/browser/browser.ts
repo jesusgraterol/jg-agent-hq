@@ -20,8 +20,9 @@ export const createBrowserActions = (store: IStore) => {
       .safeParse({ id, operatorId });
     if (!parsed.success)
       throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
-    const receipt = await store.getBrowserAction(id, operatorId);
-    if (receipt?.kind === 'native') receipt.native = await store.getAction(receipt.nativeActionId);
+    const receipt = await store.call('browser', 'get', id, operatorId);
+    if (receipt?.kind === 'native')
+      receipt.native = await store.call('reads', 'getAction', receipt.nativeActionId);
     return receipt;
   };
   const perform = (
@@ -39,14 +40,14 @@ export const createBrowserActions = (store: IStore) => {
       const action = BrowserActionSchema.safeParse(input);
       if (!action.success || !OperatorSchema.safeParse(operatorId).success)
         throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
-      const admission = await store.admitBrowserAction(action.data, operatorId);
+      const admission = await store.call('browser', 'admit', action.data, operatorId);
       if (admission.isNew) {
         try {
           await execute(action.data, admission.receipt.nativeActionId);
-          await store.settleBrowserAction(action.data.id, operatorId, 'acknowledged');
+          await store.call('browser', 'settle', action.data.id, operatorId, 'acknowledged');
         } catch (cause) {
           // effects may have committed before an error; only reconciliation can establish their outcome
-          await store.settleBrowserAction(action.data.id, operatorId, 'uncertain');
+          await store.call('browser', 'settle', action.data.id, operatorId, 'uncertain');
           throw cause;
         }
       }

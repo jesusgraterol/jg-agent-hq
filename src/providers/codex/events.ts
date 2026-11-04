@@ -11,6 +11,7 @@ import { toTurnResult } from '../results/index.js';
 
 import { NativeIdSchema } from '../../contracts/identities/index.js';
 import type { IAgentProviderOutcome, IAgentProviderEvents, IProviderThread } from '../index.js';
+import { parseActionRequest } from '../utilities.js';
 
 import { LOST_NOTIFICATIONS, RUNNING_TURNS_CAPACITY } from './constants.js';
 import type { ICodexEvents, ICodexProvider, INativeThread, ITurnSummary } from './types.js';
@@ -32,9 +33,6 @@ import { buildCodexReply, parseCodexPrompt, toApprovalPresentation } from './app
 
 const TargetSchema = z.object({ threadId: NativeIdSchema, turnId: NativeIdSchema });
 const DeltaSchema = TargetSchema.extend({ itemId: NativeIdSchema, delta: z.string() });
-const PhaseIdSchema = z
-  .string()
-  .regex(/^[a-f0-9-]{36}:(create|resume|name|turn|steer|interrupt|clean|close)$/);
 
 /** @returns Exact native session metadata normalized to the common control boundary. */
 export const toProviderThread = (thread: INativeThread): IProviderThread => ({
@@ -270,50 +268,54 @@ export const createCodexEvents = (
       });
     },
     lateResponse(requestId, result, error) {
-      if (!PhaseIdSchema.safeParse(requestId).success) return;
+      // a reply's request ID is the native approval's, and answers no action phase
+      const request = parseActionRequest(requestId);
+      if (!request || request.phase === 'reply') return;
       let outcome: IAgentProviderOutcome;
       let thread: IProviderThread | undefined;
       if (error !== undefined)
-        outcome = { kind: 'failed', requestId, failure: 'agent-unavailable' };
-      else if (requestId.endsWith(':create') || requestId.endsWith(':resume')) {
+        outcome = { kind: 'failed', ...request, failure: 'agent-unavailable' };
+      else if (request.phase === 'create' || request.phase === 'resume') {
         thread = toProviderThread(
           parseNative(z.object({ thread: NativeThreadSchema }), result).thread,
         );
-        outcome = requestId.endsWith(':create')
-          ? { kind: 'created', requestId, nativeId: thread.nativeId }
-          : { kind: 'resumed', requestId, nativeState: thread.nativeState };
-      } else if (requestId.endsWith(':turn'))
+        outcome =
+          request.phase === 'create'
+            ? { kind: 'created', ...request, nativeId: thread.nativeId }
+            : { kind: 'resumed', ...request, nativeState: thread.nativeState };
+      } else if (request.phase === 'turn')
         outcome = {
           kind: 'turn-accepted',
-          requestId,
+          ...request,
           nativeTurnId: parseNative(z.object({ turn: NativeTurnSchema }), result).turn.id,
         };
-      else if (requestId.endsWith(':steer'))
+      else if (request.phase === 'steer')
         outcome = {
           kind: 'steer-accepted',
-          requestId,
+          ...request,
           nativeTurnId: parseNative(z.object({ turnId: NativeIdSchema }), result).turnId,
         };
       else if (
-        requestId.endsWith(':name') ||
-        requestId.endsWith(':interrupt') ||
-        requestId.endsWith(':clean')
+        request.phase === 'name' ||
+        request.phase === 'interrupt' ||
+        request.phase === 'clean'
       ) {
         parseNative(z.object({}), result);
         outcome = {
-          kind: requestId.endsWith(':name')
-            ? 'renamed'
-            : requestId.endsWith(':interrupt')
-              ? 'interrupt-accepted'
-              : 'cleaned',
-          requestId,
+          kind:
+            request.phase === 'name'
+              ? 'renamed'
+              : request.phase === 'interrupt'
+                ? 'interrupt-accepted'
+                : 'cleaned',
+          ...request,
         };
       } else {
         parseNative(
           z.object({ status: z.enum(['unsubscribed', 'notSubscribed', 'notLoaded']) }),
           result,
         );
-        outcome = { kind: 'closed', requestId };
+        outcome = { kind: 'closed', ...request };
       }
       events.outcome(outcome, thread);
     },

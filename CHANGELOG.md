@@ -16,9 +16,17 @@
 - The error codes `JG_AGENT_HQ_LOCK_INVALID_ARGUMENTS`, `JG_AGENT_HQ_LOCK_UNSUPPORTED_PLATFORM`, `JG_AGENT_HQ_LOCK_FILE_INVALID`, `JG_AGENT_HQ_LOCK_FILE_PERMISSIONS`, `JG_AGENT_HQ_LOCK_OWNER_OVERSIZED`, `JG_AGENT_HQ_LOCK_OWNER_UNREADABLE`, `JG_AGENT_HQ_LOCK_OWNER_INCOMPLETE`, `JG_AGENT_HQ_LOCK_OWNER_INACTIVE`, `JG_AGENT_HQ_LOCK_OWNER_UNVERIFIABLE`, `JG_AGENT_HQ_LOCK_TIMEOUT`, `JG_AGENT_HQ_LOCK_OWNERSHIP_CHANGED`, `JG_AGENT_HQ_LOCK_NOT_HELD`, `JG_AGENT_HQ_LOCK_NONCE_MISMATCH`, `JG_AGENT_HQ_RUNTIME_DIRECTORY_INVALID` and `JG_AGENT_HQ_RUNTIME_DIRECTORY_PERMISSIONS`. A state root that can't be created as a private directory now fails with `JG_AGENT_HQ_STATE_DIRECTORY_UNSAFE`.
 - The IPC envelope's `schemaVersion`: requests carry `id`, `runtimeEpoch` and `command`, and responses `id`, `success` and their `response` or `error`. The CLI's JSON output keeps its `schemaVersion: 1`.
 - The `version` field of cursors. Cursors stay opaque, and every cursor an earlier version issued is refused with `JG_AGENT_HQ_CURSOR_INVALID`.
+- The receipt and action summary field `nativeRequestId`. `phase` names the native step an action takes; the request ID HQ sends the native CLI stays internal.
+
+### Added
+
+- Receipts and action summaries carry `phase`, the native step the action takes now: `create`, `resume`, `name`, `turn`, `steer`, `interrupt`, `clean`, `close` or `reply`, or null for an action that sends nothing native. `ACTION_PHASES` and `IActionPhase` in `jg-agent-hq/contracts` list them.
 
 ### Changed
 
+- HQ's tables, indexes, unique indexes and named constraints use the `agent_hq_` prefix instead of `hq_`, such as `agent_hq_action`, `agent_hq_idx_a__native_turn_id` and the stamp table `agent_hq_schema`, and `IStorageDescriptor.reservedPrefix` is `agent_hq_`: a host keeps its own tables outside that prefix.
+- `agent_hq_action` records an action's native step in a `phase` column, checked against the phases above, instead of a suffix of its `native_request_id` column, which is gone with its unique index; an action's ID, its primary key, keeps each native request unique. `agent_hq_browser_action` keeps a receipt's state, runtime epoch, kind, native action ID and timestamps in columns instead of a JSON `receipt` column, with a unique native action ID; browser receipts are unchanged.
+- The schema stamp changes with these tables, so startup refuses storage an earlier version wrote with `JG_AGENT_HQ_STORAGE_INVALID`. Storage from 12.0.0 on names the version that wrote it; earlier storage, whose stamp is in `hq_schema`, has no `agent_hq_schema` stamp and is refused as missing one. HQ never migrates storage.
 - Locks live under `<stateRoot>/.runtime/locks` and are taken through jg-locks: the runtime holds the `runtime` lock for its lifetime, whose owner nonce is the runtime epoch, and capture holds the `snapshot` lock. A runtime that stopped without releasing the state root is taken over with jg-locks' `recoverFrom` only when its process is gone and the host's `isPreviousRuntimeStopped` resolves true, which now receives the `runtime` lock owner's process ID and start time; a `snapshot` lock the same process left is recovered with it. Any other dead holder stays until it is recovered with jg-locks. `createAgentHq` passes jg-locks' and jg-fs' errors for an unusable locks folder through unchanged, as the error reference lists them.
 
 ### Fixed

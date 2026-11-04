@@ -102,7 +102,7 @@ test('transitions older than seven days are deleted in batches of 128 after each
     const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
     try {
       const insert = database.prepare(
-        "INSERT INTO hq_session_transition (provider, native_id, thread_id, ownership, previous_state, state, reason, recorded_at) VALUES ('codex', ?, NULL, 'external', NULL, 'idle', 'opened', ?)",
+        "INSERT INTO agent_hq_session_transition (provider, native_id, thread_id, ownership, previous_state, state, reason, recorded_at) VALUES ('codex', ?, NULL, 'external', NULL, 'idle', 'opened', ?)",
       );
       for (let index = 0; index < 130; index += 1)
         insert.run(`expired-${index}`, Date.now() - 8 * DAY_MS);
@@ -171,7 +171,7 @@ test('a cursor whose transition was pruned is reset, and latestSequence stays th
     const seed = new DatabaseSync(databasePath);
     try {
       const insert = seed.prepare(
-        "INSERT INTO hq_session_transition (provider, native_id, thread_id, ownership, previous_state, state, reason, recorded_at) VALUES ('codex', ?, NULL, 'external', NULL, 'idle', 'opened', ?)",
+        "INSERT INTO agent_hq_session_transition (provider, native_id, thread_id, ownership, previous_state, state, reason, recorded_at) VALUES ('codex', ?, NULL, 'external', NULL, 'idle', 'opened', ?)",
       );
       for (const nativeId of ['expired-first', 'expired-second'])
         insert.run(nativeId, Date.now() - 8 * DAY_MS);
@@ -206,9 +206,10 @@ test('a cursor whose transition was pruned is reset, and latestSequence stays th
     let latest: number;
     try {
       latest = Number(
-        emptied.prepare('SELECT max(sequence) AS latest FROM hq_session_transition').get()!.latest,
+        emptied.prepare('SELECT max(sequence) AS latest FROM agent_hq_session_transition').get()!
+          .latest,
       );
-      emptied.exec('DELETE FROM hq_session_transition');
+      emptied.exec('DELETE FROM agent_hq_session_transition');
     } finally {
       emptied.close();
     }
@@ -238,13 +239,13 @@ test("an observed session's Claude history is found by its native ID through an 
       const plan = JSON.stringify(
         database
           .prepare(
-            `EXPLAIN QUERY PLAN SELECT name FROM hq_claude_file
+            `EXPLAIN QUERY PLAN SELECT name FROM agent_hq_claude_file
             WHERE native_id = ? AND workspace_state = 'matching' ORDER BY updated_at DESC LIMIT 1`,
           )
           .all(randomUUID()),
       );
-      expect(plan).toContain('hq_idx_cf__native_id_updated_at_desc');
-      expect(plan).not.toContain('SCAN hq_claude_file');
+      expect(plan).toContain('agent_hq_idx_cf__native_id_updated_at_desc');
+      expect(plan).not.toContain('SCAN agent_hq_claude_file');
       expect(plan).not.toContain('TEMP B-TREE');
     } finally {
       database.close();

@@ -1,6 +1,5 @@
 import {
   DEFAULT_PAGE_SIZE,
-  HqResponseSchema,
   MAX_PAGE_SIZE,
   type IActiveSessions,
   type IHqResponse,
@@ -10,7 +9,7 @@ import {
   type IThreadSummary,
   type IUnstartedThreads,
 } from '../contracts/index.js';
-import { retainNativeLineage } from '../providers/index.js';
+import { parseActionRequest, retainNativeLineage } from '../providers/index.js';
 import type { createProviderRegistry } from '../providers/registry/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 import type { IStore } from '../store/index.js';
@@ -51,18 +50,22 @@ export const readNativeHistory = async (
     command.kind === 'item-detail' ||
     command.kind === 'item-image'
   ) {
-    const unstarted = await projection.getUnstartedThread(command.provider, command.nativeId);
+    const unstarted = await projection.call(
+      'reads',
+      'getUnstartedThread',
+      command.provider,
+      command.nativeId,
+    );
     if (unstarted?.workspaceRoot === workspaceRoot) {
       if (command.kind === 'items')
-        return HqResponseSchema.parse({
+        return {
           kind: 'items',
           result: { data: [], history: 'persisted', source: 'native', nextCursor: null },
-        });
-      if (command.kind === 'item-detail')
-        return HqResponseSchema.parse({ kind: 'item-detail', result: null });
+        };
+      if (command.kind === 'item-detail') return { kind: 'item-detail', result: null };
       if (command.kind === 'item-image') return imageUnavailable();
       const [summary] = await toManagedSummaries(projection, [unstarted]);
-      return HqResponseSchema.parse({ kind: 'thread', result: withListing(summary!, claude) });
+      return { kind: 'thread', result: withListing(summary!, claude) };
     }
   }
   const adapter = await registry.get(command.provider);
@@ -90,7 +93,9 @@ export const readNativeHistory = async (
   if (threads.length) {
     const managed = new Map(
       (
-        await projection.getNativeThreads(
+        await projection.call(
+          'reads',
+          'getNativeThreads',
           command.provider,
           threads.map((thread) => thread.nativeId),
         )
@@ -98,7 +103,9 @@ export const readNativeHistory = async (
     );
     const states = new Map(
       (
-        await projection.getSessionStates(
+        await projection.call(
+          'sessions',
+          'states',
           command.provider,
           threads.map((thread) => thread.nativeId),
         )
@@ -129,21 +136,25 @@ export const readNativeHistory = async (
      * input sent, so attachments and a cut text don't hide it.
      */
     for (const item of items) item.provenance = resetProvenance(item.kind, item.provenance);
-    const origins = await projection.getEvidenceOrigins({
+    const origins = await projection.call('reads', 'getEvidenceOrigins', {
       provider: command.provider,
       nativeId: command.nativeId,
-      items: items.map(({ kind, provenance, ...item }) => ({
-        nativeInputId: kind === 'user-message' ? provenance.nativeInputId : null,
-        turnId: 'reference' in item ? item.reference.turnId : item.turnId,
-        sha256: provenance.nativeInputSha256,
-      })),
+      items: items.map(({ kind, provenance, ...item }) => {
+        const nativeInputId = kind === 'user-message' ? provenance.nativeInputId : null;
+        return {
+          nativeInputId,
+          request: nativeInputId === null ? null : parseActionRequest(nativeInputId),
+          turnId: 'reference' in item ? item.reference.turnId : item.turnId,
+          sha256: provenance.nativeInputSha256,
+        };
+      }),
     });
     for (const [index, origin] of origins.entries())
       if (origin && items[index]) items[index].provenance = origin;
   }
   if (response.kind === 'session-evidence' && Buffer.byteLength(JSON.stringify(response)) > 65_280)
     throw HQ_ERRORS.create('providerFailed', { data: { kind: 'agent-unavailable' } });
-  return HqResponseSchema.parse(response);
+  return response;
 };
 
 // a summary with the terminal that runs it and its background commands, which only Claude reports
@@ -166,7 +177,9 @@ const toManagedSummaries = async (
 ): Promise<IThreadSummary[]> => {
   const states = new Map<string, ISessionState>();
   for (const provider of new Set(threads.map((thread) => thread.provider)))
-    for (const session of await projection.getSessionStates(
+    for (const session of await projection.call(
+      'sessions',
+      'states',
       provider,
       threads.flatMap((thread) =>
         thread.provider === provider && thread.nativeId ? [thread.nativeId] : [],
@@ -207,7 +220,9 @@ export const readUnstartedThreads = async (
   claude: IClaudeSessions,
 ): Promise<IUnstartedThreads> => {
   const workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, allowedRoots);
-  const page = await projection.listUnstartedThreads(
+  const page = await projection.call(
+    'reads',
+    'listUnstartedThreads',
     command.provider,
     workspaceRoot,
     DEFAULT_PAGE_SIZE,
@@ -299,7 +314,12 @@ export const readActiveSessions = async (
   allowedRoots: string[],
   claude: IClaudeSessions,
 ): Promise<IActiveSessions> => {
-  const records = await projection.listActiveSessions(MAX_PAGE_SIZE, claude.backgroundSessions());
+  const records = await projection.call(
+    'sessions',
+    'active',
+    MAX_PAGE_SIZE,
+    claude.backgroundSessions(),
+  );
   // each directory is authorized once per read
   const roots = new Map<string, Promise<string | null>>();
   const resolveRoot = (directory: string): Promise<string | null> => {

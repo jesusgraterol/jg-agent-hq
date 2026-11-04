@@ -79,7 +79,7 @@ export const createStorage = (store: IStore) => {
     try {
       while (active.size > 0) await Promise.allSettled([...active]);
       isMaintenanceHeld = true;
-      if (!(await store.prepareStorageMaintenance())) conflict();
+      if (!(await store.call('lifecycle', 'canStartMaintenance'))) conflict();
       return await operation(structuredClone(store.storage));
     } finally {
       isMaintenanceHeld = false;

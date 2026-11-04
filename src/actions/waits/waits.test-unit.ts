@@ -15,7 +15,7 @@ const receipt = (fields: Partial<IActionReceipt> = {}): IActionReceipt => ({
   threadId: 'thread-1',
   nativeThreadId: null,
   nativeTurnId: null,
-  nativeRequestId: null,
+  phase: null,
   delivery: 'submitted',
   completion: null,
   failure: null,

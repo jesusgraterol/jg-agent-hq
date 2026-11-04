@@ -1,13 +1,18 @@
-import {
-  PreparedInputSchema,
-  TurnResultSchema,
-  NativeLineageSchema,
-  type IActionReceipt,
-  type IActionSummary,
-  type IManagedThread,
+import type {
+  IActionReceipt,
+  IActionSummary,
+  IManagedThread,
+  INativeLineage,
+  IPreparedInput,
+  ITurnResult,
 } from '../../contracts/index.js';
 
 import type { IActionReceiptRow, IActionRow, IThreadRow } from './types.js';
+
+/*
+ * HQ writes its JSON columns from values it validated at their boundary, such as native lineage
+ * and results at the adapter and queued input at admission, so they are read back as written.
+ */
 
 /** Converts a persisted control record without leaking internal admission state. */
 export const toManagedThread = (thread: IThreadRow): IManagedThread => ({
@@ -15,9 +20,7 @@ export const toManagedThread = (thread: IThreadRow): IManagedThread => ({
   provider: thread.provider,
   nativeId: thread.native_id,
   nativeLineage:
-    thread.native_lineage === null
-      ? null
-      : NativeLineageSchema.parse(JSON.parse(thread.native_lineage)),
+    thread.native_lineage === null ? null : (JSON.parse(thread.native_lineage) as INativeLineage),
   name: thread.name,
   workspaceRoot: thread.workspace_root,
   ownership: thread.ownership,
@@ -39,7 +42,7 @@ export const toActionSummary = (
   provider: action.provider,
   threadId: action.thread_id,
   nativeTurnId: action.native_turn_id,
-  nativeRequestId: action.native_request_id,
+  phase: action.phase,
   delivery: action.delivery,
   completion: action.completion,
   failure: action.failure,
@@ -56,8 +59,6 @@ export const toActionReceipt = (action: IActionReceiptRow): IActionReceipt => ({
   ...toActionSummary(action),
   nativeThreadId: action.native_thread_id,
   queuedInput:
-    action.queued_input === null
-      ? null
-      : PreparedInputSchema.parse(JSON.parse(action.queued_input)),
-  result: action.result === null ? null : TurnResultSchema.parse(JSON.parse(action.result)),
+    action.queued_input === null ? null : (JSON.parse(action.queued_input) as IPreparedInput),
+  result: action.result === null ? null : (JSON.parse(action.result) as ITurnResult),
 });

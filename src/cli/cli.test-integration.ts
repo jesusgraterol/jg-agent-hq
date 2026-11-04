@@ -385,29 +385,29 @@ test.each([
   [
     // the hash of the schema jg-agent-hq 4.0.2 wrote, whose entry index had no notice kind
     'the 4.0.2 schema',
-    "UPDATE hq_schema SET schema_hash = '062346e252b338d94d126c3f55f50851e003691b1be51de46b6e43b5b09615ae', package_version = '4.0.2'",
+    "UPDATE agent_hq_schema SET schema_hash = '062346e252b338d94d126c3f55f50851e003691b1be51de46b6e43b5b09615ae', package_version = '4.0.2'",
     'The HQ storage is invalid: written by jg-agent-hq 4.0.2',
   ],
   [
     // the hash of the schema jg-agent-hq 8.0.2 wrote
     'the 8.0.2 schema',
-    "UPDATE hq_schema SET schema_hash = 'bf4d6ad7f2c97adaeb762f7206557999e6ed081d54484d233fe931b31fdf62ab', package_version = '8.0.2'",
+    "UPDATE agent_hq_schema SET schema_hash = 'bf4d6ad7f2c97adaeb762f7206557999e6ed081d54484d233fe931b31fdf62ab', package_version = '8.0.2'",
     'The HQ storage is invalid: written by jg-agent-hq 8.0.2',
   ],
   [
     // the hash of the schema jg-agent-hq 9.0.0 wrote, whose Claude history index sorted by creation
     'the 9.0.0 schema',
-    "UPDATE hq_schema SET schema_hash = '285c2e16237fc293a83cebd85c7283b0ba655f8efcf0ac262ed2c367ba85e913', package_version = '9.0.0'",
+    "UPDATE agent_hq_schema SET schema_hash = '285c2e16237fc293a83cebd85c7283b0ba655f8efcf0ac262ed2c367ba85e913', package_version = '9.0.0'",
     'The HQ storage is invalid: written by jg-agent-hq 9.0.0',
   ],
   [
     'a newer schema',
-    `UPDATE hq_schema SET schema_hash = '${'0'.repeat(64)}', package_version = '99.0.0'`,
+    `UPDATE agent_hq_schema SET schema_hash = '${'0'.repeat(64)}', package_version = '99.0.0'`,
     'The HQ storage is invalid: written by jg-agent-hq 99.0.0',
   ],
   [
     'a stamp without a package version',
-    'ALTER TABLE hq_schema DROP COLUMN package_version',
+    'ALTER TABLE agent_hq_schema DROP COLUMN package_version',
     'The HQ storage is invalid: written by another jg-agent-hq version',
   ],
 ])(

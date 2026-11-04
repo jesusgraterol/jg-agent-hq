@@ -4,7 +4,6 @@ import { randomUUID } from 'node:crypto';
 import { Exception, extractMessage, hasErrorCode } from 'jg-exception';
 
 import {
-  HqResponseSchema,
   IpcRequestSchema,
   PUBLIC_ERROR_MESSAGES,
   type IHqRequest,
@@ -76,10 +75,8 @@ export const createIpcServer = async (
           throw HQ_ERRORS.create('runtimeOwnerUnverifiable', {
             data: { kind: 'state-conflict' },
           });
-        const response = HqResponseSchema.safeParse(await handle(input.data.command));
-        if (!response.success || response.data.kind !== input.data.command.kind)
-          throw HQ_ERRORS.create('transportFailed', { data: { kind: 'operation-failed' } });
-        send({ id, success: true, response: response.data });
+        // the client checks the response at its own boundary
+        send({ id, success: true, response: await handle(input.data.command) });
       } catch (error) {
         send({ id, success: false, error: toPublicError(error) });
       }

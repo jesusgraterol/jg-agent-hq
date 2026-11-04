@@ -55,7 +55,7 @@ export const openDatabase = (
         database.exec(source);
         database
           .prepare(
-            'INSERT INTO hq_schema (id, schema_hash, action_key_hash, package_version) VALUES (1, ?, ?, ?)',
+            'INSERT INTO agent_hq_schema (id, schema_hash, action_key_hash, package_version) VALUES (1, ?, ?, ?)',
           )
           .run(schemaHash, actionKeyHash, PACKAGE_VERSION);
         database.exec('COMMIT');
