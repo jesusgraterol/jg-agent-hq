@@ -50,8 +50,8 @@ export const createCodexProviderFactory = (
   async create(context) {
     const native = await createCodexProvider(extraSkillRoots, daemonLauncher);
     /*
-     * Each session's workspace, name and creation time, read once, or null for one that isn't
-     * observed: Codex doesn't save it, or it runs outside the allowed workspaces.
+     * Each session's workspace, name and creation time, refreshed on reconnect and rename, or
+     * null for one Codex doesn't save or that runs outside the allowed workspaces.
      */
     const observedThreads = new Map<string, IObservedThread | null>();
     let observations = Promise.resolve();
@@ -76,7 +76,7 @@ export const createCodexProviderFactory = (
       }
       if (thread) context.events.session(nativeId, state, thread);
     };
-    const observeSession = (nativeId: string, state: ISessionState): void => {
+    const observeSession = (nativeId: string, state: ISessionState | null): void => {
       observations = observations
         .then(() => record(nativeId, state))
         // an unreadable session stays unobserved until its next status change

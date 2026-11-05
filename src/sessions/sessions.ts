@@ -207,7 +207,7 @@ const toActiveSummary = async (
       continuedIn: null,
     };
   }
-  // an observed Codex session keeps what the first read of it found
+  // an observed Codex session keeps its latest confirmed metadata
   if (!record.observed) return null;
   const workspaceRoot = await resolveRoot(record.observed.workspaceRoot);
   if (workspaceRoot === null) return null;

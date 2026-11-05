@@ -42,11 +42,9 @@ export class SessionsModel {
   }
 
   /**
-   * Records the states of sessions HQ doesn't manage, and on a session's first record what its
-   * provider's first read of it found; the schema's triggers append the transitions, each with the
-   * session's folder. A Claude session's folder follows the poll's listing, while a Codex session
-   * keeps the one its first read found. A complete observation also closes every open session of
-   * that provider it omits.
+   * Records the states and latest metadata of sessions HQ doesn't manage. Metadata-only changes
+   * preserve the activity time and append no state transition. A complete observation also closes
+   * every open session of that provider it omits.
    */
   public observe(provider: IProviderId, sessions: IObservedSession[], isComplete: boolean): void {
     const now = Date.now();
@@ -82,7 +80,21 @@ export class SessionsModel {
         )
           continue;
         this.__statements.run(
-          'INSERT INTO agent_hq_observed_session (provider, native_id, state, observed_at, workspace_root, name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (provider, native_id) DO UPDATE SET state = excluded.state, observed_at = excluded.observed_at, workspace_root = coalesce(excluded.workspace_root, agent_hq_observed_session.workspace_root) WHERE agent_hq_observed_session.state != excluded.state',
+          `INSERT INTO agent_hq_observed_session (provider, native_id, state, observed_at, workspace_root, name, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (provider, native_id) DO UPDATE SET
+            state = excluded.state,
+            observed_at = CASE WHEN agent_hq_observed_session.state != excluded.state
+              THEN excluded.observed_at ELSE agent_hq_observed_session.observed_at END,
+            workspace_root = coalesce(excluded.workspace_root, agent_hq_observed_session.workspace_root),
+            name = CASE WHEN excluded.created_at IS NOT NULL
+              THEN excluded.name ELSE agent_hq_observed_session.name END,
+            created_at = coalesce(excluded.created_at, agent_hq_observed_session.created_at)
+          WHERE agent_hq_observed_session.state != excluded.state
+            OR agent_hq_observed_session.workspace_root IS NOT coalesce(excluded.workspace_root, agent_hq_observed_session.workspace_root)
+            OR (excluded.created_at IS NOT NULL AND
+              (agent_hq_observed_session.name IS NOT excluded.name
+                OR agent_hq_observed_session.created_at IS NOT excluded.created_at))`,
           provider,
           session.nativeId,
           session.state,

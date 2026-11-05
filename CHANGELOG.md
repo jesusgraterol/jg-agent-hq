@@ -1,5 +1,10 @@
 # Changelog
 
+## 12.0.1
+
+- Refresh the cached metadata of an observed Codex session on `thread/name/updated` and reconnect, so a terminal rename or cleared name reaches `active-sessions`. Metadata-only changes preserve the session's activity time and append no state transition; active-list reads still make no native calls.
+- Keep the 12.0.0 storage schema unchanged. Existing databases, sessions and snapshots remain compatible.
+
 ## 12.0.0
 
 To upgrade from 11.x:

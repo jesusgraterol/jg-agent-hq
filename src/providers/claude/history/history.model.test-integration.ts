@@ -1851,18 +1851,18 @@ test(
   '1,024 equal-time native sessions use bounded seek pages and do not skip concurrent newer inserts',
   { timeout: 30_000 },
   async () => {
-    await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    await withClaudeRuntime(async ({ root, workspaceRoot, transcript, request }) => {
       const ids: string[] = [];
       // every session was last active at the same moment, so only native IDs order them
       const activity = new Date('2026-10-19T12:00:00.000Z');
+      const staged = join(root, 'fixed-session.jsonl');
       for (let index = 0; index < 1024; index += 1) {
         const nativeId = randomUUID();
         ids.push(nativeId);
-        await writeFile(
-          transcript(nativeId),
-          JSON.stringify(claudeRecord(workspaceRoot, nativeId)) + '\n',
-        );
-        await utimes(transcript(nativeId), activity, activity);
+        await writeFile(staged, JSON.stringify(claudeRecord(workspaceRoot, nativeId)) + '\n');
+        // publish the fixed timestamp atomically, before startup indexing can observe the file
+        await utimes(staged, activity, activity);
+        await rename(staged, transcript(nativeId));
       }
       ids.sort().reverse();
       let cursor: string | undefined;

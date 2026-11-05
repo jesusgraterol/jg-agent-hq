@@ -49,7 +49,7 @@ export const toProviderThread = (thread: INativeThread): IProviderThread => ({
 export const createCodexEvents = (
   native: ICodexProvider,
   events: IAgentProviderEvents,
-  observeSession: (nativeId: string, state: ISessionState) => void,
+  observeSession: (nativeId: string, state: ISessionState | null) => void,
   observeLoaded: () => void,
 ): ICodexEvents => {
   const turns = new Map<
@@ -190,6 +190,10 @@ export const createCodexEvents = (
         params,
       );
       observeSession(threadId, toSessionState(status));
+    } else if (method === 'thread/name/updated') {
+      const { threadId } = parseNative(z.object({ threadId: NativeIdSchema }), params);
+      // read current metadata once, including a cleared name, without inventing a state change
+      observeSession(threadId, null);
     } else if (method === 'thread/settings/updated') {
       // the thread record leaves the tier out, so a turn that changes it is followed here
       const { threadId, threadSettings } = parseNative(
