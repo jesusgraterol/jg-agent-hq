@@ -1,11 +1,11 @@
 import type { INativeLineage, IProviderId, ISessionState } from '../../contracts/index.js';
 
-// what the provider's first read of a session another client drives found, which its record keeps
+// the latest confirmed metadata of a session another client drives, which its record keeps
 export type IObservedThread = { workspaceRoot: string; name: string | null; createdAt: number };
 
 /*
- * One observed session's state. Codex's adapter reports what its first read of the session found,
- * and Claude's poll the folder it lists the session in.
+ * One observed session's state. Codex's adapter reports its confirmed native metadata, and
+ * Claude's poll the folder it lists the session in.
  */
 export type IObservedSession = {
   nativeId: string;
@@ -16,8 +16,8 @@ export type IObservedSession = {
 
 /*
  * One running or waiting session as the store knows it, or an idle one that runs background
- * commands. A managed session carries its thread, an observed Codex session what the first read
- * of it found, and an observed Claude session its history index entry when its transcript is
+ * commands. A managed session carries its thread, an observed Codex session its latest confirmed
+ * metadata, and an observed Claude session its history index entry when its transcript is
  * indexed; an observed Claude session's workspace is resolved outside the store.
  */
 export type IActiveSessionRecord = {

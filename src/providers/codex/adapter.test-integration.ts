@@ -159,6 +159,53 @@ test('a session another Codex client drives stays external, and HQ adopts it bet
   });
 });
 
+test.each(['fix-assurance', null])(
+  'a terminal Codex rename to %s refreshes active metadata without changing activity',
+  async (name) => {
+    await withClaudeRuntime(async (fixture) => {
+      const running = { type: 'active', activeFlags: [] };
+      const active = async () => {
+        const response = await fixture.runtime.request({ kind: 'active-sessions' });
+        if (response.kind !== 'active-sessions') throw new Error('Missing active sessions');
+        return response.result.data.find((session) => session.nativeId === EXTERNAL);
+      };
+      await broadcast(fixture, running);
+      await expect.poll(active).toMatchObject({ name: 'Task 1023', state: 'running' });
+      const before = (await active())!;
+      const priorTransitions = await transitions(fixture);
+      await codex(fixture, {
+        threadNames: { [EXTERNAL]: name },
+        threadStatuses: { [EXTERNAL]: running },
+        emitOnce: true,
+        emit: [
+          {
+            method: 'thread/name/updated',
+            params: { threadId: EXTERNAL, ...(name === null ? {} : { threadName: name }) },
+          },
+        ],
+      });
+      await fixture.runtime.request({ kind: 'usage', provider: 'codex' });
+      await expect
+        .poll(active)
+        .toMatchObject({ name, state: 'running', updatedAt: before.updatedAt });
+      expect(await transitions(fixture)).toStrictEqual(priorTransitions);
+      const reads = (await calls(fixture)).filter((call) => call.method === 'thread/read').length;
+      // a later status uses the refreshed cache, and the active read itself makes no native calls
+      await broadcast(
+        fixture,
+        { type: 'active', activeFlags: ['waitingOnApproval'] },
+        {
+          threadNames: { [EXTERNAL]: name },
+        },
+      );
+      await expect.poll(active).toMatchObject({ name, state: 'waiting' });
+      expect((await calls(fixture)).filter((call) => call.method === 'thread/read')).toHaveLength(
+        reads,
+      );
+    });
+  },
+);
+
 test('a Codex session outside the allowed workspaces is never observed', async () => {
   await withClaudeRuntime(async (fixture) => {
     await fixture.runtime.request({ kind: 'usage', provider: 'codex' });

@@ -5,7 +5,7 @@ export const RETENTION_MS = 604_800_000;
  * Running and waiting sessions by their latest state change, with the idle ones among the included
  * sessions, which run background commands. A managed thread is active only while a runtime binds
  * it, which its runtime epoch index finds; a stopping one reports the state it stops, from its
- * last transition. An observed Codex session carries what the first read of it found, and an
+ * last transition. An observed Codex session carries its latest confirmed metadata, and an
  * observed Claude session joins its indexed transcript, if any, by session ID. The included
  * sessions are one JSON array of [provider, native ID] pairs.
  */
