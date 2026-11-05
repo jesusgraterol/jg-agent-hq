@@ -8,7 +8,12 @@ import { expectToRejectCode } from 'jg-exception/testing';
 import { hasErrorCode } from 'jg-exception';
 import { hashValue } from 'jg-crypto';
 import { inspectLock } from 'jg-locks';
-import { createAgentHq, openHostDatabase, type IStorageDescriptor } from 'jg-agent-hq';
+import {
+  createAgentHq,
+  openHostDatabase,
+  restoreHqSnapshot,
+  type IStorageDescriptor,
+} from 'jg-agent-hq';
 import type { IBrowserAction } from 'jg-agent-hq/contracts';
 import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
@@ -52,6 +57,104 @@ const openStorage = (storage: IStorageDescriptor): DatabaseSync =>
     timeout: storage.connectionSettings.busyTimeoutMs,
     enableForeignKeyConstraints: storage.connectionSettings.foreignKeys,
   });
+
+test('12.0.1 storage opens unchanged and longer names survive restart and snapshot restore', async () => {
+  await withClaudeRuntime(async ({ runtime, stateRoot, workspaceRoot, root }) => {
+    const descriptor = runtime.storage;
+    const key = await readFile(join(stateRoot, 'action.key'));
+    await runtime.close();
+    const database = openStorage(descriptor);
+    try {
+      // a previous writer's diagnostic version with the same schema and original action key
+      database.prepare('UPDATE agent_hq_schema SET package_version = ?').run('12.0.1');
+      database.exec(
+        'CREATE TABLE app_note (id INTEGER PRIMARY KEY, body TEXT NOT NULL) STRICT; PRAGMA user_version = 37',
+      );
+      database.prepare('INSERT INTO app_note VALUES (?, ?)').run(1, 'Keep the host record');
+    } finally {
+      database.close();
+    }
+    const upgraded = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
+    let threadId: string;
+    let nativeId: string | null;
+    try {
+      expect(upgraded.storage).toStrictEqual(descriptor);
+      const runtimeEpoch = (await upgraded.request({ kind: 'status' })).result.runtimeEpoch;
+      const admitted = await upgraded.request({
+        kind: 'action',
+        action: {
+          id: randomUUID(),
+          runtimeEpoch,
+          command: {
+            kind: 'thread-create',
+            provider: 'codex',
+            workspaceRoot,
+            name: 'build-agent-composer-with-inline-code-blocks-and-markdown-tables',
+          },
+        },
+      });
+      const settled = await upgraded.request({
+        kind: 'action-wait',
+        actionId: admitted.result.id,
+        until: 'settled',
+        timeoutMs: 5000,
+      });
+      expect(settled.result).toMatchObject({
+        isTimedOut: false,
+        receipt: { delivery: 'acknowledged' },
+      });
+      threadId = admitted.result.threadId!;
+      nativeId = (await upgraded.request({ kind: 'managed-thread', threadId })).result!.nativeId;
+    } finally {
+      await upgraded.close();
+    }
+    const reopened = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
+    try {
+      expect(reopened.storage).toStrictEqual(descriptor);
+      const expected = {
+        id: threadId,
+        nativeId,
+        name: 'build-agent-composer-with-inline-code-blocks-and-markdown-tables',
+      };
+      expect((await reopened.request({ kind: 'managed-thread', threadId })).result).toMatchObject(
+        expected,
+      );
+      expect(await readFile(join(stateRoot, 'action.key'))).toStrictEqual(key);
+      const host = openStorage(reopened.storage);
+      try {
+        expect(host.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 37 });
+        expect(host.prepare('SELECT body FROM app_note WHERE id = 1').get()).toMatchObject({
+          body: 'Keep the host record',
+        });
+        expect(host.prepare('SELECT schema_hash FROM agent_hq_schema').get()).toMatchObject({
+          schema_hash: descriptor.schemaHash,
+        });
+      } finally {
+        host.close();
+      }
+      const snapshot = await reopened.createSnapshot(join(root, 'long-name-snapshot'));
+      const restored = await restoreHqSnapshot({
+        snapshotDirectory: snapshot.directory,
+        destination: join(root, 'long-name-recovery'),
+      });
+      expect(await readFile(join(restored.stateRoot, 'action.key'))).toStrictEqual(key);
+      const recovered = await createAgentHq({
+        stateRoot: restored.stateRoot,
+        allowedRoots: [workspaceRoot],
+      });
+      try {
+        expect(recovered.storage.schemaHash).toBe(descriptor.schemaHash);
+        expect(
+          (await recovered.request({ kind: 'managed-thread', threadId })).result,
+        ).toMatchObject(expected);
+      } finally {
+        await recovered.close();
+      }
+    } finally {
+      await reopened.close();
+    }
+  });
+});
 
 test('shared storage retains application tables and user_version across current-schema reopen', async () => {
   await withClaudeRuntime(async ({ runtime, stateRoot, workspaceRoot }) => {

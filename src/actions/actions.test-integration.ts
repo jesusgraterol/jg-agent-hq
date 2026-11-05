@@ -28,9 +28,168 @@ import {
   startHoldingDelays,
   stateLocks,
   stopHoldingDelays,
+  waitForWarmUp,
   writeFixtureControl,
   withClaudeRuntime,
 } from '../../scripts/test-support/index.js';
+
+test('64-character suggestions and concurrent admissions retain complete growing collision suffixes', async () => {
+  await withClaudeRuntime(async ({ runtime, request, workspaceRoot }) => {
+    await waitForWarmUp(runtime);
+    const runtimeEpoch = (await request({ kind: 'status' })).result.runtimeEpoch;
+    const name = 'build-agent-composer-with-inline-code-blocks-and-markdown-tables';
+    expect(
+      (
+        await request({
+          kind: 'suggest-thread-name',
+          topic: name.toUpperCase() + '!!! extra words',
+        })
+      ).result.name,
+    ).toBe(name);
+    expect((await request({ kind: 'suggest-thread-name', topic: '!!!' })).result.name).toBe(
+      'session',
+    );
+    const create = async () => {
+      const admitted = await request({
+        kind: 'action',
+        action: {
+          id: randomUUID(),
+          runtimeEpoch,
+          command: { kind: 'thread-create', provider: 'codex', workspaceRoot, name },
+        },
+      });
+      const settled = await request({
+        kind: 'action-wait',
+        actionId: admitted.result.id,
+        until: 'settled',
+        timeoutMs: 5000,
+      });
+      expect(settled.result).toMatchObject({
+        isTimedOut: false,
+        receipt: { delivery: 'acknowledged' },
+      });
+      return (await request({ kind: 'managed-thread', threadId: admitted.result.threadId! }))
+        .result!;
+    };
+    const threads = await Promise.all([create(), create()]);
+    for (let ordinal = 3; ordinal <= 10; ordinal++) threads.push(await create());
+    expect(threads.map((thread) => thread.name).sort()).toStrictEqual(
+      [
+        'build-agent-composer-with-inline-code-blocks-and-markdown-tables',
+        'build-agent-composer-with-inline-code-blocks-and-markdown-tabl-2',
+        'build-agent-composer-with-inline-code-blocks-and-markdown-tabl-3',
+        'build-agent-composer-with-inline-code-blocks-and-markdown-tabl-4',
+        'build-agent-composer-with-inline-code-blocks-and-markdown-tabl-5',
+        'build-agent-composer-with-inline-code-blocks-and-markdown-tabl-6',
+        'build-agent-composer-with-inline-code-blocks-and-markdown-tabl-7',
+        'build-agent-composer-with-inline-code-blocks-and-markdown-tabl-8',
+        'build-agent-composer-with-inline-code-blocks-and-markdown-tabl-9',
+        'build-agent-composer-with-inline-code-blocks-and-markdown-tab-10',
+      ].sort(),
+    );
+    expect(new Set(threads.map((thread) => thread.id)).size).toBe(10);
+    expect(new Set(threads.map((thread) => thread.nativeId)).size).toBe(10);
+    expect((await request({ kind: 'suggest-thread-name', topic: name })).result.name).toBe(
+      'build-agent-composer-with-inline-code-blocks-and-markdown-tab-11',
+    );
+  });
+});
+
+test.each(['codex', 'claude'] as const)(
+  '%s creates, adopts and renames long names without changing identities or dispatching invalid names',
+  async (provider) => {
+    await withClaudeRuntime(async (fixture) => {
+      const { runtime, request, workspaceRoot, root } = fixture;
+      await waitForWarmUp(runtime);
+      const runtimeEpoch = (await request({ kind: 'status' })).result.runtimeEpoch;
+      const submit = async (command: IActionCommand) => {
+        const admitted = await request({
+          kind: 'action',
+          action: { id: randomUUID(), runtimeEpoch, command },
+        });
+        const settled = await request({
+          kind: 'action-wait',
+          actionId: admitted.result.id,
+          until: 'settled',
+          timeoutMs: 5000,
+        });
+        expect(settled.result).toMatchObject({
+          isTimedOut: false,
+          receipt: { delivery: 'acknowledged' },
+        });
+        return (await request({ kind: 'managed-thread', threadId: admitted.result.threadId! }))
+          .result!;
+      };
+      const created = await submit({
+        kind: 'thread-create',
+        provider,
+        workspaceRoot,
+        name: 'build-agent-composer-with-inline-code-blocks-and-markdown-tables',
+      });
+      const renamed = await submit({
+        kind: 'thread-rename',
+        threadId: created.id,
+        name: 'draft-agent-composer-with-inline-code-blocks-and-markdown-tables',
+      });
+      expect(renamed).toMatchObject({
+        id: created.id,
+        nativeId: created.nativeId,
+        name: 'draft-agent-composer-with-inline-code-blocks-and-markdown-tables',
+      });
+      const nativeId = provider === 'claude' ? randomUUID() : 'external-long-name';
+      if (provider === 'claude')
+        await writeFile(
+          fixture.transcript(nativeId),
+          JSON.stringify(claudeRecord(workspaceRoot, nativeId)) + '\n',
+        );
+      const adopted = await submit({
+        kind: 'thread-adopt',
+        provider,
+        workspaceRoot,
+        nativeId,
+        name: renamed.name,
+        operatorConfirmation: 'The native CLI controller is closed',
+      });
+      expect(adopted).toMatchObject({
+        nativeId,
+        name: 'draft-agent-composer-with-inline-code-blocks-and-markdown-tabl-2',
+      });
+      expect(adopted.id).not.toBe(created.id);
+      expect(
+        (await request({ kind: 'thread', provider, workspaceRoot, nativeId: created.nativeId! }))
+          .result,
+      ).toMatchObject({ managedId: created.id, name: renamed.name });
+      const logPath = join(root, provider === 'codex' ? 'calls.jsonl' : 'claude-calls.jsonl');
+      const before = await readFile(logPath, 'utf8');
+      for (const name of ['a'.repeat(65), 'Invalid_name']) {
+        for (const command of [
+          { kind: 'thread-create', provider, workspaceRoot, name },
+          {
+            kind: 'thread-adopt',
+            provider,
+            workspaceRoot,
+            nativeId,
+            name,
+            operatorConfirmation: 'The native CLI controller is closed',
+          },
+          { kind: 'thread-rename', threadId: created.id, name },
+        ] satisfies IActionCommand[]) {
+          const id = randomUUID();
+          await expectToRejectCode(
+            runtime.request({ kind: 'action', action: { id, runtimeEpoch, command } }),
+            'JG_AGENT_HQ_REQUEST_INVALID',
+            'The HQ request is invalid',
+          );
+          expect((await request({ kind: 'receipt', actionId: id })).result).toBeNull();
+        }
+      }
+      expect(await readFile(logPath, 'utf8')).toBe(before);
+      expect(
+        (await request({ kind: 'managed-thread', threadId: created.id })).result,
+      ).toStrictEqual(renamed);
+    });
+  },
+);
 
 // a re-check's 2-second re-read is released by the tests that hold it instead of waited out
 vi.mock('jg-utilities', async (original) => {
@@ -2413,7 +2572,7 @@ test('short names are suggested without reservation and renamed without replacin
     const long = await fixture.create('a'.repeat(32));
     const collision = await fixture.create('a'.repeat(32));
     expect(long.thread.name).toHaveLength(32);
-    expect(collision.thread.name).toBe('a'.repeat(30) + '-2');
+    expect(collision.thread.name).toBe('a'.repeat(32) + '-2');
     const rename = await fixture.submit(
       fixture.envelope({ kind: 'thread-rename', threadId: first.thread.id, name: 'review-usage' }),
     );
@@ -2439,8 +2598,10 @@ test.each([
   [' Build usage ', 'build-usage'],
   ['Review / API feedback!', 'review-api-feedback'],
   ['---', 'session'],
-  ['a'.repeat(31) + ' topic', 'a'.repeat(31)],
-  ['a'.repeat(64), 'a'.repeat(32)],
+  ['a'.repeat(31) + ' topic', 'a'.repeat(31) + '-topic'],
+  ['a'.repeat(63) + ' topic', 'a'.repeat(63)],
+  ['a'.repeat(64), 'a'.repeat(64)],
+  ['a'.repeat(65), 'a'.repeat(64)],
 ])('native-independent name suggestion(%s) -> %s', async (topic, name) => {
   const fixture = await setup();
   try {

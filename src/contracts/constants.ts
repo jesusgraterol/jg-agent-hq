@@ -5,6 +5,9 @@ export const MAX_PAGE_SIZE = 128;
 // the most folders one `threads` read lists, so its cursor carries every source's continuation
 export const MAX_WORKSPACE_ROOTS = 64;
 
+// the complete editable managed-session label, including any collision suffix
+export const MAX_THREAD_NAME_LENGTH = 64;
+
 // the largest action envelope HQ admits, in UTF-8 bytes of its JSON
 export const MAX_ACTION_BYTES = 32_768;
 
