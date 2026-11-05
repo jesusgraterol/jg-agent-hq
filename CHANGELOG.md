@@ -1,5 +1,11 @@
 # Changelog
 
+## 13.0.0
+
+- Accept managed-session names of 1 through 64 characters for create, adopt, rename and managed-thread responses. Export `MAX_THREAD_NAME_LENGTH` from `jg-agent-hq/contracts`; suggestions and atomic collision suffixes use the same limit. The lowercase ASCII alphabet, first-character rule, case-insensitive uniqueness and immutable identities are unchanged.
+- This is a breaking producer-contract change: 12.x consumers with strict 32-character response schemas reject longer names. Upgrade runtime and consumers together.
+- Keep the 12.0.1 storage schema, action key and host `user_version` unchanged. Existing names are retained. Before downgrading to 12.x, inventory managed sessions through bounded pages and explicitly shorten every name longer than 32, resolving collisions through supported rename actions. See [package downgrade](docs/recovery.md#package-downgrade).
+
 ## 12.0.1
 
 - Refresh the cached metadata of an observed Codex session on `thread/name/updated` and reconnect, so a terminal rename or cleared name reaches `active-sessions`. Metadata-only changes preserve the session's activity time and append no state transition; active-list reads still make no native calls.

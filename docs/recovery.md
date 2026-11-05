@@ -24,6 +24,12 @@ Recover repositories and native files separately. Source paths are retained as e
 
 Roll back by restoring an earlier snapshot into a new recovery workspace; never overwrite the current state root. A snapshot from another schema is refused with an error naming the package version that wrote it, so restore it with that version. Rollback accepts losing every change made after that snapshot, including host changes and later runtime receipts. Reconcile native ownership before enabling work.
 
+## Package downgrade
+
+Version 13.0.0 uses the same storage schema as 12.0.1, including the existing action key and host `user_version`; startup accepts that schema without migration or reset. The writing package version is diagnostic. Snapshot capture and restore retain longer managed names under the same schema.
+
+The expanded name contract is still a breaking change for older consumers: 12.x strict schemas reject managed names longer than 32 characters. Before installing 12.x, pause new session creation and naming actions, inventory every managed session using bounded `managed-threads` pages for each workspace, and use 13.x supported `thread-rename` actions to shorten each longer name. Resolve occupied or pending-name conflicts and verify the complete inventory contains no name longer than 32 before switching runtime and consumers together. Renaming retains the managed and native identities. Do not edit the database or stamp, reset storage, or replay session creation to make a downgrade work. Keep the existing database and `action.key` together.
+
 ## Off-machine durability
 
 The development helper examples/shared-storage.ts demonstrates a host-owned application table, maintenance, capture and offline restore using public exports. Capture already returns verified metadata, so the helper avoids an immediate extra full-database inspection. Its application transaction commits independently of capture. Inspect the restored values before starting a recovered runtime with explicitly chosen roots.

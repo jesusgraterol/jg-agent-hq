@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import ts from 'typescript';
 import { hashValue } from 'jg-crypto';
+import { MAX_THREAD_NAME_LENGTH } from 'jg-agent-hq/contracts';
 import { expect, test } from 'vitest';
 import { z } from 'zod';
 
@@ -68,6 +69,13 @@ test(
         ),
       ).toBe(true);
       expect(paths.some((path) => path.startsWith('examples/'))).toBe(false);
+      for (const [path, phrase] of [
+        ['README.md', `label of up to ${MAX_THREAD_NAME_LENGTH} characters`],
+        ['api/README.md', `have at most ${MAX_THREAD_NAME_LENGTH} characters`],
+        ['CHANGELOG.md', `names of 1 through ${MAX_THREAD_NAME_LENGTH} characters`],
+      ]) {
+        expect(await readFile(join(ROOT, path!), 'utf8')).toContain(phrase);
+      }
       await writeFile(
         join(scratch, 'package.json'),
         JSON.stringify({ private: true, type: 'module' }),
@@ -134,7 +142,8 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
       for (const name of ['upgradeHqStorage', 'inspectHqSnapshot', 'acquireHqLock', 'withHqLock', 'releaseHqLock', 'readHqLockState', 'getOwnerLiveness', 'HQ_LOCK_FILE', 'RUNTIME_DIRECTORY'])
         if (name in packed) throw new Error('packed export remains: ' + name);
       import * as contracts from 'jg-agent-hq/contracts';
-      import { HqResponseSchema, BrowserActionSchema, BrowserCommandSchema, UsageCreditsSchema, UsageResetCreditsSchema, UsageWindowScopeSchema } from 'jg-agent-hq/contracts';
+      import { HqResponseSchema, BrowserActionSchema, BrowserCommandSchema, UsageCreditsSchema, UsageResetCreditsSchema, UsageWindowScopeSchema, MAX_THREAD_NAME_LENGTH } from 'jg-agent-hq/contracts';
+      if(MAX_THREAD_NAME_LENGTH!==64) throw new Error('packed name limit failed');
       for (const name of ['BrowserRepositorySchema','BrowserRepositoryPageSchema','BrowserPlanSummarySchema','BrowserPlanPageSchema','BrowserPlanDetailSchema','BrowserSessionSchema','BrowserSystemSchema','PublicationStatusSchema','PlanComparisonSchema','PlanCorrespondenceSchema','PlanProposalSchema','PlanReconciliationEntrySchema','AccountRequestSchema','AccountObservationSchema','AccountControlCommandSchema','LoginRequestSchema','LoginObservationSchema','NativeControlResultSchema','ExtensionControlCommandSchema','McpRequestSchema','McpServerPageSchema','McpToolPageSchema','McpResourcePageSchema','MAX_MCP_ITEMS','SessionDiscoveryRequestSchema','SkillPreviewSchema','LifecycleEventSchema','TurnSummarySchema','MAX_PROVIDERS'])
         if (name in contracts) throw new Error('packed contract remains: ' + name);
       if (BrowserCommandSchema.options.map((command) => command.shape.kind.value).join() !== 'native') throw new Error('packed browser commands changed');
@@ -159,8 +168,8 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
         if(effects!==1 || (await runtime.readBrowserAction(input.id,'packed-operator')).state!=='acknowledged') throw new Error('packed receipt failed');
         const recovered = await shareStorage({hq: runtime,label:'Packed host preference.',snapshotDirectory:join(process.cwd(),'snapshot'),recoveryDirectory:join(process.cwd(),'recovery')});
         if(recovered.label!=='Packed host preference.' || recovered.restored.stateRoot!==join(process.cwd(),'recovery','state')) throw new Error('packed shared storage failed');
-        const session = await controlSession({stateRoot: runtime.stateRoot, workspaceRoot: process.cwd(), provider: 'codex', name: 'packed-example', text: 'Discuss the task without changing files.', actionIds: {create:crypto.randomUUID(), message:crypto.randomUUID()}});
-        if(session.receipt.delivery!=='acknowledged' || session.thread.provider!=='codex' || session.usage.source!=='native') throw new Error('packed source example failed');
+        const session = await controlSession({stateRoot: runtime.stateRoot, workspaceRoot: process.cwd(), provider: 'codex', name: 'build-agent-composer-with-inline-code-blocks-and-markdown-tables', text: 'Discuss the task without changing files.', actionIds: {create:crypto.randomUUID(), message:crypto.randomUUID()}});
+        if(session.receipt.delivery!=='acknowledged' || session.thread.provider!=='codex' || session.usage.source!=='native' || session.thread.name!=='build-agent-composer-with-inline-code-blocks-and-markdown-tables') throw new Error('packed source example failed');
       } finally { await runtime.close(); }
     `;
       const bin = await installCodexFixture(scratch);

@@ -77,7 +77,9 @@ Durable state includes `action.key`, which must stay private and accompany its S
 
 Text and skill inputs can attach up to 8 workspace files by path and media type, 16 MiB in all and 256 KiB per text file. The runtime verifies their content hashes again before queued delivery. Output schemas use native Codex turn parameters or Claude's structured-session flag; complete validated results and known token usage remain available on selected receipts after reconnect. Live previews stay bounded and explicitly mark truncation. See [file inputs and complete results](api/README.md#file-inputs-and-complete-results).
 
-Use `suggest-thread-name --topic "Build usage" --state-root <directory>` for an editable label. Creation adds a short ordinal suffix when a name is occupied. Actions and relationships retain immutable IDs.
+Use `suggest-thread-name --topic "Build usage" --state-root <directory>` for an editable label of up to 64 characters. Creation adds an ordinal suffix when a name is occupied, keeping the complete label within that limit. `MAX_THREAD_NAME_LENGTH` from `jg-agent-hq/contracts` is the public limit. Actions and relationships retain immutable IDs.
+
+Version 13 retains the 12.0.1 storage schema and action key without migration or reset, and leaves existing names intact. Upgrade runtime and consumers together: older strict response schemas reject names longer than 32 characters. Before a package downgrade, explicitly shorten every longer managed name through supported actions, resolving collisions. See [package downgrade](docs/recovery.md#package-downgrade).
 
 Use `skills --workspace-root <directory> --state-root <directory>` to browse the native skill catalog a session started in that folder would have, with `--provider` (default `codex`), and add `--thread-id <id>` for a controlled session's own catalog. A skill input resolves its exact invocation from that catalog before it is sent. Missing native metadata is explicitly unavailable. The CLI loads all skill content and retains its permissions and invocation rules.
 

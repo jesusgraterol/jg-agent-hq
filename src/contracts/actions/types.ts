@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { ACTION_PHASES, MAX_ACTION_BYTES } from '../constants.js';
+import { ACTION_PHASES, MAX_ACTION_BYTES, MAX_THREAD_NAME_LENGTH } from '../constants.js';
 import { ProviderIdSchema } from '../providers/index.js';
 import { SessionSettingsSchema, TurnSettingsSchema } from '../configuration/index.js';
 
@@ -21,7 +21,10 @@ export type IPreparedInput = z.infer<typeof PreparedInputSchema>;
 
 // explicit local intent; native RPC methods and arbitrary configuration are never accepted
 const ThreadIdSchema = z.uuid();
-const NameSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/);
+const NameSchema = z
+  .string()
+  .max(MAX_THREAD_NAME_LENGTH)
+  .regex(/^[a-z0-9][a-z0-9-]*$/);
 const TextSchema = z.string().min(1).max(65_536);
 const ActiveTargetFields = { threadId: ThreadIdSchema, expectedTurnId: NativeIdSchema };
 
