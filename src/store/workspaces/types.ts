@@ -2,6 +2,7 @@ import type { IWorkspaceTransition } from '../../contracts/index.js';
 
 // the worker's journal row mirrors SQLite without additional serialized state
 export type IWorkspaceTransitionRow = {
+  sequence: number;
   action_id: string;
   thread_id: string;
   source_workspace_root: string;

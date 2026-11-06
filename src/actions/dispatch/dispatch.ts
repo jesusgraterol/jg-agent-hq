@@ -244,23 +244,40 @@ export const createDispatch = (context: IActionsContext) => {
           });
         } else if (phase === 'workspace') {
           const turnInput = input ?? receipt.queuedInput;
-          const change = turnInput?.workspaceChange;
-          if (!thread || !nativeId || !turnInput || !change || !control.changeWorkspace) conflict();
+          const transition = receipt.workspaceTransition;
+          const change =
+            turnInput?.workspaceChange ??
+            (receipt.kind === 'workspace-change' && transition
+              ? {
+                  expectedWorkspaceRoot: transition.sourceWorkspaceRoot,
+                  workspaceRoot: transition.targetWorkspaceRoot,
+                }
+              : undefined);
+          if (
+            !thread ||
+            !nativeId ||
+            !change ||
+            !control.changeWorkspace ||
+            (!turnInput && receipt.kind !== 'workspace-change')
+          )
+            conflict();
           hasDispatched = false;
           if (
             change.expectedWorkspaceRoot !== thread.workspaceRoot ||
             (await resolveWorkspaceDirectory(change.workspaceRoot, roots)) !== change.workspaceRoot
           )
             conflict();
-          const files = await readInputFiles(turnInput.files, change.workspaceRoot, roots);
-          await control.validateInput(nativeId, turnInput);
+          const files = turnInput
+            ? await readInputFiles(turnInput.files, change.workspaceRoot, roots)
+            : [];
+          if (turnInput) await control.validateInput(nativeId, turnInput);
           await store.call('workspaces', 'settle', receipt.id, 'submitted');
           hasDispatched = true;
           const proof = await control.changeWorkspace(
             requestId,
             nativeId,
             change,
-            turnInput,
+            turnInput ?? null,
             files,
           );
           if (

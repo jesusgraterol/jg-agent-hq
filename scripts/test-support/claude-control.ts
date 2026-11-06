@@ -2,7 +2,7 @@
 export const CLAUDE_CONTROL_SOURCE = String.raw`
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
-import {appendFileSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs';
+import {appendFileSync,existsSync,mkdirSync,readFileSync,renameSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {createInterface} from 'node:readline';
 // the commands initialize reports, from claude-control.json, the same for a session and a read
@@ -19,9 +19,10 @@ export const startClaudeControl = () => {
  // like Claude, an SDK client without the flag set hears that it must opt in first
  const fastReport=()=>!fast?{fast_mode_state:'off',fast_mode_disabled_reason:'sdk_opt_in_required'}:control().fastUnavailable?{fast_mode_state:'off',fast_mode_disabled_reason:control().fastUnavailable}:{fast_mode_state:'on'};
  const id=args[args.indexOf(args.includes('--session-id')?'--session-id':'--resume')+1];
- const directory=join(process.env.CLAUDE_CONFIG_DIR,'projects',process.cwd().replace(/[^a-zA-Z0-9]/g,'-'));
+ let directory=join(process.env.CLAUDE_CONFIG_DIR,'projects',process.cwd().replace(/[^a-zA-Z0-9]/g,'-'));
  mkdirSync(directory,{recursive:true});
- const transcript=join(directory,id+'.jsonl');
+ let transcript=join(directory,id+'.jsonl');
+ let hasMoved=false;
  const child=spawn(process.execPath,['-e','setInterval(()=>{},60000)'],{stdio:'ignore'});
  appendFileSync(join(root,'claude-pids.jsonl'),JSON.stringify({pid:process.pid,child:child.pid})+'\n');
  appendFileSync(join(root,'claude-starts.jsonl'),JSON.stringify({args,cwd:process.cwd(),id})+'\n');
@@ -33,6 +34,8 @@ export const startClaudeControl = () => {
  // 'next' holds it until the turn's result, as for text written while the answer streams
  let steers=[];
  let leaf=null;
+ // resumeHistory restores the parent fence of a small controlled fixture conversation
+ if(args.includes('--resume')&&startupControls.resumeHistory&&existsSync(transcript))for(const line of readFileSync(transcript,'utf8').trim().split('\n')){const previous=JSON.parse(line);if(previous.uuid)leaf=previous.uuid;}
  let hasPrompt=false;
  let isClosing=false;
  // a turn the CLI starts on its own, as Claude does after a background command finishes
@@ -118,7 +121,19 @@ export const startClaudeControl = () => {
    if(subtype==='get_settings'&&settings.nativeOnSettings&&!native&&!input)startNative();
    if(subtype==='get_settings'){response({effective:{model,effortLevel:'stale-effort',agent:flag('--agent'),...(fast===null?{}:{fastMode:fast}),secret:'must-not-leak'},applied:settings.unavailableSettings?{model:null,effort:null}:{model,effort}});return;}
    if(subtype==='apply_flag_settings'){model=message.request.settings.model??model;effort=message.request.settings.effortLevel??effort;fast=message.request.settings.fastMode??fast;response();return;}
-   if(subtype==='initialize'){response({...(settings.omitVersion?{}:{claude_code_version:settings.version??'2.1.304'}),futureMetadata:settings.futureMetadata,agents:settings.agentsUnavailable?undefined:Array.from({length:settings.agentCount??4},(_,index)=>({name:'agent-'+String(index).padStart(4,'0'),description:settings.configRevision?'Updated agent':'Native agent',model:'model-0000'})),current_permission_mode:flag('--permission-mode')??'default',session_state:settings.omitIdle?undefined:settings.nativeState??'idle',commands:fixtureCommands(settings)});return;}
+   if(subtype==='initialize'){if(hasMoved&&settings.workspaceReply==='refresh-failure'){out({type:'control_response',response:{subtype:'error',request_id:message.request_id,error:'Synthetic context refresh rejection'}});return;}response({...(settings.omitVersion?{}:{claude_code_version:settings.version??'2.1.304'}),futureMetadata:settings.futureMetadata,agents:settings.agentsUnavailable?undefined:Array.from({length:settings.agentCount??4},(_,index)=>({name:'agent-'+String(index).padStart(4,'0'),description:settings.configRevision?'Updated agent':'Native agent',model:'model-0000'})),current_permission_mode:hasMoved&&settings.workspaceReply==='permission-change'?'bypassPermissions':flag('--permission-mode')??'default',session_state:settings.omitIdle?undefined:settings.nativeState??'idle',commands:fixtureCommands({...settings,...(settings.skillNamesByWorkspace?{skillNames:settings.skillNamesByWorkspace[process.cwd()]}:{})})});return;}
+   if(subtype==='set_cwd'){
+    if(settings.workspaceReply==='busy'){response({status:'rejected',reason:'busy',message:'A turn is in progress'});return;}
+    if(settings.workspaceReply==='trust'){response({status:'needs_trust',directory:message.request.path});return;}
+    if(settings.workspaceReply==='wrong-root'){response({status:'ok',cwd:process.cwd(),changed:true,transcript_relocated:true});return;}
+    if(settings.workspaceReply==='malformed'){response({status:'unknown'});return;}
+    const previous=process.cwd();process.chdir(message.request.path);
+    const next=join(process.env.CLAUDE_CONFIG_DIR,'projects',process.cwd().replace(/[^a-zA-Z0-9]/g,'-'));mkdirSync(next,{recursive:true});
+    const filename=join(next,id+'.jsonl');if(filename!==transcript&&existsSync(transcript))renameSync(transcript,filename);
+    directory=next;transcript=filename;hasMoved=true;
+    const answer=()=>{if(settings.controlResult)out({type:'result',subtype:'success',is_error:false,num_turns:0,result:'',usage:{input_tokens:0,output_tokens:0}});response({status:'ok',cwd:process.cwd(),changed:previous!==process.cwd(),transcript_relocated:previous!==process.cwd()});};
+    if(settings.lateWorkspaceAck)setTimeout(answer,31000);else answer();return;
+   }
    if(subtype==='rename_session'){
     if(settings.rejectName){out({type:'control_response',response:{subtype:'error',request_id:message.request_id,error:'Synthetic name rejection'}});return;}
     if(message.request.session_id!==id){out({type:'control_response',response:{subtype:'error',request_id:message.request_id,error:'Wrong session'}});return;}

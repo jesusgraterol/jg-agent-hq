@@ -256,6 +256,7 @@ export type IAgentProvider = {
    * Changes an idle native workspace, atomically with input when the provider requires a turn.
    * @returns Verified destination and the accepted turn when input was already delivered.
    * @throws
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
    * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
    * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
@@ -267,7 +268,7 @@ export type IAgentProvider = {
     requestId: string,
     nativeId: string,
     change: IWorkspaceChange,
-    input: IPreparedInput,
+    input: IPreparedInput | null,
     files: IProviderInputFile[],
     call: IProviderCall,
   ): Promise<{ workspaceRoot: string; historyWorkspaceRoot?: string; nativeTurnId?: string }>;

@@ -1,6 +1,11 @@
-import type { IHistoryItem, ISessionSettings } from '../../../contracts/index.js';
+import type { IHistoryItem, ISessionSettings, IWorkspaceChange } from '../../../contracts/index.js';
 import type { INativeObservation } from '../../../store/control/index.js';
-import type { INativePrompt, IProviderSkills, IAgentProviderOutcome } from '../../index.js';
+import type {
+  INativePrompt,
+  IProviderSkills,
+  IAgentProviderOutcome,
+  IProviderThread,
+} from '../../index.js';
 
 // normalized Claude evidence is consumed by the existing action and live-window owners
 export type IClaudeControlEvents = {
@@ -10,7 +15,7 @@ export type IClaudeControlEvents = {
   background(nativeId: string, count: number): void;
   delta(nativeId: string, turnId: string, itemId: string, text: string): void;
   prompt(prompt: INativePrompt): void;
-  outcome(outcome: IAgentProviderOutcome): void;
+  outcome(outcome: IAgentProviderOutcome, thread?: IProviderThread): void;
   unavailable(nativeId: string): void;
 };
 
@@ -57,6 +62,8 @@ export type IClaudeFastMode = {
   state: 'on' | 'cooldown' | 'off';
   disabledReason: string | null;
 };
+// verified cwd and the native project context containing the relocated transcript
+export type IClaudeWorkspaceProof = { workspaceRoot: string; historyWorkspaceRoot: string };
 export type IClaudeSession = {
   id: string;
   workspaceRoot: string;
@@ -85,6 +92,8 @@ export type IClaudeSession = {
   idleStop?: AbortController;
   // a park or a reopen in progress, which every other call waits for
   transition?: Promise<void>;
+  // retained only while an exact directory control lacks definitive completion
+  workspaceChange?: { requestId: string; change: IWorkspaceChange };
   requests: Map<
     string,
     { toolId: string | null; scopedId: string; fingerprint: string; isWritten: boolean }

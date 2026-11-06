@@ -5,6 +5,9 @@ import type { IHqResponse } from '../../../contracts/index.js';
 // private worker progress; the adapter completes bounded chunks before answering a client
 export type IClaudeHistoryRead = IHqResponse | { kind: 'indexing' };
 
+// the exact managed journal generation authorizing a relocated transcript
+export type IClaudeHistoryContext = { threadId: string; generation: string };
+
 // the new transcript bytes one worker call may still index, and whether it has indexed a record
 export type IIndexingBudget = { bytes: number; hasIndexed: boolean };
 

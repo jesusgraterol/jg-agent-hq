@@ -26,6 +26,7 @@ import {
 } from '../../../sessions/evidence/index.js';
 import { HQ_ERRORS } from '../../../errors/index.js';
 import type { IStatements } from '../../../store/index.js';
+import { WorkspacesModel } from '../../../store/workspaces/index.js';
 import type { IThreadList, IThreadListRequest } from '../../types.js';
 
 import {
@@ -36,6 +37,7 @@ import {
   type IEntryRow,
   type IFileRow,
   type IClaudeHistoryRead,
+  type IClaudeHistoryContext,
   type IIndexingBudget,
   type IRecord,
 } from './types.js';
@@ -59,7 +61,7 @@ const itemCursors = createRequestCursors(EntrySeekSchema);
 const THREAD_CURSOR = /^(\d{1,16}):(.+)$/;
 
 // identifies the path and record interpretation used by persisted projection entries
-const HISTORY_PROJECTION_VERSION = 10;
+const HISTORY_PROJECTION_VERSION = 11;
 // the transcripts whose continuing session is remembered, oldest dropped first
 const MAX_CONTINUED_ANSWERS = 1_024;
 // one record, such as a tool result holding images
@@ -134,10 +136,12 @@ export class ClaudeHistoryModel {
     { entries: Dir; seen: Set<string>; pending: string | null; changedAt: number }
   >();
   private readonly __statements: IStatements;
+  private readonly __workspaces: WorkspacesModel;
 
   public constructor(database: DatabaseSync, statements: IStatements) {
     this.__database = database;
     this.__statements = statements;
+    this.__workspaces = new WorkspacesModel(statements);
   }
 
   /**
@@ -256,8 +260,45 @@ export class ClaudeHistoryModel {
     }
   }
 
+  /**
+   * Pins moved managed history to its current locator and exact confirmed journal identity.
+   * @throws
+   * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+   */
+  private __historyContext(root: string, nativeId: string): IClaudeHistoryContext | null {
+    const thread = this.__statements.get<{ id: string; workspace_root: string }>(
+      "SELECT id, workspace_root FROM agent_hq_thread WHERE provider = 'claude' AND native_id = ?",
+      nativeId,
+    );
+    if (!thread) return null;
+    const latest = this.__workspaces.latestConfirmed(thread.id);
+    if (!latest) return null;
+    if (
+      thread.workspace_root !== root ||
+      latest.targetWorkspaceRoot !== root ||
+      latest.historyWorkspaceRoot !== root
+    )
+      this.__unavailable();
+    return { threadId: thread.id, generation: latest.actionId };
+  }
+
+  /** Retains native file checks while limiting moved records to this conversation's provenance. */
+  private __isRecordContext(
+    cwd: string | undefined,
+    root: string,
+    context: IClaudeHistoryContext | null,
+  ): boolean {
+    return (
+      isClaudeRecordCwd(cwd, root) &&
+      (context === null ||
+        isClaudeWorkspaceCwd(cwd, root) ||
+        this.__workspaces.hasContext(context.threadId, cwd!, true))
+    );
+  }
+
   private __read(command: IHistoryRequest): IClaudeHistoryRead {
     const root = command.workspaceRoot;
+    const historyContext = this.__historyContext(root, command.nativeId);
     const { cursor, ...filters } =
       command.kind === 'thread' || command.kind === 'item-detail' || command.kind === 'item-image'
         ? { ...command, cursor: undefined }
@@ -289,16 +330,19 @@ export class ClaudeHistoryModel {
     }
     if (!row || row.supported !== 1 || row.workspace_state !== 'matching') this.__unavailable();
     if (command.kind === 'session-evidence')
-      return { kind: 'session-evidence', result: this.__evidence(command, row, directory) };
+      return {
+        kind: 'session-evidence',
+        result: this.__evidence(command, row, directory, historyContext),
+      };
     if (command.kind === 'item-detail')
       return {
         kind: 'item-detail',
-        result: this.__itemDetail(command, row, directory),
+        result: this.__itemDetail(command, row, directory, historyContext),
       };
     if (command.kind === 'item-image')
       return {
         kind: 'item-image',
-        result: this.__itemImage(command, row, directory),
+        result: this.__itemImage(command, row, directory, historyContext),
       };
     const seek = itemSeek;
     if (seek && seek.revision !== row.revision)
@@ -332,7 +376,10 @@ export class ClaudeHistoryModel {
     const page = entries.slice(0, command.limit);
     const fd = openTranscript(directory, command.nativeId);
     try {
-      if (this.__identity(fd) !== row.identity || fstatSync(fd).size < row.file_size)
+      if (
+        this.__identity(fd, historyContext) !== row.identity ||
+        fstatSync(fd).size < row.file_size
+      )
         this.__unavailable();
       const items = [];
       let size = 0;
@@ -348,7 +395,11 @@ export class ClaudeHistoryModel {
         const record = RecordSchema.parse(
           JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
         );
-        if (record.uuid !== entry.uuid || !isClaudeRecordCwd(record.cwd, root))
+        if (
+          record.uuid !== entry.uuid ||
+          record.sessionId !== command.nativeId ||
+          !this.__isRecordContext(record.cwd, root, historyContext)
+        )
           this.__unavailable();
         // the index stores only records the CLI shows, so a dropped one means it no longer matches
         const item = toClaudeItem(record, entry.turn_id) ?? this.__unavailable();
@@ -384,15 +435,19 @@ export class ClaudeHistoryModel {
     command: Extract<IHistoryRequest, { kind: 'item-detail' }>,
     row: IFileRow,
     directory: string,
+    historyContext: IClaudeHistoryContext | null,
   ): IItemDetail | null {
     const root = command.workspaceRoot;
     const entry = this.__entry(root, command.nativeId, command.nativeItemId);
     if (!entry || entry.is_visible !== 1 || entry.turn_id !== command.turnId) return null;
     const fd = openTranscript(directory, command.nativeId);
     try {
-      if (this.__identity(fd) !== row.identity || fstatSync(fd).size < row.file_size)
+      if (
+        this.__identity(fd, historyContext) !== row.identity ||
+        fstatSync(fd).size < row.file_size
+      )
         this.__unavailable();
-      const record = this.__readEntry(fd, entry, root);
+      const record = this.__readEntry(fd, entry, root, command.nativeId, historyContext);
       const item = toClaudeItem(record, entry.turn_id) ?? this.__unavailable();
       let call: IRecord | null = null;
       if (isClaudeAnswer(record, item)) {
@@ -403,7 +458,7 @@ export class ClaudeHistoryModel {
           if (!ancestor || ancestor.turn_id !== entry.turn_id || ancestor.byte_length > budget)
             break;
           budget -= ancestor.byte_length;
-          const candidate = this.__readEntry(fd, ancestor, root);
+          const candidate = this.__readEntry(fd, ancestor, root, command.nativeId, historyContext);
           if (isClaudeCallFor(candidate, item)) {
             call = candidate;
             break;
@@ -428,6 +483,7 @@ export class ClaudeHistoryModel {
     command: Extract<IHistoryRequest, { kind: 'item-image' }>,
     row: IFileRow,
     directory: string,
+    historyContext: IClaudeHistoryContext | null,
   ): IItemImage {
     const root = command.workspaceRoot;
     const entry = this.__entry(root, command.nativeId, command.nativeItemId);
@@ -435,9 +491,14 @@ export class ClaudeHistoryModel {
       return imageUnavailable();
     const fd = openTranscript(directory, command.nativeId);
     try {
-      if (this.__identity(fd) !== row.identity || fstatSync(fd).size < row.file_size)
+      if (
+        this.__identity(fd, historyContext) !== row.identity ||
+        fstatSync(fd).size < row.file_size
+      )
         this.__unavailable();
-      const data = toClaudeImageData(this.__readEntry(fd, entry, root))[command.index];
+      const data = toClaudeImageData(
+        this.__readEntry(fd, entry, root, command.nativeId, historyContext),
+      )[command.index];
       return data ? decodeBase64Image(data) : imageUnavailable();
     } finally {
       closeSync(fd);
@@ -457,14 +518,25 @@ export class ClaudeHistoryModel {
   }
 
   // reads an entry's record, which must still be the one the index found there
-  private __readEntry(fd: number, entry: IEntryRow, root: string): IRecord {
+  private __readEntry(
+    fd: number,
+    entry: IEntryRow,
+    root: string,
+    nativeId: string,
+    historyContext: IClaudeHistoryContext | null,
+  ): IRecord {
     const bytes = Buffer.alloc(entry.byte_length);
     if (readSync(fd, bytes, 0, bytes.length, entry.byte_offset) !== bytes.length)
       this.__unavailable();
     const record = RecordSchema.parse(
       JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
     );
-    if (record.uuid !== entry.uuid || !isClaudeRecordCwd(record.cwd, root)) this.__unavailable();
+    if (
+      record.uuid !== entry.uuid ||
+      record.sessionId !== nativeId ||
+      !this.__isRecordContext(record.cwd, root, historyContext)
+    )
+      this.__unavailable();
     return record;
   }
 
@@ -506,7 +578,12 @@ export class ClaudeHistoryModel {
     };
   }
 
-  private __evidence(command: IEvidenceRequest, row: IFileRow, directory: string): IEvidencePage {
+  private __evidence(
+    command: IEvidenceRequest,
+    row: IFileRow,
+    directory: string,
+    historyContext: IClaudeHistoryContext | null,
+  ): IEvidencePage {
     const position = evidencePosition(command);
     const seek = position.sourceCursor
       ? this.__parseCursor(EntrySeekSchema, position.sourceCursor)
@@ -539,7 +616,10 @@ export class ClaudeHistoryModel {
     let readBytes = 0;
     let lastOffset = 0;
     try {
-      if (this.__identity(fd) !== row.identity || fstatSync(fd).size < row.file_size)
+      if (
+        this.__identity(fd, historyContext) !== row.identity ||
+        fstatSync(fd).size < row.file_size
+      )
         this.__unavailable();
       for (const entry of entries.slice(0, EVIDENCE_SOURCE_PAGE_SIZE)) {
         if (readBytes > 0 && readBytes + entry.byte_length > MAX_PAGE_BYTES) break;
@@ -553,7 +633,7 @@ export class ClaudeHistoryModel {
           record.uuid !== entry.uuid ||
           readClaudeParentUuid(record) !== entry.parent_uuid ||
           record.sessionId !== command.nativeId ||
-          !isClaudeRecordCwd(record.cwd, command.workspaceRoot)
+          !this.__isRecordContext(record.cwd, command.workspaceRoot, historyContext)
         )
           this.__unavailable();
         items.push(toClaudeItem(record, entry.turn_id, true) ?? this.__unavailable());
@@ -604,12 +684,12 @@ export class ClaudeHistoryModel {
     return row;
   }
 
-  private __identity(fd: number): string {
+  private __identity(fd: number, context: IClaudeHistoryContext | null): string {
     const stat = fstatSync(fd);
     if (!stat.isFile()) this.__unavailable();
     const bytes = Buffer.alloc(Math.min(stat.size, 256));
     readSync(fd, bytes, 0, bytes.length, 0);
-    return `${HISTORY_PROJECTION_VERSION}:${stat.dev}:${stat.ino}:${stat.birthtimeMs}:${hashValue(bytes)}`;
+    return `${HISTORY_PROJECTION_VERSION}:${context?.generation ?? 'native'}:${stat.dev}:${stat.ino}:${stat.birthtimeMs}:${hashValue(bytes)}`;
   }
 
   /**
@@ -726,10 +806,11 @@ export class ClaudeHistoryModel {
     nativeId: string,
     budget: IIndexingBudget,
   ): boolean {
+    const historyContext = this.__historyContext(root, nativeId);
     const fd = openTranscript(directory, nativeId);
     try {
       const stat = fstatSync(fd);
-      const identity = this.__identity(fd);
+      const identity = this.__identity(fd, historyContext);
       let row = this.__file(root, nativeId);
       if (
         row?.identity === identity &&
@@ -790,7 +871,7 @@ export class ClaudeHistoryModel {
       let beforeHeld = null as { offset: number; row: IFileRow } | null;
       const indexRecord = (bytes: Buffer, offset: number): void => {
         const workspaceState = row.workspace_state;
-        const parentUuid = this.__record(root, nativeId, row, bytes, offset, false);
+        const parentUuid = this.__record(root, nativeId, row, bytes, offset, false, historyContext);
         if (parentUuid !== null) {
           if (heldBack.length >= MAX_HELD_BACK_RECORDS) this.__unavailable();
           if (!heldBack.length) {
@@ -811,6 +892,7 @@ export class ClaudeHistoryModel {
               reread(record.offset, record.length),
               record.offset,
               false,
+              historyContext,
             );
           held = heldBack.findIndex(isReleasable);
         }
@@ -879,6 +961,7 @@ export class ClaudeHistoryModel {
             reread(record.offset, record.length),
             record.offset,
             true,
+            historyContext,
           );
         row.byte_offset = lineStart;
         this.__statements.run(
@@ -932,20 +1015,25 @@ export class ClaudeHistoryModel {
     bytes: Buffer,
     offset: number,
     isOrphanAllowed: boolean,
+    historyContext: IClaudeHistoryContext | null,
   ): string | null {
     const input: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
     const metadata = ApiRequestMetadataSchema.safeParse(input);
     if (metadata.success) {
       if (
         metadata.data.sessionId !== nativeId ||
-        (metadata.data.cwd !== undefined && !isClaudeRecordCwd(metadata.data.cwd, root))
+        (metadata.data.cwd !== undefined &&
+          !this.__isRecordContext(metadata.data.cwd, root, historyContext))
       )
         this.__unavailable();
       return null;
     }
     const record = RecordSchema.parse(input);
     if (record.cwd !== undefined) {
-      if (!isClaudeRecordCwd(record.cwd, root) || record.sessionId !== nativeId) {
+      if (
+        !this.__isRecordContext(record.cwd, root, historyContext) ||
+        record.sessionId !== nativeId
+      ) {
         row.workspace_state = 'foreign';
         this.__unavailable();
       }
@@ -975,7 +1063,7 @@ export class ClaudeHistoryModel {
       this.__unavailable();
     if (
       record.sessionId !== nativeId ||
-      !isClaudeRecordCwd(record.cwd, root) ||
+      !this.__isRecordContext(record.cwd, root, historyContext) ||
       record.timestamp === undefined ||
       !Number.isFinite(Date.parse(record.timestamp))
     )

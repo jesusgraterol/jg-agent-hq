@@ -1,11 +1,15 @@
 // @vitest-environment node
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { expectToRejectCode } from 'jg-exception/testing';
+import { createAgentHq } from 'jg-agent-hq';
 import type { IActionCommand, IActionReceipt, IManagedThread } from 'jg-agent-hq/contracts';
 import { expect, test } from 'vitest';
 import { z } from 'zod';
+
+import { projectDirectory } from '../../../../dist/providers/claude/history/index.js';
 
 import {
   withClaudeRuntime,
@@ -52,10 +56,10 @@ const actionsOf = async (fixture: IClaudeFixture) => {
       .map((line) => z.object({ method: z.string(), params: z.unknown() }).parse(JSON.parse(line)))
       .filter((call) => call.method === 'turn/start')
       .map((call) => z.object({ clientUserMessageId: z.string() }).parse(call.params));
-  const createThread = async (name: string) => {
+  const createThread = async (name: string, provider: 'codex' | 'claude' = 'codex') => {
     const action = envelope({
       kind: 'thread-create',
-      provider: 'codex',
+      provider,
       workspaceRoot: fixture.workspaceRoot,
       name,
     });
@@ -65,6 +69,100 @@ const actionsOf = async (fixture: IClaudeFixture) => {
   };
   return { envelope, submit, receipt, thread, storedPhase, startedTurns, createThread };
 };
+
+test('Claude native deletion is confirmed before local index cleanup and recovery never deletes a recreated transcript', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actionsOf(fixture);
+    const { threadId } = await api.createThread('claude-delete-proof', 'claude');
+    const nativeId = (await api.thread(threadId))!.nativeId!;
+    const away = join(fixture.workspaceRoot, 'part-b');
+    await mkdir(away);
+    const moved = api.envelope({
+      kind: 'message',
+      threadId,
+      input: { kind: 'text', text: 'Complete this unit' },
+      workspaceChange: { expectedWorkspaceRoot: fixture.workspaceRoot, workspaceRoot: away },
+    });
+    await api.submit(moved);
+    await expect.poll(async () => (await api.receipt(moved.id))?.completion).toBe('completed');
+    await fixture.runtime.request({
+      kind: 'items',
+      provider: 'claude',
+      workspaceRoot: away,
+      nativeId,
+      limit: 1,
+    });
+    const transcript = join(projectDirectory(away), nativeId + '.jsonl');
+    const database = new DatabaseSync(fixture.runtime.storage.databasePath);
+    const deletion = api.envelope({
+      kind: 'thread-delete',
+      provider: 'claude',
+      workspaceRoot: away,
+      nativeId,
+    });
+    try {
+      database.exec(
+        "CREATE TRIGGER hold_history_delete BEFORE DELETE ON agent_hq_claude_file BEGIN SELECT RAISE(ABORT, 'hold local history deletion'); END",
+      );
+      await expectToRejectCode(api.submit(deletion), 'JG_AGENT_HQ_STORE_FAILED');
+      expect(
+        database
+          .prepare('SELECT deleted_native_id FROM agent_hq_action WHERE id = ?')
+          .get(deletion.id)?.deleted_native_id,
+      ).toBe(nativeId);
+      expect(
+        database
+          .prepare(
+            'SELECT count(*) AS count FROM agent_hq_workspace_transition WHERE thread_id = ?',
+          )
+          .get(threadId)?.count,
+      ).toBe(1);
+      await expect(readFile(transcript)).rejects.toMatchObject({ code: 'ENOENT' });
+      await writeFile(transcript, 'new native transcript after confirmed deletion\n', {
+        flag: 'wx',
+      });
+      database.exec('DROP TRIGGER hold_history_delete');
+    } finally {
+      database.close();
+    }
+    await fixture.runtime.close();
+    const reopened = await createAgentHq({
+      stateRoot: fixture.stateRoot,
+      allowedRoots: [fixture.workspaceRoot],
+    });
+    try {
+      expect(
+        (await reopened.request({ kind: 'receipt', actionId: deletion.id })).result,
+      ).toMatchObject({ delivery: 'acknowledged', threadId: null });
+      expect((await reopened.request({ kind: 'managed-thread', threadId })).result).toBeNull();
+      expect((await reopened.request({ kind: 'action', action: deletion })).result.delivery).toBe(
+        'acknowledged',
+      );
+      expect(await readFile(transcript, 'utf8')).toBe(
+        'new native transcript after confirmed deletion\n',
+      );
+      const remaining = new DatabaseSync(reopened.storage.databasePath);
+      try {
+        expect(
+          remaining
+            .prepare('SELECT count(*) AS count FROM agent_hq_claude_file WHERE native_id = ?')
+            .get(nativeId)?.count,
+        ).toBe(0);
+        expect(
+          remaining
+            .prepare(
+              'SELECT count(*) AS count FROM agent_hq_workspace_transition WHERE thread_id = ?',
+            )
+            .get(threadId)?.count,
+        ).toBe(0);
+      } finally {
+        remaining.close();
+      }
+    } finally {
+      await reopened.close();
+    }
+  });
+});
 
 test('a create records its create phase, then continues in its name phase once the session exists', async () => {
   await withClaudeRuntime(async (fixture) => {

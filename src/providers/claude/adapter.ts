@@ -158,17 +158,17 @@ export const createClaudeProviderFactory = (
       },
       startTurn: (requestId, nativeId, text, _skill, settings, files, call) =>
         control.startTurn(requestId, nativeId, text, settings, call.signal, files),
+      changeWorkspace: (requestId, nativeId, change, _input, _files, call) =>
+        control.changeWorkspace(requestId, nativeId, change, call.signal),
       steer: (requestId, nativeId, expectedTurnId, text) =>
         control.steer(requestId, nativeId, expectedTurnId, text),
       interrupt: (requestId, nativeId, nativeTurnId) =>
         control.interrupt(requestId, nativeId, nativeTurnId),
       cleanThread: (requestId, nativeId) => control.stopSession(requestId, nativeId),
       releaseThread: (requestId, nativeId) => control.releaseSession(requestId, nativeId),
-      // a session's files go before its index rows, so no scan indexes them again once forgotten
-      async deleteThread(_requestId, nativeId, workspaceRoot) {
-        await deleteTranscript(workspaceRoot, nativeId);
-        await store.call('claudeHistory', 'forget', nativeId);
-      },
+      // local history cleanup runs only after durable native confirmation, in the outcome transaction
+      deleteThread: (_requestId, nativeId, workspaceRoot) =>
+        deleteTranscript(workspaceRoot, nativeId),
       prepareShutdown: (nativeId) =>
         control.stopSession(`${randomUUID()}:shutdown-clean`, nativeId),
       async stopControl(nativeId) {

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { hashValue } from 'jg-crypto';
@@ -111,6 +111,58 @@ test.each(['12.0.1', '13.0.0'])(
           allowedRoots: [fixture.workspaceRoot],
         });
         expect(runtime.storage.schemaHash).toBe(schemaHash);
+        const away = join(fixture.workspaceRoot, 'part-b');
+        await mkdir(away);
+        const created = await runtime.request({
+          kind: 'action',
+          action: {
+            id: randomUUID(),
+            runtimeEpoch: runtime.runtimeEpoch,
+            command: {
+              kind: 'thread-create',
+              provider: 'codex',
+              workspaceRoot: fixture.workspaceRoot,
+              name: 'upgraded-workspace',
+            },
+          },
+        });
+        await expect
+          .poll(
+            async () =>
+              (await runtime.request({ kind: 'receipt', actionId: created.result.id })).result
+                ?.delivery,
+          )
+          .toBe('acknowledged');
+        const moved = await runtime.request({
+          kind: 'action',
+          action: {
+            id: randomUUID(),
+            runtimeEpoch: runtime.runtimeEpoch,
+            command: {
+              kind: 'message',
+              threadId: created.result.threadId!,
+              input: { kind: 'text', text: 'Continue through the upgraded schema' },
+              workspaceChange: {
+                expectedWorkspaceRoot: fixture.workspaceRoot,
+                workspaceRoot: away,
+              },
+            },
+          },
+        });
+        await expect
+          .poll(
+            async () =>
+              (await runtime.request({ kind: 'receipt', actionId: moved.result.id })).result
+                ?.workspaceTransition?.state,
+          )
+          .toBe('confirmed');
+        await expect
+          .poll(
+            async () =>
+              (await runtime.request({ kind: 'receipt', actionId: moved.result.id })).result
+                ?.completion,
+          )
+          .toBe('completed');
         await runtime.createSnapshot(join(fixture.root, 'upgraded-snapshot'));
       } finally {
         await runtime.close();

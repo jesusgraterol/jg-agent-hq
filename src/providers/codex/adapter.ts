@@ -346,6 +346,7 @@ export const createCodexProviderFactory = (
       startTurn: (requestId, nativeId, text, skill, settings, files) =>
         native.startTurn(requestId, nativeId, text, skill, settings, files),
       async changeWorkspace(requestId, nativeId, change, input, files, call) {
+        if (!input) capabilityUnavailable();
         const intent = parseActionRequest(requestId);
         if (!intent || intent.phase !== 'workspace' || call.signal.aborted) capabilityUnavailable();
         const before = await native.readThread(nativeId);

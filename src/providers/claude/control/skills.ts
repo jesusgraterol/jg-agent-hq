@@ -58,3 +58,21 @@ export const toClaudeSkills = (response: unknown): Omit<IProviderSkills, 'observ
     })),
   };
 };
+
+/**
+ * Captures a bounded native catalog; unsupported optional metadata leaves it unavailable.
+ * @returns The captured catalog, or null when native metadata cannot support it.
+ */
+export const captureClaudeSkills = (
+  commands: unknown,
+  observedAt: number,
+): IProviderSkills | null => {
+  try {
+    const skills = toClaudeSkills({ skills: commands });
+    return Buffer.byteLength(JSON.stringify(skills.skills)) <= 1_048_576
+      ? { ...skills, observedAt }
+      : null;
+  } catch {
+    return null;
+  }
+};

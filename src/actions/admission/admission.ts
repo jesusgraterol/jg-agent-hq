@@ -233,7 +233,11 @@ export const createAdmission = (
         conflict();
       prompt.native.validate(command.response);
     }
-    if (command.kind === 'message' || command.kind === 'queue') {
+    if (
+      command.kind === 'message' ||
+      command.kind === 'queue' ||
+      command.kind === 'workspace-change'
+    ) {
       const thread = await store.call('reads', 'getThread', command.threadId);
       if (!thread?.nativeId) conflict();
       // a terminal that resumed a Claude session HQ runs has it now, so HQ sends nothing
@@ -243,6 +247,11 @@ export const createAdmission = (
         if (
           !control.changeWorkspace ||
           PROVIDER_OPERATIONS[provider].workspaceChange.state !== 'supported'
+        )
+          capabilityUnavailable();
+        if (
+          command.kind === 'workspace-change' &&
+          PROVIDER_OPERATIONS[provider].workspaceControl.state !== 'supported'
         )
           capabilityUnavailable();
         const source = await resolveWorkspaceTarget(
@@ -260,15 +269,17 @@ export const createAdmission = (
         )
           conflict();
       }
-      input = await prepareInput(
-        command.input,
-        command.settings ?? {},
-        workspaceRoot,
-        command.workspaceChange ? { provider, workspaceRoot } : { threadId: command.threadId },
-      );
-      if (command.workspaceChange) input.workspaceChange = command.workspaceChange;
-      await control.validateInput(thread.nativeId, input);
-      prepared.input = input;
+      if (command.kind !== 'workspace-change') {
+        input = await prepareInput(
+          command.input,
+          command.settings ?? {},
+          workspaceRoot,
+          command.workspaceChange ? { provider, workspaceRoot } : { threadId: command.threadId },
+        );
+        if (command.workspaceChange) input.workspaceChange = command.workspaceChange;
+        await control.validateInput(thread.nativeId, input);
+        prepared.input = input;
+      }
     }
     const admitted = await store.call('admission', 'admit', { action, prepared });
     // sending or canceling a queued entry changes that entry's own receipt

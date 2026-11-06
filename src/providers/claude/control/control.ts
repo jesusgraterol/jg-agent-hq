@@ -7,6 +7,7 @@ import type {
   IConfigurationRequest,
   ISessionSettings,
   ITurnSettings,
+  IWorkspaceChange,
 } from '../../../contracts/index.js';
 import type { IProviderInputFile } from '../../inputs/index.js';
 import { parseActionRequest } from '../../utilities.js';
@@ -23,7 +24,8 @@ import {
   receiveClaudeMessage,
   setBackgroundCommands,
 } from './stream.js';
-import { toClaudeSkills } from './skills.js';
+import { captureClaudeSkills } from './skills.js';
+import { changeClaudeWorkspace, reconcileClaudeWorkspace } from './workspaces.js';
 
 // a session idle this long since its last turn ended gives up its process until it is needed
 const IDLE_STOP_SECONDS = 3_600;
@@ -79,7 +81,10 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
   };
   // whether a call, a request or a background command still uses an idle session's process
   const isHeld = (session: IClaudeSession): boolean =>
-    activeCalls.has(session.id) || session.requests.size > 0 || session.backgroundTaskCount > 0;
+    activeCalls.has(session.id) ||
+    session.requests.size > 0 ||
+    session.backgroundTaskCount > 0 ||
+    session.workspaceChange !== undefined;
   /**
    * Reads an idle session's native settings once, then closes its process. The session stays idle
    * and records nothing; a call that arrives first keeps the process, and a background command
@@ -241,8 +246,19 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
           else if (wasBusy && !isBusy(session)) scheduleIdleStop(session);
         },
         lateResponse(id, _result, error) {
-          // only a name or an interrupt is a control request an action phase sends
           const request = parseActionRequest(id);
+          if (request?.phase === 'workspace') {
+            const prior = session.transition;
+            const operation = (async () => {
+              await prior?.catch(() => undefined);
+              await reconcileClaudeWorkspace(session, id, _result, error, events);
+            })();
+            session.transition = operation;
+            void operation.finally(() => {
+              if (session.transition === operation) session.transition = undefined;
+            });
+            return;
+          }
           if (request?.phase !== 'name' && request?.phase !== 'interrupt') return;
           if (error !== undefined)
             events?.outcome({ kind: 'failed', ...request, failure: 'agent-unavailable' });
@@ -262,14 +278,10 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       unavailable();
     }
     // unsupported optional metadata disables the catalog, without disabling native controls
-    session.skills = null;
-    try {
-      const skills = toClaudeSkills({ skills: connection.initialization.commands });
-      if (Buffer.byteLength(JSON.stringify(skills.skills)) <= 1_048_576)
-        session.skills = { ...skills, observedAt: connection.initializedAt };
-    } catch {
-      /* catalog availability is reported independently */
-    }
+    session.skills = captureClaudeSkills(
+      connection.initialization.commands,
+      connection.initializedAt,
+    );
     delete connection.initialization.commands;
     scheduleIdleStop(session);
   };
@@ -395,6 +407,41 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
      */
     async readSkills(nativeId: string) {
       return withSession(nativeId, false, async (session) => session.skills ?? unavailable());
+    },
+    /**
+     * Changes one idle native directory before input and refreshes its native command context.
+     * @returns Verified destination and transcript context, without a model turn.
+     * @throws
+     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+     * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+     * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+     */
+    async changeWorkspace(
+      requestId: string,
+      nativeId: string,
+      change: IWorkspaceChange,
+      signal?: AbortSignal,
+    ) {
+      return withSession(
+        nativeId,
+        true,
+        async (session) => {
+          cancelIdleStop(session);
+          const operation = changeClaudeWorkspace(session, requestId, change, signal, events);
+          const barrier = operation.then(
+            () => undefined,
+            () => undefined,
+          );
+          session.transition = barrier;
+          try {
+            return await operation;
+          } finally {
+            if (session.transition === barrier) session.transition = undefined;
+            scheduleIdleStop(session);
+          }
+        },
+        signal,
+      );
     },
     /**
      * Reads settings from the exact owned native process rather than a global configuration file.

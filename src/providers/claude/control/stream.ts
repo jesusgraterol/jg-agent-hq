@@ -40,6 +40,14 @@ const ResultSchema = z.object({
   result: z.string().optional(),
   usage: z.unknown().optional(),
 });
+// context and skill commands can complete without a model turn or an input acknowledgement
+const ControlOnlyResultSchema = ResultSchema.extend({
+  subtype: z.literal('success'),
+  is_error: z.literal(false),
+  user_message_uuid: z.never().optional(),
+  num_turns: z.literal(0),
+  result: z.literal(''),
+});
 const UsageSchema = z.object({
   input_tokens: z.number().int().nonnegative().safe(),
   output_tokens: z.number().int().nonnegative().safe(),
@@ -399,6 +407,7 @@ export const receiveClaudeMessage = (
     }
   } else if (frame.type === 'result') {
     const result = ResultSchema.parse(raw);
+    if (!session.nativeTurn && ControlOnlyResultSchema.safeParse(raw).success) return;
     observeFastMode(session, raw);
     // a turn Claude started, or one a steer runs after its turn, has no action to capture its result
     if (

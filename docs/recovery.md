@@ -20,6 +20,8 @@ The recovered runtime rebuilds the Claude history index from the transcripts on 
 
 Recover repositories and native files separately. Source paths are retained as evidence; never blindly replace repository files. Reconcile native ownership before enabling execution. The snapshot does not promise path translation or restore authentication.
 
+Workspace journal evidence survives snapshot capture and restoration, including confirmed historical contexts and their insertion order. It does not copy or reconstruct native transcripts. Moved Claude history uses the current verified native project locator and that exact conversation's confirmed contexts; old worktrees can remain removed. Restored uncertainty never authorizes another input or directory control automatically.
+
 ## Rollback
 
 Roll back by restoring an earlier snapshot into a new recovery workspace; never overwrite the current state root. A snapshot from another schema is refused with an error naming the package version that wrote it, so restore it with that version. Before enabling work, reconcile every native and host effect after that snapshot, including later receipts; never silently discard them or replay uncertain input.

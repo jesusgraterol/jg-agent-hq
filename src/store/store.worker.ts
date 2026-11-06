@@ -63,7 +63,14 @@ const startWorker = async (): Promise<void> => {
         "SELECT seq FROM sqlite_sequence WHERE name = 'agent_hq_session_transition'",
       )?.seq ?? 0;
     // the lifecycle quarantines what another runtime left unsettled before anything is admitted
-    const outcomes = new ControlOutcomes(database, statements, runtimeEpoch, actionKey);
+    const claudeHistory = new ClaudeHistoryModel(database, statements);
+    const outcomes = new ControlOutcomes(
+      database,
+      statements,
+      runtimeEpoch,
+      actionKey,
+      (nativeId) => claudeHistory.forget(nativeId),
+    );
     outcomes.finishConfirmedDeletions();
     const models: IStoreModels = {
       browser: new BrowserModel(statements, runtimeEpoch, actionKey),
@@ -73,7 +80,7 @@ const startWorker = async (): Promise<void> => {
       admission: new ControlAdmission(database, statements, runtimeEpoch, actionKey),
       outcomes,
       observations: new ControlObservations(database, statements, runtimeEpoch, actionKey),
-      claudeHistory: new ClaudeHistoryModel(database, statements),
+      claudeHistory,
       snapshot: new SnapshotModel(database),
       workspaces: new WorkspacesModel(statements),
     };

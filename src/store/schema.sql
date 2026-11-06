@@ -62,8 +62,8 @@ CREATE TABLE agent_hq_action (
   CONSTRAINT agent_hq_pk_a__id PRIMARY KEY (id),
   CONSTRAINT agent_hq_fk_a__thread_id FOREIGN KEY (thread_id) REFERENCES agent_hq_thread(id),
   CONSTRAINT agent_hq_fk_a__related_action_id FOREIGN KEY (related_action_id) REFERENCES agent_hq_action(id),
-  -- a queued entry's input, or a create's first input, until it is delivered
-  CONSTRAINT agent_hq_chk_a__queued_input_kind CHECK (queued_input IS NULL OR kind IN ('queue', 'thread-create')),
+  -- input retained until native delivery, including a workspace control's continuation
+  CONSTRAINT agent_hq_chk_a__queued_input_kind CHECK (queued_input IS NULL OR kind IN ('queue', 'thread-create', 'message')),
   CONSTRAINT agent_hq_chk_a__queued_body_required CHECK (delivery != 'queued' OR (kind = 'queue' AND queued_input IS NOT NULL))
 ) STRICT;
 
@@ -79,7 +79,8 @@ CREATE INDEX agent_hq_idx_a__requested_name_delivery ON agent_hq_action (request
 CREATE INDEX agent_hq_idx_a__confirmed_delete ON agent_hq_action(id)
 WHERE phase = 'delete' AND deleted_native_id IS NOT NULL AND delivery IN ('submitted', 'uncertain');
 CREATE TABLE agent_hq_workspace_transition (
-  action_id TEXT NOT NULL PRIMARY KEY REFERENCES agent_hq_action(id),
+  sequence INTEGER PRIMARY KEY,
+  action_id TEXT NOT NULL UNIQUE REFERENCES agent_hq_action(id),
   thread_id TEXT NOT NULL REFERENCES agent_hq_thread(id),
   source_workspace_root TEXT NOT NULL,
   target_workspace_root TEXT NOT NULL,
@@ -92,6 +93,8 @@ CREATE UNIQUE INDEX agent_hq_uq_wt__thread_id_pending ON agent_hq_workspace_tran
 WHERE state IN ('prepared', 'submitted', 'uncertain');
 CREATE INDEX agent_hq_idx_wt__thread_id_updated_at_action_id_desc
 ON agent_hq_workspace_transition(thread_id, updated_at DESC, action_id DESC);
+CREATE INDEX agent_hq_idx_wt__thread_id_sequence_confirmed
+ON agent_hq_workspace_transition(thread_id, sequence DESC) WHERE state = 'confirmed';
 CREATE INDEX agent_hq_idx_wt__state_updated_at_action_id
 ON agent_hq_workspace_transition(state, updated_at, action_id);
 CREATE INDEX agent_hq_idx_wt__thread_id_source_confirmed

@@ -474,6 +474,45 @@ test('large journal reads stay bounded with stable equal-time cursors and identi
       ).toStrictEqual([]);
       expect(await store.call('workspaces', 'hasContext', action.threadId, action.away)).toBe(true);
       expect(await store.call('workspaces', 'hasContext', randomUUID(), action.away)).toBe(false);
+      expect(await store.call('workspaces', 'latestConfirmed', action.threadId)).toMatchObject({
+        actionId: '10000000-0000-4000-8000-0000000003ff',
+      });
+      expect(
+        await store.call(
+          'workspaces',
+          'hasContext',
+          action.threadId,
+          join(action.away, 'removed', 'child'),
+          true,
+        ),
+      ).toBe(true);
+      expect(
+        await store.call(
+          'workspaces',
+          'hasContext',
+          action.threadId,
+          fixture.workspaceRoot + '-neighbor/child',
+          true,
+        ),
+      ).toBe(false);
+      expect(
+        await store.call(
+          'workspaces',
+          'hasContext',
+          randomUUID(),
+          join(action.away, 'removed', 'child'),
+          true,
+        ),
+      ).toBe(false);
+      expect(
+        await store.call(
+          'workspaces',
+          'hasContext',
+          action.threadId,
+          action.away + '/x'.repeat(1024),
+          true,
+        ),
+      ).toBe(true);
       await expectToRejectCode(
         store.call('workspaces', 'page', action.threadId, 129, null),
         'JG_AGENT_HQ_REQUEST_INVALID',

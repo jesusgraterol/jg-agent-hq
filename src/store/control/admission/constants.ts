@@ -78,6 +78,14 @@ export const ADMISSION_RULES: Record<IActionReceipt['kind'], IAdmissionRule> = {
     phase: 'turn',
     delivery: 'dispatch',
   },
+  'workspace-change': {
+    ...NONE,
+    target: 'thread',
+    control: 'owned',
+    requiresIdle: true,
+    phase: 'workspace',
+    delivery: 'dispatch',
+  },
   queue: {
     ...NONE,
     target: 'thread',

@@ -14,6 +14,17 @@ test('workspace changes survive message, queue and prepared input without wideni
   expect(
     ActionCommandSchema.parse({ kind: 'message', threadId, input, workspaceChange }),
   ).toStrictEqual({ kind: 'message', threadId, input, workspaceChange });
+  const control = {
+    kind: 'workspace-change',
+    threadId,
+    expectedTurnId: 'completed-source',
+    workspaceChange,
+  };
+  expect(ActionCommandSchema.parse(control)).toStrictEqual(control);
+  expect(ActionCommandSchema.safeParse({ ...control, input }).success).toBe(false);
+  expect(ActionCommandSchema.safeParse({ ...control, expectedTurnId: undefined }).success).toBe(
+    false,
+  );
   expect(
     ActionCommandSchema.parse({
       kind: 'queue',

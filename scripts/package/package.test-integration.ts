@@ -117,6 +117,7 @@ export const resets: IUsageResetCredits = { availableCount: 0 };
 export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model' }, surface: null };
 export const workspaceChange: IWorkspaceChange = {expectedWorkspaceRoot:'/work/a',workspaceRoot:'/work/b'};
 export const workspaceCommand: IActionCommand = {kind:'message',threadId:'00000000-0000-4000-8000-000000000000',input:{kind:'text',text:'continue'},workspaceChange};
+export const workspaceControl: IActionCommand = {kind:'workspace-change',threadId:workspaceCommand.threadId,expectedTurnId:'source-turn',workspaceChange};
 export const transition: IWorkspaceTransition = {actionId:'00000000-0000-4000-8000-000000000001',threadId:workspaceCommand.threadId,sourceWorkspaceRoot:'/work/a',targetWorkspaceRoot:'/work/b',historyWorkspaceRoot:null,state:'confirmed',createdAt:1,updatedAt:1};
 `,
       );
@@ -153,6 +154,7 @@ export const transition: IWorkspaceTransition = {actionId:'00000000-0000-4000-80
       if(credit.balance!=='0.29000000000000001') throw new Error('packed credit precision failed');
       UsageResetCreditsSchema.parse({availableCount:0});
       UsageWindowScopeSchema.parse({model:{id:null,displayName:'Model'},surface:null});
+      contracts.ActionCommandSchema.parse({kind:'workspace-change',threadId:crypto.randomUUID(),expectedTurnId:'source-turn',workspaceChange:{expectedWorkspaceRoot:'/work/a',workspaceRoot:'/work/b'}});
       import { controlSession } from './examples/control-session.ts';
       import { shareStorage } from './examples/shared-storage.ts';
       import { join } from 'node:path';
@@ -163,6 +165,9 @@ export const transition: IWorkspaceTransition = {actionId:'00000000-0000-4000-80
         const response = HqResponseSchema.parse(await requestAgentHq(runtime.stateRoot, { kind: 'threads', providers: ['codex'], workspaceRoots: [process.cwd()], limit: 1 }));
         if (response.kind !== 'threads' || response.result.data.length !== 1) throw new Error('packed runtime failed');
         const status = await runtime.request({kind:'status'});
+        const claude = await runtime.request({kind:'capabilities',provider:'claude'});
+        const codex = await runtime.request({kind:'capabilities',provider:'codex'});
+        if(claude.result.operations.workspaceControl.state!=='supported' || codex.result.operations.workspaceControl.state!=='unsupported') throw new Error('packed workspace control capabilities failed');
         const input = BrowserActionSchema.parse({id:crypto.randomUUID(),runtimeEpoch:status.result.runtimeEpoch,command:{kind:'native',action:{id:crypto.randomUUID(),runtimeEpoch:status.result.runtimeEpoch,command:{kind:'thread-create',provider:'codex',workspaceRoot:process.cwd(),name:'packed-request'}}}});
         let effects = 0;
         await runtime.performBrowserAction(input,'packed-operator',async()=>{effects++;});

@@ -52,7 +52,8 @@ export class ControlAdmission extends ControlModel {
       const now = Date.now();
       const command = action.command;
       const expectedTurn = 'expectedTurnId' in command ? command.expectedTurnId : null;
-      const nativeTurn = command.kind === 'queue' ? null : expectedTurn;
+      const nativeTurn =
+        command.kind === 'queue' || command.kind === 'workspace-change' ? null : expectedTurn;
       const requestedName = 'name' in command ? command.name : null;
       this._statements.run(
         `INSERT INTO agent_hq_action (id, digest, requested_runtime_epoch, runtime_epoch, kind, provider, delivery, expected_turn_id, native_turn_id, requested_name, created_at, updated_at)
@@ -262,7 +263,7 @@ export class ControlAdmission extends ControlModel {
     if (!thread) this._conflict();
     this.__requireControl(rule.control, thread);
     if (
-      ['message', 'queue', 'queue-send'].includes(command.kind) &&
+      ['message', 'queue', 'queue-send', 'workspace-change'].includes(command.kind) &&
       this._workspaces.hasPending(threadId, queued?.id ?? action.id)
     )
       this._conflict();
@@ -335,8 +336,28 @@ export class ControlAdmission extends ControlModel {
         );
         break;
       case 'message':
-        if (prepared.input?.workspaceChange) phase = 'workspace';
+        if (prepared.input?.workspaceChange) {
+          phase = 'workspace';
+          this._statements.run(
+            'UPDATE agent_hq_action SET queued_input = ? WHERE id = ?',
+            JSON.stringify(prepared.input),
+            action.id,
+          );
+        }
         this.__beginTurn(action.id, threadId);
+        break;
+      case 'workspace-change':
+        if (
+          thread.last_turn_id !== command.expectedTurnId ||
+          thread.last_turn_state !== 'completed'
+        )
+          this._conflict();
+        this._statements.run(
+          'UPDATE agent_hq_thread SET pending_action_id = ?, updated_at = ? WHERE id = ?',
+          action.id,
+          now,
+          thread.id,
+        );
         break;
       case 'queue':
         this._statements.run(
@@ -382,11 +403,16 @@ export class ControlAdmission extends ControlModel {
         break;
       }
     }
+    const change =
+      command.kind === 'workspace-change'
+        ? command.workspaceChange
+        : prepared.input?.workspaceChange;
     if (
-      (command.kind === 'message' || command.kind === 'queue') &&
-      prepared.input?.workspaceChange
+      (command.kind === 'message' ||
+        command.kind === 'queue' ||
+        command.kind === 'workspace-change') &&
+      change
     ) {
-      const change = prepared.input.workspaceChange;
       if (change.expectedWorkspaceRoot !== thread.workspace_root) this._conflict();
       this._workspaces.prepare(action.id, thread.id, change, now);
     }

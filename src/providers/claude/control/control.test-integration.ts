@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { expectToRejectCode } from 'jg-exception/testing';
@@ -8,6 +8,8 @@ import { hasErrorCode } from 'jg-exception';
 import type { IActionCommand, IActionEnvelope, IManagedThread } from 'jg-agent-hq/contracts';
 import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
+
+import { projectDirectory } from '../../../../dist/providers/claude/history/index.js';
 
 import {
   claudeRecord,
@@ -149,6 +151,423 @@ const actions = async (fixture: IClaudeFixture) => {
     message,
   };
 };
+
+test('Claude A → B → A refreshes skills and retains exact identity and history after worktree removal', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const away = join(fixture.workspaceRoot, 'part-b');
+    await mkdir(away);
+    await fixture.control({
+      resumeHistory: true,
+      skillNamesByWorkspace: {
+        [fixture.workspaceRoot]: ['home-skill'],
+        [away]: ['away-skill'],
+      },
+    });
+    const { thread } = await api.create('workspace-claude');
+    const first = api.envelope({
+      kind: 'message',
+      threadId: thread.id,
+      input: { kind: 'text', text: 'Remember the home conversation.' },
+      settings: { model: 'model-0001', effort: 'native-effort', fast: true },
+    });
+    await api.submit(first);
+    await expect.poll(async () => (await api.receipt(first.id)).completion).toBe('completed');
+    const initialPage = await fixture.runtime.request({
+      kind: 'items',
+      provider: 'claude',
+      workspaceRoot: fixture.workspaceRoot,
+      nativeId: thread.nativeId!,
+      limit: 1,
+    });
+    expect(initialPage.result.nextCursor).not.toBeNull();
+    for (const [source, target, skill] of [
+      [fixture.workspaceRoot, away, 'away-skill'],
+      [away, fixture.workspaceRoot, 'home-skill'],
+    ]) {
+      const intent = api.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Continue the same conversation.' },
+        workspaceChange: { expectedWorkspaceRoot: source!, workspaceRoot: target! },
+      });
+      await api.submit(intent);
+      await expect.poll(async () => (await api.receipt(intent.id)).completion).toBe('completed');
+      expect(await api.receipt(intent.id)).toMatchObject({
+        workspaceTransition: { state: 'confirmed', historyWorkspaceRoot: target },
+      });
+      expect(await api.thread(thread.id)).toMatchObject({
+        id: thread.id,
+        nativeId: thread.nativeId,
+        name: thread.name,
+        workspaceRoot: target,
+      });
+      const skills = await fixture.request({
+        kind: 'skills',
+        provider: 'claude',
+        workspaceRoot: target!,
+        threadId: thread.id,
+      });
+      expect(skills.result.data.map((item) => item.name)).toStrictEqual([skill]);
+      expect(
+        (
+          await fixture.request({
+            kind: 'configuration',
+            provider: 'claude',
+            workspaceRoot: target!,
+            threadId: thread.id,
+          })
+        ).result.effective.model,
+      ).toBe('model-0001');
+      await api.submit(intent);
+    }
+    await rm(away, { recursive: true });
+    await expectToRejectCode(
+      fixture.runtime.request({
+        kind: 'items',
+        provider: 'claude',
+        workspaceRoot: fixture.workspaceRoot,
+        nativeId: thread.nativeId!,
+        limit: 1,
+        cursor: initialPage.result.nextCursor!,
+      }),
+      'JG_AGENT_HQ_CURSOR_INVALID',
+    );
+    const history = await fixture.request({
+      kind: 'items',
+      provider: 'claude',
+      workspaceRoot: fixture.workspaceRoot,
+      nativeId: thread.nativeId!,
+      limit: 32,
+    });
+    expect(history.result.data.filter((item) => item.kind === 'user-message')).toHaveLength(3);
+    expect(
+      (await readStarts(fixture)).filter((start) => start.id === thread.nativeId),
+    ).toHaveLength(1);
+    expect((await api.calls()).filter((call) => call.type === 'user')).toHaveLength(3);
+    const closed = api.envelope({ kind: 'thread-close', threadId: thread.id });
+    await api.submit(closed);
+    await api.settled(closed.id);
+    const reopened = api.envelope({
+      kind: 'thread-resume',
+      threadId: thread.id,
+      operatorConfirmation: 'Reopen the owned fixture conversation.',
+    });
+    await api.submit(reopened);
+    await api.settled(reopened.id);
+    expect((await api.thread(thread.id)).nativeId).toBe(thread.nativeId);
+    const next = await api.message(thread.id, 'Continue after returning home.');
+    await expect.poll(async () => (await api.receipt(next.id)).completion).toBe('completed');
+    const resumedHistory = await fixture.request({
+      kind: 'items',
+      provider: 'claude',
+      workspaceRoot: fixture.workspaceRoot,
+      nativeId: thread.nativeId!,
+      limit: 32,
+    });
+    expect(resumedHistory.result.data.filter((item) => item.kind === 'user-message')).toHaveLength(
+      4,
+    );
+  });
+});
+
+test('Claude returns with an input-free control bound to its completed source, without another model turn', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create();
+    const away = join(fixture.workspaceRoot, 'part-b');
+    await mkdir(away);
+    const moved = api.envelope({
+      kind: 'message',
+      threadId: thread.id,
+      input: { kind: 'text', text: 'Complete the authorized unit' },
+      workspaceChange: { expectedWorkspaceRoot: fixture.workspaceRoot, workspaceRoot: away },
+    });
+    await api.submit(moved);
+    await expect.poll(async () => (await api.receipt(moved.id)).completion).toBe('completed');
+    const source = (await api.receipt(moved.id)).nativeTurnId!;
+    await fixture.control({ controlResult: true });
+    const home = api.envelope({
+      kind: 'workspace-change',
+      threadId: thread.id,
+      expectedTurnId: source,
+      workspaceChange: { expectedWorkspaceRoot: away, workspaceRoot: fixture.workspaceRoot },
+    });
+    await api.submit(home);
+    await expect.poll(async () => (await api.receipt(home.id)).delivery).toBe('acknowledged');
+    expect(await api.receipt(home.id)).toMatchObject({
+      phase: 'workspace',
+      nativeTurnId: null,
+      completion: null,
+      queuedInput: null,
+      workspaceTransition: { state: 'confirmed', historyWorkspaceRoot: fixture.workspaceRoot },
+    });
+    expect(await api.thread(thread.id)).toMatchObject({
+      nativeId: thread.nativeId,
+      workspaceRoot: fixture.workspaceRoot,
+      state: 'completed',
+    });
+    await api.submit(home);
+    const calls = await api.calls();
+    expect(calls.filter((call) => call.type === 'user')).toHaveLength(1);
+    expect(calls.filter((call) => call.request?.subtype === 'set_cwd')).toHaveLength(2);
+  });
+});
+
+// the real 30-second request deadline must expire before the fixture's late acknowledgement
+test.each(['message', 'workspace-change'] as const)(
+  'late Claude %s proof reconciles once without repeating control or input',
+  async (kind) => {
+    await withClaudeRuntime(async (fixture) => {
+      const api = await actions(fixture);
+      const { thread } = await api.create();
+      const first = await api.message(thread.id, 'Successful source');
+      await expect.poll(async () => (await api.receipt(first.id)).completion).toBe('completed');
+      const away = join(fixture.workspaceRoot, 'part-b');
+      await mkdir(away);
+      await fixture.control({ lateWorkspaceAck: true });
+      const workspaceChange = { expectedWorkspaceRoot: fixture.workspaceRoot, workspaceRoot: away };
+      const intent = api.envelope(
+        kind === 'message'
+          ? {
+              kind,
+              threadId: thread.id,
+              input: { kind: 'text', text: 'Continue once' },
+              workspaceChange,
+            }
+          : {
+              kind,
+              threadId: thread.id,
+              expectedTurnId: (await api.receipt(first.id)).nativeTurnId!,
+              workspaceChange,
+            },
+      );
+      await api.submit(intent);
+      await expect
+        .poll(async () => (await api.receipt(intent.id)).delivery, { timeout: 35000 })
+        .toBe('uncertain');
+      await expect
+        .poll(async () => (await api.receipt(intent.id)).delivery, { timeout: 5000 })
+        .toBe('acknowledged');
+      if (kind === 'message')
+        await expect.poll(async () => (await api.receipt(intent.id)).completion).toBe('completed');
+      expect((await api.receipt(intent.id)).workspaceTransition?.state).toBe('confirmed');
+      expect((await api.thread(thread.id)).workspaceRoot).toBe(away);
+      await api.submit(intent);
+      const calls = await api.calls();
+      expect(calls.filter((call) => call.request?.subtype === 'set_cwd')).toHaveLength(1);
+      expect(calls.filter((call) => call.type === 'user')).toHaveLength(kind === 'message' ? 2 : 1);
+    });
+  },
+  45000,
+);
+
+test.each(['stale', 'interrupted'] as const)(
+  'a Claude input-free change refuses a %s source before directory control',
+  async (failure) => {
+    await withClaudeRuntime(async (fixture) => {
+      const api = await actions(fixture);
+      const { thread } = await api.create();
+      const first = await api.message(thread.id, 'Earlier source');
+      await expect.poll(async () => (await api.receipt(first.id)).completion).toBe('completed');
+      if (failure === 'interrupted') await fixture.control({ holdTurn: true });
+      const second = await api.message(thread.id, 'Current source');
+      if (failure === 'interrupted') {
+        await expect.poll(async () => (await api.thread(thread.id)).activeTurnId).not.toBeNull();
+        await api.submit(
+          api.envelope({
+            kind: 'interrupt',
+            threadId: thread.id,
+            expectedTurnId: (await api.thread(thread.id)).activeTurnId!,
+          }),
+        );
+      }
+      await expect
+        .poll(async () => (await api.receipt(second.id)).completion)
+        .toBe(failure === 'interrupted' ? 'interrupted' : 'completed');
+      const away = join(fixture.workspaceRoot, 'part-b');
+      await mkdir(away);
+      const intent = api.envelope({
+        kind: 'workspace-change',
+        threadId: thread.id,
+        expectedTurnId: (await api.receipt(failure === 'interrupted' ? second.id : first.id))
+          .nativeTurnId!,
+        workspaceChange: { expectedWorkspaceRoot: fixture.workspaceRoot, workspaceRoot: away },
+      });
+      expect(await api.submit(intent)).toMatchObject({
+        delivery: 'failed',
+        failure: 'state-conflict',
+      });
+      expect(
+        (await api.calls()).filter((call) => call.request?.subtype === 'set_cwd'),
+      ).toStrictEqual([]);
+    });
+  },
+);
+
+test('Codex advertises and refuses unsupported input-free workspace control before admission', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create('codex-input-free', 'codex');
+    const source = await api.message(thread.id);
+    await expect.poll(async () => (await api.receipt(source.id)).completion).toBe('completed');
+    const away = join(fixture.workspaceRoot, 'part-b');
+    await mkdir(away);
+    expect(
+      (await fixture.runtime.request({ kind: 'capabilities', provider: 'codex' })).result.operations
+        .workspaceControl.state,
+    ).toBe('unsupported');
+    const intent = api.envelope({
+      kind: 'workspace-change',
+      threadId: thread.id,
+      expectedTurnId: (await api.receipt(source.id)).nativeTurnId!,
+      workspaceChange: { expectedWorkspaceRoot: fixture.workspaceRoot, workspaceRoot: away },
+    });
+    await expectToRejectCode(
+      fixture.runtime.request({ kind: 'action', action: intent }),
+      'JG_AGENT_HQ_CAPABILITY_UNAVAILABLE',
+    );
+    expect(
+      (await fixture.runtime.request({ kind: 'receipt', actionId: intent.id })).result,
+    ).toBeNull();
+    expect((await api.thread(thread.id)).workspaceRoot).toBe(fixture.workspaceRoot);
+  });
+});
+
+test('Claude moved history refuses a foreign record outside its exact confirmed contexts', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create();
+    const first = await api.message(thread.id, 'Original context');
+    await expect.poll(async () => (await api.receipt(first.id)).completion).toBe('completed');
+    const away = join(fixture.workspaceRoot, 'part-b');
+    await mkdir(away);
+    const moved = api.envelope({
+      kind: 'message',
+      threadId: thread.id,
+      input: { kind: 'text', text: 'Move context' },
+      workspaceChange: { expectedWorkspaceRoot: fixture.workspaceRoot, workspaceRoot: away },
+    });
+    await api.submit(moved);
+    await expect.poll(async () => (await api.receipt(moved.id)).completion).toBe('completed');
+    const before = await fixture.runtime.request({
+      kind: 'items',
+      provider: 'claude',
+      nativeId: thread.nativeId!,
+      workspaceRoot: away,
+      limit: 1,
+    });
+    const injected = claudeRecord(join(fixture.root, 'foreign'), thread.nativeId!, {
+      parentUuid: before.result.data[0]!.nativeId,
+      text: 'Must not be exposed',
+    });
+    await appendFile(
+      join(projectDirectory(away), thread.nativeId! + '.jsonl'),
+      JSON.stringify(injected) + '\n',
+    );
+    await expectToRejectCode(
+      fixture.runtime.request({
+        kind: 'items',
+        provider: 'claude',
+        nativeId: thread.nativeId!,
+        workspaceRoot: away,
+        limit: 32,
+      }),
+      'JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE',
+    );
+  });
+});
+
+test('large moved Claude history pages verified historical descendants without loading the journal', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create();
+    const away = join(fixture.workspaceRoot, 'part-b');
+    await mkdir(away);
+    const moved = api.envelope({
+      kind: 'message',
+      threadId: thread.id,
+      input: { kind: 'text', text: 'Move the conversation' },
+      workspaceChange: { expectedWorkspaceRoot: fixture.workspaceRoot, workspaceRoot: away },
+    });
+    await api.submit(moved);
+    await expect.poll(async () => (await api.receipt(moved.id)).completion).toBe('completed');
+    const initial = await fixture.runtime.request({
+      kind: 'items',
+      provider: 'claude',
+      workspaceRoot: away,
+      nativeId: thread.nativeId!,
+      limit: 1,
+    });
+    let parent = initial.result.data[0]!.nativeId;
+    const records = [];
+    for (let index = 0; index < 2048; index += 1) {
+      const record = claudeRecord(
+        join(fixture.workspaceRoot, 'removed', 'scope-' + index),
+        thread.nativeId!,
+        { parentUuid: parent, text: 'Historical context ' + index },
+      );
+      records.push(JSON.stringify(record));
+      parent = record.uuid;
+    }
+    await appendFile(
+      join(projectDirectory(away), thread.nativeId! + '.jsonl'),
+      records.join('\n') + '\n',
+    );
+    const first = await fixture.runtime.request({
+      kind: 'items',
+      provider: 'claude',
+      workspaceRoot: away,
+      nativeId: thread.nativeId!,
+      limit: 128,
+    });
+    expect(first.result.data).toHaveLength(128);
+    expect(first.result.nextCursor).not.toBeNull();
+    const second = await fixture.runtime.request({
+      kind: 'items',
+      provider: 'claude',
+      workspaceRoot: away,
+      nativeId: thread.nativeId!,
+      limit: 128,
+      cursor: first.result.nextCursor!,
+    });
+    expect(second.result.data).toHaveLength(128);
+    expect(
+      new Set([...first.result.data, ...second.result.data].map((item) => item.nativeId)).size,
+    ).toBe(256);
+  });
+});
+
+test.each([
+  ['busy', 'failed'],
+  ['trust', 'failed'],
+  ['wrong-root', 'uncertain'],
+  ['malformed', 'uncertain'],
+  ['refresh-failure', 'uncertain'],
+  ['permission-change', 'uncertain'],
+] as const)(
+  'Claude workspace refusal %s records %s without user input or trust expansion',
+  async (mode, delivery) => {
+    await withClaudeRuntime(async (fixture) => {
+      const api = await actions(fixture);
+      const { thread } = await api.create();
+      const away = join(fixture.workspaceRoot, 'part-b');
+      await mkdir(away);
+      await fixture.control({ workspaceReply: mode });
+      const intent = api.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Must not be delivered.' },
+        workspaceChange: { expectedWorkspaceRoot: fixture.workspaceRoot, workspaceRoot: away },
+      });
+      await api.submit(intent);
+      await expect.poll(async () => (await api.receipt(intent.id)).delivery).toBe(delivery);
+      expect((await api.receipt(intent.id)).workspaceTransition?.state).toBe(delivery);
+      expect((await api.thread(thread.id)).workspaceRoot).toBe(fixture.workspaceRoot);
+      expect((await api.calls()).filter((call) => call.type === 'user')).toStrictEqual([]);
+    });
+  },
+);
 
 test('Claude creates and names an idle native session, deduplicates input and reconciles live items with native history', async () => {
   await withClaudeRuntime(async (fixture) => {

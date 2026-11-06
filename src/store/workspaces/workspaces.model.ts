@@ -45,6 +45,15 @@ export class WorkspacesModel {
     );
   }
 
+  /** Returns the latest confirmed context by durable insertion order, independent of clock ties. */
+  public latestConfirmed(threadId: string): IWorkspaceTransition | null {
+    const row = this.__statements.get<{ action_id: string }>(
+      "SELECT action_id FROM agent_hq_workspace_transition WHERE thread_id = ? AND state = 'confirmed' ORDER BY sequence DESC LIMIT 1",
+      threadId,
+    );
+    return row ? this.get(row.action_id) : null;
+  }
+
   /**
    * Records intent inside admission's existing transaction, before any provider effect.
    * @throws
@@ -80,16 +89,32 @@ export class WorkspacesModel {
   }
 
   /** Tests one historical root through confirmed, identity-scoped indexed membership. */
-  public hasContext(threadId: string, workspaceRoot: string): boolean {
-    return ['source_workspace_root', 'target_workspace_root', 'history_workspace_root'].some(
-      (column) =>
-        Boolean(
-          this.__statements.get(
-            `SELECT 1 FROM agent_hq_workspace_transition WHERE thread_id = ? AND state = 'confirmed' AND ${column} = ? LIMIT 1`,
-            threadId,
-            workspaceRoot,
-          ),
+  public hasContext(threadId: string, workspaceRoot: string, includeDescendants = false): boolean {
+    const columns = ['source_workspace_root', 'target_workspace_root', 'history_workspace_root'];
+    const exact = columns.some((column) =>
+      Boolean(
+        this.__statements.get(
+          `SELECT 1 FROM agent_hq_workspace_transition WHERE thread_id = ? AND state = 'confirmed' AND ${column} = ? LIMIT 1`,
+          threadId,
+          workspaceRoot,
         ),
+      ),
+    );
+    if (exact || !includeDescendants) return exact;
+    // candidate prefix lengths keep one path bounded without copying all its ancestor strings
+    const prefixes = [1];
+    for (let index = 1; index < workspaceRoot.length; index += 1)
+      if (workspaceRoot[index] === '/') prefixes.push(index);
+    const positions = JSON.stringify(prefixes);
+    return columns.some((column) =>
+      Boolean(
+        this.__statements.get(
+          `SELECT 1 FROM agent_hq_workspace_transition WHERE thread_id = ? AND state = 'confirmed' AND ${column} IN (SELECT substr(?, 1, value) FROM json_each(?)) LIMIT 1`,
+          threadId,
+          workspaceRoot,
+          positions,
+        ),
+      ),
     );
   }
 

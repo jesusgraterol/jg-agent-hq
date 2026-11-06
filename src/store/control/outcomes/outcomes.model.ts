@@ -1,4 +1,7 @@
+import type { DatabaseSync } from 'node:sqlite';
+
 import type { IActionReceipt } from '../../../contracts/index.js';
+import type { IStatements } from '../../index.js';
 
 import { ControlModel } from '../control.model.js';
 import { toActionReceipt } from '../transformers.js';
@@ -6,6 +9,20 @@ import type { IActionRow, IThreadRow, INativeOutcome } from '../types.js';
 
 /** Applies native request outcomes to the actions whose phases they answer. */
 export class ControlOutcomes extends ControlModel {
+  private readonly __forgetClaudeHistory: (nativeId: string) => void;
+
+  /** Shares the worker's history owner so confirmed deletion and local cleanup commit together. */
+  public constructor(
+    database: DatabaseSync,
+    statements: IStatements,
+    runtimeEpoch: string,
+    actionKey: Uint8Array,
+    forgetClaudeHistory: (nativeId: string) => void,
+  ) {
+    super(database, statements, runtimeEpoch, actionKey);
+    this.__forgetClaudeHistory = forgetClaudeHistory;
+  }
+
   /**
    * Applies an exact native request outcome without downgrading a known acknowledgement. An
    * outcome answers the phase its action takes now; one for a phase the action has left, or from
@@ -138,6 +155,7 @@ export class ControlOutcomes extends ControlModel {
         );
       } else if (outcome.kind === 'deleted') {
         if (!this.isDeletionConfirmed(action.id)) this._conflict();
+        if (action.provider === 'claude') this.__forgetClaudeHistory(outcome.nativeId);
         if (thread) {
           if (thread.pending_action_id !== action.id) this._conflict();
           this.__deleteThread(thread.id, action.id);
@@ -171,7 +189,19 @@ export class ControlOutcomes extends ControlModel {
           now,
           thread.id,
         );
-        if (outcome.nativeTurnId)
+        if (action.kind === 'workspace-change') {
+          if (outcome.nativeTurnId) this._conflict();
+          this._statements.run(
+            "UPDATE agent_hq_action SET delivery = 'acknowledged', failure = NULL, updated_at = ? WHERE id = ?",
+            now,
+            action.id,
+          );
+          this._statements.run(
+            'UPDATE agent_hq_thread SET pending_action_id = NULL, updated_at = ? WHERE id = ?',
+            now,
+            thread.id,
+          );
+        } else if (outcome.nativeTurnId)
           this.__acknowledgeTurn(action, thread, outcome.nativeTurnId, true, now);
         else
           this._statements.run(
@@ -280,6 +310,7 @@ export class ControlOutcomes extends ControlModel {
       if (!batch.length) return;
       for (const action of batch)
         this._transaction(() => {
+          if (action.provider === 'claude') this.__forgetClaudeHistory(action.deleted_native_id);
           if (action.thread_id) this.__deleteThread(action.thread_id, action.id);
           this._statements.run(
             'DELETE FROM agent_hq_observed_session WHERE provider = ? AND native_id = ?',

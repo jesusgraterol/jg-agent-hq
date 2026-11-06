@@ -55,6 +55,7 @@ const unavailableCapabilities = (): IProviderCapabilitySet => {
       models: unavailable,
       configuration: unavailable,
       workspaceChange: unavailable,
+      workspaceControl: unavailable,
     },
     inputSchema: null,
     configurationSchema: null,

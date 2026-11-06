@@ -41,9 +41,11 @@ export const upgradeWorkspaceSchema = (
           .get(),
       ).sql;
       const phase = "'close', 'delete', 'reply'";
+      const inputKinds = "kind IN ('queue', 'thread-create')";
       if (
         !previous.startsWith('CREATE TABLE agent_hq_action (') ||
         previous.split(phase).length !== 2 ||
+        previous.split(inputKinds).length !== 2 ||
         !previous.includes('CONSTRAINT agent_hq_pk_a__id') ||
         previous.includes('deleted_native_id')
       )
@@ -63,6 +65,7 @@ export const upgradeWorkspaceSchema = (
       const replacement = previous
         .replace('CREATE TABLE agent_hq_action (', 'CREATE TABLE agent_hq_action_upgrade (')
         .replace(phase, `${phase}, 'workspace'`)
+        .replace(inputKinds, "kind IN ('queue', 'thread-create', 'message')")
         .replace(
           'CONSTRAINT agent_hq_pk_a__id',
           'deleted_native_id TEXT,\n  CONSTRAINT agent_hq_pk_a__id',

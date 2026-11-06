@@ -88,6 +88,11 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({ kind: z.literal('steer'), ...ActiveTargetFields, text: TextSchema }),
   z.strictObject({
+    kind: z.literal('workspace-change'),
+    ...ActiveTargetFields,
+    workspaceChange: WorkspaceChangeSchema,
+  }),
+  z.strictObject({
     kind: z.literal('queue'),
     ...ActiveTargetFields,
     input: MessageInputSchema,
