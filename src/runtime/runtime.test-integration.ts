@@ -256,8 +256,8 @@ test('authorized native history is re-read after a delayed flush and large frame
           contentBoundary: 'untrusted',
           grantsAuthority: false,
         },
-        // an agent message takes its completed turn's end
-        createdAt: 1_700_000_001_000,
+        // older native entries without item lifecycle timestamps stay unknown
+        createdAt: null,
       },
     ]);
     const calls = CallsSchema.parse(
@@ -360,7 +360,7 @@ test('Codex items read newest first toward older ones, cut their text, and find 
   });
 });
 
-test('Codex items take their turn times, and a page reads its turns once, newest first and at most eight times', async () => {
+test('Codex items retain individual millisecond times across pages and detail without reading their turns', async () => {
   await withRuntime(async ({ root, workspaceRoot, control, request }) => {
     const target = {
       kind: 'items',
@@ -368,12 +368,14 @@ test('Codex items take their turn times, and a page reads its turns once, newest
       workspaceRoot,
       nativeId: 'thread-1023',
     } as const;
-    const message = (id: string, turnId: string) => ({
+    const message = (id: string, turnId: string, completedAtMs: number | null) => ({
       turnId,
+      completedAtMs,
       item: { id, type: 'agentMessage', text: id },
     });
-    const prompt = (id: string, turnId: string) => ({
+    const prompt = (id: string, turnId: string, startedAtMs: number) => ({
       turnId,
+      startedAtMs,
       item: { id, type: 'userMessage', content: [{ type: 'text', text: id }] },
     });
     // 1,100 old turns, then a completed turn and a running one, listed oldest first
@@ -389,12 +391,13 @@ test('Codex items take their turn times, and a page reads its turns once, newest
         { id: 'turn-b', status: 'inProgress', startedAt: 1_700_100_000, completedAt: null },
       ],
       items: [
-        message('oldest', 'old-0'),
-        message('older', 'old-900'),
-        prompt('prompt-a', 'turn-a'),
-        message('answer-a', 'turn-a'),
-        prompt('prompt-b', 'turn-b'),
-        message('answer-b', 'turn-b'),
+        message('untimed', 'old-0', null),
+        message('oldest', 'old-0', 1_600_000_005_456),
+        message('older', 'old-900', 1_600_009_005_789),
+        prompt('prompt-a', 'turn-a', 1_700_000_010_123),
+        message('answer-a', 'turn-a', 1_700_000_020_456),
+        prompt('prompt-b', 'turn-b', 1_700_100_010_001),
+        message('answer-b', 'turn-b', 1_700_100_099_999),
       ],
     });
     const readTurns = async () =>
@@ -411,27 +414,54 @@ test('Codex items take their turn times, and a page reads its turns once, newest
     const first = await request({ ...target, limit: 4 });
     if (first.kind !== 'items') throw new Error('wrong response');
     expect(first.result.data.map((item) => [item.nativeId, item.createdAt])).toStrictEqual([
-      // the running turn times every item by its start
-      ['answer-b', 1_700_100_000_000],
-      ['prompt-b', 1_700_100_000_000],
-      // a completed turn times its operator message by its start and the rest by its end
-      ['answer-a', 1_700_000_060_000],
-      ['prompt-a', 1_700_000_000_000],
+      ['answer-b', 1_700_100_099_999],
+      ['prompt-b', 1_700_100_010_001],
+      ['answer-a', 1_700_000_020_456],
+      ['prompt-a', 1_700_000_010_123],
     ]);
-    const firstReads = (await readTurns()).slice(before);
-    expect(firstReads).toStrictEqual([
-      { threadId: 'thread-1023', limit: 128, sortDirection: 'desc', itemsView: 'notLoaded' },
-    ]);
+    expect((await readTurns()).slice(before)).toStrictEqual([]);
     const next = await request({ ...target, limit: 4, cursor: first.result.nextCursor! });
     if (next.kind !== 'items') throw new Error('wrong response');
-    // old-900 is on the second page of turns; old-0 lies past the eighth, so it has no time
     expect(next.result.data.map((item) => [item.nativeId, item.createdAt])).toStrictEqual([
-      ['older', 1_600_009_005_000],
-      ['oldest', null],
+      ['older', 1_600_009_005_789],
+      ['oldest', 1_600_000_005_456],
+      ['untimed', null],
     ]);
-    expect((await readTurns()).slice(before + 1)).toHaveLength(8);
+    const detail = await request({
+      kind: 'item-detail',
+      provider: 'codex',
+      workspaceRoot,
+      nativeId: 'thread-1023',
+      turnId: 'turn-a',
+      nativeItemId: 'answer-a',
+    });
+    if (detail.kind !== 'item-detail') throw new Error('wrong response');
+    expect(detail.result?.item.createdAt).toBe(1_700_000_020_456);
+    expect((await readTurns()).slice(before)).toStrictEqual([]);
   });
 });
+
+test.each([-1, 1.5, '1700000000123', 8_640_000_000_000_001])(
+  'Codex rejects invalid native item time %s at the history boundary',
+  async (completedAtMs) => {
+    await withRuntime(async ({ workspaceRoot, control, request }) => {
+      await control({
+        items: [
+          {
+            turnId: 'turn-a',
+            completedAtMs,
+            item: { id: 'bad-time', type: 'agentMessage', text: 'A reply' },
+          },
+        ],
+      });
+      await expectToRejectCode(
+        request({ kind: 'items', provider: 'codex', workspaceRoot, nativeId: 'thread-1023' }),
+        'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
+        'Coding agent is unavailable.',
+      );
+    });
+  },
+);
 
 test('Codex history leaves reasoning out, presents what the CLI shows and counts files past the text cut, as evidence does', async () => {
   await withRuntime(async ({ workspaceRoot, control, request }) => {

@@ -162,17 +162,15 @@ const toHistoryFile = (change: z.infer<typeof ChangesSchema>['changes'][number])
 
 /**
  * Presents one native item as the CLI shows it, shared by history pages, live items and evidence.
- * Outcome and files come from the full item, before the text is cut. Times come from the item's
- * turn, which Codex times across all of its history: an operator message takes its turn's start
- * and every other item its turn's end, or its start while the turn runs; an item whose turn isn't
- * known has no time.
+ * Outcome and files come from the full item, before the text is cut. Native lifecycle times are
+ * already milliseconds: operator input prefers its start, other items their completion. A
+ * missing preferred time uses the other item time; absent item times never use a turn's time.
  * @returns The item, or null for reasoning, which the CLI leaves out of history.
  * @throws
  * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
  */
 export const toHistoryItem = (
-  { turnId, item }: INativeItem,
-  turn: Pick<ITurnSummary, 'startedAt' | 'completedAt'> | undefined,
+  { turnId, item, startedAtMs, completedAtMs }: INativeItem,
   fullBody = false,
 ): IHistoryItem | null => {
   let kind: IHistoryItem['kind'] = 'unsupported';
@@ -263,11 +261,9 @@ export const toHistoryItem = (
     outcome,
     files,
     createdAt:
-      turn === undefined
-        ? null
-        : item.type === 'userMessage'
-          ? turn.startedAt
-          : (turn.completedAt ?? turn.startedAt),
+      item.type === 'userMessage'
+        ? (startedAtMs ?? item.startedAtMs ?? completedAtMs ?? item.completedAtMs ?? null)
+        : (completedAtMs ?? item.completedAtMs ?? startedAtMs ?? item.startedAtMs ?? null),
   });
 };
 

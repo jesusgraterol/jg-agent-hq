@@ -15,8 +15,8 @@ import { NativeIdSchema } from '../../contracts/identities/index.js';
 import type { IAgentProviderOutcome, IAgentProviderEvents, IProviderThread } from '../index.js';
 import { parseActionRequest } from '../utilities.js';
 
-import { LOST_NOTIFICATIONS, RUNNING_TURNS_CAPACITY } from './constants.js';
-import type { ICodexEvents, ICodexProvider, INativeThread, ITurnSummary } from './types.js';
+import { LOST_NOTIFICATIONS } from './constants.js';
+import type { ICodexEvents, ICodexProvider, INativeThread } from './types.js';
 import {
   NativeItemSchema,
   NativeThreadSchema,
@@ -24,13 +24,7 @@ import {
   NativeTurnSchema,
 } from './types.js';
 import { parseNative } from './validations.js';
-import {
-  toHistoryItem,
-  toNativeLineage,
-  toNativeState,
-  toSessionState,
-  toTurnSummary,
-} from './transformers.js';
+import { toHistoryItem, toNativeLineage, toNativeState, toSessionState } from './transformers.js';
 import { buildCodexReply, parseCodexPrompt, toApprovalPresentation } from './approvals/index.js';
 
 const TargetSchema = z.object({ threadId: NativeIdSchema, turnId: NativeIdSchema });
@@ -67,8 +61,6 @@ export const createCodexEvents = (
       usage: ITurnUsage | null;
     }
   >();
-  // each thread's running turn, which times its live items
-  const runningTurns = new Map<string, ITurnSummary>();
   /**
    * Keeps HQ's result capture in step with a turn whose start or end failed validation: a lost
    * start still binds the capture prepared for HQ's input, and a lost end drops its turn's capture,
@@ -100,11 +92,6 @@ export const createCodexEvents = (
         const captured = turns.get(threadId);
         // a second turn started for HQ's own input breaks the protocol
         if (captured?.turnId && captured.turnId !== turn.id) parseNative(z.never(), params);
-        const summary = toTurnSummary(turn);
-        runningTurns.delete(threadId);
-        if (runningTurns.size >= RUNNING_TURNS_CAPACITY)
-          runningTurns.delete(runningTurns.keys().next().value!);
-        runningTurns.set(threadId, summary);
         if (captured) captured.turnId = turn.id;
         events.observe({
           kind: 'turn-started',
@@ -113,7 +100,6 @@ export const createCodexEvents = (
           nativeTurnId: turn.id,
         });
       } else if (turn.status !== 'inProgress') {
-        if (runningTurns.get(threadId)?.nativeId === turn.id) runningTurns.delete(threadId);
         const pending = turns.get(threadId);
         const captured = pending?.turnId === turn.id ? pending : undefined;
         const result = captured
@@ -138,8 +124,12 @@ export const createCodexEvents = (
         });
       } else parseNative(z.never(), params);
     } else if (method === 'item/started' || method === 'item/completed') {
-      const { threadId, turnId, item } = parseNative(
-        TargetSchema.extend({ item: NativeItemSchema.shape.item }),
+      const { threadId, turnId, item, startedAtMs, completedAtMs } = parseNative(
+        TargetSchema.extend({
+          item: NativeItemSchema.shape.item,
+          startedAtMs: NativeItemSchema.shape.startedAtMs,
+          completedAtMs: NativeItemSchema.shape.completedAtMs,
+        }),
         params,
       );
       const captured = turns.get(threadId);
@@ -163,11 +153,7 @@ export const createCodexEvents = (
           } else if (!captured.oversized) captured.text = message.text;
         }
       }
-      const running = runningTurns.get(threadId);
-      const presented = toHistoryItem(
-        { turnId, item },
-        running?.nativeId === turnId ? running : undefined,
-      );
+      const presented = toHistoryItem({ turnId, item, startedAtMs, completedAtMs });
       if (presented) events.item(threadId, presented, method === 'item/completed');
     } else if (
       method === 'item/agentMessage/delta' ||
@@ -354,7 +340,6 @@ export const createCodexEvents = (
       connectionId = randomUUID();
       // a disconnected stream cannot supply a complete result from its partial capture
       turns.clear();
-      runningTurns.clear();
       events.unavailable();
     },
     connected: () => observeLoaded(),

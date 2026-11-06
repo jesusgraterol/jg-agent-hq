@@ -54,10 +54,25 @@ export const TurnSummarySchema = z.object({
   completedAt: z.number().int().nullable(),
 });
 export type ITurnSummary = z.infer<typeof TurnSummarySchema>;
+// recorded native item lifecycle times are milliseconds; older producers may omit them
+const NativeItemTimeSchema = z
+  .number()
+  .int()
+  .safe()
+  .nonnegative()
+  .max(8_640_000_000_000_000)
+  .nullish();
 export const NativeItemSchema = z.object({
   turnId: z.string().min(1).max(4096),
+  startedAtMs: NativeItemTimeSchema,
+  completedAtMs: NativeItemTimeSchema,
   item: z
-    .object({ id: z.string().min(1).max(4096), type: z.string().min(1).max(256) })
+    .object({
+      id: z.string().min(1).max(4096),
+      type: z.string().min(1).max(256),
+      startedAtMs: NativeItemTimeSchema,
+      completedAtMs: NativeItemTimeSchema,
+    })
     .catchall(z.unknown()),
 });
 export const NativeThreadPageSchema = z.object({
