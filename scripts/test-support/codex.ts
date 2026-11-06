@@ -173,7 +173,7 @@ else {
       if (thread.status.type === 'active') thread.activeTurn = control.threadTurns?.[thread.id]?.at(-1)?.id ?? thread.activeTurn;
       respond(request.id,{thread,model:thread.model,reasoningEffort:thread.reasoningEffort,serviceTier:tiers.get(thread.id),approvalPolicy:params.approvalPolicy??'on-request',sandbox:{type:params.sandbox??'read-only'},instructionSources:[]});
       // resumePrompt is the request Codex sends again to a client that joins a session waiting on it
-      if (control.resumePrompt) send(JSON.stringify({id:'native-approval-resumed',method:control.resumePrompt.method,params:{threadId:thread.id,turnId:thread.activeTurn,itemId:'tool-resumed',...control.resumePrompt.params}}));
+      if (control.resumePrompt) send(JSON.stringify({id:control.resumeRequestId??'native-approval-resumed',method:control.resumePrompt.method,params:{threadId:thread.id,turnId:thread.activeTurn,itemId:'tool-resumed',...control.resumePrompt.params}}));
       return;
     }
     if (method === 'thread/name/set') { managed.get(params.threadId).name=params.name;respond(request.id,{});return; }
