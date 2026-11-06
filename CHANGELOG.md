@@ -4,6 +4,7 @@
 
 - Rejoin eligible managed Codex sessions after the shared daemon connection stops, including a daemon update. Recheck the recorded native turn before and after joining, preserve session settings, and catch up confirmed completions and queued work without replaying input. A newer external turn, failed read, or unacknowledged operation remains uncertain.
 - Stop and drain the old proxy before replacing it, and report its EOF and exit as one connection loss. Mark live output as incomplete and discard partial result capture across the gap.
+- Scope native approval identities and reply callbacks to their connection. Reissued native request IDs open fresh approvals, while expired approvals cannot answer or decline a request on the replacement connection.
 - Keep the existing storage schema, action key and public request contracts unchanged.
 
 ## 13.0.0

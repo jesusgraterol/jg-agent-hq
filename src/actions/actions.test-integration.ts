@@ -2968,6 +2968,115 @@ test('Codex reconnect quarantines a turn that changes while its subscription is 
   }
 });
 
+test.each([
+  ['identical', false],
+  ['changed', true],
+] as const)(
+  'Codex reconnect scopes a reused approval request ID with %s content to its new connection',
+  async (_description, hasChangedContent) => {
+    const fixture = await setup();
+    try {
+      const { thread } = await fixture.create('reconnect-approval');
+      const prompt = {
+        method: 'item/commandExecution/requestApproval',
+        params: {
+          startedAtMs: Date.now(),
+          itemId: 'same-tool',
+          command: 'echo original-request',
+          cwd: fixture.workspaceRoot,
+        },
+      };
+      await fixture.control({ holdTurn: true, prompt });
+      await fixture.submit(
+        fixture.envelope({
+          kind: 'message',
+          threadId: thread.id,
+          input: { kind: 'text', text: 'Check a native approval' },
+        }),
+      );
+      const waiting = await fixture.until(
+        () => fixture.thread(thread.id),
+        (entry) => entry.state === 'waiting-approval',
+      );
+      const prior = (
+        await fixture.runtime.request({ kind: 'approvals', threadId: thread.id, state: 'pending' })
+      ).result.data[0]!;
+      await fixture.control({
+        ...reads(
+          thread.nativeId!,
+          { type: 'active', activeFlags: ['waitingOnApproval'] },
+          waiting.activeTurnId!,
+          'inProgress',
+        ),
+        disconnectOnce: true,
+        resumeRequestId: 'native-approval-1',
+        completeOnReply: true,
+        resumePrompt: {
+          ...prompt,
+          params: {
+            ...prompt.params,
+            command: hasChangedContent ? 'echo replacement-request' : prompt.params.command,
+          },
+        },
+      });
+      await fixture.request({ kind: 'usage', provider: 'codex' });
+      const readNewApproval = async () =>
+        (
+          await fixture.runtime.request({
+            kind: 'approvals',
+            threadId: thread.id,
+            state: 'pending',
+          })
+        ).result.data.find((entry) => entry.id !== prior.id);
+      await expect.poll(readNewApproval, { timeout: 2000 }).toBeDefined();
+      const current = (await readNewApproval())!;
+      expect(current.presentation?.detail).toContain(
+        hasChangedContent ? 'replacement-request' : 'original-request',
+      );
+      const historical = (
+        await fixture.runtime.request({ kind: 'approvals', threadId: thread.id })
+      ).result.data.find((entry) => entry.id === prior.id);
+      expect(historical).toMatchObject({ state: 'expired', presentation: null });
+      await expectToRejectCode(
+        fixture.runtime.request({
+          kind: 'action',
+          action: fixture.envelope({
+            kind: 'native-reply',
+            threadId: thread.id,
+            expectedTurnId: waiting.activeTurnId!,
+            approvalId: prior.id,
+            response: { kind: 'decision', decision: 'accept' },
+          }),
+        }),
+        'JG_AGENT_HQ_ACTION_CONFLICT',
+      );
+      await expect(readFile(join(fixture.root, 'replies.jsonl'), 'utf8')).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      const reply = fixture.envelope({
+        kind: 'native-reply',
+        threadId: thread.id,
+        expectedTurnId: waiting.activeTurnId!,
+        approvalId: current.id,
+        response: { kind: 'decision', decision: 'decline' },
+      });
+      await fixture.submit(reply);
+      await fixture.until(
+        () => fixture.receipt(reply.id),
+        (entry) => entry.delivery === 'acknowledged',
+      );
+      const replies: unknown[] = (await readFile(join(fixture.root, 'replies.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line));
+      expect(replies).toStrictEqual([{ id: 'native-approval-1', result: { decision: 'decline' } }]);
+      expect(replies).toHaveLength(1);
+    } finally {
+      await fixture.close();
+    }
+  },
+);
+
 test('a lost Codex turn completion is read back: the turn completes, queued input follows, and a late original changes nothing', async () => {
   const fixture = await setup();
   try {
