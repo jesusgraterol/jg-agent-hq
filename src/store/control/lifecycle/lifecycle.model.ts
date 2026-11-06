@@ -79,12 +79,13 @@ export class ControlLifecycle extends ControlModel {
   /**
    * Marks controls inactive only after its caller has proven native shutdown. A session a native
    * process keeps running stays bound to this runtime, for the next one to rejoin.
+   * Quarantined Codex controls retain their producing epoch and evidence for explicit recovery.
    */
   public releaseControls(): void {
     this._transaction(() => {
       const now = Date.now();
       this._statements.run(
-        `UPDATE agent_hq_thread SET runtime_epoch = NULL, pending_action_id = NULL, active_turn_id = NULL, ownership = CASE WHEN native_id IS NULL THEN 'uncertain' ELSE 'managed' END, state = CASE WHEN native_id IS NULL THEN 'unknown' ELSE 'inactive' END, updated_at = ? WHERE runtime_epoch = ? AND NOT (${KEPT_SESSION_CONDITION})`,
+        `UPDATE agent_hq_thread SET runtime_epoch = NULL, pending_action_id = NULL, active_turn_id = NULL, ownership = CASE WHEN native_id IS NULL THEN 'uncertain' ELSE 'managed' END, state = CASE WHEN native_id IS NULL THEN 'unknown' ELSE 'inactive' END, updated_at = ? WHERE runtime_epoch = ? AND NOT (${KEPT_SESSION_CONDITION}) AND NOT (provider = 'codex' AND ownership = 'uncertain')`,
         now,
         this._epoch,
       );
@@ -122,7 +123,21 @@ export class ControlLifecycle extends ControlModel {
   }
 
   /**
-   * Binds a session another runtime left running to this runtime, as its native process reports
+   * Lists the current controls that have no unacknowledged operation in flight.
+   * @returns The bounded cohort eligible for rechecking after a connection loss.
+   */
+  public listReconnectable(): IManagedThread[] {
+    return this._statements
+      .all<IThreadRow>(
+        `SELECT ${THREAD_COLUMNS} FROM agent_hq_thread WHERE runtime_epoch = ? AND ${KEPT_SESSION_CONDITION} ORDER BY created_at ASC, id ASC LIMIT ?`,
+        this._epoch,
+        CONTROLLED_THREAD_CAPACITY,
+      )
+      .map(toManagedThread);
+  }
+
+  /**
+   * Binds a kept or reconnecting session to this runtime, as its native process reports
    * it before the runtime rejoins it. A turn that finished meanwhile completes its action and lets
    * the session's queued input advance, which this runtime then delivers. A session whose latest
    * turn isn't the one HQ recorded, because another client started one, has its ownership marked
@@ -134,7 +149,11 @@ export class ControlLifecycle extends ControlModel {
   public reattach(input: IReattachment): IObservationResult | null {
     return this._transaction(() => {
       const thread = this._statements.get<IThreadRow>(
-        `SELECT ${THREAD_COLUMNS} FROM agent_hq_thread WHERE id = ? AND runtime_epoch IS NOT NULL AND runtime_epoch != ? AND ${KEPT_SESSION_CONDITION}`,
+        `SELECT ${THREAD_COLUMNS} FROM agent_hq_thread WHERE id = ? AND ${
+          input.isReconnect
+            ? "runtime_epoch = ? AND ownership = 'uncertain' AND native_id IS NOT NULL AND pending_action_id IS NULL AND provider = 'codex'"
+            : `runtime_epoch IS NOT NULL AND runtime_epoch != ? AND ${KEPT_SESSION_CONDITION}`
+        }`,
         input.threadId,
         this._epoch,
       );
@@ -146,7 +165,7 @@ export class ControlLifecycle extends ControlModel {
         (latest?.nativeTurnId ?? null) !== (thread.active_turn_id ?? thread.last_turn_id) ||
         (isRunning && thread.active_turn_id === null)
       ) {
-        this.__quarantine(thread.id, now);
+        if (!input.isReconnect) this.__quarantine(thread.id, now);
         return { thread: this._managedThread(thread.id), canDispatchQueued: false };
       }
       this._availableSlot();
@@ -159,9 +178,10 @@ export class ControlLifecycle extends ControlModel {
         ? thread.state === 'stopping'
           ? 'stopping'
           : 'running'
-        : (finished?.state ?? thread.state);
+        : (finished?.state ??
+          (input.isReconnect ? (thread.last_turn_state ?? 'idle') : thread.state));
       this._statements.run(
-        'UPDATE agent_hq_thread SET runtime_epoch = ?, active_turn_id = ?, last_turn_id = ?, last_turn_state = ?, state = ?, updated_at = ? WHERE id = ?',
+        "UPDATE agent_hq_thread SET ownership = 'managed', runtime_epoch = ?, active_turn_id = ?, last_turn_id = ?, last_turn_state = ?, state = ?, updated_at = ? WHERE id = ?",
         this._epoch,
         isRunning ? latest.nativeTurnId : null,
         finished?.nativeTurnId ?? thread.last_turn_id,

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { isException } from 'jg-exception';
 import { z } from 'zod';
 
@@ -7,6 +8,7 @@ import {
   type ISessionState,
   type ITurnUsage,
 } from '../../contracts/index.js';
+import { HQ_ERRORS } from '../../errors/index.js';
 import { toTurnResult } from '../results/index.js';
 
 import { NativeIdSchema } from '../../contracts/identities/index.js';
@@ -52,6 +54,9 @@ export const createCodexEvents = (
   observeSession: (nativeId: string, state: ISessionState | null) => void,
   observeLoaded: () => void,
 ): ICodexEvents => {
+  // native request IDs may be reused by the replacement daemon
+  let connectionId = randomUUID();
+  const scopedRequestId = (id: string | number): string => JSON.stringify([connectionId, id]);
   const turns = new Map<
     string,
     {
@@ -217,7 +222,7 @@ export const createCodexEvents = (
         kind: 'request-resolved',
         provider: 'codex',
         nativeThreadId: threadId,
-        requestId: JSON.stringify(requestId),
+        requestId: scopedRequestId(requestId),
       });
     }
   };
@@ -251,24 +256,43 @@ export const createCodexEvents = (
       }
     },
     request(id, method, params) {
+      const requestConnection = connectionId;
+      /**
+       * Refuses a reply on a replacement connection that may reuse the native request ID.
+       * @throws
+       * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+       */
+      const assertCurrentRequest = (): void => {
+        if (requestConnection !== connectionId)
+          throw HQ_ERRORS.create('codexFailed', { data: { kind: 'state-conflict' } });
+      };
+      // a stale refusal must not decline a different request on the replacement connection
+      const reject = (): Promise<void> =>
+        requestConnection === connectionId ? native.reject(id) : Promise.resolve();
       const prompt = parseCodexPrompt(method, params);
       if (!prompt) {
         // a request on a session is refused only when HQ controls that session
         const thread = z.object({ threadId: NativeIdSchema }).safeParse(params);
-        if (thread.success) events.unpresentable(thread.data.threadId, () => native.reject(id));
-        else void native.reject(id).catch(() => events.unavailable());
+        if (thread.success) events.unpresentable(thread.data.threadId, reject);
+        else void reject().catch(() => events.unavailable());
         return;
       }
       events.prompt({
         provider: 'codex',
         nativeThreadId: prompt.params.threadId,
         nativeTurnId: prompt.params.turnId,
-        requestId: JSON.stringify(id),
+        requestId: scopedRequestId(id),
         fingerprint: JSON.stringify([method, params]),
         presentation: toApprovalPresentation(prompt),
-        validate: (response) => buildCodexReply(prompt, response),
-        reply: (result) => native.reply(id, result),
-        reject: () => native.reject(id),
+        validate: (response) => {
+          assertCurrentRequest();
+          return buildCodexReply(prompt, response);
+        },
+        reply: (result) => {
+          assertCurrentRequest();
+          return native.reply(id, result);
+        },
+        reject,
       });
     },
     lateResponse(requestId, result, error) {
@@ -341,7 +365,13 @@ export const createCodexEvents = (
       }
       events.outcome(outcome, thread);
     },
-    unavailable: () => events.unavailable(),
+    unavailable: () => {
+      connectionId = randomUUID();
+      // a disconnected stream cannot supply a complete result from its partial capture
+      turns.clear();
+      runningTurns.clear();
+      events.unavailable();
+    },
     connected: () => observeLoaded(),
     // a discarded message's session can't be known, so every session HQ controls is read
     discarded: () => events.resync(undefined, 'unknown'),

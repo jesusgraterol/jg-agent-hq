@@ -8,6 +8,23 @@
 - Add the durable workspace journal, bounded indexed provenance, source-bound queued transitions, uncertainty handling and exact native-deletion confirmation before local cleanup. Restart completes confirmed local deletion without repeating the provider call.
 - Upgrade only the exact 12.0.1/13.0.0 native schema transactionally before provider startup. Preserve native/host rows, indexes, identities, host user_version and keys; refuse unknown schemas/keys unchanged and roll failures back. Snapshot import stays strict; older binaries cannot open the new schema.
 
+## 13.1.1
+
+- Preserve quarantined Codex controls and their producing runtime epoch during shutdown. Stopping HQ no longer turns unverified native ownership into a managed inactive record or discards its recorded turn, so the next runtime can explicitly recover a still-loaded idle or active session. Queued input stays paused and no input is replayed.
+- Keep the existing storage schema, action key and public request contracts unchanged.
+
+## 13.1.0
+
+- Let explicit `thread-recover` with `recovery: { kind: 'resume' }` rejoin a known Codex identity that remains loaded idle or active after its previous HQ runtime stopped. Read and bind its current turn before joining without settings or input, then verify the turn again before acknowledging recovery. A reissued approval belongs to that verified active turn.
+- Keep earlier queued input paused and uncertain input receipts unresolved. Unknown native state, changed identity/workspace, and a turn that changes during the join refuse recovery. The previous-runtime ownership gate, automatic reconnect fences, storage schema and public request shapes are unchanged.
+
+## 13.0.1
+
+- Rejoin eligible managed Codex sessions after the shared daemon connection stops, including a daemon update. Recheck the recorded native turn before and after joining, preserve session settings, and catch up confirmed completions and queued work without replaying input. A newer external turn, failed read, or unacknowledged operation remains uncertain.
+- Stop and drain the old proxy before replacing it, and report its EOF and exit as one connection loss. Mark live output as incomplete and discard partial result capture across the gap.
+- Scope native approval identities and reply callbacks to their connection. Reissued native request IDs open fresh approvals, while expired approvals cannot answer or decline a request on the replacement connection.
+- Keep the existing storage schema, action key and public request contracts unchanged.
+
 ## 13.0.0
 
 - Accept managed-session names of 1 through 64 characters for create, adopt, rename and managed-thread responses. Export `MAX_THREAD_NAME_LENGTH` from `jg-agent-hq/contracts`; suggestions and atomic collision suffixes use the same limit. The lowercase ASCII alphabet, first-character rule, case-insensitive uniqueness and immutable identities are unchanged.

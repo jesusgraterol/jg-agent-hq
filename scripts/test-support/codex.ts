@@ -120,6 +120,7 @@ else {
     }
     if (!isHeldRead) appendFileSync(join(directory,'calls.jsonl'),JSON.stringify({ method: request.method, params: request.params })+'\n');
     if (request.id === undefined) return;
+    if (control.disconnectOnce) { writeFileSync(join(directory,'control.json'),JSON.stringify({...control,disconnectOnce:false}));process.stdout.end();return; }
     if (request.method === 'initialize') {
       if (control.mode === 'malformed') { send('invalid JSON');return; }
       if (control.mode === 'oversized') { send('x'.repeat(33_554_433));return; }
@@ -164,6 +165,7 @@ else {
       respond(request.id,{thread,model:thread.model,reasoningEffort:thread.reasoningEffort,serviceTier:tiers.get(thread.id),approvalPolicy:params.approvalPolicy??'on-request',sandbox:{type:params.sandbox??'read-only'},instructionSources:[]});return;
     }
     if (method === 'thread/resume') {
+      if (control.resumeTurns) writeFileSync(join(directory,'control.json'),JSON.stringify({...control,threadTurns:control.resumeTurns,resumeTurns:undefined}));
       const thread = managed.get(params.threadId) || { ...threads[0],id:params.threadId,activeTurn:null };
       // a session another runtime left running keeps its status and running turn when joined again
       thread.status = control.threadStatuses?.[params.threadId] ?? {type:'idle'};thread.model=params.model??thread.model;thread.reasoningEffort=params.config?.model_reasoning_effort??thread.reasoningEffort; managed.set(thread.id,thread);
@@ -171,7 +173,7 @@ else {
       if (thread.status.type === 'active') thread.activeTurn = control.threadTurns?.[thread.id]?.at(-1)?.id ?? thread.activeTurn;
       respond(request.id,{thread,model:thread.model,reasoningEffort:thread.reasoningEffort,serviceTier:tiers.get(thread.id),approvalPolicy:params.approvalPolicy??'on-request',sandbox:{type:params.sandbox??'read-only'},instructionSources:[]});
       // resumePrompt is the request Codex sends again to a client that joins a session waiting on it
-      if (control.resumePrompt) send(JSON.stringify({id:'native-approval-resumed',method:control.resumePrompt.method,params:{threadId:thread.id,turnId:thread.activeTurn,itemId:'tool-resumed',...control.resumePrompt.params}}));
+      if (control.resumePrompt) send(JSON.stringify({id:control.resumeRequestId??'native-approval-resumed',method:control.resumePrompt.method,params:{threadId:thread.id,turnId:thread.activeTurn,itemId:'tool-resumed',...control.resumePrompt.params}}));
       return;
     }
     if (method === 'thread/name/set') { managed.get(params.threadId).name=params.name;respond(request.id,{});return; }

@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createAgentHq } from 'jg-agent-hq';
@@ -107,3 +108,122 @@ test('startup deletes the observations earlier runtimes recorded, and the new ru
     }
   });
 });
+
+test.each(['idle', 'active'] as const)(
+  'shutdown preserves quarantined Codex evidence for explicit recovery of a loaded %s session',
+  async (nativeState) => {
+    await withClaudeRuntime(async ({ root, stateRoot, workspaceRoot, runtime }) => {
+      const originalEpoch = (await runtime.request({ kind: 'status' })).result.runtimeEpoch;
+      const action = (command: IActionCommand) => ({
+        id: randomUUID(),
+        runtimeEpoch: originalEpoch,
+        command,
+      });
+      const created = (
+        await runtime.request({
+          kind: 'action',
+          action: action({
+            kind: 'thread-create',
+            provider: 'codex',
+            workspaceRoot,
+            name: 'quarantined-at-shutdown',
+          }),
+        })
+      ).result;
+      const threadId = created.threadId!;
+      await expect
+        .poll(() => runtime.request({ kind: 'managed-thread', threadId }))
+        .toMatchObject({ result: { state: 'idle' } });
+      await writeFixtureControl(root, 'control.json', { holdTurn: true });
+      const message = action({
+        kind: 'message',
+        threadId,
+        input: { kind: 'text', text: 'Do not repeat this input' },
+      });
+      await runtime.request({ kind: 'action', action: message });
+      await expect
+        .poll(() => runtime.request({ kind: 'receipt', actionId: message.id }))
+        .toMatchObject({ result: { delivery: 'acknowledged' } });
+      const held = (await runtime.request({ kind: 'managed-thread', threadId })).result!;
+      const queued = action({
+        kind: 'queue',
+        threadId,
+        expectedTurnId: held.activeTurnId!,
+        input: { kind: 'text', text: 'Keep this queued input paused' },
+      });
+      await runtime.request({ kind: 'action', action: queued });
+      await writeFixtureControl(root, 'control.json', {
+        disconnectOnce: true,
+        holdTurn: true,
+        threadStatuses: { [held.nativeId!]: { type: nativeState, activeFlags: [] } },
+        threadTurns: {
+          [held.nativeId!]: [
+            {
+              id: 'external-turn-after-loss',
+              status: nativeState === 'active' ? 'inProgress' : 'completed',
+            },
+          ],
+        },
+      });
+      await runtime.request({ kind: 'usage', provider: 'codex' });
+      await expect
+        .poll(() => runtime.request({ kind: 'managed-thread', threadId }))
+        .toMatchObject({ result: { ownership: 'uncertain', state: 'unknown' } });
+      await runtime.close();
+      const reopened = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
+      try {
+        const retained = (await reopened.request({ kind: 'managed-thread', threadId })).result!;
+        expect(retained).toMatchObject({
+          id: threadId,
+          nativeId: held.nativeId,
+          ownership: 'uncertain',
+          state: 'unknown',
+          runtimeEpoch: originalEpoch,
+          activeTurnId: held.activeTurnId,
+        });
+        const runtimeEpoch = (await reopened.request({ kind: 'status' })).result.runtimeEpoch;
+        const recovery = {
+          id: randomUUID(),
+          runtimeEpoch,
+          command: {
+            kind: 'thread-recover' as const,
+            threadId,
+            recovery: { kind: 'resume' as const },
+            operatorConfirmation:
+              'The exact producing runtime has stopped; rejoin the inspected identity',
+          },
+        };
+        await reopened.request({ kind: 'action', action: recovery });
+        expect(
+          (
+            await reopened.request({
+              kind: 'action-wait',
+              actionId: recovery.id,
+              until: 'settled',
+              timeoutMs: 5000,
+            })
+          ).result,
+        ).toMatchObject({ isTimedOut: false, receipt: { delivery: 'acknowledged' } });
+        expect((await reopened.request({ kind: 'managed-thread', threadId })).result).toMatchObject(
+          {
+            ownership: 'managed',
+            runtimeEpoch,
+            state: nativeState === 'active' ? 'running' : 'completed',
+            activeTurnId: nativeState === 'active' ? 'external-turn-after-loss' : null,
+          },
+        );
+        expect(
+          (await reopened.request({ kind: 'receipt', actionId: queued.id })).result,
+        ).toMatchObject({ delivery: 'queued' });
+        const calls = (await readFile(join(root, 'calls.jsonl'), 'utf8'))
+          .trim()
+          .split('\n')
+          .map((line) => z.object({ method: z.string() }).parse(JSON.parse(line)));
+        expect(calls.filter((call) => call.method === 'turn/start')).toHaveLength(1);
+        expect(calls.filter((call) => call.method === 'thread/resume')).toHaveLength(1);
+      } finally {
+        await reopened.close();
+      }
+    });
+  },
+);

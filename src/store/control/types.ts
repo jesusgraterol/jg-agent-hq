@@ -72,6 +72,8 @@ export type INativeOutcome = IOutcomeFields &
         kind: 'resumed';
         nativeState: 'notLoaded' | 'idle' | 'systemError' | 'active' | 'unknown';
         nativeLineage: INativeLineage | null;
+        // an explicit known-session join is acknowledged only after its turn was verified twice
+        latestTurn?: IReattachment['latestTurn'];
       }
     | { kind: 'closed' }
     | { kind: 'cleaned' }
@@ -112,7 +114,12 @@ export type INativeObservation =
 // only validated derivations of trusted configuration/native metadata reach admission
 export type IAdmission = {
   action: IActionEnvelope;
-  prepared: { workspaceRoot?: string; nativeId?: string; input?: IPreparedInput };
+  prepared: {
+    workspaceRoot?: string;
+    nativeId?: string;
+    input?: IPreparedInput;
+    recoveryTurn?: IReattachment['latestTurn'];
+  };
 };
 export type IAdmissionResult = {
   receipt: IActionReceipt;
@@ -134,6 +141,8 @@ export type IObservationResult = {
 // a session another runtime left running, with its latest turn as its native process reports it
 export type IReattachment = {
   threadId: string;
+  // only a cohort captured before a live connection loss may rejoin within the current runtime
+  isReconnect?: boolean;
   latestTurn: {
     nativeTurnId: string;
     state: 'running' | 'completed' | 'failed' | 'interrupted';

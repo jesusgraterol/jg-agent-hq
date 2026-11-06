@@ -2729,6 +2729,564 @@ const lostCompletion = (nativeId: string, turnId: string) => ({
   params: { threadId: nativeId, turn: { id: turnId, status: 'finishedSomehow' } },
 });
 
+const withQuarantinedCodex = async (
+  run: (context: {
+    fixture: Awaited<ReturnType<typeof setup>>;
+    runtime: IAgentHq;
+    running: Awaited<ReturnType<typeof startHeldTurn>>;
+    queuedId: string;
+    envelope: (command: IActionCommand) => IActionEnvelope;
+  }) => Promise<void>,
+) => {
+  const fixture = await setup();
+  let runtime: IAgentHq | undefined;
+  try {
+    const running = await startHeldTurn(fixture, 'recover-loaded-session');
+    const queued = fixture.envelope({
+      kind: 'queue',
+      threadId: running.thread.id,
+      expectedTurnId: running.turnId,
+      input: { kind: 'text', text: 'Keep this paused after recovery' },
+    });
+    await fixture.submit(queued);
+    await fixture.control({ threadStatuses: { [running.nativeId]: { type: 'systemError' } } });
+    await fixture.runtime.close();
+    runtime = await createAgentHq({
+      stateRoot: fixture.stateRoot,
+      allowedRoots: [fixture.workspaceRoot],
+    });
+    await expect
+      .poll(() => runtime!.request({ kind: 'managed-thread', threadId: running.thread.id }))
+      .toMatchObject({ result: { ownership: 'uncertain' } });
+    const runtimeEpoch = (await runtime.request({ kind: 'status' })).result.runtimeEpoch;
+    await run({
+      fixture,
+      runtime,
+      running,
+      queuedId: queued.id,
+      envelope: (command) => ({ id: randomUUID(), runtimeEpoch, command }),
+    });
+  } finally {
+    await runtime?.close();
+    await fixture.close();
+  }
+};
+
+test.each(['idle', 'empty', 'active', 'same-turn'] as const)(
+  'explicit Codex recovery rejoins a known loaded %s session and leaves earlier input paused',
+  async (mode) => {
+    await withQuarantinedCodex(async ({ fixture, runtime, running, queuedId, envelope }) => {
+      const turnId = mode === 'same-turn' ? running.turnId : 'external-latest-turn';
+      const isActive = mode === 'active' || mode === 'same-turn';
+      await fixture.control({
+        ...reads(
+          running.nativeId,
+          { type: isActive ? 'active' : 'idle', activeFlags: [] },
+          turnId,
+          isActive ? 'inProgress' : 'completed',
+        ),
+        ...(mode === 'empty' ? { threadTurns: { [running.nativeId]: [] } } : {}),
+        ...(isActive
+          ? {
+              resumePrompt: {
+                method: 'item/commandExecution/requestApproval',
+                params: {
+                  startedAtMs: 1_800_000_001_000,
+                  command: 'echo inspect-only',
+                  cwd: fixture.workspaceRoot,
+                },
+              },
+            }
+          : {}),
+      });
+      const action = envelope({
+        kind: 'thread-recover',
+        threadId: running.thread.id,
+        recovery: { kind: 'resume' },
+        operatorConfirmation: 'The previous HQ stopped; rejoin this exact native session',
+      });
+      await runtime.request({ kind: 'action', action });
+      await expect
+        .poll(() => runtime.request({ kind: 'receipt', actionId: action.id }))
+        .toMatchObject({ result: { delivery: 'acknowledged' } });
+      await expect
+        .poll(() => runtime.request({ kind: 'managed-thread', threadId: running.thread.id }))
+        .toMatchObject({
+          result: {
+            nativeId: running.nativeId,
+            ownership: 'managed',
+            state: isActive ? 'waiting-approval' : mode === 'empty' ? 'idle' : 'completed',
+            activeTurnId: isActive ? turnId : null,
+          },
+        });
+      if (isActive) {
+        expect(
+          (await runtime.request({ kind: 'approvals', threadId: running.thread.id })).result.data,
+        ).toMatchObject([{ nativeTurnId: turnId, state: 'pending' }]);
+        await fixture.control({
+          ...reads(running.nativeId, { type: 'idle' }, turnId, 'completed'),
+          emitOnce: true,
+          emit: [
+            {
+              method: 'turn/completed',
+              params: { threadId: running.nativeId, turn: { id: turnId, status: 'completed' } },
+            },
+          ],
+        });
+        await runtime.request({ kind: 'usage', provider: 'codex' });
+        await expect
+          .poll(() => runtime.request({ kind: 'managed-thread', threadId: running.thread.id }))
+          .toMatchObject({ result: { state: 'completed', activeTurnId: null } });
+      }
+      expect(await runtime.request({ kind: 'receipt', actionId: queuedId })).toMatchObject({
+        result: { delivery: 'queued' },
+      });
+      await runtime.request({ kind: 'action', action });
+      const calls = await fixture.calls();
+      expect(calls.filter((call) => call.method === 'turn/start')).toHaveLength(1);
+      expect(calls.filter((call) => call.method === 'thread/resume')).toHaveLength(1);
+      const resume = calls.find((call) => call.method === 'thread/resume')!;
+      expect(resume.params).not.toHaveProperty('model');
+      expect(resume.params).not.toHaveProperty('config');
+      expect(calls.filter((call) => call.method === 'turn/interrupt')).toHaveLength(0);
+    });
+  },
+);
+
+test('explicit Codex recovery still refuses uncertainty from the current runtime', async () => {
+  const fixture = await setup();
+  try {
+    const running = await startHeldTurn(fixture, 'recover-current-runtime');
+    await fixture.control({
+      ...reads(running.nativeId, { type: 'idle' }, 'external-current-turn', 'completed'),
+      disconnectOnce: true,
+    });
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    await expect
+      .poll(async () => (await fixture.thread(running.thread.id)).ownership)
+      .toBe('uncertain');
+    await expect
+      .poll(async () =>
+        (await fixture.runtime.request({ kind: 'status' })).result.providers.find(
+          (entry) => entry.provider === 'codex',
+        ),
+      )
+      .toMatchObject({ state: 'ready' });
+    const action = fixture.envelope({
+      kind: 'thread-recover',
+      threadId: running.thread.id,
+      recovery: { kind: 'resume' },
+      operatorConfirmation: 'The native session is idle, but this HQ still owns the evidence',
+    });
+    await expectToRejectCode(
+      fixture.runtime.request({ kind: 'action', action }),
+      'JG_AGENT_HQ_ACTION_CONFLICT',
+    );
+    expect((await fixture.calls()).filter((call) => call.method === 'thread/resume')).toHaveLength(
+      0,
+    );
+    expect((await fixture.calls()).filter((call) => call.method === 'turn/start')).toHaveLength(1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test.each(['unknown', 'active-without-turn', 'join-race'] as const)(
+  'explicit Codex recovery refuses %s evidence without sending input',
+  async (mode) => {
+    await withQuarantinedCodex(async ({ fixture, runtime, running, envelope }) => {
+      await fixture.control({
+        ...reads(
+          running.nativeId,
+          { type: mode === 'unknown' ? 'futureState' : 'active', activeFlags: [] },
+          running.turnId,
+          mode === 'active-without-turn' ? 'completed' : 'inProgress',
+        ),
+        ...(mode === 'join-race'
+          ? { resumeTurns: { [running.nativeId]: [{ id: 'later-turn', status: 'inProgress' }] } }
+          : {}),
+      });
+      const action = envelope({
+        kind: 'thread-recover',
+        threadId: running.thread.id,
+        recovery: { kind: 'resume' },
+        operatorConfirmation: 'The previous runtime stopped; inspect before joining',
+      });
+      if (mode === 'join-race') {
+        await runtime.request({ kind: 'action', action });
+        await expect
+          .poll(() => runtime.request({ kind: 'receipt', actionId: action.id }))
+          .toMatchObject({ result: { delivery: 'uncertain' } });
+      } else {
+        await expectToRejectCode(
+          runtime.request({ kind: 'action', action }),
+          'JG_AGENT_HQ_PROVIDER_FAILED',
+        );
+        expect(await runtime.request({ kind: 'receipt', actionId: action.id })).toMatchObject({
+          result: null,
+        });
+      }
+      expect(
+        await runtime.request({ kind: 'managed-thread', threadId: running.thread.id }),
+      ).toMatchObject({ result: { ownership: 'uncertain', state: 'unknown' } });
+      expect((await fixture.calls()).filter((call) => call.method === 'turn/start')).toHaveLength(
+        1,
+      );
+      expect(
+        (await fixture.calls()).filter((call) => call.method === 'thread/resume'),
+      ).toHaveLength(mode === 'join-race' ? 1 : 0);
+    });
+  },
+);
+
+test('a Codex connection restart rejoins matching managed sessions without replaying input', async () => {
+  const fixture = await setup();
+  try {
+    const running = await startHeldTurn(fixture, 'reconnect-running');
+    const finished = await startHeldTurn(fixture, 'reconnect-finished');
+    const { thread: idle } = await fixture.create('reconnect-idle');
+    const queued = fixture.envelope({
+      kind: 'queue',
+      threadId: finished.thread.id,
+      expectedTurnId: finished.turnId,
+      input: { kind: 'text', text: 'Only send this after confirmed completion' },
+    });
+    expect((await fixture.submit(queued)).delivery).toBe('queued');
+    const before = (await fixture.calls()).length;
+    await fixture.control({
+      disconnectOnce: true,
+      holdTurn: true,
+      threadStatuses: {
+        [running.nativeId]: { type: 'active', activeFlags: [] },
+        [finished.nativeId]: { type: 'idle' },
+        [idle.nativeId!]: { type: 'idle' },
+      },
+      threadTurns: {
+        [running.nativeId]: [{ id: running.turnId, status: 'inProgress' }],
+        [finished.nativeId]: [{ id: finished.turnId, status: 'completed' }],
+        [idle.nativeId!]: [],
+      },
+    });
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    await expect
+      .poll(
+        async () => {
+          // ordinary reads cause the disconnected transport to reconnect
+          await fixture.request({ kind: 'usage', provider: 'codex' });
+          return (await fixture.calls())
+            .slice(before)
+            .filter((call) => call.method === 'thread/resume').length;
+        },
+        { timeout: 2000 },
+      )
+      .toBe(3);
+    expect(await fixture.thread(running.thread.id)).toMatchObject({
+      ownership: 'managed',
+      state: 'running',
+      activeTurnId: running.turnId,
+    });
+    expect(await fixture.thread(idle.id)).toMatchObject({ ownership: 'managed', state: 'idle' });
+    expect(await fixture.receipt(finished.message.id)).toMatchObject({
+      delivery: 'acknowledged',
+      completion: 'completed',
+      result: null,
+    });
+    await fixture.until(
+      () => fixture.receipt(queued.id),
+      (entry) => entry.delivery === 'acknowledged',
+    );
+    const resumed = (await fixture.calls()).slice(before);
+    expect(resumed.filter((call) => call.method === 'turn/start')).toHaveLength(1);
+    for (const call of resumed.filter((call) => call.method === 'thread/resume'))
+      expect(call.params).toStrictEqual({ threadId: call.params.threadId, excludeTurns: true });
+    await emit(fixture, { holdTurn: true }, [
+      {
+        method: 'turn/completed',
+        params: {
+          threadId: running.nativeId,
+          turn: { id: running.turnId, status: 'completed' },
+        },
+      },
+    ]);
+    await fixture.until(
+      () => fixture.receipt(running.message.id),
+      (entry) => entry.completion === 'completed',
+    );
+    expect(await fixture.thread(running.thread.id)).toMatchObject({
+      ownership: 'managed',
+      activeTurnId: null,
+    });
+    expect(await fixture.receipt(running.message.id)).toMatchObject({
+      completion: 'completed',
+      result: null,
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('successive Codex connection restarts rejoin once per loss without another turn start', async () => {
+  const fixture = await setup();
+  try {
+    const running = await startHeldTurn(fixture, 'repeated-reconnect');
+    for (const count of [1, 2]) {
+      await fixture.control({
+        ...reads(
+          running.nativeId,
+          { type: 'active', activeFlags: [] },
+          running.turnId,
+          'inProgress',
+        ),
+        disconnectOnce: true,
+      });
+      await fixture.request({ kind: 'usage', provider: 'codex' });
+      await expect
+        .poll(
+          async () =>
+            (await fixture.calls()).filter((call) => call.method === 'thread/resume').length,
+          { timeout: 2000 },
+        )
+        .toBe(count);
+      await expect
+        .poll(async () => (await fixture.thread(running.thread.id)).ownership)
+        .toBe('managed');
+      expect(await fixture.thread(running.thread.id)).toMatchObject({
+        state: 'running',
+        activeTurnId: running.turnId,
+      });
+    }
+    expect((await fixture.calls()).filter((call) => call.method === 'turn/start')).toHaveLength(1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('Codex reconnect leaves a newer external turn and an unacknowledged send uncertain', async () => {
+  const fixture = await setup();
+  try {
+    const changed = await startHeldTurn(fixture, 'reconnect-external-turn');
+    const { thread: unsettled } = await fixture.create('reconnect-unsettled');
+    await fixture.control({
+      loseOutput: true,
+      holdTurn: true,
+      threadStatuses: { [changed.nativeId]: { type: 'active', activeFlags: [] } },
+      threadTurns: { [changed.nativeId]: [{ id: 'different-native-turn', status: 'inProgress' }] },
+    });
+    const lost = fixture.envelope({
+      kind: 'message',
+      threadId: unsettled.id,
+      input: { kind: 'text', text: 'Never replay an unacknowledged send' },
+    });
+    const before = (await fixture.calls()).length;
+    await fixture.submit(lost);
+    await fixture.until(
+      () => fixture.receipt(lost.id),
+      (entry) => entry.delivery === 'uncertain',
+    );
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    await expect
+      .poll(async () =>
+        (await fixture.calls())
+          .slice(before)
+          .some(
+            (call) =>
+              call.method === 'thread/turns/list' && call.params.threadId === changed.nativeId,
+          ),
+      )
+      .toBe(true);
+    await fixture.until(
+      () => fixture.thread(changed.thread.id),
+      (entry) => entry.ownership === 'uncertain',
+    );
+    expect(await fixture.thread(unsettled.id)).toMatchObject({
+      ownership: 'uncertain',
+      state: 'unknown',
+    });
+    expect(await fixture.receipt(lost.id)).toMatchObject({ delivery: 'uncertain' });
+    const calls = (await fixture.calls()).slice(before);
+    expect(calls.filter((call) => call.method === 'turn/start')).toHaveLength(1);
+    expect(calls.filter((call) => call.method === 'thread/resume')).toStrictEqual([]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test.each([
+  [{ type: 'future-native-state' }, 'inProgress'],
+  [{ type: 'active', activeFlags: [] }, null],
+] as const)(
+  'Codex reconnect rejects unverified native execution state %o',
+  async (status, turnStatus) => {
+    const fixture = await setup();
+    try {
+      const running = await startHeldTurn(fixture, 'reconnect-unknown-state');
+      const before = (await fixture.calls()).length;
+      await fixture.control({
+        disconnectOnce: true,
+        holdTurn: true,
+        threadStatuses: { [running.nativeId]: status },
+        threadTurns: {
+          [running.nativeId]: turnStatus ? [{ id: running.turnId, status: turnStatus }] : [],
+        },
+      });
+      await fixture.request({ kind: 'usage', provider: 'codex' });
+      await expect
+        .poll(async () =>
+          (await fixture.calls())
+            .slice(before)
+            .some(
+              (call) =>
+                call.method === 'thread/turns/list' && call.params.threadId === running.nativeId,
+            ),
+        )
+        .toBe(true);
+      expect(await fixture.thread(running.thread.id)).toMatchObject({
+        ownership: 'uncertain',
+        state: 'unknown',
+      });
+      expect(
+        (await fixture.calls()).slice(before).filter((call) => call.method === 'thread/resume'),
+      ).toStrictEqual([]);
+    } finally {
+      await fixture.close();
+    }
+  },
+);
+
+test('Codex reconnect quarantines a turn that changes while its subscription is rejoined', async () => {
+  const fixture = await setup();
+  try {
+    const running = await startHeldTurn(fixture, 'reconnect-join-race');
+    await fixture.control({
+      ...reads(running.nativeId, { type: 'active', activeFlags: [] }, running.turnId, 'inProgress'),
+      disconnectOnce: true,
+      resumeTurns: { [running.nativeId]: [{ id: 'new-turn-during-join', status: 'inProgress' }] },
+    });
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    await expect
+      .poll(
+        async () =>
+          (await fixture.calls()).filter((call) => call.method === 'thread/resume').length,
+      )
+      .toBe(1);
+    await expect
+      .poll(async () => (await fixture.thread(running.thread.id)).ownership)
+      .toBe('uncertain');
+    expect((await fixture.calls()).filter((call) => call.method === 'turn/start')).toHaveLength(1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test.each([
+  ['identical', false],
+  ['changed', true],
+] as const)(
+  'Codex reconnect scopes a reused approval request ID with %s content to its new connection',
+  async (_description, hasChangedContent) => {
+    const fixture = await setup();
+    try {
+      const { thread } = await fixture.create('reconnect-approval');
+      const prompt = {
+        method: 'item/commandExecution/requestApproval',
+        params: {
+          startedAtMs: Date.now(),
+          itemId: 'same-tool',
+          command: 'echo original-request',
+          cwd: fixture.workspaceRoot,
+        },
+      };
+      await fixture.control({ holdTurn: true, prompt });
+      await fixture.submit(
+        fixture.envelope({
+          kind: 'message',
+          threadId: thread.id,
+          input: { kind: 'text', text: 'Check a native approval' },
+        }),
+      );
+      const waiting = await fixture.until(
+        () => fixture.thread(thread.id),
+        (entry) => entry.state === 'waiting-approval',
+      );
+      const prior = (
+        await fixture.runtime.request({ kind: 'approvals', threadId: thread.id, state: 'pending' })
+      ).result.data[0]!;
+      await fixture.control({
+        ...reads(
+          thread.nativeId!,
+          { type: 'active', activeFlags: ['waitingOnApproval'] },
+          waiting.activeTurnId!,
+          'inProgress',
+        ),
+        disconnectOnce: true,
+        resumeRequestId: 'native-approval-1',
+        completeOnReply: true,
+        resumePrompt: {
+          ...prompt,
+          params: {
+            ...prompt.params,
+            command: hasChangedContent ? 'echo replacement-request' : prompt.params.command,
+          },
+        },
+      });
+      await fixture.request({ kind: 'usage', provider: 'codex' });
+      const readNewApproval = async () =>
+        (
+          await fixture.runtime.request({
+            kind: 'approvals',
+            threadId: thread.id,
+            state: 'pending',
+          })
+        ).result.data.find((entry) => entry.id !== prior.id);
+      await expect.poll(readNewApproval, { timeout: 2000 }).toBeDefined();
+      const current = (await readNewApproval())!;
+      expect(current.presentation?.detail).toContain(
+        hasChangedContent ? 'replacement-request' : 'original-request',
+      );
+      const historical = (
+        await fixture.runtime.request({ kind: 'approvals', threadId: thread.id })
+      ).result.data.find((entry) => entry.id === prior.id);
+      expect(historical).toMatchObject({ state: 'expired', presentation: null });
+      await expectToRejectCode(
+        fixture.runtime.request({
+          kind: 'action',
+          action: fixture.envelope({
+            kind: 'native-reply',
+            threadId: thread.id,
+            expectedTurnId: waiting.activeTurnId!,
+            approvalId: prior.id,
+            response: { kind: 'decision', decision: 'accept' },
+          }),
+        }),
+        'JG_AGENT_HQ_ACTION_CONFLICT',
+      );
+      await expect(readFile(join(fixture.root, 'replies.jsonl'), 'utf8')).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      const reply = fixture.envelope({
+        kind: 'native-reply',
+        threadId: thread.id,
+        expectedTurnId: waiting.activeTurnId!,
+        approvalId: current.id,
+        response: { kind: 'decision', decision: 'decline' },
+      });
+      await fixture.submit(reply);
+      await fixture.until(
+        () => fixture.receipt(reply.id),
+        (entry) => entry.delivery === 'acknowledged',
+      );
+      const replies: unknown[] = (await readFile(join(fixture.root, 'replies.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line));
+      expect(replies).toStrictEqual([{ id: 'native-approval-1', result: { decision: 'decline' } }]);
+      expect(replies).toHaveLength(1);
+    } finally {
+      await fixture.close();
+    }
+  },
+);
+
 test('a lost Codex turn completion is read back: the turn completes, queued input follows, and a late original changes nothing', async () => {
   const fixture = await setup();
   try {
