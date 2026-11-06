@@ -3,21 +3,18 @@ import { expect, test } from 'vitest';
 import { toHistoryItem, toSessionState } from './index.js';
 
 test('native MCP tool activity retains its identity, input and bounded output', () => {
-  const item = toHistoryItem(
-    {
-      turnId: 'turn',
-      item: {
-        id: 'call',
-        type: 'mcpToolCall',
-        server: 'docs',
-        tool: 'lookup',
-        status: 'completed',
-        arguments: { query: 'protocol' },
-        result: { content: '🧪'.repeat(40_000) },
-      },
+  const item = toHistoryItem({
+    turnId: 'turn',
+    item: {
+      id: 'call',
+      type: 'mcpToolCall',
+      server: 'docs',
+      tool: 'lookup',
+      status: 'completed',
+      arguments: { query: 'protocol' },
+      result: { content: '🧪'.repeat(40_000) },
     },
-    undefined,
-  )!;
+  })!;
   expect(item.kind).toBe('tool');
   expect(item.text).toContain('docs/lookup (completed)');
   expect(item.text).toContain('"query":"protocol"');
@@ -27,7 +24,7 @@ test('native MCP tool activity retains its identity, input and bounded output', 
 });
 
 const present = (item: { type: string } & Record<string, unknown>) => {
-  const presented = toHistoryItem({ turnId: 'turn', item: { id: 'item', ...item } }, undefined);
+  const presented = toHistoryItem({ turnId: 'turn', item: { id: 'item', ...item } });
   return (
     presented && {
       kind: presented.kind,
@@ -40,26 +37,61 @@ const present = (item: { type: string } & Record<string, unknown>) => {
 };
 
 test.each([
-  ['userMessage', 'completed', { startedAt: 1_000, completedAt: 9_000 }, 1_000],
-  ['agentMessage', 'completed', { startedAt: 1_000, completedAt: 9_000 }, 9_000],
-  ['commandExecution', 'completed', { startedAt: 1_000, completedAt: 9_000 }, 9_000],
-  ['userMessage', 'running', { startedAt: 1_000, completedAt: null }, 1_000],
-  ['agentMessage', 'running', { startedAt: 1_000, completedAt: null }, 1_000],
-  ['agentMessage', 'untimed', { startedAt: null, completedAt: null }, null],
-  ['agentMessage', 'unknown', undefined, null],
+  ['userMessage', 1_700_000_001_123, 1_700_000_002_456, 1_700_000_001_123],
+  ['agentMessage', 1_700_000_001_123, 1_700_000_002_456, 1_700_000_002_456],
+  ['commandExecution', 1_700_000_001_123, 1_700_000_002_456, 1_700_000_002_456],
+  ['userMessage', null, 1_700_000_002_456, 1_700_000_002_456],
+  ['agentMessage', 1_700_000_001_123, null, 1_700_000_001_123],
+  ['agentMessage', null, null, null],
+  ['agentMessage', undefined, undefined, null],
+  ['userMessage', 0, 1, 0],
 ])(
-  'toHistoryItem(%s, %s turn) -> createdAt %s',
+  'toHistoryItem(%s, started %s, completed %s) -> item time %s',
   { tags: ['full'] },
-  (type, _turnState, turn, createdAt) => {
+  (type, startedAtMs, completedAtMs, createdAt) => {
     const item =
       type === 'userMessage'
         ? { id: 'item', type, content: [{ type: 'text', text: 'Fix it' }] }
         : type === 'agentMessage'
           ? { id: 'item', type, text: 'Done' }
           : { id: 'item', type, command: 'ls', aggregatedOutput: '', status: 'completed' };
-    expect(toHistoryItem({ turnId: 'turn', item }, turn)?.createdAt).toBe(createdAt);
+    expect(toHistoryItem({ turnId: 'turn', item, startedAtMs, completedAtMs })?.createdAt).toBe(
+      createdAt,
+    );
   },
 );
+
+test('item-embedded lifecycle times work without an entry timestamp', () => {
+  expect(
+    toHistoryItem({
+      turnId: 'turn',
+      item: {
+        id: 'message',
+        type: 'agentMessage',
+        text: 'Done',
+        startedAtMs: 1_700_000_001_123,
+        completedAtMs: 1_700_000_002_456,
+      },
+    })?.createdAt,
+  ).toBe(1_700_000_002_456);
+});
+
+test('entry times take precedence over embedded times of the same lifecycle phase', () => {
+  expect(
+    toHistoryItem({
+      turnId: 'turn',
+      startedAtMs: 100,
+      completedAtMs: 200,
+      item: {
+        id: 'message',
+        type: 'agentMessage',
+        text: 'Done',
+        startedAtMs: 10,
+        completedAtMs: 20,
+      },
+    })?.createdAt,
+  ).toBe(200);
+});
 
 test('reasoning is left out as it is read', () => {
   expect(present({ type: 'reasoning', summary: ['plan'], content: ['private'] })).toBeNull();

@@ -1,5 +1,10 @@
 # Changelog
 
+## 13.1.2
+
+- Preserve native Codex item lifecycle timestamps in history, item details, evidence and live notifications. Operator messages use their own start time and replies their own completion time, retaining millisecond precision. Missing item times remain unknown instead of borrowing a turn time.
+- Remove the extra turn-history requests used only for item timing. Public response shapes, storage schema, action key and native session ownership are unchanged.
+
 ## 13.1.1
 
 - Preserve quarantined Codex controls and their producing runtime epoch during shutdown. Stopping HQ no longer turns unverified native ownership into a managed inactive record or discards its recorded turn, so the next runtime can explicitly recover a still-loaded idle or active session. Queued input stays paused and no input is replayed.

@@ -393,36 +393,85 @@ test.each(['codex', 'claude'] as const)(
   },
 );
 
-test(
-  'live Codex items take their running turn start as their time',
-  { tags: ['full'] },
-  async () => {
-    const fixture = await setup();
-    try {
-      const { thread } = await fixture.create('times');
-      const message = fixture.envelope({
-        kind: 'message',
-        threadId: thread.id,
-        input: { kind: 'text', text: 'Time it' },
-      });
-      await fixture.submit(message);
-      await expect
-        .poll(() => fixture.receipt(message.id))
-        .toMatchObject({ completion: 'completed' });
-      // the fake starts turn N at 1,800,000,000 + N seconds
-      const turnNumber = Number(
-        /^native-turn-(\d+)$/.exec((await fixture.receipt(message.id)).nativeTurnId!)![1],
-      );
-      const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
-      if (live.kind !== 'live-items') throw new Error('wrong response');
-      expect(live.result.data.map((item) => [item.text, item.createdAt])).toStrictEqual([
-        ['Live response', (1_800_000_000 + turnNumber) * 1000],
+test('live Codex messages retain their individual native times within one running turn', async () => {
+  const fixture = await setup();
+  try {
+    const { thread } = await fixture.create('times');
+    await fixture.control({ holdTurn: true });
+    const message = fixture.envelope({
+      kind: 'message',
+      threadId: thread.id,
+      input: { kind: 'text', text: 'Time it' },
+    });
+    await fixture.submit(message);
+    await expect
+      .poll(() => fixture.receipt(message.id))
+      .toMatchObject({ delivery: 'acknowledged' });
+    const turnId = (await fixture.receipt(message.id)).nativeTurnId!;
+    await fixture.control({
+      holdTurn: true,
+      emitOnce: true,
+      emit: [
+        {
+          method: 'item/completed',
+          params: {
+            threadId: thread.nativeId,
+            turnId,
+            item: {
+              id: 'timed-prompt',
+              type: 'userMessage',
+              content: [{ type: 'text', text: 'Follow-up' }],
+            },
+            startedAtMs: 1_800_003_600_123,
+            completedAtMs: 1_800_003_601_456,
+          },
+        },
+        {
+          method: 'item/started',
+          params: {
+            threadId: thread.nativeId,
+            turnId,
+            item: { id: 'timed-answer', type: 'agentMessage', text: '' },
+            startedAtMs: 1_800_003_602_123,
+          },
+        },
+        {
+          method: 'item/completed',
+          params: {
+            threadId: thread.nativeId,
+            turnId,
+            item: { id: 'timed-answer', type: 'agentMessage', text: 'Later reply' },
+            completedAtMs: 1_800_003_609_456,
+          },
+        },
+        {
+          method: 'item/completed',
+          params: {
+            threadId: thread.nativeId,
+            turnId,
+            item: { id: 'timed-unknown', type: 'agentMessage', text: 'No native time' },
+          },
+        },
+      ],
+    });
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    await expect
+      .poll(async () => {
+        const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
+        if (live.kind !== 'live-items') throw new Error('wrong response');
+        return live.result.data
+          .filter((item) => item.nativeId.startsWith('timed-'))
+          .map((item) => [item.text, item.createdAt]);
+      })
+      .toStrictEqual([
+        ['Follow-up', 1_800_003_600_123],
+        ['Later reply', 1_800_003_609_456],
+        ['No native time', null],
       ]);
-    } finally {
-      await fixture.close();
-    }
-  },
-);
+  } finally {
+    await fixture.close();
+  }
+});
 
 test('atomic admission deduplicates UUIDs, suffixes names and rejects competing new turns', async () => {
   const fixture = await setup();
