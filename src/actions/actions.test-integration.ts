@@ -2821,19 +2821,155 @@ const withQuarantinedCodex = async (
   }
 };
 
+test('quarantined Codex sessions follow live CLI state without recovering control or replaying input', async () => {
+  await withQuarantinedCodex(async ({ fixture, runtime, running, queuedId }) => {
+    const target = {
+      provider: 'codex' as const,
+      workspaceRoot: fixture.workspaceRoot,
+      nativeId: running.nativeId,
+    };
+    const retained = (
+      await runtime.request({ kind: 'managed-thread', threadId: running.thread.id })
+    ).result!;
+    const before = (await fixture.calls()).length;
+    for (const [status, state] of [
+      [{ type: 'active', activeFlags: [] }, 'running'],
+      [{ type: 'active', activeFlags: ['waitingOnApproval'] }, 'waiting'],
+      [{ type: 'idle' }, 'idle'],
+      [{ type: 'notLoaded' }, 'closed'],
+      [{ type: 'future-native-state' }, 'unknown'],
+    ] as const) {
+      await emit(
+        fixture,
+        {
+          ...reads(running.nativeId, status, 'cli-turn', 'inProgress'),
+          listedThreads: [
+            {
+              id: running.nativeId,
+              cwd: fixture.workspaceRoot,
+              name: running.thread.name,
+              updatedAt: 1_800_000_000,
+            },
+          ],
+        },
+        [{ method: 'thread/status/changed', params: { threadId: running.nativeId, status } }],
+      );
+      await expect
+        .poll(() => runtime.request({ kind: 'thread', ...target }))
+        .toMatchObject({
+          result: { state, ownership: 'uncertain', managedId: running.thread.id },
+        });
+      const listed = await runtime.request({
+        kind: 'threads',
+        workspaceRoots: [fixture.workspaceRoot],
+        providers: ['codex'],
+      });
+      expect(listed.result.data).toMatchObject([
+        { nativeId: running.nativeId, state, ownership: 'uncertain' },
+      ]);
+      const active = (await runtime.request({ kind: 'active-sessions' })).result;
+      expect(active.data).toMatchObject(
+        state === 'running' || state === 'waiting'
+          ? [
+              {
+                nativeId: running.nativeId,
+                state,
+                ownership: 'uncertain',
+                managedId: running.thread.id,
+              },
+            ]
+          : [],
+      );
+      expect(active.data).toHaveLength(state === 'running' || state === 'waiting' ? 1 : 0);
+      expect(
+        (await runtime.request({ kind: 'managed-thread', threadId: retained.id })).result,
+      ).toStrictEqual(retained);
+      expect((await runtime.request({ kind: 'receipt', actionId: queuedId })).result).toMatchObject(
+        { delivery: 'queued' },
+      );
+    }
+    const calls = (await fixture.calls()).slice(before);
+    expect(calls.filter(({ method }) => method === 'thread/resume')).toStrictEqual([]);
+    expect(calls.filter(({ method }) => method === 'turn/start')).toStrictEqual([]);
+  });
+});
+
+test('startup keeps native status when a newer CLI turn prevents automatic reattachment', async () => {
+  const fixture = await setup();
+  let reopened: IAgentHq | undefined;
+  try {
+    const running = await startHeldTurn(fixture, 'cli-startup-observation');
+    await fixture.runtime.close();
+    await fixture.control({
+      ...reads(running.nativeId, { type: 'active', activeFlags: [] }, 'cli-turn', 'inProgress'),
+      loadedThreads: [running.nativeId],
+    });
+    const before = (await fixture.calls()).length;
+    reopened = await createAgentHq({
+      stateRoot: fixture.stateRoot,
+      allowedRoots: [fixture.workspaceRoot],
+    });
+    await expect
+      .poll(() => fixture.thread(running.thread.id))
+      .toMatchObject({
+        ownership: 'uncertain',
+        state: 'unknown',
+        activeTurnId: running.turnId,
+      });
+    await expect
+      .poll(() => reopened!.request({ kind: 'active-sessions' }))
+      .toMatchObject({
+        result: {
+          data: [{ nativeId: running.nativeId, state: 'running', ownership: 'uncertain' }],
+        },
+      });
+    const calls = (await fixture.calls()).slice(before);
+    expect(calls.filter(({ method }) => method === 'thread/resume')).toStrictEqual([]);
+    expect(calls.filter(({ method }) => method === 'turn/start')).toStrictEqual([]);
+  } finally {
+    await reopened?.close();
+    await fixture.close();
+  }
+});
+
+test('startup observes an already running CLI session whose retained ownership is uncertain', async () => {
+  await withQuarantinedCodex(async ({ fixture, runtime, running }) => {
+    await runtime.close();
+    await fixture.control({
+      ...reads(running.nativeId, { type: 'active', activeFlags: [] }, 'cli-turn', 'inProgress'),
+      loadedThreads: [running.nativeId],
+    });
+    const before = (await fixture.calls()).length;
+    const reopened = await createAgentHq({
+      stateRoot: fixture.stateRoot,
+      allowedRoots: [fixture.workspaceRoot],
+    });
+    try {
+      await expect
+        .poll(() => reopened.request({ kind: 'active-sessions' }))
+        .toMatchObject({
+          result: {
+            data: [{ nativeId: running.nativeId, state: 'running', ownership: 'uncertain' }],
+          },
+        });
+      const calls = (await fixture.calls()).slice(before);
+      expect(calls.filter(({ method }) => method === 'thread/resume')).toStrictEqual([]);
+      expect(calls.filter(({ method }) => method === 'turn/start')).toStrictEqual([]);
+    } finally {
+      await reopened.close();
+    }
+  });
+});
+
 test.each(['idle', 'empty', 'active', 'same-turn'] as const)(
   'explicit Codex recovery rejoins a known loaded %s session and leaves earlier input paused',
   async (mode) => {
     await withQuarantinedCodex(async ({ fixture, runtime, running, queuedId, envelope }) => {
       const turnId = mode === 'same-turn' ? running.turnId : 'external-latest-turn';
       const isActive = mode === 'active' || mode === 'same-turn';
-      await fixture.control({
-        ...reads(
-          running.nativeId,
-          { type: isActive ? 'active' : 'idle', activeFlags: [] },
-          turnId,
-          isActive ? 'inProgress' : 'completed',
-        ),
+      const status = { type: isActive ? 'active' : 'idle', activeFlags: [] };
+      const native = {
+        ...reads(running.nativeId, status, turnId, isActive ? 'inProgress' : 'completed'),
         ...(mode === 'empty' ? { threadTurns: { [running.nativeId]: [] } } : {}),
         ...(isActive
           ? {
@@ -2847,7 +2983,18 @@ test.each(['idle', 'empty', 'active', 'same-turn'] as const)(
               },
             }
           : {}),
-      });
+      };
+      await fixture.control(native);
+      if (isActive) {
+        await emit(fixture, native, [
+          { method: 'thread/status/changed', params: { threadId: running.nativeId, status } },
+        ]);
+        await expect
+          .poll(() => runtime.request({ kind: 'active-sessions' }))
+          .toMatchObject({
+            result: { data: [{ nativeId: running.nativeId, ownership: 'uncertain' }] },
+          });
+      }
       const action = envelope({
         kind: 'thread-recover',
         threadId: running.thread.id,
@@ -2869,6 +3016,11 @@ test.each(['idle', 'empty', 'active', 'same-turn'] as const)(
           },
         });
       if (isActive) {
+        const active = (await runtime.request({ kind: 'active-sessions' })).result.data;
+        expect(active).toHaveLength(1);
+        expect(active).toMatchObject([
+          { nativeId: running.nativeId, state: 'waiting', ownership: 'managed' },
+        ]);
         expect(
           (await runtime.request({ kind: 'approvals', threadId: running.thread.id })).result.data,
         ).toMatchObject([{ nativeTurnId: turnId, state: 'pending' }]);
@@ -3152,6 +3304,24 @@ test('Codex reconnect leaves a newer external turn and an unacknowledged send un
       state: 'unknown',
     });
     expect(await fixture.receipt(lost.id)).toMatchObject({ delivery: 'uncertain' });
+    const status = { type: 'active', activeFlags: ['waitingOnApproval'] };
+    await emit(fixture, reads(changed.nativeId, status, 'different-native-turn', 'inProgress'), [
+      { method: 'thread/status/changed', params: { threadId: changed.nativeId, status } },
+    ]);
+    await expect
+      .poll(() =>
+        fixture.request({
+          kind: 'thread',
+          provider: 'codex',
+          workspaceRoot: fixture.workspaceRoot,
+          nativeId: changed.nativeId,
+        }),
+      )
+      .toMatchObject({ result: { state: 'waiting', ownership: 'uncertain' } });
+    expect(await fixture.thread(changed.thread.id)).toMatchObject({
+      ownership: 'uncertain',
+      state: 'unknown',
+    });
     const calls = (await fixture.calls()).slice(before);
     expect(calls.filter((call) => call.method === 'turn/start')).toHaveLength(1);
     expect(calls.filter((call) => call.method === 'thread/resume')).toStrictEqual([]);

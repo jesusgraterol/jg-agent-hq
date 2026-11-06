@@ -52,12 +52,12 @@ export class SessionsModel {
     try {
       for (const session of sessions) {
         /*
-         * A session HQ runs keeps its transitions on its managed record instead; one HQ closed is
-         * observed again, so a terminal that continues it shows.
+         * A session HQ controls keeps its transitions on its managed record. Closed and uncertain
+         * controls can still be observed without granting control or changing their ledger.
          */
         if (
           this.__statements.get(
-            "SELECT 1 FROM agent_hq_thread WHERE provider = ? AND native_id = ? AND state != 'inactive'",
+            "SELECT 1 FROM agent_hq_thread WHERE provider = ? AND native_id = ? AND ownership = 'managed' AND state != 'inactive'",
             provider,
             session.nativeId,
           )
@@ -144,8 +144,8 @@ export class SessionsModel {
     nativeIds: string[],
   ): { nativeId: string; state: ISessionState }[] {
     return nativeIds.flatMap((nativeId) => {
-      const record = this.__statements.get<{ state: ISessionState; is_closed: number }>(
-        "SELECT coalesce(agent_hq_session_state_map.session_state, (SELECT state FROM agent_hq_session_transition WHERE thread_id = agent_hq_thread.id ORDER BY sequence DESC LIMIT 1), 'unknown') AS state, agent_hq_thread.state = 'inactive' AS is_closed FROM agent_hq_thread INNER JOIN agent_hq_session_state_map ON agent_hq_session_state_map.thread_state = agent_hq_thread.state WHERE agent_hq_thread.provider = ? AND agent_hq_thread.native_id = ?",
+      const record = this.__statements.get<{ state: ISessionState; uses_observation: number }>(
+        "SELECT coalesce(agent_hq_session_state_map.session_state, (SELECT state FROM agent_hq_session_transition WHERE thread_id = agent_hq_thread.id ORDER BY sequence DESC LIMIT 1), 'unknown') AS state, (agent_hq_thread.state = 'inactive' OR agent_hq_thread.ownership = 'uncertain') AS uses_observation FROM agent_hq_thread INNER JOIN agent_hq_session_state_map ON agent_hq_session_state_map.thread_state = agent_hq_thread.state WHERE agent_hq_thread.provider = ? AND agent_hq_thread.native_id = ?",
         provider,
         nativeId,
       );
@@ -155,8 +155,8 @@ export class SessionsModel {
           provider,
           nativeId,
         );
-      // a session HQ closed takes the state observed since, while a terminal continues it
-      const row = record?.is_closed ? (observed() ?? record) : (record ?? observed());
+      // native status remains readable even when HQ no longer controls the session
+      const row = record?.uses_observation ? (observed() ?? record) : (record ?? observed());
       return row ? [{ nativeId, state: row.state }] : [];
     });
   }

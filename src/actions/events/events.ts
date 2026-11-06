@@ -353,8 +353,8 @@ export const createEvents = (
             turnId: null,
           });
         }
-        return;
       }
+      // the store suppresses controlled observations and retains status for uncertain controls
       enqueue(provider, () =>
         store.call(
           'sessions',
