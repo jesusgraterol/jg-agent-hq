@@ -152,6 +152,15 @@ export class ControlOutcomes extends ControlModel {
           action.id,
         );
       } else {
+        if (
+          outcome.kind === 'resumed' &&
+          outcome.latestTurn !== undefined &&
+          (!ownsThread ||
+            thread.pending_action_id !== action.id ||
+            (thread.active_turn_id !== null &&
+              thread.active_turn_id !== outcome.latestTurn?.nativeTurnId))
+        )
+          this._conflict();
         let nativeTurnId = action.native_turn_id;
         if (outcome.kind === 'turn-accepted' || outcome.kind === 'steer-accepted')
           nativeTurnId = outcome.nativeTurnId;
@@ -174,17 +183,47 @@ export class ControlOutcomes extends ControlModel {
               thread.id,
               action.id,
             );
-          else if (outcome.kind === 'resumed')
-            this._statements.run(
-              'UPDATE agent_hq_thread SET pending_action_id = NULL, ownership = ?, state = ?, native_lineage = ?, updated_at = ? WHERE id = ? AND pending_action_id = ?',
-              outcome.nativeState === 'idle' ? 'managed' : 'uncertain',
-              outcome.nativeState === 'idle' ? 'idle' : 'unknown',
-              outcome.nativeLineage === null ? null : JSON.stringify(outcome.nativeLineage),
-              now,
-              thread.id,
-              action.id,
-            );
-          else if (outcome.kind === 'renamed') {
+          else if (outcome.kind === 'resumed') {
+            if (outcome.latestTurn !== undefined) {
+              const latest = outcome.latestTurn;
+              const hasFinished =
+                latest &&
+                thread.last_turn_id === latest.nativeTurnId &&
+                thread.last_turn_state !== null &&
+                thread.active_turn_id === null;
+              const isRunning = latest?.state === 'running' && !hasFinished;
+              const state = isRunning
+                ? ['waiting-input', 'waiting-approval'].includes(thread.state)
+                  ? thread.state
+                  : 'running'
+                : hasFinished
+                  ? thread.last_turn_state!
+                  : (latest?.state ?? 'idle');
+              this._statements.run(
+                'UPDATE agent_hq_thread SET pending_action_id = NULL, active_turn_id = ?, last_turn_id = ?, last_turn_state = ?, state = ?, native_lineage = ?, updated_at = ? WHERE id = ?',
+                isRunning ? latest!.nativeTurnId : null,
+                latest && !isRunning ? latest.nativeTurnId : thread.last_turn_id,
+                hasFinished
+                  ? thread.last_turn_state
+                  : latest && !isRunning
+                    ? latest.state
+                    : thread.last_turn_state,
+                state,
+                outcome.nativeLineage === null ? null : JSON.stringify(outcome.nativeLineage),
+                now,
+                thread.id,
+              );
+            } else
+              this._statements.run(
+                'UPDATE agent_hq_thread SET pending_action_id = NULL, ownership = ?, state = ?, native_lineage = ?, updated_at = ? WHERE id = ? AND pending_action_id = ?',
+                outcome.nativeState === 'idle' ? 'managed' : 'uncertain',
+                outcome.nativeState === 'idle' ? 'idle' : 'unknown',
+                outcome.nativeLineage === null ? null : JSON.stringify(outcome.nativeLineage),
+                now,
+                thread.id,
+                action.id,
+              );
+          } else if (outcome.kind === 'renamed') {
             if (!action.requested_name) this._conflict();
             this._statements.run(
               'UPDATE agent_hq_thread SET name = ?, pending_action_id = NULL, state = ?, updated_at = ? WHERE id = ? AND pending_action_id = ?',
