@@ -47,6 +47,36 @@ test('unchanged live reads avoid copying bodies; append, completion, reconciliat
   expect(live.read('thread').hasGap).toBe(true);
 });
 
+test('provenance invalidation revises only a retained window with an identifiable user input', () => {
+  const live = new LiveItems();
+  live.open('thread');
+  const empty = live.read('thread');
+  live.invalidateProvenance('thread');
+  expect(live.read('thread', empty.revision).unchanged).toBe(true);
+  live.put('thread', item, true);
+  const assistant = live.read('thread');
+  live.invalidateProvenance('thread');
+  expect(live.read('thread', assistant.revision).unchanged).toBe(true);
+  live.put(
+    'thread',
+    {
+      ...item,
+      nativeId: 'input',
+      kind: 'user-message',
+      provenance: nativeProvenance('user-message', 'native-input', 'hello'),
+    },
+    true,
+  );
+  live.open('other-thread');
+  const other = live.read('other-thread');
+  const before = live.read('thread');
+  live.invalidateProvenance('thread');
+  const after = live.read('thread', before.revision);
+  expect(after.revision).toBeGreaterThan(before.revision);
+  expect(after.data).toStrictEqual(before.data);
+  expect(live.read('other-thread', other.revision).unchanged).toBe(true);
+});
+
 test('a finished command whose saved output the provider shortened is no longer awaiting flush', () => {
   const live = new LiveItems();
   const command = {

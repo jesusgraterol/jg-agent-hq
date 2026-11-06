@@ -22,5 +22,8 @@ export type { IClaudeSessions } from './types.js';
 export { readActiveSessions, readNativeHistory } from './sessions.js';
 export type { IHistoryRequest } from './types.js';
 
+// verified input origins
+export { correlateEvidenceOrigins } from './evidence/index.js';
+
 // discovery across folders and providers
 export { readThreads } from './discovery/index.js';

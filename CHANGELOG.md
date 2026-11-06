@@ -1,5 +1,10 @@
 # Changelog
 
+## 13.1.4
+
+- Correlate live user inputs against the same acknowledged native identity, turn and content fingerprint as saved history. Verified browser inputs also expose their original optional `browserActionId`, allowing an optimistic row to reconcile before the HTTP receipt arrives.
+- Publish a fresh live-window revision when late native acknowledgement changes its provenance, without waiting for another output token or reading native history. Storage, action admission and historical provenance's lack of execution authority are unchanged.
+
 ## 13.1.3
 
 - Keep native execution status visible for sessions with uncertain control ownership, including CLI sessions already running at startup and status changes after connection loss. Session reads, discovery and active lists retain the managed identity and uncertain ownership without joining the session, replaying input or releasing queued work.

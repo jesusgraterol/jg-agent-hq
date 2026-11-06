@@ -5,7 +5,6 @@ import {
   type IProviderId,
   type IThreadSummary,
 } from '../contracts/index.js';
-import { parseActionRequest } from '../providers/index.js';
 import type { createProviderRegistry } from '../providers/registry/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
 import type { IStore } from '../store/index.js';
@@ -15,7 +14,7 @@ import { getErrorKind, HQ_ERRORS } from '../errors/index.js';
 import type { IClaudeSessions, IHistoryRequest } from './types.js';
 import { imageUnavailable } from './utilities.js';
 import { joinRecords, toManagedSummaries, withListing } from './summaries.js';
-import { resetProvenance } from './evidence/index.js';
+import { correlateEvidenceOrigins } from './evidence/index.js';
 
 /**
  * Authorizes native history before loading content. A `thread` read whose history its provider
@@ -103,29 +102,8 @@ export const readNativeHistory = async (
       : response.kind === 'item-detail' && response.result
         ? [response.result.item]
         : [];
-  if (items.length && 'nativeId' in command) {
-    /*
-     * Provider assertions alone never establish an operator or an HQ action link. A user message
-     * links to the action whose input it holds by its native input and the hash of the text that
-     * input sent, so attachments and a cut text don't hide it.
-     */
-    for (const item of items) item.provenance = resetProvenance(item.kind, item.provenance);
-    const origins = await projection.call('reads', 'getEvidenceOrigins', {
-      provider: command.provider,
-      nativeId: command.nativeId,
-      items: items.map(({ kind, provenance, ...item }) => {
-        const nativeInputId = kind === 'user-message' ? provenance.nativeInputId : null;
-        return {
-          nativeInputId,
-          request: nativeInputId === null ? null : parseActionRequest(nativeInputId),
-          turnId: 'reference' in item ? item.reference.turnId : item.turnId,
-          sha256: provenance.nativeInputSha256,
-        };
-      }),
-    });
-    for (const [index, origin] of origins.entries())
-      if (origin && items[index]) items[index].provenance = origin;
-  }
+  if (items.length && 'nativeId' in command)
+    await correlateEvidenceOrigins(items, command.provider, command.nativeId, projection);
   if (response.kind === 'session-evidence' && Buffer.byteLength(JSON.stringify(response)) > 65_280)
     throw HQ_ERRORS.create('providerFailed', { data: { kind: 'agent-unavailable' } });
   return response;

@@ -93,6 +93,8 @@ export const createDispatch = (context: IActionsContext) => {
     waits.notifyAction(outcome.actionId);
     if (!receipt?.threadId) return receipt;
     const thread = await store.call('reads', 'getThread', receipt.threadId);
+    if (thread?.nativeId && (outcome.kind === 'turn-accepted' || outcome.kind === 'steer-accepted'))
+      context.live.invalidateProvenance(context.key(thread.provider, thread.nativeId));
     if (thread?.nativeId && outcome.kind === 'closed') {
       controlled.delete(context.key(thread.provider, thread.nativeId));
       watched.delete(context.key(thread.provider, thread.nativeId));

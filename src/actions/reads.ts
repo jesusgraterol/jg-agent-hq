@@ -2,7 +2,11 @@ import { z } from 'zod';
 
 import type { IHqRequest, IHqResponse, IManagedThread } from '../contracts/index.js';
 import { resolveWorkspaceTarget } from '../runtime/state/index.js';
-import { createRequestCursors, limitItemText } from '../sessions/index.js';
+import {
+  correlateEvidenceOrigins,
+  createRequestCursors,
+  limitItemText,
+} from '../sessions/index.js';
 import type { IStore } from '../store/index.js';
 import { HQ_ERRORS } from '../errors/index.js';
 
@@ -146,6 +150,7 @@ export const readControl = async (
       (topic) => topic.kind === 'live',
       command.waitMs,
     ));
+  await correlateEvidenceOrigins(items.data, thread.provider, thread.nativeId, store);
   return {
     kind: 'live-items',
     result: { ...items, data: limitItemText(items.data, command.textLimit) },

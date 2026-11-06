@@ -17,6 +17,7 @@ export const HistoryProvenanceSchema = z.object({
     .regex(/^[a-f0-9]{64}$/)
     .nullable(),
   actionId: z.uuid().nullable(),
+  browserActionId: z.uuid().optional(),
   contentBoundary: z.literal('untrusted'),
   grantsAuthority: z.literal(false),
 });

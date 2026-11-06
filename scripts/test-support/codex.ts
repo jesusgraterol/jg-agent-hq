@@ -99,6 +99,7 @@ else {
   let threadSequence = 0;
   let turnSequence = 0;
   const interrupts = [];
+  const turnAcknowledgements = [];
   const complete = (threadId,status = 'completed') => {
     const thread = managed.get(threadId);
     if (!thread?.activeTurn) return;
@@ -129,6 +130,7 @@ else {
       respond(request.id,{ ...(control.omitVersion?{}:{userAgent:control.version??'codex-cli/fixture'}), futureMetadata:control.futureMetadata });return;
     }
     const { method,params = {} } = request;
+    if (control.releaseTurnAcks) for (const acknowledge of turnAcknowledgements.splice(0)) acknowledge();
     // held interrupts are confirmed together on the first request after releaseInterrupts is set
     if (control.releaseInterrupts && !control.holdInterrupt) for (const pending of interrupts.splice(0)) { respond(pending.id,{});complete(pending.params.threadId,'interrupted'); }
     // threadStatuses reports sessions another client drives, by thread ID; ephemeralThreads lists the ones Codex doesn't save
@@ -193,7 +195,8 @@ else {
       if (control.prompt) send(JSON.stringify({id:'native-approval-'+turnSequence,method:control.prompt.method,params:{threadId:thread.id,turnId:turn.id,...(control.prompt.method==='mcpServer/elicitation/request'?{}:{itemId:'tool-'+turnSequence}),...control.prompt.params}}));
       if (control.loseOutput) { process.stdout.end();return; }
       const acknowledge = () => respond(request.id,{turn});
-      if (control.lateTurnAck) setTimeout(acknowledge,31_000); else acknowledge();
+      if (control.holdTurnAck) turnAcknowledgements.push(acknowledge);
+      else if (control.lateTurnAck) setTimeout(acknowledge,31_000); else acknowledge();
       if (!control.holdTurn && !control.prompt) {
         const text=control.outputText??(control.outputSize?'x'.repeat(control.outputSize):control.structuredOutput!==undefined?JSON.stringify(control.structuredOutput):'Live response');
         for(const extra of control.turnItems??[])notify('item/completed',{threadId:thread.id,turnId:turn.id,item:extra});
