@@ -125,6 +125,8 @@ export type IObservationResult = {
 // a session another runtime left running, with its latest turn as its native process reports it
 export type IReattachment = {
   threadId: string;
+  // only a cohort captured before a live connection loss may rejoin within the current runtime
+  isReconnect?: boolean;
   latestTurn: {
     nativeTurnId: string;
     state: 'running' | 'completed' | 'failed' | 'interrupted';

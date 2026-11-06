@@ -29,6 +29,7 @@ import { TURN_FLUSH_PAGES } from './constants.js';
 export const createEvents = (
   context: IActionsContext,
   dispatcher: ReturnType<typeof createDispatch>,
+  reconnect: (threads: IManagedThread[]) => Promise<void>,
 ) => {
   const { registry, store, epoch, actionKey, runBackground, state, prompts, controlled, live } =
     context;
@@ -439,7 +440,10 @@ export const createEvents = (
     },
     unavailable(provider, nativeId) {
       if (state.isClosing || context.blockedProviders.has(provider)) return;
+      const canReconnect = provider === 'codex' && nativeId === undefined;
+      let reconnectable: IManagedThread[] = [];
       enqueue(provider, async () => {
+        if (canReconnect) reconnectable = await store.call('lifecycle', 'listReconnectable');
         await recordObservation({
           kind: 'native-unavailable',
           provider,
@@ -454,8 +458,19 @@ export const createEvents = (
             (!nativeId || prompt.native.nativeThreadId === nativeId)
           )
             prompts.delete(id);
+        for (const entry of controlled.values())
+          if (entry.provider === provider && (!nativeId || entry.nativeId === nativeId))
+            live.markGap(key(provider, entry.nativeId));
       });
-      runNativeOwned(provider, nativeId, async () => registry.stopControl(provider, nativeId));
+      if (canReconnect) {
+        const persisted = state.lane;
+        runOwned(async () => {
+          await persisted;
+          if (!state.isClosing && !state.isUnavailable && !context.blockedProviders.has(provider))
+            await reconnect(reconnectable);
+        });
+      } else
+        runNativeOwned(provider, nativeId, async () => registry.stopControl(provider, nativeId));
     },
   });
 

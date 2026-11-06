@@ -30,6 +30,10 @@ Version 13.0.0 uses the same storage schema as 12.0.1, including the existing ac
 
 The expanded name contract is still a breaking change for older consumers: 12.x strict schemas reject managed names longer than 32 characters. Before installing 12.x, pause new session creation and naming actions, inventory every managed session using bounded `managed-threads` pages for each workspace, and use 13.x supported `thread-rename` actions to shorten each longer name. Resolve occupied or pending-name conflicts and verify the complete inventory contains no name longer than 32 before switching runtime and consumers together. Renaming retains the managed and native identities. Do not edit the database or stamp, reset storage, or replay session creation to make a downgrade work. Keep the existing database and `action.key` together.
 
+## Codex connection recovery
+
+A shared Codex daemon restart can interrupt every managed Codex session's live connection while HQ stays running. The runtime rechecks only its previously controlled sessions with no action in flight and rejoins matching native turns without changing settings or repeating input. Confirmed completions advance their waiting queues; unacknowledged actions and changed turns remain uncertain. Native command handles may have been lost, so rejoining establishes session control rather than successful command execution. See [runtime lifecycle](../api/README.md#runtime-lifecycle).
+
 ## Off-machine durability
 
 The development helper examples/shared-storage.ts demonstrates a host-owned application table, maintenance, capture and offline restore using public exports. Capture already returns verified metadata, so the helper avoids an immediate extra full-database inspection. Its application transaction commits independently of capture. Inspect the restored values before starting a recovered runtime with explicitly chosen roots.

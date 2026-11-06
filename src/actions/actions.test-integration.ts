@@ -2729,6 +2729,245 @@ const lostCompletion = (nativeId: string, turnId: string) => ({
   params: { threadId: nativeId, turn: { id: turnId, status: 'finishedSomehow' } },
 });
 
+test('a Codex connection restart rejoins matching managed sessions without replaying input', async () => {
+  const fixture = await setup();
+  try {
+    const running = await startHeldTurn(fixture, 'reconnect-running');
+    const finished = await startHeldTurn(fixture, 'reconnect-finished');
+    const { thread: idle } = await fixture.create('reconnect-idle');
+    const queued = fixture.envelope({
+      kind: 'queue',
+      threadId: finished.thread.id,
+      expectedTurnId: finished.turnId,
+      input: { kind: 'text', text: 'Only send this after confirmed completion' },
+    });
+    expect((await fixture.submit(queued)).delivery).toBe('queued');
+    const before = (await fixture.calls()).length;
+    await fixture.control({
+      disconnectOnce: true,
+      holdTurn: true,
+      threadStatuses: {
+        [running.nativeId]: { type: 'active', activeFlags: [] },
+        [finished.nativeId]: { type: 'idle' },
+        [idle.nativeId!]: { type: 'idle' },
+      },
+      threadTurns: {
+        [running.nativeId]: [{ id: running.turnId, status: 'inProgress' }],
+        [finished.nativeId]: [{ id: finished.turnId, status: 'completed' }],
+        [idle.nativeId!]: [],
+      },
+    });
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    await expect
+      .poll(
+        async () => {
+          // ordinary reads cause the disconnected transport to reconnect
+          await fixture.request({ kind: 'usage', provider: 'codex' });
+          return (await fixture.calls())
+            .slice(before)
+            .filter((call) => call.method === 'thread/resume').length;
+        },
+        { timeout: 2000 },
+      )
+      .toBe(3);
+    expect(await fixture.thread(running.thread.id)).toMatchObject({
+      ownership: 'managed',
+      state: 'running',
+      activeTurnId: running.turnId,
+    });
+    expect(await fixture.thread(idle.id)).toMatchObject({ ownership: 'managed', state: 'idle' });
+    expect(await fixture.receipt(finished.message.id)).toMatchObject({
+      delivery: 'acknowledged',
+      completion: 'completed',
+      result: null,
+    });
+    await fixture.until(
+      () => fixture.receipt(queued.id),
+      (entry) => entry.delivery === 'acknowledged',
+    );
+    const resumed = (await fixture.calls()).slice(before);
+    expect(resumed.filter((call) => call.method === 'turn/start')).toHaveLength(1);
+    for (const call of resumed.filter((call) => call.method === 'thread/resume'))
+      expect(call.params).toStrictEqual({ threadId: call.params.threadId, excludeTurns: true });
+    await emit(fixture, { holdTurn: true }, [
+      {
+        method: 'turn/completed',
+        params: {
+          threadId: running.nativeId,
+          turn: { id: running.turnId, status: 'completed' },
+        },
+      },
+    ]);
+    await fixture.until(
+      () => fixture.receipt(running.message.id),
+      (entry) => entry.completion === 'completed',
+    );
+    expect(await fixture.thread(running.thread.id)).toMatchObject({
+      ownership: 'managed',
+      activeTurnId: null,
+    });
+    expect(await fixture.receipt(running.message.id)).toMatchObject({
+      completion: 'completed',
+      result: null,
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('successive Codex connection restarts rejoin once per loss without another turn start', async () => {
+  const fixture = await setup();
+  try {
+    const running = await startHeldTurn(fixture, 'repeated-reconnect');
+    for (const count of [1, 2]) {
+      await fixture.control({
+        ...reads(
+          running.nativeId,
+          { type: 'active', activeFlags: [] },
+          running.turnId,
+          'inProgress',
+        ),
+        disconnectOnce: true,
+      });
+      await fixture.request({ kind: 'usage', provider: 'codex' });
+      await expect
+        .poll(
+          async () =>
+            (await fixture.calls()).filter((call) => call.method === 'thread/resume').length,
+          { timeout: 2000 },
+        )
+        .toBe(count);
+      await expect
+        .poll(async () => (await fixture.thread(running.thread.id)).ownership)
+        .toBe('managed');
+      expect(await fixture.thread(running.thread.id)).toMatchObject({
+        state: 'running',
+        activeTurnId: running.turnId,
+      });
+    }
+    expect((await fixture.calls()).filter((call) => call.method === 'turn/start')).toHaveLength(1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('Codex reconnect leaves a newer external turn and an unacknowledged send uncertain', async () => {
+  const fixture = await setup();
+  try {
+    const changed = await startHeldTurn(fixture, 'reconnect-external-turn');
+    const { thread: unsettled } = await fixture.create('reconnect-unsettled');
+    await fixture.control({
+      loseOutput: true,
+      holdTurn: true,
+      threadStatuses: { [changed.nativeId]: { type: 'active', activeFlags: [] } },
+      threadTurns: { [changed.nativeId]: [{ id: 'different-native-turn', status: 'inProgress' }] },
+    });
+    const lost = fixture.envelope({
+      kind: 'message',
+      threadId: unsettled.id,
+      input: { kind: 'text', text: 'Never replay an unacknowledged send' },
+    });
+    const before = (await fixture.calls()).length;
+    await fixture.submit(lost);
+    await fixture.until(
+      () => fixture.receipt(lost.id),
+      (entry) => entry.delivery === 'uncertain',
+    );
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    await expect
+      .poll(async () =>
+        (await fixture.calls())
+          .slice(before)
+          .some(
+            (call) =>
+              call.method === 'thread/turns/list' && call.params.threadId === changed.nativeId,
+          ),
+      )
+      .toBe(true);
+    await fixture.until(
+      () => fixture.thread(changed.thread.id),
+      (entry) => entry.ownership === 'uncertain',
+    );
+    expect(await fixture.thread(unsettled.id)).toMatchObject({
+      ownership: 'uncertain',
+      state: 'unknown',
+    });
+    expect(await fixture.receipt(lost.id)).toMatchObject({ delivery: 'uncertain' });
+    const calls = (await fixture.calls()).slice(before);
+    expect(calls.filter((call) => call.method === 'turn/start')).toHaveLength(1);
+    expect(calls.filter((call) => call.method === 'thread/resume')).toStrictEqual([]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test.each([
+  [{ type: 'future-native-state' }, 'inProgress'],
+  [{ type: 'active', activeFlags: [] }, null],
+] as const)(
+  'Codex reconnect rejects unverified native execution state %o',
+  async (status, turnStatus) => {
+    const fixture = await setup();
+    try {
+      const running = await startHeldTurn(fixture, 'reconnect-unknown-state');
+      const before = (await fixture.calls()).length;
+      await fixture.control({
+        disconnectOnce: true,
+        holdTurn: true,
+        threadStatuses: { [running.nativeId]: status },
+        threadTurns: {
+          [running.nativeId]: turnStatus ? [{ id: running.turnId, status: turnStatus }] : [],
+        },
+      });
+      await fixture.request({ kind: 'usage', provider: 'codex' });
+      await expect
+        .poll(async () =>
+          (await fixture.calls())
+            .slice(before)
+            .some(
+              (call) =>
+                call.method === 'thread/turns/list' && call.params.threadId === running.nativeId,
+            ),
+        )
+        .toBe(true);
+      expect(await fixture.thread(running.thread.id)).toMatchObject({
+        ownership: 'uncertain',
+        state: 'unknown',
+      });
+      expect(
+        (await fixture.calls()).slice(before).filter((call) => call.method === 'thread/resume'),
+      ).toStrictEqual([]);
+    } finally {
+      await fixture.close();
+    }
+  },
+);
+
+test('Codex reconnect quarantines a turn that changes while its subscription is rejoined', async () => {
+  const fixture = await setup();
+  try {
+    const running = await startHeldTurn(fixture, 'reconnect-join-race');
+    await fixture.control({
+      ...reads(running.nativeId, { type: 'active', activeFlags: [] }, running.turnId, 'inProgress'),
+      disconnectOnce: true,
+      resumeTurns: { [running.nativeId]: [{ id: 'new-turn-during-join', status: 'inProgress' }] },
+    });
+    await fixture.request({ kind: 'usage', provider: 'codex' });
+    await expect
+      .poll(
+        async () =>
+          (await fixture.calls()).filter((call) => call.method === 'thread/resume').length,
+      )
+      .toBe(1);
+    await expect
+      .poll(async () => (await fixture.thread(running.thread.id)).ownership)
+      .toBe('uncertain');
+    expect((await fixture.calls()).filter((call) => call.method === 'turn/start')).toHaveLength(1);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('a lost Codex turn completion is read back: the turn completes, queued input follows, and a late original changes nothing', async () => {
   const fixture = await setup();
   try {

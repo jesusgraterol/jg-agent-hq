@@ -154,11 +154,17 @@ export const createCodexRpc = async (
         cause,
       });
     }
+    // EOF and child exit describe one loss; an old exit must not invalidate a replacement.
+    let hasStopped = false;
     const transport = createProviderProcess(
       'codex',
       ['app-server', 'proxy'],
       receive,
-      stopped,
+      (cause) => {
+        if (hasStopped) return;
+        hasStopped = true;
+        stopped(cause);
+      },
       undefined,
       createWebSocketFraming(),
       () => handlers.discarded(),
@@ -209,6 +215,7 @@ export const createCodexRpc = async (
       });
     reopening ??= (async () => {
       try {
+        await connection.transport.close();
         connection = await open();
         handlers.opened();
       } finally {

@@ -110,7 +110,7 @@ The [qualification matrix](api/README.md#qualification) records native journeys,
 - `src/providers/configuration/` and `src/providers/lineage/`: bounded native choices and confirmed immutable session relationships.
 - `src/sessions/`: authorized discovery that merges folders' and providers' native pages with live session states, the active-session list, bounded evidence and provenance, cursor-bound history reads and short label suggestions.
 - `src/skills/`: bounded native catalogs and explicit input preparation.
-- `src/actions/`: durable action admission, phased native dispatch, ordered native events, rejoining kept sessions, bounded live presentation, and receipt waits and long-polls its own changes wake.
+- `src/actions/`: durable action admission, phased native dispatch, ordered native events, rejoining kept sessions at startup and after a Codex connection loss, bounded live presentation, and receipt waits and long-polls its own changes wake.
 - `src/store/`: SQLite discovery metadata, observed sessions and state transitions, the action/control ledger and the snapshot's database copy in one worker, whose model methods the main thread calls with one typed `call`; `src/store/control/` splits the ledger into reads, rule-driven admission, native outcomes, native observations and runtime lifecycle.
 - `src/pending/`: the request bookkeeping, deadlines and late-response detection shared by the store worker and native connections.
 - `src/errors/`: the catalog of jg-agent-hq's coded errors and their safe boundary classifications.
