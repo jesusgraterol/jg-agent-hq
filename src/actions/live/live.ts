@@ -106,6 +106,18 @@ export class LiveItems {
     }
   }
 
+  /** Publishes a new revision when ledger evidence can change retained items' provenance. */
+  public invalidateProvenance(nativeId: string): void {
+    const thread = this.__threads.get(nativeId);
+    if (
+      thread &&
+      [...thread.items.values()].some(
+        ({ item }) => item.kind === 'user-message' && item.provenance.nativeInputId !== null,
+      )
+    )
+      thread.revision = this.__change();
+  }
+
   /** Replaces an ephemeral stream identity when the native persisted identity arrives. */
   public replace(nativeId: string, turnId: string, itemId: string): void {
     const thread = this.__threads.get(nativeId);

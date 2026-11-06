@@ -30,6 +30,8 @@ No suite environment variable leaks into a later invocation. Omit the filter for
 
 Root `test`, `check:package`, and `check` select essential coverage. `test:full`, `check:package:full`, and `check:full` retain complete coverage at the same package or package/website boundary. Granular and focused commands remain complete by default. CI uses `pnpm check`, retaining one package build, the consumer-tested release producer, both Node versions, and the website essential check. Full is reserved for explicit local requests, with complete focused coverage still required for affected behavior. No full CI input, schedule, or recurring manual routine is added.
 
+Live input provenance remains essential. The real runtime, IPC and SQLite ledger correlate native messages without pre-tagged SDK rows, retain the same identity after persistence, and reject mismatched request, turn, content and session evidence. A held native acknowledgement qualifies live-before-acknowledgement ordering and revision-based wake-up without another output token. Identical text sent through another action never acquires the browser action's identity. All rows retain `grantsAuthority: false`.
+
 ## Website boundary
 
 `pnpm --dir website test` and `check` select essential; `test:full` and `check:full` include every existing category. Granular unit, integration, E2E, and `:artifact` commands remain complete. Both aggregate checks build once. Full runs locally only when explicitly requested; changed website behavior still requires complete focused coverage.

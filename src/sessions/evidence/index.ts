@@ -10,3 +10,6 @@ export {
 } from './utilities.js';
 // private worker provenance lookup
 export type { IEvidenceOriginsRequest } from './types.js';
+
+// verified history and live input origins
+export { correlateEvidenceOrigins } from './origins.js';

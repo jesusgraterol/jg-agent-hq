@@ -48,8 +48,8 @@ export class ControlReads extends ControlModel {
   public getEvidenceOrigins(command: IEvidenceOriginsRequest): (IHistoryProvenance | null)[] {
     return command.items.map((item) => {
       if (item.nativeInputId === null || item.sha256 === null) return null;
-      const rows = this._statements.all<{ id: string; authenticated: number }>(
-        `SELECT a.id, EXISTS(SELECT 1 FROM agent_hq_browser_action b WHERE b.native_action_id = a.id AND b.native_thread_id = a.thread_id AND b.native_input_sha256 = a.input_sha256) AS authenticated
+      const rows = this._statements.all<{ id: string; browser_action_id: string | null }>(
+        `SELECT a.id, (SELECT b.id FROM agent_hq_browser_action b WHERE b.native_action_id = a.id AND b.native_thread_id = a.thread_id AND b.native_input_sha256 = a.input_sha256) AS browser_action_id
       FROM agent_hq_action a JOIN agent_hq_thread t ON t.id = a.thread_id
       WHERE t.provider = ? AND t.native_id = ? AND a.native_turn_id = ? AND a.input_sha256 = ?
       AND a.delivery = 'acknowledged' AND ((a.id = ? AND a.phase = ?) OR a.native_turn_id = ?)
@@ -65,9 +65,10 @@ export class ControlReads extends ControlModel {
       if (rows.length !== 1) return null;
       const row = rows[0]!;
       return {
-        origin: row.authenticated === 1 ? 'operator' : 'unknown',
-        source: row.authenticated === 1 ? 'authenticated-host-action' : 'host-action',
+        origin: row.browser_action_id !== null ? 'operator' : 'unknown',
+        source: row.browser_action_id !== null ? 'authenticated-host-action' : 'host-action',
         actionId: row.id,
+        ...(row.browser_action_id === null ? {} : { browserActionId: row.browser_action_id }),
         nativeInputId: item.nativeInputId,
         nativeInputSha256: item.sha256,
         contentBoundary: 'untrusted',
