@@ -75,12 +75,13 @@ export class ControlLifecycle extends ControlModel {
   /**
    * Marks controls inactive only after its caller has proven native shutdown. A session a native
    * process keeps running stays bound to this runtime, for the next one to rejoin.
+   * Quarantined Codex controls retain their producing epoch and evidence for explicit recovery.
    */
   public releaseControls(): void {
     this._transaction(() => {
       const now = Date.now();
       this._statements.run(
-        `UPDATE agent_hq_thread SET runtime_epoch = NULL, pending_action_id = NULL, active_turn_id = NULL, ownership = CASE WHEN native_id IS NULL THEN 'uncertain' ELSE 'managed' END, state = CASE WHEN native_id IS NULL THEN 'unknown' ELSE 'inactive' END, updated_at = ? WHERE runtime_epoch = ? AND NOT (${KEPT_SESSION_CONDITION})`,
+        `UPDATE agent_hq_thread SET runtime_epoch = NULL, pending_action_id = NULL, active_turn_id = NULL, ownership = CASE WHEN native_id IS NULL THEN 'uncertain' ELSE 'managed' END, state = CASE WHEN native_id IS NULL THEN 'unknown' ELSE 'inactive' END, updated_at = ? WHERE runtime_epoch = ? AND NOT (${KEPT_SESSION_CONDITION}) AND NOT (provider = 'codex' AND ownership = 'uncertain')`,
         now,
         this._epoch,
       );
