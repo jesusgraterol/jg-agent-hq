@@ -6,9 +6,29 @@ import type {
   IHqResponseOf,
   IBrowserAction,
   IBrowserReceipt,
+  IProviderId,
+  IWorkspaceChange,
 } from '../contracts/index.js';
 import type { IHqSnapshotInspection } from '../snapshots/index.js';
 import type { IStorageDescriptor, IStorageMaintenanceOperation } from '../storage/index.js';
+
+// copied action identity and workspace intent supplied immediately before its native effect
+export type IWorkspaceDispatchCheckRequest = {
+  actionId: string;
+  threadId: string;
+  provider: IProviderId;
+  nativeId: string;
+  workspaceChange: IWorkspaceChange;
+};
+
+/*
+ * A trusted host's read-only authorization check. Only true permits dispatch; rejection, failure,
+ * shutdown or the 30-second deadline refuses it. The host must honor cancellation and own cleanup.
+ */
+export type IWorkspaceDispatchCheck = (
+  request: IWorkspaceDispatchCheckRequest,
+  signal: AbortSignal,
+) => Promise<boolean>;
 
 // construction receives trusted operator configuration, never a browser-selected root
 export const AgentHqOptionsSchema = z.strictObject({
@@ -18,6 +38,9 @@ export const AgentHqOptionsSchema = z.strictObject({
   // a command and its arguments run before `codex app-server daemon start`, such as a new scope
   codexDaemonLauncher: z.array(z.string().min(1)).min(1).max(16).optional(),
   claudeAdditionalDirectories: z.array(z.string().min(1).refine(isAbsolute)).max(128).optional(),
+  validateWorkspaceDispatch: z
+    .custom<IWorkspaceDispatchCheck>((input) => typeof input === 'function')
+    .optional(),
   /*
    * Proves no process of a runtime that stopped without releasing the state root remains, which
    * lets startup take its runtime lock over and clear the snapshot lock and socket it left.

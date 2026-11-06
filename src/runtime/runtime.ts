@@ -138,6 +138,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     skills,
     storage.background,
     (nativeId) => claudeAgents.terminalOf(nativeId),
+    parsed.data.validateWorkspaceDispatch,
   );
   // a long-poll on session states reads again once a worker call recorded a new transition
   projection.onTransition(() => actions.polls.notify({ kind: 'transitions' }));

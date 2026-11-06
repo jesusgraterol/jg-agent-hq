@@ -8,7 +8,7 @@ Intentional Node API failures use `Exception` from `jg-exception`. The [error re
 
 `jg-agent-hq` holds the trusted Node API:
 
-- Runtime: `createAgentHq`, `IAgentHq`, `IAgentHqOptions`, `IPreviousRuntimeCheck` and `IPreviousRuntimeOwner`; see [runtime lifecycle](#runtime-lifecycle).
+- Runtime: `createAgentHq`, `IAgentHq`, `IAgentHqOptions`, `IPreviousRuntimeCheck`, `IPreviousRuntimeOwner`, `IWorkspaceDispatchCheck` and `IWorkspaceDispatchCheckRequest`; see [runtime lifecycle](#runtime-lifecycle).
 - Local client: `requestAgentHq`, which sends one command to a running runtime over its socket.
 - Errors: `getErrorKind`, which reads an error's safe classification.
 - Host storage: `openHostDatabase`, `IStorageDescriptor` and `IStorageMaintenanceOperation`; see [shared storage](#shared-storage).
@@ -244,6 +244,10 @@ File timestamps and records do not prove that a native process is idle or a turn
 ## Workspace changes
 
 Message and queue commands accept optional `workspaceChange: { expectedWorkspaceRoot, workspaceRoot }`, also retained in prepared input. Both roots must be canonical allowed directories, the managed source must match exactly, and the provider must advertise `operations.workspaceChange`. Codex sends cwd and the exact authorized input in one native turn. Claude applies qualified `set_cwd` control before input, verifies native directory and transcript relocation, and refreshes the native command catalog without changing permissions. Refusal or native trust requirements stop before input; the host never accepts trust automatically. Ordinary input keeps its existing behavior.
+
+Trusted Node hosts may pass `validateWorkspaceDispatch(request, signal)` to `createAgentHq`. Before each native workspace effect, after file and skill validation, it receives a copied `{ actionId, threadId, provider, nativeId, workspaceChange }` intent. This includes a queued continuation when it becomes ready and input-free control. Return exactly `true` to permit that effect. A refusal records failed delivery with `state-conflict`; a thrown check or its 30-second deadline records failed delivery under the existing safe failure classification. No directory change or input is sent, and neither receipt reads nor restart retry the check or effect. Ordinary input never invokes it. Runtime shutdown cancels the signal and refuses dispatch even if the check subsequently permits it.
+
+The check is read-only host authorization, not a native permission response. Honor cancellation and release owned resources. It may read application state and runtime observations, but must not dispatch actions, alter execution state or answer native prompts. It is process-local trusted configuration, never an RPC field or persisted code; a restarted host must supply its current policy again. Hosts own their frozen plan/version rules and correlate them by exact action identity. The callback adds no model invocation, queue, cache or permission expansion.
 
 The input-free `{ kind: 'workspace-change', threadId, expectedTurnId, workspaceChange }` control additionally requires `operations.workspaceControl`. Claude supports it; Codex requires input and rejects this control before admission. The exact source must be the session's most recent successfully completed turn. Its receipt remains in phase `workspace`, with no new `nativeTurnId`, model result or completion. Repeating the same action returns its receipt without another control. Applications own when they authorize it.
 

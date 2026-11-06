@@ -5,4 +5,6 @@ export type {
   IAgentHqOptions,
   IPreviousRuntimeCheck,
   IPreviousRuntimeOwner,
+  IWorkspaceDispatchCheck,
+  IWorkspaceDispatchCheckRequest,
 } from './types.js';

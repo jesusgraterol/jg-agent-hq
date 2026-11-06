@@ -60,6 +60,8 @@ Important guarantees remain required regardless of cost. A timeout, privacy or o
 
 Workspace transition and known-schema upgrade scenarios are essential. They exercise the real runtime, queue, worker and SQLite ownership with synthetic native CLIs: exact source/target proof, canceled source continuations, input-free Claude return, command refresh without trust or permission expansion, late proof without duplicate input, moved-context privacy and cursor invalidation, bounded historical descendants, uncertain input without replay, journal lifetime/deletion recovery, populated 12.0.1/13.0.0 upgrades, rollback, keys, foreign keys and strict snapshot import. The immutable upgrade.fixture.sql is the predecessor schema, checked against its known hash; it is test input and is never copied into production output.
 
+Workspace dispatch checks additionally cover changed host bindings after queue admission, both providers' permitted/refused/failed checks, copied intent isolation, input-free return, source cancellation, shutdown/restart without replay and the real 30-second validation deadline. Native-boundary doubles remain outside the real-provider execution release gate.
+
 Prefer complete focused checks during development. Run a changed integration file three consecutive times with retries disabled:
 
 ```sh

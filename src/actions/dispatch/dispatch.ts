@@ -1,4 +1,5 @@
 import { isException } from 'jg-exception';
+import { abortable, createDeadline } from 'jg-utilities';
 import { z } from 'zod';
 
 import type {
@@ -271,6 +272,45 @@ export const createDispatch = (context: IActionsContext) => {
             ? await readInputFiles(turnInput.files, change.workspaceRoot, roots)
             : [];
           if (turnInput) await control.validateInput(nativeId, turnInput);
+          if (context.validateWorkspaceDispatch) {
+            // the same deadline as a native operation; never hold shutdown on a host callback
+            const deadline = createDeadline({
+              timeoutSeconds: 30,
+              signal: context.resyncLifetime.signal,
+            });
+            try {
+              deadline.throwIfStopped();
+              const permitted = await abortable(
+                context.validateWorkspaceDispatch(
+                  {
+                    actionId: receipt.id,
+                    threadId: thread.id,
+                    provider: thread.provider,
+                    nativeId,
+                    workspaceChange: { ...change },
+                  },
+                  deadline.signal,
+                ),
+                { signal: deadline.signal },
+              );
+              if (permitted !== true) conflict();
+            } finally {
+              deadline.dispose();
+            }
+            const current = await store.call('reads', 'getThread', thread.id);
+            if (
+              state.isClosing ||
+              state.isUnavailable ||
+              context.blockedProviders.has(thread.provider) ||
+              current?.ownership !== 'managed' ||
+              current.runtimeEpoch !== context.epoch ||
+              current.nativeId !== nativeId ||
+              current.workspaceRoot !== change.expectedWorkspaceRoot ||
+              current.activeTurnId !== null ||
+              current.state !== thread.state
+            )
+              conflict();
+          }
           await store.call('workspaces', 'settle', receipt.id, 'submitted');
           hasDispatched = true;
           const proof = await control.changeWorkspace(

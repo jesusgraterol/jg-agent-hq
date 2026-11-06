@@ -3,6 +3,7 @@ import type { INativePrompt } from '../providers/index.js';
 import type { createProviderRegistry } from '../providers/registry/index.js';
 import type { createSkills } from '../skills/index.js';
 import type { IStore } from '../store/index.js';
+import type { IWorkspaceDispatchCheck } from '../runtime/index.js';
 
 import type { LiveItems } from './live/index.js';
 import type { ActionWaits, ChangeWaits } from './waits/index.js';
@@ -37,6 +38,7 @@ export type IActionsContext = {
   skills: ReturnType<typeof createSkills>;
   runBackground: (operation: () => Promise<void>) => Promise<void>;
   claudeTerminalOf: (nativeId: string) => ISessionTerminal | null;
+  validateWorkspaceDispatch: IWorkspaceDispatchCheck | undefined;
   state: IActionsState;
   // the native requests waiting on an answer, by approval ID; their bodies stay in memory
   prompts: Map<string, { native: INativePrompt; threadId: string }>;

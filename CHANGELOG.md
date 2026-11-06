@@ -2,6 +2,7 @@
 
 ## 14.0.0
 
+- Add trusted Node-only workspace dispatch validation for application authorization at the native effect boundary, including ready queues and input-free control. Refusal, callback failure, deadline or shutdown prevents input and directory effects without replay.
 - Add optional expected-source workspace changes to message/queue input, a workspace phase and selected-receipt provenance. Codex applies cwd with the exact input atomically; Claude applies verified native directory control and refreshes commands before input. Add capability-gated input-free Claude control after an exact successful source, with no model turn. Directory acknowledgement and model completion remain separate.
 - Bind moved Claude history to confirmed journal contexts and workspace generations, retaining safe reads after old worktrees disappear and rejecting obsolete cursors. Distinguish empty zero-turn native control results from model acknowledgements.
 - Add the durable workspace journal, bounded indexed provenance, source-bound queued transitions, uncertainty handling and exact native-deletion confirmation before local cleanup. Restart completes confirmed local deletion without repeating the provider call.

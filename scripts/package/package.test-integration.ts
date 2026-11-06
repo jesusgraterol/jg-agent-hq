@@ -108,6 +108,9 @@ test(
       await writeFile(
         usageContract,
         `import type { IUsageCredits, IUsageResetCredits, IUsageSnapshot, IUsageWindowScope, IWorkspaceChange, IWorkspaceTransition, IActionCommand } from 'jg-agent-hq/contracts';
+import type { IAgentHqOptions, IWorkspaceDispatchCheck, IWorkspaceDispatchCheckRequest } from 'jg-agent-hq';
+export const workspaceCheck: IWorkspaceDispatchCheck = async (request: IWorkspaceDispatchCheckRequest, signal: AbortSignal) => !signal.aborted && request.actionId.length > 0;
+export const guardedRuntime: Pick<IAgentHqOptions, 'validateWorkspaceDispatch'> = { validateWorkspaceDispatch: workspaceCheck };
 export const minimalUsage: IUsageSnapshot = {
   provider: 'codex', source: 'native', state: 'unavailable', observedAt: null,
   ordinaryUsageAllowed: null, windows: [],
@@ -160,7 +163,7 @@ export const transition: IWorkspaceTransition = {actionId:'00000000-0000-4000-80
       import { join } from 'node:path';
       try { await import('jg-agent-hq/dist/runtime/state/state.js'); throw new Error('private path was exposed'); }
       catch (error) { if (error.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw error; }
-      const runtime = await createAgentHq({ stateRoot: join(process.cwd(), 'controller'), allowedRoots: [process.cwd()] });
+      const runtime = await createAgentHq({ stateRoot: join(process.cwd(), 'controller'), allowedRoots: [process.cwd()], validateWorkspaceDispatch: async () => false });
       try {
         const response = HqResponseSchema.parse(await requestAgentHq(runtime.stateRoot, { kind: 'threads', providers: ['codex'], workspaceRoots: [process.cwd()], limit: 1 }));
         if (response.kind !== 'threads' || response.result.data.length !== 1) throw new Error('packed runtime failed');

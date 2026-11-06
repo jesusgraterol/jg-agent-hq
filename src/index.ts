@@ -5,6 +5,8 @@ export type {
   IAgentHqOptions,
   IPreviousRuntimeCheck,
   IPreviousRuntimeOwner,
+  IWorkspaceDispatchCheck,
+  IWorkspaceDispatchCheckRequest,
 } from './runtime/index.js';
 export { requestAgentHq } from './ipc/index.js';
 
