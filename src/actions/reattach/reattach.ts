@@ -1,12 +1,27 @@
 import { randomUUID } from 'node:crypto';
 
 import type { IManagedThread } from '../../contracts/index.js';
+import type { IProviderReattachment } from '../../providers/index.js';
 import { capabilityUnavailable } from '../../providers/registry/index.js';
 
 import type { createDispatch } from '../dispatch/index.js';
 import type { createEvents } from '../events/index.js';
 import type { IActionsContext } from '../types.js';
 import { agentUnavailable } from '../utilities.js';
+
+/**
+ * Refuses unknown execution state before restoring native control.
+ * @throws
+ * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+ */
+const assertKnownTurn = (read: IProviderReattachment): void => {
+  if (
+    read.thread.nativeState === 'systemError' ||
+    read.thread.nativeState === 'unknown' ||
+    (read.thread.nativeState === 'active' && read.latestTurn?.state !== 'running')
+  )
+    agentUnavailable();
+};
 
 /**
  * Rejoins the sessions the previous runtime left running in a native process that outlives it.
@@ -30,7 +45,7 @@ export const createReattach = (
    * @throws
    * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
    */
-  const reattachThread = async (thread: IManagedThread): Promise<void> => {
+  const reattachThread = async (thread: IManagedThread, isReconnect = false): Promise<void> => {
     const nativeId = thread.nativeId!;
     let isOwned = false;
     try {
@@ -38,9 +53,10 @@ export const createReattach = (
       if (!control.readReattachment || !control.reattachThread) capabilityUnavailable();
       await validateRoot(thread);
       const read = await control.readReattachment(nativeId, thread.workspaceRoot);
-      if (read.thread.nativeState === 'systemError') agentUnavailable();
+      assertKnownTurn(read);
       const bound = await store.call('lifecycle', 'reattach', {
         threadId: thread.id,
+        isReconnect,
         latestTurn: read.latestTurn && {
           nativeTurnId: read.latestTurn.nativeId,
           state: read.latestTurn.state,
@@ -55,8 +71,10 @@ export const createReattach = (
         nativeId,
         thread.workspaceRoot,
       );
+      assertKnownTurn(joined);
       const turnId = bound.thread.activeTurnId;
       const latest = joined.latestTurn;
+      if ((latest?.nativeId ?? null) !== (read.latestTurn?.nativeId ?? null)) agentUnavailable();
       if (turnId && latest?.nativeId === turnId && latest.state !== 'running') {
         const { state: turnState } = latest;
         live.completeTurn(key(thread.provider, nativeId), turnId);
@@ -91,5 +109,16 @@ export const createReattach = (
     }
   };
 
-  return { reattach };
+  /**
+   * Rechecks only controls captured before this connection lost its native evidence.
+   * @returns A promise resolved after the bounded cohort has been checked in order.
+   */
+  const reconnect = async (threads: IManagedThread[]): Promise<void> => {
+    for (const thread of threads) {
+      if (state.isClosing || state.isUnavailable || context.blockedProviders.has(thread.provider))
+        return;
+      await reattachThread(thread, true);
+    }
+  };
+  return { reattach, reconnect };
 };

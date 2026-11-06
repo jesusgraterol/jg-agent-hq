@@ -1,5 +1,11 @@
 # Changelog
 
+## 13.0.1
+
+- Rejoin eligible managed Codex sessions after the shared daemon connection stops, including a daemon update. Recheck the recorded native turn before and after joining, preserve session settings, and catch up confirmed completions and queued work without replaying input. A newer external turn, failed read, or unacknowledged operation remains uncertain.
+- Stop and drain the old proxy before replacing it, and report its EOF and exit as one connection loss. Mark live output as incomplete and discard partial result capture across the gap.
+- Keep the existing storage schema, action key and public request contracts unchanged.
+
 ## 13.0.0
 
 - Accept managed-session names of 1 through 64 characters for create, adopt, rename and managed-thread responses. Export `MAX_THREAD_NAME_LENGTH` from `jg-agent-hq/contracts`; suggestions and atomic collision suffixes use the same limit. The lowercase ASCII alphabet, first-character rule, case-insensitive uniqueness and immutable identities are unchanged.

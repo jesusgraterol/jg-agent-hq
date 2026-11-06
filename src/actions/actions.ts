@@ -87,9 +87,14 @@ export const createActions = (
   };
   const { state, prompts, controlled, live, waits } = context;
   const dispatcher = createDispatch(context);
-  const events = createEvents(context, dispatcher);
+  const events = createEvents(
+    context,
+    dispatcher,
+    (threads): Promise<void> => reattachment.reconnect(threads),
+  );
   const { admitAndDispatch } = createAdmission(context, dispatcher);
-  context.runOwned(createReattach(context, dispatcher, events).reattach);
+  const reattachment = createReattach(context, dispatcher, events);
+  context.runOwned(reattachment.reattach);
 
   return {
     live,

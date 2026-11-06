@@ -326,7 +326,12 @@ export const createCodexEvents = (
       }
       events.outcome(outcome, thread);
     },
-    unavailable: () => events.unavailable(),
+    unavailable: () => {
+      // a disconnected stream cannot supply a complete result from its partial capture
+      turns.clear();
+      runningTurns.clear();
+      events.unavailable();
+    },
     connected: () => observeLoaded(),
     // a discarded message's session can't be known, so every session HQ controls is read
     discarded: () => events.resync(undefined, 'unknown'),

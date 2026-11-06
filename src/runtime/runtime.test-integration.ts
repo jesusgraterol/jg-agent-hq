@@ -1452,7 +1452,7 @@ process.exitCode = spawnSync(command,args,{ stdio: 'inherit' }).status ?? 1;
 });
 
 test(
-  'a daemon that stops answering keepalive pings makes Codex unavailable and its sessions uncertain',
+  'a missed daemon keepalive records connection loss and rejoins a matching Codex session',
   // the keepalive interval is fixed at 10 seconds, so detection takes up to two intervals
   { timeout: 45_000 },
   async () => {
@@ -1477,22 +1477,35 @@ test(
       const receipt = await request({ kind: 'receipt', actionId });
       if (receipt.kind !== 'receipt' || !receipt.result?.threadId) throw new Error('no thread');
       const threadId = receipt.result.threadId;
-      await control({ ignorePings: true });
+      const nativeId = receipt.result.nativeThreadId!;
+      await control({
+        ignorePings: true,
+        threadStatuses: { [nativeId]: { type: 'idle' } },
+        threadTurns: { [nativeId]: [] },
+      });
       await expect
         .poll(
           async () => {
-            const current = await request({ kind: 'status' });
-            return current.kind === 'status'
-              ? current.result.providers.find((provider) => provider.provider === 'codex')?.state
-              : null;
+            const transitions = await request({ kind: 'session-states', limit: 128 });
+            return (
+              transitions.kind === 'session-states' &&
+              transitions.result.data.some(
+                (entry) =>
+                  entry.threadId === threadId &&
+                  entry.ownership === 'uncertain' &&
+                  entry.state === 'unknown',
+              )
+            );
           },
           { timeout: 30_000, interval: 250 },
         )
-        .toBe('unavailable');
-      expect(await request({ kind: 'managed-thread', threadId })).toMatchObject({
-        kind: 'managed-thread',
-        result: { ownership: 'uncertain' },
-      });
+        .toBe(true);
+      await expect
+        .poll(() => request({ kind: 'managed-thread', threadId }))
+        .toMatchObject({
+          kind: 'managed-thread',
+          result: { ownership: 'managed', state: 'idle' },
+        });
     });
   },
 );
