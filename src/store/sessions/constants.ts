@@ -6,7 +6,8 @@ export const RETENTION_MS = 604_800_000;
  * sessions, which run background commands. A managed thread is active only while a runtime binds
  * it, which its runtime epoch index finds; a stopping one reports the state it stops, from its
  * last transition. An observed Codex session carries its latest confirmed metadata, and an
- * observed Claude session joins its indexed transcript, if any, by session ID. The included
+ * observed Claude session joins its indexed transcript, if any, by session ID. An uncertain
+ * control retains its identity while taking its live state from observation. The included
  * sessions are one JSON array of [provider, native ID] pairs.
  */
 export const ACTIVE_SESSIONS = `WITH included(provider, native_id) AS (
@@ -22,12 +23,15 @@ SELECT provider, native_id, state, changed_at, thread, observed_thread, history 
       'createdAt', agent_hq_thread.created_at, 'updatedAt', agent_hq_thread.updated_at) AS thread,
     NULL AS observed_thread, NULL AS history
   FROM agent_hq_thread INNER JOIN agent_hq_session_state_map AS map ON map.thread_state = agent_hq_thread.state
-  WHERE agent_hq_thread.runtime_epoch IS NOT NULL AND agent_hq_thread.native_id IS NOT NULL AND (map.session_state IS NULL OR map.session_state IN ('running', 'waiting')
+  WHERE agent_hq_thread.ownership = 'managed' AND agent_hq_thread.runtime_epoch IS NOT NULL AND agent_hq_thread.native_id IS NOT NULL AND (map.session_state IS NULL OR map.session_state IN ('running', 'waiting')
     OR EXISTS (SELECT 1 FROM included WHERE included.provider = agent_hq_thread.provider AND included.native_id = agent_hq_thread.native_id))
   UNION ALL
   SELECT observed.provider, observed.native_id,
     EXISTS (SELECT 1 FROM included WHERE included.provider = observed.provider AND included.native_id = observed.native_id),
-    observed.state, observed.observed_at, NULL,
+    observed.state, observed.observed_at,
+    CASE WHEN retained.id IS NOT NULL THEN json_object('id', retained.id, 'ownership', retained.ownership,
+      'name', retained.name, 'workspaceRoot', retained.workspace_root, 'nativeLineage', json(retained.native_lineage),
+      'createdAt', retained.created_at, 'updatedAt', retained.updated_at) END,
     CASE WHEN observed.provider = 'codex' AND observed.workspace_root IS NOT NULL THEN json_object('workspaceRoot', observed.workspace_root,
       'name', observed.name, 'createdAt', observed.created_at) END,
     CASE WHEN observed.provider = 'claude' THEN (
@@ -36,7 +40,12 @@ SELECT provider, native_id, state, changed_at, thread, observed_thread, history 
       FROM agent_hq_claude_file WHERE native_id = observed.native_id AND workspace_state = 'matching'
       ORDER BY updated_at DESC LIMIT 1
     ) END
-  FROM agent_hq_observed_session AS observed WHERE observed.state IN ('running', 'waiting')
-    OR EXISTS (SELECT 1 FROM included WHERE included.provider = observed.provider AND included.native_id = observed.native_id)
+  FROM agent_hq_observed_session AS observed
+  LEFT JOIN agent_hq_thread AS retained ON retained.provider = observed.provider
+    AND retained.native_id = observed.native_id AND retained.ownership = 'uncertain'
+  WHERE (observed.state IN ('running', 'waiting')
+    OR EXISTS (SELECT 1 FROM included WHERE included.provider = observed.provider AND included.native_id = observed.native_id))
+    AND NOT EXISTS (SELECT 1 FROM agent_hq_thread AS controlled WHERE controlled.provider = observed.provider
+      AND controlled.native_id = observed.native_id AND controlled.ownership = 'managed' AND controlled.state != 'inactive')
 ) WHERE state IN ('running', 'waiting') OR (is_included AND state = 'idle')
 ORDER BY changed_at DESC, native_id DESC LIMIT ?`;

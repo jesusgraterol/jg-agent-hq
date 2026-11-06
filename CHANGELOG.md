@@ -1,5 +1,10 @@
 # Changelog
 
+## 13.1.3
+
+- Keep native execution status visible for sessions with uncertain control ownership, including CLI sessions already running at startup and status changes after connection loss. Session reads, discovery and active lists retain the managed identity and uncertain ownership without joining the session, replaying input or releasing queued work.
+- Reread native status after a newer CLI turn prevents automatic reattachment, preserving the initial observation across the startup quarantine race. Keep the existing storage schema, action key and public request contracts unchanged.
+
 ## 13.1.2
 
 - Preserve native Codex item lifecycle timestamps in history, item details, evidence and live notifications. Operator messages use their own start time and replies their own completion time, retaining millisecond precision. Missing item times remain unknown instead of borrowing a turn time.

@@ -48,6 +48,28 @@ export const createReattach = (
         },
       });
       waits.notifyThread(thread.id);
+      if (bound?.thread?.ownership === 'uncertain') {
+        // the initial loaded-thread observation may have preceded quarantine
+        const { thread: observed } = await control.inspectThread(nativeId, thread.workspaceRoot);
+        await store.call(
+          'sessions',
+          'observe',
+          thread.provider,
+          [
+            {
+              nativeId,
+              state: observed.state,
+              thread: {
+                workspaceRoot: observed.workspaceRoot,
+                name: observed.name,
+                createdAt: observed.createdAt,
+              },
+            },
+          ],
+          false,
+        );
+        return;
+      }
       if (bound?.thread?.ownership !== 'managed' || bound.thread.runtimeEpoch !== epoch) return;
       own(thread.provider, nativeId);
       isOwned = true;

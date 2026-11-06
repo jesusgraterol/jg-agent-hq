@@ -32,6 +32,8 @@ The expanded name contract is still a breaking change for older consumers: 12.x 
 
 ## Codex connection recovery
 
+A quarantined session can still be monitored while a CLI runs it. Native observations update its live state without recovering ownership; the summary keeps uncertain ownership and its existing managed identity. Monitoring sends no input and leaves the control ledger and earlier queued entries unchanged.
+
 A shared Codex daemon restart can interrupt every managed Codex session's live connection while HQ stays running. The runtime rechecks only its previously controlled sessions with no action in flight and rejoins matching native turns without changing settings or repeating input. Confirmed completions advance their waiting queues; unacknowledged actions and changed turns remain uncertain. Native command handles may have been lost, so rejoining establishes session control rather than successful command execution. See [runtime lifecycle](../api/README.md#runtime-lifecycle).
 
 For a session left uncertain, stop its producing HQ runtime and inspect the native identity and competing controllers before explicit recovery in the next runtime. `thread-recover` with `recovery: { kind: 'resume' }` can rejoin its already known Codex identity even when the daemon still holds it idle or active. The verified current turn is bound before joining and checked again afterward; no settings or input are sent. Reissued approvals can then be answered explicitly. Earlier queued entries stay paused, uncertain input receipts stay unresolved, and unknown state or a turn changing during the join leaves control uncertain. Never use attach/create to replace a known native identity or replay work to recover control.
