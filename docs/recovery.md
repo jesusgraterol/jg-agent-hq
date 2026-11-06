@@ -8,7 +8,7 @@ Capture runs while agents keep working, under the state root's `snapshot` lock. 
 
 Capture leaves out the index the runtime keeps of Claude transcripts, the `agent_hq_claude_file` and `agent_hq_claude_entry` rows, which make up most of a database that has read Claude sessions, and compacts the copy with `VACUUM INTO`, which keeps the rowids of every table, including application tables. The snapshot of such a database is a small fraction of its size.
 
-A successful snapshot has exact file hashes and a final completion marker. The header records the package version that captured it, and the database stamp binds its schema, action-key fingerprint and writing package version; restore and runtime startup reject a mismatched key or another schema. Keep it private. It excludes repositories and other workspace files, native transcripts/authentication, external references and transient runtime credentials. Inspection establishes complete local file/database evidence; hashes provide integrity rather than sender authentication.
+A successful snapshot has exact file hashes and a final completion marker. The header records the package version that captured it, and the database stamp binds its schema, action-key fingerprint and writing package version; restore rejects a mismatched key or another schema. Startup additionally permits the finite, transactional 12.0.1/13.0.0 upgrade. Keep it private. It excludes repositories and other workspace files, native transcripts/authentication, external references and transient runtime credentials. Inspection establishes complete local file/database evidence; hashes provide integrity rather than sender authentication.
 
 ## Restore
 
@@ -22,9 +22,11 @@ Recover repositories and native files separately. Source paths are retained as e
 
 ## Rollback
 
-Roll back by restoring an earlier snapshot into a new recovery workspace; never overwrite the current state root. A snapshot from another schema is refused with an error naming the package version that wrote it, so restore it with that version. Rollback accepts losing every change made after that snapshot, including host changes and later runtime receipts. Reconcile native ownership before enabling work.
+Roll back by restoring an earlier snapshot into a new recovery workspace; never overwrite the current state root. A snapshot from another schema is refused with an error naming the package version that wrote it, so restore it with that version. Before enabling work, reconcile every native and host effect after that snapshot, including later receipts; never silently discard them or replay uncertain input.
 
 ## Package downgrade
+
+Version 14 upgrades only native hash dd49fcd16db9c8f5431b24f63e7f1e0163dbc32e21a763246d249c6387622be1, under exclusive runtime ownership, without resetting host tables, user_version or keys. Before commit, failure leaves the predecessor usable. After commit, prefer forward repair: a 12.x/13.x binary refuses the new schema. Restoring an old-schema snapshot requires its matching binary first, then the supported startup upgrade. Snapshot import itself stays strict. Never relabel stamps, reverse-edit tables, discard later effects or run an old binary against upgraded storage.
 
 Version 13.0.0 uses the same storage schema as 12.0.1, including the existing action key and host `user_version`; startup accepts that schema without migration or reset. The writing package version is diagnostic. Snapshot capture and restore retain longer managed names under the same schema.
 

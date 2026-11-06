@@ -1,5 +1,11 @@
 # Changelog
 
+## 14.0.0
+
+- Add optional expected-source workspace changes to message/queue input, a workspace phase and selected-receipt provenance. Codex applies cwd with the exact input atomically; directory acknowledgement and model completion remain separate. Claude workspace support remains unavailable in this development checkpoint.
+- Add the durable workspace journal, bounded indexed provenance, source-bound queued transitions, uncertainty handling and exact native-deletion confirmation before local cleanup. Restart completes confirmed local deletion without repeating the provider call.
+- Upgrade only the exact 12.0.1/13.0.0 native schema transactionally before provider startup. Preserve native/host rows, indexes, identities, host user_version and keys; refuse unknown schemas/keys unchanged and roll failures back. Snapshot import stays strict; older binaries cannot open the new schema.
+
 ## 13.0.0
 
 - Accept managed-session names of 1 through 64 characters for create, adopt, rename and managed-thread responses. Export `MAX_THREAD_NAME_LENGTH` from `jg-agent-hq/contracts`; suggestions and atomic collision suffixes use the same limit. The lowercase ASCII alphabet, first-character rule, case-insensitive uniqueness and immutable identities are unchanged.

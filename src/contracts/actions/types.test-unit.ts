@@ -1,7 +1,50 @@
-import { ActionCommandSchema, ManagedThreadSchema } from 'jg-agent-hq/contracts';
+import {
+  ActionCommandSchema,
+  ManagedThreadSchema,
+  PreparedInputSchema,
+  WorkspaceChangeSchema,
+} from 'jg-agent-hq/contracts';
 import { expect, test } from 'vitest';
 
 const threadId = '0b5e2c4a-7b84-4d6c-9a52-3f1d6a8e9c10';
+
+test('workspace changes survive message, queue and prepared input without widening other commands', () => {
+  const workspaceChange = { expectedWorkspaceRoot: '/work/a', workspaceRoot: '/work/b' };
+  const input = { kind: 'text', text: 'Authorized input' };
+  expect(
+    ActionCommandSchema.parse({ kind: 'message', threadId, input, workspaceChange }),
+  ).toStrictEqual({ kind: 'message', threadId, input, workspaceChange });
+  expect(
+    ActionCommandSchema.parse({
+      kind: 'queue',
+      threadId,
+      expectedTurnId: 'source',
+      input,
+      workspaceChange,
+    }),
+  ).toStrictEqual({ kind: 'queue', threadId, expectedTurnId: 'source', input, workspaceChange });
+  expect(
+    PreparedInputSchema.parse({
+      text: input.text,
+      skill: null,
+      files: [],
+      settings: {},
+      workspaceChange,
+    }).workspaceChange,
+  ).toStrictEqual(workspaceChange);
+  expect(
+    ActionCommandSchema.safeParse({
+      kind: 'steer',
+      threadId,
+      expectedTurnId: 'source',
+      text: 'Input',
+      workspaceChange,
+    }).success,
+  ).toBe(false);
+  expect(WorkspaceChangeSchema.safeParse({ ...workspaceChange, trustAccepted: true }).success).toBe(
+    false,
+  );
+});
 
 test.each([
   [1, true],

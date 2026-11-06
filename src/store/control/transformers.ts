@@ -5,6 +5,7 @@ import type {
   INativeLineage,
   IPreparedInput,
   ITurnResult,
+  IWorkspaceTransition,
 } from '../../contracts/index.js';
 
 import type { IActionReceiptRow, IActionRow, IActionSummaryRow, IThreadRow } from './types.js';
@@ -67,4 +68,7 @@ export const toActionReceipt = (action: IActionReceiptRow): IActionReceipt => ({
   queuedInput:
     action.queued_input === null ? null : (JSON.parse(action.queued_input) as IPreparedInput),
   result: action.result === null ? null : (JSON.parse(action.result) as ITurnResult),
+  ...(action.workspace_transition
+    ? { workspaceTransition: JSON.parse(action.workspace_transition) as IWorkspaceTransition }
+    : {}),
 });

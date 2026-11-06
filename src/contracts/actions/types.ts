@@ -9,6 +9,7 @@ import { MessageInputSchema, NativeSkillInputSchema } from '../skills/index.js';
 import { NativeIdSchema, NativeLineageSchema } from '../identities/index.js';
 import { BoundInputFileSchema, MAX_INPUT_FILES } from '../inputs/index.js';
 import { TurnResultSchema, OutputSchemaSchema } from '../results/index.js';
+import { WorkspaceChangeSchema, WorkspaceTransitionSchema } from '../workspaces/index.js';
 
 // queue payloads preserve the exact native selection, content hashes and turn options
 export const PreparedInputSchema = z.object({
@@ -16,6 +17,7 @@ export const PreparedInputSchema = z.object({
   skill: NativeSkillInputSchema.nullable(),
   files: z.array(BoundInputFileSchema).max(MAX_INPUT_FILES),
   settings: TurnSettingsSchema,
+  workspaceChange: WorkspaceChangeSchema.optional(),
 });
 export type IPreparedInput = z.infer<typeof PreparedInputSchema>;
 
@@ -82,6 +84,7 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
     threadId: ThreadIdSchema,
     input: MessageInputSchema,
     settings: TurnSettingsSchema.optional(),
+    workspaceChange: WorkspaceChangeSchema.optional(),
   }),
   z.strictObject({ kind: z.literal('steer'), ...ActiveTargetFields, text: TextSchema }),
   z.strictObject({
@@ -89,6 +92,7 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
     ...ActiveTargetFields,
     input: MessageInputSchema,
     settings: TurnSettingsSchema.optional(),
+    workspaceChange: WorkspaceChangeSchema.optional(),
   }),
   z.strictObject({ kind: z.literal('interrupt'), ...ActiveTargetFields }),
   z.strictObject({ kind: z.literal('queue-send'), queuedActionId: z.uuid() }),
@@ -162,6 +166,7 @@ export const ActionReceiptSchema = z.object({
   relatedActionId: z.uuid().nullable(),
   queuedInput: PreparedInputSchema.nullable(),
   result: TurnResultSchema.nullable(),
+  workspaceTransition: WorkspaceTransitionSchema.optional(),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
 });
@@ -176,6 +181,7 @@ export const ActionSummarySchema = ActionReceiptSchema.omit({
   nativeThreadId: true,
   queuedInput: true,
   result: true,
+  workspaceTransition: true,
 }).extend({
   queuedText: z.object({ text: z.string(), isTruncated: z.boolean() }).nullable(),
 });

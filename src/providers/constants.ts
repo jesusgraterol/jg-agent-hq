@@ -33,6 +33,14 @@ const DEFAULT_PROVIDER_OPERATIONS: IProviderCapabilitySet['operations'] = {
   skills: SUPPORTED_PROVIDER_OPERATION,
   models: SUPPORTED_PROVIDER_OPERATION,
   configuration: SUPPORTED_PROVIDER_OPERATION,
+  workspaceChange: {
+    state: 'unsupported',
+    changeMode: null,
+    reason: {
+      code: 'workspace-change-unsupported',
+      message: 'Native workspace changes are unsupported.',
+    },
+  },
 };
 
 /*
@@ -41,7 +49,7 @@ const DEFAULT_PROVIDER_OPERATIONS: IProviderCapabilitySet['operations'] = {
  * catalog and Claude's session skills in their place.
  */
 export const PROVIDER_OPERATIONS: Record<IProviderId, IProviderCapabilitySet['operations']> = {
-  codex: DEFAULT_PROVIDER_OPERATIONS,
+  codex: { ...DEFAULT_PROVIDER_OPERATIONS, workspaceChange: SUPPORTED_PROVIDER_OPERATION },
   claude: DEFAULT_PROVIDER_OPERATIONS,
 };
 

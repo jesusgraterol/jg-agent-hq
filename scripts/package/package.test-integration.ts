@@ -44,9 +44,8 @@ test(
       expect(paths).toContain('dist/index.d.ts');
       expect(paths).toContain('dist/cli/cli.js');
       expect(paths).toContain('dist/store/schema.sql');
-      expect(paths.filter((path) => path.startsWith('dist/storage/'))).not.toContainEqual(
-        expect.stringMatching(/v1|upgrade/),
-      );
+      expect(paths).toContain('dist/storage/schema/upgrade.js');
+      expect(paths.some((path) => /(?:upgrade\.fixture|\/v1(?:\/|\.))/.test(path))).toBe(false);
       expect(paths).toContain('dist/contracts/index.js');
       expect(paths).toContain('LICENSE');
       expect(paths).toContain('docs/recovery.md');
@@ -108,7 +107,7 @@ test(
       const usageContract = join(scratch, 'usage-contract.ts');
       await writeFile(
         usageContract,
-        `import type { IUsageCredits, IUsageResetCredits, IUsageSnapshot, IUsageWindowScope } from 'jg-agent-hq/contracts';
+        `import type { IUsageCredits, IUsageResetCredits, IUsageSnapshot, IUsageWindowScope, IWorkspaceChange, IWorkspaceTransition, IActionCommand } from 'jg-agent-hq/contracts';
 export const minimalUsage: IUsageSnapshot = {
   provider: 'codex', source: 'native', state: 'unavailable', observedAt: null,
   ordinaryUsageAllowed: null, windows: [],
@@ -116,6 +115,9 @@ export const minimalUsage: IUsageSnapshot = {
 export const credit: IUsageCredits = { bucket: 'minimal-bucket', hasCredits: true, isUnlimited: false, balance: '0.29000000000000001' };
 export const resets: IUsageResetCredits = { availableCount: 0 };
 export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model' }, surface: null };
+export const workspaceChange: IWorkspaceChange = {expectedWorkspaceRoot:'/work/a',workspaceRoot:'/work/b'};
+export const workspaceCommand: IActionCommand = {kind:'message',threadId:'00000000-0000-4000-8000-000000000000',input:{kind:'text',text:'continue'},workspaceChange};
+export const transition: IWorkspaceTransition = {actionId:'00000000-0000-4000-8000-000000000001',threadId:workspaceCommand.threadId,sourceWorkspaceRoot:'/work/a',targetWorkspaceRoot:'/work/b',historyWorkspaceRoot:null,state:'confirmed',createdAt:1,updatedAt:1};
 `,
       );
       const config = ts.readConfigFile(join(ROOT, 'tsconfig.json'), ts.sys.readFile);

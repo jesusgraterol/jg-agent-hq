@@ -46,7 +46,7 @@ CREATE TABLE agent_hq_action (
   expected_turn_id TEXT,
   native_turn_id TEXT,
   -- the native step the action takes now, such as a create's name and first turn after create
-  phase TEXT CHECK (phase IS NULL OR phase IN ('create', 'resume', 'name', 'turn', 'steer', 'interrupt', 'clean', 'close', 'delete', 'reply')),
+  phase TEXT CHECK (phase IS NULL OR phase IN ('create', 'resume', 'name', 'turn', 'steer', 'interrupt', 'clean', 'close', 'delete', 'reply', 'workspace')),
   delivery TEXT NOT NULL CHECK (delivery IN ('queued', 'submitted', 'acknowledged', 'uncertain', 'failed', 'canceled')),
   completion TEXT CHECK (completion IS NULL OR completion IN ('completed', 'failed', 'interrupted')),
   failure TEXT CHECK (failure IS NULL OR failure IN ('state-conflict', 'access-denied', 'agent-unavailable', 'operation-failed')),
@@ -56,6 +56,7 @@ CREATE TABLE agent_hq_action (
   input_sha256 TEXT CHECK (input_sha256 IS NULL OR length(input_sha256) = 64),
   queue_ready INTEGER NOT NULL DEFAULT 0 CHECK (queue_ready IN (0, 1)),
   requested_name TEXT,
+  deleted_native_id TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   CONSTRAINT agent_hq_pk_a__id PRIMARY KEY (id),
@@ -73,6 +74,33 @@ CREATE INDEX agent_hq_idx_a__thread_turn_input ON agent_hq_action (thread_id, na
 CREATE INDEX agent_hq_idx_a__runtime_epoch_delivery ON agent_hq_action (runtime_epoch, delivery);
 CREATE INDEX agent_hq_idx_a__runtime_epoch_submitted ON agent_hq_action (runtime_epoch) WHERE delivery = 'submitted';
 CREATE INDEX agent_hq_idx_a__requested_name_delivery ON agent_hq_action (requested_name, delivery);
+
+-- workspace transitions
+CREATE INDEX agent_hq_idx_a__confirmed_delete ON agent_hq_action(id)
+WHERE phase = 'delete' AND deleted_native_id IS NOT NULL AND delivery IN ('submitted', 'uncertain');
+CREATE TABLE agent_hq_workspace_transition (
+  action_id TEXT NOT NULL PRIMARY KEY REFERENCES agent_hq_action(id),
+  thread_id TEXT NOT NULL REFERENCES agent_hq_thread(id),
+  source_workspace_root TEXT NOT NULL,
+  target_workspace_root TEXT NOT NULL,
+  history_workspace_root TEXT,
+  state TEXT NOT NULL CHECK (state IN ('prepared', 'submitted', 'confirmed', 'failed', 'uncertain')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+CREATE UNIQUE INDEX agent_hq_uq_wt__thread_id_pending ON agent_hq_workspace_transition(thread_id)
+WHERE state IN ('prepared', 'submitted', 'uncertain');
+CREATE INDEX agent_hq_idx_wt__thread_id_updated_at_action_id_desc
+ON agent_hq_workspace_transition(thread_id, updated_at DESC, action_id DESC);
+CREATE INDEX agent_hq_idx_wt__state_updated_at_action_id
+ON agent_hq_workspace_transition(state, updated_at, action_id);
+CREATE INDEX agent_hq_idx_wt__thread_id_source_confirmed
+ON agent_hq_workspace_transition(thread_id, source_workspace_root) WHERE state = 'confirmed';
+CREATE INDEX agent_hq_idx_wt__thread_id_target_confirmed
+ON agent_hq_workspace_transition(thread_id, target_workspace_root) WHERE state = 'confirmed';
+CREATE INDEX agent_hq_idx_wt__thread_id_history_confirmed
+ON agent_hq_workspace_transition(thread_id, history_workspace_root) WHERE state = 'confirmed';
+-- end workspace transitions
 
 CREATE TABLE agent_hq_native_approval (
   id TEXT NOT NULL,

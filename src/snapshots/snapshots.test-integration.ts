@@ -787,25 +787,33 @@ const refreshDatabaseInventory = async (
   );
 };
 
-test.each(['header', 'database'])(
+test.each([
+  ['header', 'f'.repeat(64), '9.9.9'],
+  ['database', 'f'.repeat(64), '9.9.9'],
+  [
+    'known predecessor',
+    'dd49fcd16db9c8f5431b24f63e7f1e0163dbc32e21a763246d249c6387622be1',
+    '13.0.0',
+  ],
+])(
   'a snapshot whose %s comes from another schema is refused by name before restore reserves its destination',
-  async (source) => {
+  async (source, schemaHash, packageVersion) => {
     await withClaudeRuntime(async ({ runtime, root }) => {
       const snapshot = await runtime.createSnapshot(join(root, 'snapshot'));
-      if (source === 'database') {
+      if (source === 'database' || source === 'known predecessor') {
         const database = new DatabaseSync(join(snapshot.directory, 'hq.sqlite'));
         try {
           database
             .prepare('UPDATE agent_hq_schema SET schema_hash = ?, package_version = ?')
-            .run('f'.repeat(64), '9.9.9');
+            .run(schemaHash, packageVersion);
         } finally {
           database.close();
         }
         await refreshDatabaseInventory(snapshot.directory);
       } else
         await refreshDatabaseInventory(snapshot.directory, {
-          schemaHash: 'f'.repeat(64),
-          packageVersion: '9.9.9',
+          schemaHash,
+          packageVersion,
         });
       const before = hashValue(await readFile(join(snapshot.directory, 'hq.sqlite')));
       await expectToRejectCode(
@@ -814,7 +822,7 @@ test.each(['header', 'database'])(
           destination: join(root, 'recovery'),
         }),
         'JG_AGENT_HQ_STORAGE_INVALID',
-        'The HQ storage is invalid: written by jg-agent-hq 9.9.9',
+        `The HQ storage is invalid: written by jg-agent-hq ${packageVersion}`,
       );
       await expect(lstat(join(root, 'recovery'))).rejects.toMatchObject({ code: 'ENOENT' });
       expect(hashValue(await readFile(join(snapshot.directory, 'hq.sqlite')))).toBe(before);

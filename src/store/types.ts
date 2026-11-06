@@ -12,6 +12,7 @@ import type {
 } from './control/index.js';
 import type { SessionsModel } from './sessions/index.js';
 import type { SnapshotModel } from './snapshot.js';
+import type { WorkspacesModel } from './workspaces/index.js';
 
 // the worker's models; each operation is declared once, as a public method of its model
 export type IStoreModels = {
@@ -24,6 +25,7 @@ export type IStoreModels = {
   observations: ControlObservations;
   lifecycle: ControlLifecycle;
   snapshot: SnapshotModel;
+  workspaces: WorkspacesModel;
 };
 export type IStoreModelName = keyof IStoreModels;
 // a model's public methods, which the main thread may call
@@ -86,6 +88,7 @@ export type IStore = {
    * - JG_AGENT_HQ_IMAGE_UNAVAILABLE: The HQ image is unavailable
    * - JG_AGENT_HQ_CURSOR_INVALID: The HQ cursor does not match this request
    * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+   * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
    */
   call<TModel extends IStoreModelName, TMethod extends IStoreMethodName<TModel>>(
     model: TModel,

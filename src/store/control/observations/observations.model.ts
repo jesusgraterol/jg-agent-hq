@@ -115,6 +115,11 @@ export class ControlObservations extends ControlModel {
             id,
           );
           this._statements.run(
+            "UPDATE agent_hq_workspace_transition SET state = 'uncertain', updated_at = ? WHERE thread_id = ? AND state = 'submitted'",
+            now,
+            id,
+          );
+          this._statements.run(
             "UPDATE agent_hq_action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
             id,
           );
@@ -242,11 +247,25 @@ export class ControlObservations extends ControlModel {
               observation.nativeTurnId,
               this._epoch,
             );
-          else
+          else {
             this._statements.run(
               "UPDATE agent_hq_action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
               thread.id,
             );
+            this._statements.run(
+              "UPDATE agent_hq_workspace_transition SET state = 'failed', updated_at = ? WHERE state = 'prepared' AND action_id IN (SELECT id FROM agent_hq_action WHERE thread_id = ? AND expected_turn_id = ? AND delivery = 'queued')",
+              now,
+              thread.id,
+              observation.nativeTurnId,
+            );
+            this._statements.run(
+              "UPDATE agent_hq_action SET delivery = 'canceled', queued_input = NULL, updated_at = ? WHERE thread_id = ? AND expected_turn_id = ? AND delivery = 'queued' AND id IN (SELECT action_id FROM agent_hq_workspace_transition WHERE thread_id = ? AND state = 'failed')",
+              now,
+              thread.id,
+              observation.nativeTurnId,
+              thread.id,
+            );
+          }
         }
       } else if (observation.kind === 'request-canceled') {
         const approval = this._statements.get<{ reply_action_id: string | null }>(

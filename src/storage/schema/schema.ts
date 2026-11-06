@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { Exception, isException, extractMessage } from 'jg-exception';
 
 import { HQ_ERRORS } from '../../errors/index.js';
-import { CURRENT_SCHEMA_HASH } from './constants.js';
+import { CURRENT_SCHEMA_HASH, KNOWN_PREVIOUS_SCHEMA_HASH } from './constants.js';
 import { StorageStampSchema } from './types.js';
 
 /**
@@ -18,7 +18,8 @@ export const rejectStorage = (packageVersion: string | null, cause?: unknown): n
 };
 
 /**
- * Recognizes the current schema's stamp without writing or adopting an arbitrary database.
+ * Recognizes the current stamp without writes; only exclusive startup may accept the known
+ * predecessor for its finite upgrade. Snapshot readers keep the strict default.
  * @returns The stamped action key hash and package version, or null for a completely empty database.
  * @throws
  * - JG_AGENT_HQ_STORAGE_INVALID: The HQ storage is invalid
@@ -27,6 +28,7 @@ export const rejectStorage = (packageVersion: string | null, cause?: unknown): n
 export const readStorageStamp = (
   database: DatabaseSync,
   actionKeyHash?: string,
+  allowKnownUpgrade = false,
 ): { actionKeyHash: string; packageVersion: string } | null => {
   try {
     if (!database.prepare('SELECT 1 FROM sqlite_schema LIMIT 1').get()) return null;
@@ -48,7 +50,11 @@ export const readStorageStamp = (
         cause: parsed.error,
       });
     const stamp = parsed.data;
-    if (stamp.schema_hash !== CURRENT_SCHEMA_HASH) rejectStorage(stamp.package_version);
+    if (
+      stamp.schema_hash !== CURRENT_SCHEMA_HASH &&
+      !(allowKnownUpgrade && stamp.schema_hash === KNOWN_PREVIOUS_SCHEMA_HASH)
+    )
+      rejectStorage(stamp.package_version);
     if (actionKeyHash !== undefined && stamp.action_key_hash !== actionKeyHash)
       throw HQ_ERRORS.create('actionKeyUnavailable', { data: { kind: 'state-conflict' } });
     return { actionKeyHash: stamp.action_key_hash, packageVersion: stamp.package_version };

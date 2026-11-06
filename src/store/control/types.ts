@@ -54,7 +54,10 @@ export type IActionRow = {
   updated_at: number;
 };
 // an action row joined with its thread's native session, which its receipt carries
-export type IActionReceiptRow = IActionRow & { native_thread_id: string | null };
+export type IActionReceiptRow = IActionRow & {
+  native_thread_id: string | null;
+  workspace_transition?: string | null;
+};
 // an action's metadata with the text of its undelivered queued input, which a page carries
 export type IActionSummaryRow = Omit<IActionRow, 'queued_input' | 'result'> & {
   queued_text: string | null;
@@ -76,6 +79,12 @@ export type INativeOutcome = IOutcomeFields &
     | { kind: 'deleted'; nativeId: string }
     | { kind: 'renamed' }
     | { kind: 'turn-accepted'; nativeTurnId: string }
+    | {
+        kind: 'workspace-confirmed';
+        workspaceRoot: string;
+        historyWorkspaceRoot?: string;
+        nativeTurnId?: string;
+      }
     | { kind: 'steer-accepted'; nativeTurnId: string }
     | { kind: 'interrupt-accepted' }
     | { kind: 'reply-written' }

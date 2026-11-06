@@ -147,6 +147,23 @@ export const resolveWorkspaceTarget = async (
 };
 
 /**
+ * Resolves an authorized directory before a session changes its working folder.
+ * @returns Its canonical directory path.
+ * @throws
+ * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+ * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
+ */
+export const resolveWorkspaceDirectory = async (
+  target: string,
+  allowedRoots: string[],
+): Promise<string> => {
+  const canonical = await resolveWorkspaceTarget(target, allowedRoots);
+  if (!(await lstat(canonical)).isDirectory())
+    throw HQ_ERRORS.create('requestInvalid', { data: { kind: 'invalid-request' } });
+  return canonical;
+};
+
+/**
  * Reads the runtime lock's owner without taking it, in a state directory only this user can use.
  * @returns The owner, whose nonce is the runtime epoch, also when its process is gone.
  * @throws

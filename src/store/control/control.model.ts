@@ -5,6 +5,7 @@ import { HQ_ERRORS } from '../../errors/index.js';
 import { suffixThreadName } from '../../sessions/names/index.js';
 
 import type { IStatements } from '../utilities.js';
+import { WorkspacesModel } from '../workspaces/index.js';
 
 import { ACTION_RECEIPT_COLUMNS, CONTROLLED_THREAD_CAPACITY, THREAD_COLUMNS } from './constants.js';
 import { toActionReceipt, toManagedThread } from './transformers.js';
@@ -20,6 +21,7 @@ export abstract class ControlModel {
   protected readonly _statements: IStatements;
   protected readonly _epoch: string;
   protected readonly _digestKey: Uint8Array;
+  protected readonly _workspaces: WorkspacesModel;
 
   /** Uses the existing worker connection without owning its lifecycle. */
   public constructor(
@@ -32,6 +34,7 @@ export abstract class ControlModel {
     this._statements = statements;
     this._epoch = runtimeEpoch;
     this._digestKey = digestKey;
+    this._workspaces = new WorkspacesModel(statements);
   }
 
   /** Returns one receipt, including an undelivered queue body when present. */

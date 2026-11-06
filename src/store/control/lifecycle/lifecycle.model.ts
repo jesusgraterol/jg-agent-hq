@@ -43,6 +43,10 @@ export class ControlLifecycle extends ControlModel {
         runtimeEpoch,
       );
       statements.run(
+        "UPDATE agent_hq_workspace_transition SET state = 'uncertain', updated_at = ? WHERE state = 'submitted'",
+        now,
+      );
+      statements.run(
         "UPDATE agent_hq_action SET queue_ready = 0 WHERE runtime_epoch != ? AND delivery = 'queued'",
         runtimeEpoch,
       );
@@ -86,6 +90,11 @@ export class ControlLifecycle extends ControlModel {
       );
       this._statements.run(
         "UPDATE agent_hq_action SET delivery = 'uncertain', updated_at = ? WHERE runtime_epoch = ? AND delivery = 'submitted'",
+        now,
+        this._epoch,
+      );
+      this._statements.run(
+        "UPDATE agent_hq_workspace_transition SET state = 'uncertain', updated_at = ? WHERE state = 'submitted' AND action_id IN (SELECT id FROM agent_hq_action WHERE runtime_epoch = ? AND delivery = 'uncertain')",
         now,
         this._epoch,
       );

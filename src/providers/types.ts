@@ -21,6 +21,7 @@ import type {
   IConfigurationRequest,
   ISessionConfiguration,
   IPreparedInput,
+  IWorkspaceChange,
   ISessionState,
 } from '../contracts/index.js';
 import type { IProviderInputFile } from './inputs/index.js';
@@ -251,6 +252,25 @@ export type IAgentProvider = {
     files: IProviderInputFile[],
     call: IProviderCall,
   ): Promise<{ id: string }>;
+  /**
+   * Changes an idle native workspace, atomically with input when the provider requires a turn.
+   * @returns Verified destination and the accepted turn when input was already delivered.
+   * @throws
+   * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
+   * - JG_AGENT_HQ_TARGET_FORBIDDEN: The HQ target is outside the allowed workspaces
+   * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+   * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+   */
+  changeWorkspace?(
+    requestId: string,
+    nativeId: string,
+    change: IWorkspaceChange,
+    input: IPreparedInput,
+    files: IProviderInputFile[],
+    call: IProviderCall,
+  ): Promise<{ workspaceRoot: string; historyWorkspaceRoot?: string; nativeTurnId?: string }>;
   /** @returns The acknowledged active turn identity, without creating a new turn. */
   steer(
     requestId: string,

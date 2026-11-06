@@ -232,7 +232,7 @@ export type ICodexProvider = {
    */
   nameThread(requestId: string, nativeId: string, name: string): Promise<void>;
   /**
-   * Starts idle input with optional native model and effort selection.
+   * Starts idle input with optional native settings and an atomic, qualified cwd override.
    * @returns The accepted native turn metadata.
    * @throws
    * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
@@ -244,6 +244,7 @@ export type ICodexProvider = {
     skill?: INativeSkillInput | null,
     settings?: ITurnSettings,
     files?: IProviderInputFile[],
+    workspaceRoot?: string,
   ): Promise<INativeTurn>;
   /**
    * Steers only the required active native turn and verifies its response identity.

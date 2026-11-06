@@ -3974,7 +3974,7 @@ test('thread-delete removes a Claude transcript with its folder and records, and
   });
 });
 
-test('a Claude transcript that cannot be deleted reports PROVIDER_FAILED and stays listed', async () => {
+test('an unconfirmed Claude deletion reports PROVIDER_FAILED and never repeats its uncertain effect', async () => {
   await withClaudeRuntime(async (fixture) => {
     const nativeId = randomUUID();
     await writeFile(
@@ -4000,7 +4000,11 @@ test('a Claude transcript that cannot be deleted reports PROVIDER_FAILED and sta
       );
       expect(
         (await fixture.runtime.request({ kind: 'receipt', actionId: deletion.id })).result,
-      ).toMatchObject({ delivery: 'failed', phase: 'delete' });
+      ).toMatchObject({ delivery: 'uncertain', phase: 'delete' });
+      await chmod(fixture.projectRoot, 0o700);
+      expect(
+        (await fixture.runtime.request({ kind: 'action', action: deletion })).result,
+      ).toMatchObject({ delivery: 'uncertain', phase: 'delete' });
       await expect(readFile(fixture.transcript(nativeId))).resolves.toBeDefined();
     } finally {
       await chmod(fixture.projectRoot, 0o700);

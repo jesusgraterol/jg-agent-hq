@@ -13,3 +13,7 @@ export const PACKAGE_VERSION = z
 export const CURRENT_SCHEMA_HASH = hashValue(
   readFileSync(new URL('../../store/schema.sql', import.meta.url)),
 );
+
+// the sole predecessor supported by the finite workspace-journal upgrade
+export const KNOWN_PREVIOUS_SCHEMA_HASH =
+  'dd49fcd16db9c8f5431b24f63e7f1e0163dbc32e21a763246d249c6387622be1';

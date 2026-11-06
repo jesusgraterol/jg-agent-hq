@@ -31,6 +31,7 @@ export const ACTION_PHASES = [
   'close',
   'delete',
   'reply',
+  'workspace',
 ] as const;
 
 // the most text one history item carries, in UTF-16 code units

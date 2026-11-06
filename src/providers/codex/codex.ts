@@ -84,6 +84,8 @@ export const createCodexProvider = async (
   let accountGeneration = 0;
   let events: ICodexEvents | undefined;
   const controlled = new Set<string>();
+  const workspaceRequests = new Map<string, { nativeId: string; workspaceRoot: string }>();
+  const workspaceProofs = new Set<Promise<void>>();
   const outputSchemas = new Map<string, IOutputSchema>();
   const configurations = new Map<
     string,
@@ -151,7 +153,39 @@ export const createCodexProvider = async (
       if (events) events.request(id, method, params);
       else void rpc?.reject(id).catch(() => undefined);
     },
-    lateResponse: (id, result, error) => events?.lateResponse(id, result, error),
+    lateResponse: (id, result, error) => {
+      const transition = workspaceRequests.get(id);
+      workspaceRequests.delete(id);
+      if (!transition || error !== undefined) {
+        events?.lateResponse(id, result, error);
+        return;
+      }
+      const proof = (async () => {
+        try {
+          const observed = parseNative(
+            z.object({ thread: NativeThreadSchema }),
+            await rpc!.request('thread/read', {
+              threadId: transition.nativeId,
+              includeTurns: false,
+            }),
+          );
+          if (
+            observed.thread.id !== transition.nativeId ||
+            observed.thread.cwd !== transition.workspaceRoot
+          )
+            throw HQ_ERRORS.create('codexFailed', { data: { kind: 'state-conflict' } });
+          events?.lateResponse(
+            id,
+            { nativeResult: result, workspaceThread: observed.thread },
+            undefined,
+          );
+        } catch {
+          events?.unavailable();
+        }
+      })();
+      workspaceProofs.add(proof);
+      void proof.finally(() => workspaceProofs.delete(proof));
+    },
     unavailable: () => events?.unavailable(),
     opened: () => events?.connected(),
     discarded: () => events?.discarded(),
@@ -490,16 +524,22 @@ export const createCodexProvider = async (
         await connection.request('thread/name/set', { threadId: nativeId, name }, requestId),
       );
     },
-    async startTurn(requestId, nativeId, text, skill, settings = {}, files = []) {
+    async startTurn(requestId, nativeId, text, skill, settings = {}, files = [], workspaceRoot) {
       const { fast, ...turnSettings } = settings;
       const outputSchema = settings.outputSchema ?? outputSchemas.get(nativeId);
       events?.prepareTurn(nativeId, outputSchema);
-      return parseNative(
-        z.object({ turn: NativeTurnSchema }),
-        await connection.request(
+      if (workspaceRoot) {
+        if (workspaceRequests.size >= 32)
+          throw HQ_ERRORS.create('codexFailed', { data: { kind: 'state-conflict' } });
+        workspaceRequests.set(requestId, { nativeId, workspaceRoot });
+      }
+      let result: unknown;
+      try {
+        result = await connection.request(
           'turn/start',
           {
             threadId: nativeId,
+            ...(workspaceRoot ? { cwd: workspaceRoot } : {}),
             clientUserMessageId: requestId,
             ...turnSettings,
             ...(fast !== undefined ? { serviceTier: toCodexServiceTier(fast) } : {}),
@@ -521,8 +561,18 @@ export const createCodexProvider = async (
             ],
           },
           requestId,
-        ),
-      ).turn;
+        );
+      } catch (cause) {
+        if (
+          isException(cause) &&
+          z.object({ nativeCode: z.number() }).safeParse(cause.data).success
+        )
+          workspaceRequests.delete(requestId);
+        throw cause;
+      }
+      const response = parseNative(z.object({ turn: NativeTurnSchema }), result).turn;
+      workspaceRequests.delete(requestId);
+      return response;
     },
     async steer(requestId, nativeId, expectedTurnId, text) {
       const result = parseNative(
@@ -599,7 +649,12 @@ export const createCodexProvider = async (
         if (isException(cause) && cause.message.includes(NO_ROLLOUT_MESSAGE)) return;
         throw new Exception(`The HQ provider integration failed: ${extractMessage(cause)}`, {
           code: 'JG_AGENT_HQ_PROVIDER_FAILED',
-          data: { kind: 'agent-unavailable' },
+          data: {
+            kind: 'agent-unavailable',
+            ...(isException(cause)
+              ? z.object({ nativeCode: z.number() }).safeParse(cause.data).data
+              : undefined),
+          },
           cause,
         });
       }
@@ -614,6 +669,8 @@ export const createCodexProvider = async (
     },
     close: async () => {
       await connection.close();
+      await Promise.all(workspaceProofs);
+      workspaceRequests.clear();
       controlled.clear();
     },
   };

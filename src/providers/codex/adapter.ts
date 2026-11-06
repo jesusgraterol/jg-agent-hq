@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Exception, extractMessage } from 'jg-exception';
 
 import { z } from 'zod';
 
@@ -31,6 +32,7 @@ import {
 
 import { capabilityUnavailable } from '../registry/index.js';
 import { HQ_ERRORS } from '../../errors/index.js';
+import { parseActionRequest } from '../utilities.js';
 
 import { createCodexProvider } from './codex.js';
 import { MAX_LOADED_THREAD_PAGES } from './constants.js';
@@ -104,6 +106,26 @@ export const createCodexProviderFactory = (
     const verifyRoot = async (workspaceRoot: string, expectedRoot: string): Promise<void> => {
       if ((await resolveWorkspaceTarget(workspaceRoot, context.allowedRoots)) !== expectedRoot)
         throw HQ_ERRORS.create('targetForbidden', { data: { kind: 'access-denied' } });
+    };
+    /**
+     * A post-input read failure cannot prove that the earlier input was rejected.
+     * @returns Exact destination proof after the native effect.
+     * @throws
+     * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+     */
+    const verifyWorkspaceProof = async (nativeId: string, workspaceRoot: string) => {
+      try {
+        const thread = await native.readThread(nativeId);
+        await verifyRoot(thread.workspaceRoot, workspaceRoot);
+        if (thread.nativeId !== nativeId) capabilityUnavailable();
+        return thread;
+      } catch (cause) {
+        throw new Exception(`The Codex integration failed: ${extractMessage(cause)}`, {
+          code: 'JG_AGENT_HQ_CODEX_FAILED',
+          data: { kind: 'agent-unavailable' },
+          cause,
+        });
+      }
     };
     // a session's latest turn, which runs only while the daemon reports the session active
     const readLatestTurn = async (
@@ -323,6 +345,30 @@ export const createCodexProviderFactory = (
       },
       startTurn: (requestId, nativeId, text, skill, settings, files) =>
         native.startTurn(requestId, nativeId, text, skill, settings, files),
+      async changeWorkspace(requestId, nativeId, change, input, files, call) {
+        const intent = parseActionRequest(requestId);
+        if (!intent || intent.phase !== 'workspace' || call.signal.aborted) capabilityUnavailable();
+        const before = await native.readThread(nativeId);
+        await verifyRoot(before.workspaceRoot, change.expectedWorkspaceRoot);
+        if (before.nativeState !== 'idle' || call.signal.aborted) capabilityUnavailable();
+        const turn = await native.startTurn(
+          requestId,
+          nativeId,
+          input.text,
+          input.skill,
+          input.settings,
+          files,
+          change.workspaceRoot,
+        );
+        if (call.signal.aborted)
+          throw HQ_ERRORS.create('codexFailed', { data: { kind: 'agent-unavailable' } });
+        const after = await verifyWorkspaceProof(nativeId, change.workspaceRoot);
+        observedThreads.delete(nativeId);
+        const proof = { workspaceRoot: after.workspaceRoot, nativeTurnId: turn.id };
+        // exact native proof also settles an operation whose host deadline elapsed during its read
+        context.events.outcome({ kind: 'workspace-confirmed', ...intent, ...proof }, after);
+        return proof;
+      },
       steer: (requestId, nativeId, expectedTurnId, text) =>
         native.steer(requestId, nativeId, expectedTurnId, text),
       interrupt: (requestId, nativeId, nativeTurnId) =>

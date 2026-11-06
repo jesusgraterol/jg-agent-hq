@@ -25,6 +25,7 @@ import type {
 import { openDatabase } from './schema.js';
 import { SnapshotModel } from './snapshot.js';
 import { createStatements } from './utilities.js';
+import { WorkspacesModel } from './workspaces/index.js';
 
 // the main thread built these options
 const options = workerData as IStoreWorkerData;
@@ -62,16 +63,19 @@ const startWorker = async (): Promise<void> => {
         "SELECT seq FROM sqlite_sequence WHERE name = 'agent_hq_session_transition'",
       )?.seq ?? 0;
     // the lifecycle quarantines what another runtime left unsettled before anything is admitted
+    const outcomes = new ControlOutcomes(database, statements, runtimeEpoch, actionKey);
+    outcomes.finishConfirmedDeletions();
     const models: IStoreModels = {
       browser: new BrowserModel(statements, runtimeEpoch, actionKey),
       sessions: new SessionsModel(database, statements),
       lifecycle: new ControlLifecycle(database, statements, runtimeEpoch, actionKey),
       reads: new ControlReads(database, statements, runtimeEpoch, actionKey),
       admission: new ControlAdmission(database, statements, runtimeEpoch, actionKey),
-      outcomes: new ControlOutcomes(database, statements, runtimeEpoch, actionKey),
+      outcomes,
       observations: new ControlObservations(database, statements, runtimeEpoch, actionKey),
       claudeHistory: new ClaudeHistoryModel(database, statements),
       snapshot: new SnapshotModel(database),
+      workspaces: new WorkspacesModel(statements),
     };
     port.on('message', async (request: IStoreRequest) => {
       const { id } = request;

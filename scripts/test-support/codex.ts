@@ -178,6 +178,7 @@ else {
     if (method === 'turn/start') {
       if (control.rejectTurn) { send(JSON.stringify({id:request.id,error:{code:-32602,message:'Synthetic input rejection'}}));return; }
       const thread = managed.get(params.threadId);
+      if (params.cwd && !control.ignoreWorkspaceChange) thread.cwd=params.cwd;
       thread.model=params.model??thread.model;thread.reasoningEffort=params.effort??thread.reasoningEffort;
       // a turn's tier also applies to the turns after it, and Codex reports the change
       if (params.serviceTier != null) { tiers.set(thread.id,params.serviceTier);notify('thread/settings/updated',{threadId:thread.id,threadSettings:{model:thread.model,effort:thread.reasoningEffort,serviceTier:params.serviceTier}}); }
@@ -259,8 +260,9 @@ else {
     // failRead refuses a session read; holdReadThread answers that session's read only once the control drops it
     if (method === 'thread/read' && deleted.has(params.threadId)) { send(JSON.stringify({id:request.id,error:{code:-32600,message:'no rollout found for thread id '+params.threadId}}));return; }
     if (method === 'thread/read' && control.failRead) { send(JSON.stringify({id:request.id,error:{code:-32603,message:'Synthetic read failure'}}));return; }
+    if (method === 'thread/read' && control.failWorkspaceProof && managed.get(params.threadId)?.cwd !== workspaceRoot) { send(JSON.stringify({id:request.id,error:{code:-32603,message:'Synthetic post-input proof failure'}}));return; }
     if (method === 'thread/read' && control.holdReadThread === params.threadId) { const answer = () => controls().holdReadThread === params.threadId ? setTimeout(answer,25) : handle(line,true); setTimeout(answer,25);return; }
-    if (method === 'thread/read') { respond(request.id,{ thread: { ...threads[0],...managed.get(params.threadId),...(control.threadNames && Object.hasOwn(control.threadNames,params.threadId) ? { name: control.threadNames[params.threadId] } : {}),...(control.ephemeralThreads?.includes(params.threadId) ? { ephemeral: true } : {}),status: statusOf({ id: params.threadId,status: managed.get(params.threadId)?.status ?? threads[0].status }),...(control.unavailableSettings?{model:null,reasoningEffort:null}:{}),id: params.threadId,cwd: control.wrongRoot || managed.get(params.threadId)?.cwd || workspaceRoot } });return; }
+    if (method === 'thread/read') { respond(request.id,{ thread: { ...threads[0],...managed.get(params.threadId),...(control.threadNames && Object.hasOwn(control.threadNames,params.threadId) ? { name: control.threadNames[params.threadId] } : {}),...(control.ephemeralThreads?.includes(params.threadId) ? { ephemeral: true } : {}),status: statusOf({ id: params.threadId,status: managed.get(params.threadId)?.status ?? threads[0].status }),...(control.unavailableSettings?{model:null,reasoningEffort:null}:{}),id: params.threadId,cwd: control.wrongRoot || managed.get(params.threadId)?.cwd || workspaceRoot } });if(control.readProofMarker)writeFileSync(join(directory,'completed-read.txt'),params.threadId);return; }
     if (method === 'thread/turns/list') {
       // threadTurns lists one session's turns, oldest first, as the daemon reports them
       let selected = control.threadTurns?.[params.threadId] ?? control.turns ?? [{ id: 'turn-a',status: 'completed',startedAt: 1_700_000_000,completedAt: 1_700_000_001 }];

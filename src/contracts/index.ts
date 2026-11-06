@@ -204,3 +204,6 @@ export type {
 // machine-wide jg-locks locks
 export { LockStateSchema, LocksSchema } from './locks/index.js';
 export type { ILockState, ILocks } from './locks/index.js';
+// workspace transitions
+export { WorkspaceChangeSchema, WorkspaceTransitionSchema } from './workspaces/index.js';
+export type { IWorkspaceChange, IWorkspaceTransition } from './workspaces/index.js';

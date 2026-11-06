@@ -5,6 +5,7 @@ export {
   prepareStateRoot,
   resolveAllowedRoots,
   resolveWorkspaceTarget,
+  resolveWorkspaceDirectory,
   readRuntimeOwner,
   claimRuntimeOwner,
   recoverSnapshotLock,

@@ -39,6 +39,7 @@ export const ProviderCapabilitySetSchema = z.object({
     skills: ProviderCapabilitySchema,
     models: ProviderCapabilitySchema,
     configuration: ProviderCapabilitySchema,
+    workspaceChange: ProviderCapabilitySchema,
   }),
   inputSchema: z.record(z.string(), z.json()).nullable(),
   configurationSchema: z.record(z.string(), z.json()).nullable(),

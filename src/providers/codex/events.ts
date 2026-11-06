@@ -290,6 +290,21 @@ export const createCodexEvents = (
           request.phase === 'create'
             ? { kind: 'created', ...request, nativeId: thread.nativeId }
             : { kind: 'resumed', ...request, nativeState: thread.nativeState };
+      } else if (request.phase === 'workspace') {
+        const proof = parseNative(
+          z.object({
+            nativeResult: z.object({ turn: NativeTurnSchema }),
+            workspaceThread: NativeThreadSchema,
+          }),
+          result,
+        );
+        thread = toProviderThread(proof.workspaceThread);
+        outcome = {
+          kind: 'workspace-confirmed',
+          ...request,
+          workspaceRoot: thread.workspaceRoot,
+          nativeTurnId: proof.nativeResult.turn.id,
+        };
       } else if (request.phase === 'turn')
         outcome = {
           kind: 'turn-accepted',

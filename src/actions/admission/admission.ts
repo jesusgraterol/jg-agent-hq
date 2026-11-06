@@ -11,7 +11,7 @@ import type {
 import { HQ_ERRORS } from '../../errors/index.js';
 import { PROVIDER_OPERATIONS, readInputFiles } from '../../providers/index.js';
 import { capabilityUnavailable, type IBoundAgentProvider } from '../../providers/registry/index.js';
-import { resolveWorkspaceTarget } from '../../runtime/state/index.js';
+import { resolveWorkspaceDirectory, resolveWorkspaceTarget } from '../../runtime/state/index.js';
 import type { IAdmission } from '../../store/control/index.js';
 
 import type { createDispatch } from '../dispatch/index.js';
@@ -238,9 +238,35 @@ export const createAdmission = (
       if (!thread?.nativeId) conflict();
       // a terminal that resumed a Claude session HQ runs has it now, so HQ sends nothing
       if (thread.provider === 'claude' && claudeTerminalOf(thread.nativeId)) conflict();
-      input = await prepareInput(command.input, command.settings ?? {}, thread.workspaceRoot, {
-        threadId: command.threadId,
-      });
+      let workspaceRoot = thread.workspaceRoot;
+      if (command.workspaceChange) {
+        if (
+          !control.changeWorkspace ||
+          PROVIDER_OPERATIONS[provider].workspaceChange.state !== 'supported'
+        )
+          capabilityUnavailable();
+        const source = await resolveWorkspaceTarget(
+          command.workspaceChange.expectedWorkspaceRoot,
+          roots,
+        );
+        workspaceRoot = await resolveWorkspaceDirectory(
+          command.workspaceChange.workspaceRoot,
+          roots,
+        );
+        if (
+          source !== thread.workspaceRoot ||
+          source !== command.workspaceChange.expectedWorkspaceRoot ||
+          workspaceRoot !== command.workspaceChange.workspaceRoot
+        )
+          conflict();
+      }
+      input = await prepareInput(
+        command.input,
+        command.settings ?? {},
+        workspaceRoot,
+        command.workspaceChange ? { provider, workspaceRoot } : { threadId: command.threadId },
+      );
+      if (command.workspaceChange) input.workspaceChange = command.workspaceChange;
       await control.validateInput(thread.nativeId, input);
       prepared.input = input;
     }
@@ -273,6 +299,9 @@ export const createAdmission = (
           threadId: thread.id,
           input: { kind: 'text', text: receipt.queuedInput.text },
           settings: receipt.queuedInput.settings,
+          ...(receipt.queuedInput.workspaceChange
+            ? { workspaceChange: receipt.queuedInput.workspaceChange }
+            : {}),
         };
         input = receipt.queuedInput;
       }

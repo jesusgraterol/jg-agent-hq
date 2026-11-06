@@ -10,7 +10,7 @@ import type {
 import { HQ_ERRORS, toActionFailure } from '../../errors/index.js';
 import type { IProviderThread } from '../../providers/index.js';
 import { retainNativeLineage, readInputFiles, toActionRequestId } from '../../providers/index.js';
-import { resolveWorkspaceTarget } from '../../runtime/state/index.js';
+import { resolveWorkspaceDirectory, resolveWorkspaceTarget } from '../../runtime/state/index.js';
 import type { INativeOutcome } from '../../store/control/index.js';
 
 import type { IActionsContext } from '../types.js';
@@ -113,8 +113,8 @@ export const createDispatch = (context: IActionsContext) => {
   /**
    * Dispatches one admitted intent once, in the phase its receipt records, and records delivery
    * without replaying it, continuing with each next phase its outcome moves it to. The native CLI
-   * receives a request ID naming the action and its phase. A deletion that fails is recorded
-   * failed, since deleting again is safe: a session already gone counts as deleted.
+   * receives a request ID naming the action and its phase. Native deletion confirmation is
+   * durable before local cleanup; unknown delivery never authorizes another provider call.
    * @param initial The receipt, in the phase to dispatch.
    * @param originalThread The action's thread, or null for a deletion of a session HQ doesn't manage.
    * @param command The admitted command, when dispatch starts from admission.
@@ -242,6 +242,38 @@ export const createDispatch = (context: IActionsContext) => {
             phase,
             nativeTurnId: turn.id,
           });
+        } else if (phase === 'workspace') {
+          const turnInput = input ?? receipt.queuedInput;
+          const change = turnInput?.workspaceChange;
+          if (!thread || !nativeId || !turnInput || !change || !control.changeWorkspace) conflict();
+          hasDispatched = false;
+          if (
+            change.expectedWorkspaceRoot !== thread.workspaceRoot ||
+            (await resolveWorkspaceDirectory(change.workspaceRoot, roots)) !== change.workspaceRoot
+          )
+            conflict();
+          const files = await readInputFiles(turnInput.files, change.workspaceRoot, roots);
+          await control.validateInput(nativeId, turnInput);
+          await store.call('workspaces', 'settle', receipt.id, 'submitted');
+          hasDispatched = true;
+          const proof = await control.changeWorkspace(
+            requestId,
+            nativeId,
+            change,
+            turnInput,
+            files,
+          );
+          if (
+            proof.workspaceRoot !== change.workspaceRoot ||
+            (await resolveWorkspaceTarget(proof.workspaceRoot, roots)) !== change.workspaceRoot
+          )
+            agentUnavailable();
+          next = await applyAfterEvents({
+            kind: 'workspace-confirmed',
+            actionId: receipt.id,
+            phase,
+            ...proof,
+          });
         } else if (phase === 'steer') {
           if (!nativeId || command?.kind !== 'steer') conflict();
           const nativeTurnId = await control.steer(
@@ -271,6 +303,8 @@ export const createDispatch = (context: IActionsContext) => {
           const target = thread ?? (command?.kind === 'thread-delete' ? command : null);
           if (!target?.nativeId) conflict();
           await control.deleteThread(requestId, target.nativeId, target.workspaceRoot);
+          await store.call('outcomes', 'confirmDeletion', receipt.id, target.nativeId);
+          hasDispatched = false;
           next = await apply({
             kind: 'deleted',
             actionId: receipt.id,
@@ -292,13 +326,19 @@ export const createDispatch = (context: IActionsContext) => {
         if (thread) thread = (await store.call('reads', 'getThread', thread.id)) ?? thread;
       }
     } catch (error) {
+      // confirmed native deletion is retried only as a local outcome, never at the provider
+      if (
+        receipt.phase === 'delete' &&
+        (await store.call('outcomes', 'isDeletionConfirmed', receipt.id))
+      )
+        return error;
       // Only a matching native error response proves rejection. Transport loss and malformed results remain uncertain.
       const explicit =
         isException(error) &&
         (NativeRejectionSchema.safeParse(error.data).success ||
           error.code === 'JG_AGENT_HQ_CAPABILITY_UNAVAILABLE');
       await apply(
-        !hasDispatched || explicit || receipt.phase === 'delete'
+        !hasDispatched || explicit
           ? {
               kind: 'failed',
               actionId: receipt.id,

@@ -11,4 +11,5 @@ export const NEXT_PHASES: Partial<Record<IActionPhase, IActionPhase>> = {
   name: 'turn',
   clean: 'close',
   close: 'delete',
+  workspace: 'turn',
 };

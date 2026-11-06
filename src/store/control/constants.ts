@@ -25,4 +25,9 @@ export const ACTION_METADATA_COLUMNS =
   'id, digest, requested_runtime_epoch, runtime_epoch, kind, provider, thread_id, expected_turn_id, native_turn_id, phase, delivery, completion, failure, related_action_id, requested_name, queue_ready, created_at, updated_at';
 export const ACTION_COLUMNS = `${ACTION_METADATA_COLUMNS}, queued_input, result`;
 // a receipt's columns, with its thread's native session read by the thread's primary key
-export const ACTION_RECEIPT_COLUMNS = `${ACTION_COLUMNS}, (SELECT native_id FROM agent_hq_thread WHERE agent_hq_thread.id = agent_hq_action.thread_id) AS native_thread_id`;
+export const ACTION_RECEIPT_COLUMNS = `${ACTION_COLUMNS}, (SELECT native_id FROM agent_hq_thread WHERE agent_hq_thread.id = agent_hq_action.thread_id) AS native_thread_id,
+  (SELECT json_object('actionId', action_id, 'threadId', thread_id,
+    'sourceWorkspaceRoot', source_workspace_root, 'targetWorkspaceRoot', target_workspace_root,
+    'historyWorkspaceRoot', history_workspace_root, 'state', state,
+    'createdAt', created_at, 'updatedAt', updated_at)
+  FROM agent_hq_workspace_transition WHERE action_id = agent_hq_action.id) AS workspace_transition`;

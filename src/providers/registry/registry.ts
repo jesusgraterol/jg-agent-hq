@@ -54,6 +54,7 @@ const unavailableCapabilities = (): IProviderCapabilitySet => {
       skills: unavailable,
       models: unavailable,
       configuration: unavailable,
+      workspaceChange: unavailable,
     },
     inputSchema: null,
     configurationSchema: null,
@@ -303,6 +304,20 @@ export const createProviderRegistry = (
             invokeControl((call) =>
               adapter.startTurn(requestId, nativeId, text, skill, settings, files, call),
             ),
+          ...(adapter.changeWorkspace
+            ? {
+                changeWorkspace: (
+                  requestId: string,
+                  nativeId: string,
+                  change: Parameters<NonNullable<typeof adapter.changeWorkspace>>[2],
+                  input: Parameters<NonNullable<typeof adapter.changeWorkspace>>[3],
+                  files: Parameters<NonNullable<typeof adapter.changeWorkspace>>[4],
+                ) =>
+                  invokeControl((call) =>
+                    adapter.changeWorkspace!(requestId, nativeId, change, input, files, call),
+                  ),
+              }
+            : {}),
           steer: (requestId, nativeId, expectedTurnId, text) =>
             invokeControl((call) => adapter.steer(requestId, nativeId, expectedTurnId, text, call)),
           interrupt: (requestId, nativeId, nativeTurnId) =>

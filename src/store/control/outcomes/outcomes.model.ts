@@ -2,7 +2,7 @@ import type { IActionReceipt } from '../../../contracts/index.js';
 
 import { ControlModel } from '../control.model.js';
 import { toActionReceipt } from '../transformers.js';
-import type { INativeOutcome } from '../types.js';
+import type { IActionRow, IThreadRow, INativeOutcome } from '../types.js';
 
 /** Applies native request outcomes to the actions whose phases they answer. */
 export class ControlOutcomes extends ControlModel {
@@ -59,6 +59,7 @@ export class ControlOutcomes extends ControlModel {
           action.id,
         );
       } else if (outcome.kind === 'uncertain' || outcome.kind === 'failed') {
+        this._workspaces.settle(action.id, outcome.kind);
         this._statements.run(
           'UPDATE agent_hq_action SET delivery = ?, failure = ?, updated_at = ? WHERE id = ?',
           outcome.kind,
@@ -136,6 +137,7 @@ export class ControlOutcomes extends ControlModel {
           action.id,
         );
       } else if (outcome.kind === 'deleted') {
+        if (!this.isDeletionConfirmed(action.id)) this._conflict();
         if (thread) {
           if (thread.pending_action_id !== action.id) this._conflict();
           this.__deleteThread(thread.id, action.id);
@@ -151,10 +153,37 @@ export class ControlOutcomes extends ControlModel {
           now,
           action.id,
         );
+      } else if (outcome.kind === 'workspace-confirmed') {
+        const transition = this._workspaces.get(action.id);
+        if (
+          !thread ||
+          !ownsThread ||
+          thread.pending_action_id !== action.id ||
+          !transition ||
+          transition.sourceWorkspaceRoot !== thread.workspace_root ||
+          transition.targetWorkspaceRoot !== outcome.workspaceRoot
+        )
+          this._conflict();
+        this._workspaces.settle(action.id, 'confirmed', outcome.historyWorkspaceRoot ?? null);
+        this._statements.run(
+          'UPDATE agent_hq_thread SET workspace_root = ?, updated_at = ? WHERE id = ?',
+          outcome.workspaceRoot,
+          now,
+          thread.id,
+        );
+        if (outcome.nativeTurnId)
+          this.__acknowledgeTurn(action, thread, outcome.nativeTurnId, true, now);
+        else
+          this._statements.run(
+            "UPDATE agent_hq_action SET phase = 'turn', delivery = 'submitted', updated_at = ? WHERE id = ?",
+            now,
+            action.id,
+          );
+      } else if (outcome.kind === 'turn-accepted') {
+        this.__acknowledgeTurn(action, thread, outcome.nativeTurnId, ownsThread, now);
       } else {
         let nativeTurnId = action.native_turn_id;
-        if (outcome.kind === 'turn-accepted' || outcome.kind === 'steer-accepted')
-          nativeTurnId = outcome.nativeTurnId;
+        if (outcome.kind === 'steer-accepted') nativeTurnId = outcome.nativeTurnId;
         if (outcome.kind === 'steer-accepted' && outcome.nativeTurnId !== action.expected_turn_id)
           this._conflict();
         const completion =
@@ -194,22 +223,6 @@ export class ControlOutcomes extends ControlModel {
               thread.id,
               action.id,
             );
-          } else if (outcome.kind === 'turn-accepted' && thread.pending_action_id === action.id) {
-            const finished =
-              thread.last_turn_id === nativeTurnId && thread.last_turn_state !== null;
-            const active = finished ? null : (thread.active_turn_id ?? nativeTurnId);
-            const state = finished
-              ? thread.last_turn_state!
-              : ['stopping', 'waiting-input', 'waiting-approval'].includes(thread.state)
-                ? thread.state
-                : 'running';
-            this._statements.run(
-              'UPDATE agent_hq_thread SET pending_action_id = NULL, active_turn_id = ?, state = ?, updated_at = ? WHERE id = ?',
-              active,
-              state,
-              now,
-              thread.id,
-            );
           }
         }
       }
@@ -218,22 +231,121 @@ export class ControlOutcomes extends ControlModel {
   }
 
   /**
+   * Durably records exact native deletion before local records are removed.
+   * @throws
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   */
+  public confirmDeletion(actionId: string, nativeId: string): void {
+    this._transaction(() => {
+      const action = this._action(actionId);
+      const thread = action?.thread_id ? this._thread(action.thread_id) : null;
+      if (
+        !action ||
+        action.runtime_epoch !== this._epoch ||
+        action.phase !== 'delete' ||
+        action.delivery !== 'submitted' ||
+        (thread && thread.native_id !== nativeId)
+      )
+        this._conflict();
+      this._statements.run(
+        'UPDATE agent_hq_action SET deleted_native_id = ?, updated_at = ? WHERE id = ?',
+        nativeId,
+        Date.now(),
+        actionId,
+      );
+    });
+  }
+
+  /** Whether a provider deletion has already been confirmed under this exact action. */
+  public isDeletionConfirmed(actionId: string): boolean {
+    return Boolean(
+      this._statements.get(
+        "SELECT 1 FROM agent_hq_action WHERE id = ? AND phase = 'delete' AND deleted_native_id IS NOT NULL",
+        actionId,
+      ),
+    );
+  }
+
+  /** Completes only recorded local deletion outcomes, in bounded startup batches. */
+  public finishConfirmedDeletions(): void {
+    for (;;) {
+      const batch = this._statements.all<{
+        id: string;
+        provider: string;
+        thread_id: string | null;
+        deleted_native_id: string;
+      }>(
+        "SELECT id, provider, thread_id, deleted_native_id FROM agent_hq_action WHERE phase = 'delete' AND deleted_native_id IS NOT NULL AND delivery IN ('submitted', 'uncertain') ORDER BY id LIMIT 32",
+      );
+      if (!batch.length) return;
+      for (const action of batch)
+        this._transaction(() => {
+          if (action.thread_id) this.__deleteThread(action.thread_id, action.id);
+          this._statements.run(
+            'DELETE FROM agent_hq_observed_session WHERE provider = ? AND native_id = ?',
+            action.provider,
+            action.deleted_native_id,
+          );
+          this._statements.run(
+            "UPDATE agent_hq_action SET delivery = 'acknowledged', thread_id = NULL, failure = NULL, updated_at = ? WHERE id = ?",
+            Date.now(),
+            action.id,
+          );
+        });
+    }
+  }
+
+  /** Settles one exact input and its thread, including a workspace change's atomic native turn. */
+  private __acknowledgeTurn(
+    action: IActionRow,
+    thread: IThreadRow | null,
+    nativeTurnId: string,
+    ownsThread: boolean,
+    now: number,
+  ): void {
+    const finished = thread?.last_turn_id === nativeTurnId && thread.last_turn_state !== null;
+    this._statements.run(
+      "UPDATE agent_hq_action SET phase = 'turn', delivery = 'acknowledged', native_turn_id = ?, completion = ?, failure = NULL, queued_input = NULL, updated_at = ? WHERE id = ?",
+      nativeTurnId,
+      finished ? thread!.last_turn_state : action.completion,
+      now,
+      action.id,
+    );
+    if (ownsThread && thread?.pending_action_id === action.id) {
+      const state = finished
+        ? thread.last_turn_state!
+        : ['stopping', 'waiting-input', 'waiting-approval'].includes(thread.state)
+          ? thread.state
+          : 'running';
+      this._statements.run(
+        'UPDATE agent_hq_thread SET pending_action_id = NULL, active_turn_id = ?, state = ?, updated_at = ? WHERE id = ?',
+        finished ? null : (thread.active_turn_id ?? nativeTurnId),
+        state,
+        now,
+        thread.id,
+      );
+    }
+  }
+
+  /**
    * Deletes a managed thread with its actions, approvals and host receipts, except the action
    * deleting it. The thread and its registration action name each other, so its actions leave it
    * before it goes, and then go themselves; the transition log keeps its entries.
    */
   private __deleteThread(threadId: string, actionId: string): void {
-    const actionIds = JSON.stringify(
-      this._statements
-        .all<{
-          id: string;
-        }>('SELECT id FROM agent_hq_action WHERE thread_id = ? AND id != ?', threadId, actionId)
-        .map(({ id }) => id),
-    );
+    const registrationId = this._thread(threadId)?.registration_action_id ?? this._conflict();
     this._statements.run('DELETE FROM agent_hq_native_approval WHERE thread_id = ?', threadId);
+    this._statements.run('DELETE FROM agent_hq_workspace_transition WHERE thread_id = ?', threadId);
     this._statements.run(
-      'DELETE FROM agent_hq_browser_action WHERE native_action_id IN (SELECT value FROM json_each(?))',
-      actionIds,
+      'DELETE FROM agent_hq_browser_action WHERE native_action_id IN (SELECT id FROM agent_hq_action WHERE thread_id = ? AND id != ?)',
+      threadId,
+      actionId,
+    );
+    this._statements.run(
+      'DELETE FROM agent_hq_action WHERE thread_id = ? AND id != ? AND id != ?',
+      threadId,
+      actionId,
+      registrationId,
     );
     this._statements.run(
       'UPDATE agent_hq_action SET thread_id = NULL WHERE thread_id = ?',
@@ -241,8 +353,9 @@ export class ControlOutcomes extends ControlModel {
     );
     this._statements.run('DELETE FROM agent_hq_thread WHERE id = ?', threadId);
     this._statements.run(
-      'DELETE FROM agent_hq_action WHERE id IN (SELECT value FROM json_each(?))',
-      actionIds,
+      'DELETE FROM agent_hq_action WHERE id = ? AND id != ?',
+      registrationId,
+      actionId,
     );
   }
 }

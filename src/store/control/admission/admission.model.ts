@@ -173,8 +173,16 @@ export class ControlAdmission extends ControlModel {
         queued.queued_input === null
       )
         return null;
+      const transition = this._workspaces.get(queued.id);
+      if (
+        transition &&
+        (transition.state !== 'prepared' ||
+          queued.expected_turn_id !== thread.last_turn_id ||
+          thread.last_turn_state !== 'completed')
+      )
+        return null;
       this.__beginTurn(queued.id, threadId);
-      this.__setPhase(queued.id, 'turn');
+      this.__setPhase(queued.id, transition ? 'workspace' : 'turn');
       const dispatched = this._receipt(queued.id)!;
       return {
         receipt: dispatched,
@@ -253,6 +261,11 @@ export class ControlAdmission extends ControlModel {
     const thread = this._thread(threadId);
     if (!thread) this._conflict();
     this.__requireControl(rule.control, thread);
+    if (
+      ['message', 'queue', 'queue-send'].includes(command.kind) &&
+      this._workspaces.hasPending(threadId, queued?.id ?? action.id)
+    )
+      this._conflict();
     if (rule.requiresNoPendingAction && thread.pending_action_id) this._conflict();
     // a close that interrupts a running turn first doesn't need an idle session
     const isInterrupting =
@@ -322,6 +335,7 @@ export class ControlAdmission extends ControlModel {
         );
         break;
       case 'message':
+        if (prepared.input?.workspaceChange) phase = 'workspace';
         this.__beginTurn(action.id, threadId);
         break;
       case 'queue':
@@ -332,9 +346,18 @@ export class ControlAdmission extends ControlModel {
         );
         break;
       case 'queue-send':
+        if (this._workspaces.get(queued!.id)) {
+          if (
+            queued!.expected_turn_id !== thread.last_turn_id ||
+            thread.last_turn_state !== 'completed'
+          )
+            this._conflict();
+          phase = 'workspace';
+        }
         this.__beginTurn(queued!.id, threadId);
         break;
       case 'queue-cancel':
+        this._workspaces.settle(queued!.id, 'failed');
         this._statements.run(
           "UPDATE agent_hq_action SET delivery = 'canceled', queued_input = NULL, queue_ready = 0, updated_at = ? WHERE id = ?",
           now,
@@ -358,6 +381,14 @@ export class ControlAdmission extends ControlModel {
         );
         break;
       }
+    }
+    if (
+      (command.kind === 'message' || command.kind === 'queue') &&
+      prepared.input?.workspaceChange
+    ) {
+      const change = prepared.input.workspaceChange;
+      if (change.expectedWorkspaceRoot !== thread.workspace_root) this._conflict();
+      this._workspaces.prepare(action.id, thread.id, change, now);
     }
     if (rule.stops) {
       this._statements.run(

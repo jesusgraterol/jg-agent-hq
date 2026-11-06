@@ -8,6 +8,7 @@ import { HQ_ERRORS, getErrorKind } from '../../errors/index.js';
 import type { IProviderReattachment } from '../../providers/index.js';
 import { capabilityUnavailable } from '../../providers/registry/index.js';
 import type { INativeObservation } from '../../store/control/index.js';
+import { resolveWorkspaceTarget } from '../../runtime/state/index.js';
 
 import type { createDispatch } from '../dispatch/index.js';
 import {
@@ -427,6 +428,16 @@ export const createEvents = (
           const verified = await verifyThread(thread, nativeThread);
           verifiedOutcome = { ...outcome, nativeLineage: verified.nativeLineage };
           if (outcome.kind === 'created') own(provider, verified.nativeId);
+        }
+        if (outcome.kind === 'workspace-confirmed') {
+          if (
+            !nativeThread ||
+            nativeThread.nativeId !== thread.nativeId ||
+            outcome.workspaceRoot !== receipt.workspaceTransition?.targetWorkspaceRoot ||
+            (await resolveWorkspaceTarget(nativeThread.workspaceRoot, context.roots)) !==
+              outcome.workspaceRoot
+          )
+            agentUnavailable();
         }
         const updated = await apply(verifiedOutcome);
         // a late answer that moved its action to its next phase continues it
