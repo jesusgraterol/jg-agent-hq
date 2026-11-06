@@ -1,5 +1,10 @@
 # Changelog
 
+## 13.1.1
+
+- Preserve quarantined Codex controls and their producing runtime epoch during shutdown. Stopping HQ no longer turns unverified native ownership into a managed inactive record or discards its recorded turn, so the next runtime can explicitly recover a still-loaded idle or active session. Queued input stays paused and no input is replayed.
+- Keep the existing storage schema, action key and public request contracts unchanged.
+
 ## 13.1.0
 
 - Let explicit `thread-recover` with `recovery: { kind: 'resume' }` rejoin a known Codex identity that remains loaded idle or active after its previous HQ runtime stopped. Read and bind its current turn before joining without settings or input, then verify the turn again before acknowledging recovery. A reissued approval belongs to that verified active turn.

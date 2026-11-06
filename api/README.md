@@ -107,6 +107,8 @@ The socket accepts at most 32 simultaneous connections. Requests are bounded to 
 
 After a live Codex connection loss, the runtime rechecks the bounded cohort it controlled with no action in flight before that loss. It stops the old proxy before replacing it, then reads and rejoins each eligible session once, without settings or input. The saved native turn must still match before and after joining. Matching running turns continue; confirmed completions settle their receipts without a result and release their ready queued input. Newer external turns, failed reads/joins and unacknowledged operations remain uncertain. Live output reports a gap, and partial result capture is discarded. This recovery does not claim that native commands or their process handles survived a daemon restart. It never resumes an external session or repeats an uncertain action. A second loss is a new bounded recovery attempt, not a retry of input.
 
+Shutdown preserves a quarantined Codex record's uncertain ownership, producing runtime epoch and recorded native-turn evidence. The next runtime leaves it quarantined for explicit recovery, including when the native turn is still active. Stopping HQ does not prove that Codex stopped or that an uncertain action failed, and never converts that record into a managed inactive control.
+
 Codex approval identities are scoped to their native connection, because a replacement daemon may reuse request IDs. A reissued request opens a new approval; earlier approvals stay expired. A response prepared for an earlier connection cannot write to or decline a request on its replacement. The native response still uses the exact request ID supplied by Codex.
 
 ## Providers and capabilities
