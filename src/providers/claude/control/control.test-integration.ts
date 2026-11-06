@@ -271,6 +271,45 @@ test('Claude A → B → A refreshes skills and retains exact identity and histo
   });
 });
 
+test('Claude waits for directory control to become idle before sending the queued input once', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create();
+    const away = join(fixture.workspaceRoot, 'part-b');
+    await mkdir(away);
+    const initializations = (await api.calls()).filter(
+      (call) => call.request?.subtype === 'initialize',
+    ).length;
+    await fixture.control({ workspaceRefreshRunning: true });
+    const moved = api.envelope({
+      kind: 'message',
+      threadId: thread.id,
+      input: { kind: 'text', text: 'Continue after native directory control is idle.' },
+      workspaceChange: { expectedWorkspaceRoot: fixture.workspaceRoot, workspaceRoot: away },
+    });
+    await api.submit(moved);
+    await expect
+      .poll(
+        async () =>
+          (await api.calls()).filter((call) => call.request?.subtype === 'initialize').length,
+      )
+      .toBeGreaterThan(initializations);
+    expect((await api.calls()).filter((call) => call.type === 'user')).toHaveLength(0);
+    await fixture.control({ workspaceRefreshRunning: false });
+    await expect.poll(async () => (await api.receipt(moved.id)).completion).toBe('completed');
+    expect(await api.receipt(moved.id)).toMatchObject({
+      workspaceTransition: { state: 'confirmed', historyWorkspaceRoot: away },
+    });
+    expect(await api.thread(thread.id)).toMatchObject({
+      nativeId: thread.nativeId,
+      workspaceRoot: away,
+    });
+    const calls = await api.calls();
+    expect(calls.filter((call) => call.type === 'user')).toHaveLength(1);
+    expect(calls.filter((call) => call.request?.subtype === 'set_cwd')).toHaveLength(1);
+  });
+});
+
 test('Claude returns with an input-free control bound to its completed source, without another model turn', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture);

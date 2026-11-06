@@ -1,5 +1,5 @@
 import { Exception, extractMessage, isException } from 'jg-exception';
-import { isEqual } from 'jg-utilities';
+import { isEqual, waitUntil } from 'jg-utilities';
 import { z } from 'zod';
 
 import type { IWorkspaceChange } from '../../../contracts/index.js';
@@ -53,9 +53,38 @@ const confirmWorkspace = async (
       (!result.changed || !result.transcript_relocated))
   )
     throw HQ_ERRORS.create('claudeFailed');
-  let metadata: unknown;
+  /**
+   * Reads native idle proof while preserving the pre-move input and permission fences.
+   * @returns Refreshed context, or false while only the directory command is still running.
+   * @throws
+   * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+   */
+  const readIdleInitialization = async () => {
+    if (session.isClosing) throw HQ_ERRORS.create('claudeFailed');
+    const metadata = await connection.requestControl({ subtype: 'initialize' });
+    const refreshed = ClaudeInitializeSchema.parse(metadata);
+    if (
+      session.isClosing ||
+      session.input ||
+      session.nativeTurn ||
+      session.requests.size ||
+      session.backgroundTaskCount ||
+      !isEqual(
+        refreshed.current_permission_mode,
+        connection.initialization.current_permission_mode,
+      ) ||
+      (refreshed.session_state !== 'idle' && refreshed.session_state !== 'running')
+    )
+      throw HQ_ERRORS.create('claudeFailed');
+    return refreshed.session_state === 'idle' ? refreshed : false;
+  };
+  let initialized: z.infer<typeof ClaudeInitializeSchema>;
   try {
-    metadata = await connection.requestControl({ subtype: 'initialize' });
+    // set_cwd acknowledges relocation before its inference-free command becomes idle.
+    initialized = await waitUntil(readIdleInitialization, {
+      timeoutSeconds: 30,
+      intervalSeconds: 0.1,
+    });
   } catch (cause) {
     throw new Exception(`The Claude integration failed: ${extractMessage(cause)}`, {
       code: 'JG_AGENT_HQ_CLAUDE_FAILED',
@@ -63,23 +92,9 @@ const confirmWorkspace = async (
       cause,
     });
   }
-  const initialized = ClaudeInitializeSchema.safeParse(metadata);
-  if (!initialized.success) throw HQ_ERRORS.create('claudeFailed', { cause: initialized.error });
-  if (
-    session.isClosing ||
-    initialized.data.session_state !== 'idle' ||
-    session.input ||
-    session.nativeTurn ||
-    session.requests.size ||
-    !isEqual(
-      initialized.data.current_permission_mode,
-      connection.initialization.current_permission_mode,
-    )
-  )
-    throw HQ_ERRORS.create('claudeFailed');
-  session.skills = captureClaudeSkills(initialized.data.commands, Date.now());
-  delete initialized.data.commands;
-  Object.assign(connection.initialization, initialized.data);
+  session.skills = captureClaudeSkills(initialized.commands, Date.now());
+  delete initialized.commands;
+  Object.assign(connection.initialization, initialized);
   session.workspaceRoot = result.cwd;
   session.workspaceChange = undefined;
   return { workspaceRoot: result.cwd, historyWorkspaceRoot: result.cwd };
