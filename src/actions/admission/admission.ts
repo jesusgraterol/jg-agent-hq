@@ -16,7 +16,7 @@ import type { IAdmission } from '../../store/control/index.js';
 
 import type { createDispatch } from '../dispatch/index.js';
 import type { IActionsContext } from '../types.js';
-import { agentUnavailable, conflict } from '../utilities.js';
+import { agentUnavailable, assertKnownTurn, conflict } from '../utilities.js';
 
 // the managed thread states a close accepts while no turn runs, which a deletion closes from
 const CLOSABLE_STATES: ReadonlySet<IManagedThread['state']> = new Set([
@@ -209,7 +209,30 @@ export const createAdmission = (
       if (nativeId && thread.provider === 'claude' && claudeTerminalOf(nativeId)) conflict();
       if (nativeId) {
         const target = await control.inspectThread(nativeId, thread.workspaceRoot);
+        const isKnownCodexRecovery =
+          command.kind === 'thread-recover' &&
+          command.recovery.kind === 'resume' &&
+          thread.provider === 'codex' &&
+          !target.canAdopt;
+        if (isKnownCodexRecovery) {
+          if (thread.ownership !== 'uncertain' || thread.runtimeEpoch === epoch) conflict();
+          if (!control.readReattachment || !control.reattachThread) capabilityUnavailable();
+          const read = await control.readReattachment(nativeId, thread.workspaceRoot);
+          assertKnownTurn(read);
+          if (
+            read.thread.nativeId !== nativeId ||
+            (await resolveWorkspaceTarget(read.thread.workspaceRoot, roots)) !==
+              thread.workspaceRoot ||
+            !['idle', 'active'].includes(read.thread.nativeState)
+          )
+            conflict();
+          prepared.recoveryTurn = read.latestTurn && {
+            nativeTurnId: read.latestTurn.nativeId,
+            state: read.latestTurn.state,
+          };
+        }
         const canResume =
+          isKnownCodexRecovery ||
           target.canAdopt ||
           (command.kind === 'thread-resume' &&
             thread.state === 'inactive' &&
@@ -277,7 +300,7 @@ export const createAdmission = (
         input = receipt.queuedInput;
       }
       context.runOwned(async () => {
-        await dispatch(receipt, thread, dispatchedCommand, input);
+        await dispatch(receipt, thread, dispatchedCommand, input, prepared.recoveryTurn);
       });
     }
     return admitted.receipt;

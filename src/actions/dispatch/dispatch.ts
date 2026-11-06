@@ -14,7 +14,7 @@ import { resolveWorkspaceTarget } from '../../runtime/state/index.js';
 import type { INativeOutcome } from '../../store/control/index.js';
 
 import type { IActionsContext } from '../types.js';
-import { agentUnavailable, conflict } from '../utilities.js';
+import { agentUnavailable, assertKnownTurn, conflict } from '../utilities.js';
 
 import { NEXT_PHASES } from './constants.js';
 
@@ -119,6 +119,7 @@ export const createDispatch = (context: IActionsContext) => {
    * @param originalThread The action's thread, or null for a deletion of a session HQ doesn't manage.
    * @param command The admitted command, when dispatch starts from admission.
    * @param input The prepared input of a turn, unless the receipt holds it as queued input.
+   * @param recoveryTurn The verified current turn for explicit recovery of a loaded Codex session.
    * @returns A promise resolved after delivery evidence or uncertainty is persisted, to the
    * failure it recorded, if any.
    * @throws
@@ -130,6 +131,7 @@ export const createDispatch = (context: IActionsContext) => {
     originalThread: IManagedThread | null,
     command?: IActionEnvelope['command'],
     input?: IPreparedInput,
+    recoveryTurn?: Extract<INativeOutcome, { kind: 'resumed' }>['latestTurn'],
   ): Promise<unknown> => {
     let receipt = initial;
     let thread = originalThread;
@@ -191,6 +193,35 @@ export const createDispatch = (context: IActionsContext) => {
         } else if (phase === 'resume') {
           if (!thread || !nativeId) conflict();
           context.own(thread.provider, nativeId);
+          if (recoveryTurn !== undefined) {
+            if (!control.reattachThread) conflict();
+            // only the verified join may acknowledge this recovery, after its second turn read
+            const joined = await control.reattachThread(
+              `${receipt.id}:recover`,
+              nativeId,
+              thread.workspaceRoot,
+            );
+            assertKnownTurn(joined);
+            if (
+              joined.thread.nativeId !== nativeId ||
+              (joined.latestTurn?.nativeId ?? null) !== (recoveryTurn?.nativeTurnId ?? null) ||
+              (recoveryTurn?.state !== 'running' && joined.latestTurn?.state === 'running')
+            )
+              agentUnavailable();
+            const verified = await verifyThread(thread, joined.thread);
+            await applyAfterEvents({
+              kind: 'resumed',
+              actionId: receipt.id,
+              phase,
+              nativeState: verified.nativeState,
+              nativeLineage: verified.nativeLineage,
+              latestTurn: joined.latestTurn && {
+                nativeTurnId: joined.latestTurn.nativeId,
+                state: joined.latestTurn.state,
+              },
+            });
+            return undefined;
+          }
           const resumed = await verifyThread(
             thread,
             await control.resumeThread(
@@ -292,6 +323,16 @@ export const createDispatch = (context: IActionsContext) => {
         if (thread) thread = (await store.call('reads', 'getThread', thread.id)) ?? thread;
       }
     } catch (error) {
+      if (recoveryTurn !== undefined && thread?.nativeId) {
+        await store.call('observations', 'observe', {
+          kind: 'native-unavailable',
+          provider: thread.provider,
+          nativeThreadId: thread.nativeId,
+        });
+        for (const [id, pending] of context.prompts)
+          if (pending.threadId === thread.id) context.prompts.delete(id);
+        waits.notifyThread(thread.id);
+      }
       // Only a matching native error response proves rejection. Transport loss and malformed results remain uncertain.
       const explicit =
         isException(error) &&

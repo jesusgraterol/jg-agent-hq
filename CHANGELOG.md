@@ -1,5 +1,10 @@
 # Changelog
 
+## 13.1.0
+
+- Let explicit `thread-recover` with `recovery: { kind: 'resume' }` rejoin a known Codex identity that remains loaded idle or active after its previous HQ runtime stopped. Read and bind its current turn before joining without settings or input, then verify the turn again before acknowledging recovery. A reissued approval belongs to that verified active turn.
+- Keep earlier queued input paused and uncertain input receipts unresolved. Unknown native state, changed identity/workspace, and a turn that changes during the join refuse recovery. The previous-runtime ownership gate, automatic reconnect fences, storage schema and public request shapes are unchanged.
+
 ## 13.0.1
 
 - Rejoin eligible managed Codex sessions after the shared daemon connection stops, including a daemon update. Recheck the recorded native turn before and after joining, preserve session settings, and catch up confirmed completions and queued work without replaying input. A newer external turn, failed read, or unacknowledged operation remains uncertain.

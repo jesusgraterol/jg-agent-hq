@@ -293,6 +293,30 @@ export class ControlAdmission extends ControlModel {
           now,
           threadId,
         );
+        if (prepared.recoveryTurn !== undefined) {
+          if (
+            command.kind !== 'thread-recover' ||
+            command.recovery.kind !== 'resume' ||
+            thread.provider !== 'codex' ||
+            thread.native_id !== prepared.nativeId
+          )
+            this._conflict();
+          const latest = prepared.recoveryTurn;
+          const isRunning = latest?.state === 'running';
+          // bind before joining so a reissued native request finds the exact active turn
+          this._statements.run(
+            'UPDATE agent_hq_thread SET active_turn_id = ?, last_turn_id = ?, last_turn_state = ?, state = ? WHERE id = ?',
+            isRunning ? latest.nativeTurnId : null,
+            latest && !isRunning ? latest.nativeTurnId : thread.last_turn_id,
+            latest && !isRunning ? latest.state : thread.last_turn_state,
+            latest?.state ?? 'idle',
+            threadId,
+          );
+          this._statements.run(
+            "UPDATE agent_hq_action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
+            threadId,
+          );
+        }
         if (isCreating)
           this._statements.run(
             'UPDATE agent_hq_action SET requested_name = ? WHERE id = ?',

@@ -1,27 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
 import type { IManagedThread } from '../../contracts/index.js';
-import type { IProviderReattachment } from '../../providers/index.js';
 import { capabilityUnavailable } from '../../providers/registry/index.js';
 
 import type { createDispatch } from '../dispatch/index.js';
 import type { createEvents } from '../events/index.js';
 import type { IActionsContext } from '../types.js';
-import { agentUnavailable } from '../utilities.js';
-
-/**
- * Refuses unknown execution state before restoring native control.
- * @throws
- * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
- */
-const assertKnownTurn = (read: IProviderReattachment): void => {
-  if (
-    read.thread.nativeState === 'systemError' ||
-    read.thread.nativeState === 'unknown' ||
-    (read.thread.nativeState === 'active' && read.latestTurn?.state !== 'running')
-  )
-    agentUnavailable();
-};
+import { agentUnavailable, assertKnownTurn } from '../utilities.js';
 
 /**
  * Rejoins the sessions the previous runtime left running in a native process that outlives it.
