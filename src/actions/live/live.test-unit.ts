@@ -154,7 +154,7 @@ test.each(['matching', 'source', 'hash', 'turn', 'body', 'kind'])(
       {
         ...input,
         nativeId: 'saved-graph-uuid',
-        nativeType: 'attachment',
+        nativeType: 'user',
         turnId: scenario === 'turn' ? 'another-turn' : input.turnId,
         text: scenario === 'body' ? 'another body' : input.text,
         kind: scenario === 'kind' ? 'notice' : input.kind,
@@ -245,4 +245,30 @@ test('background counts read without copying a window, and only sessions that ru
   expect(live.backgroundKeys()).toStrictEqual(['thread']);
   live.setBackgroundCommands('thread', 0);
   expect(live.backgroundKeys()).toStrictEqual([]);
+});
+
+test('a message sent while a turn ran leaves once history holds the queued record that names it, and only with its text', () => {
+  const steer = {
+    ...item,
+    nativeId: 'steer-input',
+    kind: 'user-message' as const,
+    nativeType: 'user',
+    text: 'also check the docs',
+    provenance: nativeProvenance('user-message', 'steer-input', 'also check the docs'),
+  };
+  // Claude Code saves the message as a queued command attachment under its own record ID
+  const saved = {
+    ...steer,
+    nativeId: 'queued-attachment',
+    provenance: nativeProvenance('user-message', 'steer-input', 'also check the docs'),
+  };
+  const live = new LiveItems();
+  live.put('thread', steer, true);
+  const before = live.read('thread');
+  live.reconcile('thread', [{ ...saved, text: 'another message' }]);
+  expect(live.read('thread', before.revision).unchanged).toBe(true);
+  live.reconcile('thread', [{ ...saved, provenance: nativeProvenance('user-message', 'other') }]);
+  expect(live.read('thread', before.revision).unchanged).toBe(true);
+  live.reconcile('thread', [saved]);
+  expect(live.read('thread', before.revision)).toMatchObject({ unchanged: false, data: [] });
 });

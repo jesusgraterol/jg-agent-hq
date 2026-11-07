@@ -369,7 +369,7 @@ test.each([
       })
     ).result;
     const item = result.data.find(
-      (entry) => entry.nativeType === 'attachment' || entry.provenance.nativeInputId === id,
+      (entry) => entry.text === (scenario === 'hash' ? 'Different persisted text' : text),
     )!;
     expect(item.provenance).toMatchObject({
       actionId: scenario === 'host' ? id : null,

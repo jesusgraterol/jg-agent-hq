@@ -139,9 +139,14 @@ const compaction = (
 };
 const toLines = (records: object[]) => records.map((row) => JSON.stringify(row)).join('\n') + '\n';
 
-test.each(['text', 'files'])(
-  'queued-command %s input keeps its source identity and running turn',
-  async (mode) => {
+test.each([
+  ['text', 10],
+  ['text', 11],
+  ['files', 10],
+  ['files', 11],
+] as const)(
+  'queued-command %s input keeps its source identity and running turn after projection %d',
+  async (mode, oldVersion) => {
     await withClaudeRuntime(async ({ workspaceRoot, transcript, request, runtime, stateRoot }) => {
       const nativeId = randomUUID();
       const sourceUuid = randomUUID().toUpperCase();
@@ -238,9 +243,9 @@ test.each(['text', 'files'])(
       try {
         database
           .prepare(
-            "UPDATE agent_hq_claude_file SET identity = '10' || substr(identity, instr(identity, ':')) WHERE native_id = ?",
+            "UPDATE agent_hq_claude_file SET identity = ? || substr(identity, instr(identity, ':')) WHERE native_id = ?",
           )
-          .run(nativeId);
+          .run(String(oldVersion), nativeId);
         database
           .prepare('DELETE FROM agent_hq_claude_entry WHERE native_id = ? AND uuid = ?')
           .run(nativeId, queued.uuid);
@@ -257,6 +262,55 @@ test.each(['text', 'files'])(
     });
   },
 );
+
+test.each([
+  '<bash-input>echo quoted</bash-input>',
+  '<command-message>quoted</command-message><command-name>/quoted</command-name>',
+  '<task-notification>quoted</task-notification>',
+])('a queued prompt keeps command-looking text and its original fingerprint: %s', async (text) => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID(),
+      sourceUuid = randomUUID();
+    const first = claudeRecord(workspaceRoot, nativeId);
+    const queued = {
+      ...claudeRecord(workspaceRoot, nativeId, { parentUuid: first.uuid }),
+      type: 'attachment',
+      message: undefined,
+      attachment: {
+        type: 'queued_command',
+        commandMode: 'prompt',
+        source_uuid: sourceUuid,
+        prompt: text,
+      },
+    };
+    await writeFile(transcript(nativeId), toLines([first, queued]));
+    const target = { provider: 'claude' as const, workspaceRoot, nativeId };
+    const item = (await request({ kind: 'items', ...target })).result.data[0]!;
+    expect(item).toMatchObject({
+      kind: 'user-message',
+      nativeType: 'user',
+      nativeId: queued.uuid,
+      turnId: first.uuid,
+      text,
+      provenance: {
+        nativeInputId: sourceUuid,
+        nativeInputSha256: createHash('sha256').update(text).digest('hex'),
+        origin: 'unknown',
+        grantsAuthority: false,
+      },
+    });
+    const detail = (
+      await request({
+        kind: 'item-detail',
+        ...target,
+        turnId: first.uuid,
+        nativeItemId: queued.uuid,
+      })
+    ).result!;
+    expect(detail.command).toBeNull();
+    expect(detail.tool).toBeNull();
+  });
+});
 
 test.each([
   'missing source',
@@ -302,6 +356,29 @@ test.each([
       request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId }),
       'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
     );
+  });
+});
+
+test('a hidden meta attachment is not validated as a queued operator input', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const first = claudeRecord(workspaceRoot, nativeId);
+    const hidden = {
+      ...claudeRecord(workspaceRoot, nativeId, { parentUuid: first.uuid }),
+      type: 'attachment',
+      message: undefined,
+      isMeta: true,
+      attachment: {
+        type: 'queued_command',
+        commandMode: 'prompt',
+        source_uuid: 'internal-metadata',
+        prompt: [],
+      },
+    };
+    await writeFile(transcript(nativeId), toLines([first, hidden]));
+    const page = (await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId }))
+      .result;
+    expect(page.data.map((item) => item.nativeId)).toStrictEqual([first.uuid]);
   });
 });
 
@@ -980,6 +1057,128 @@ test('hidden records Claude Code writes before the records they follow keep the 
       items.kind === 'items' && items.result.data.map((item) => [item.text, item.turnId]),
     ).toStrictEqual([
       ['answer', prompt.uuid],
+      ['prompt', prompt.uuid],
+    ]);
+  });
+});
+
+test('a message sent while a turn ran shows in that turn as the input Claude Code names, and a queued task notification stays hidden', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const queued = (parentUuid: string, attachment: object) => ({
+      ...claudeRecord(workspaceRoot, nativeId, { parentUuid }),
+      type: 'attachment',
+      message: undefined,
+      attachment,
+    });
+    const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'prompt' });
+    const working = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: prompt.uuid,
+      text: 'working',
+    });
+    const steerInput = randomUUID();
+    // the shape Claude Code 2.1.319 writes for a message it takes in at a tool boundary
+    const steer = queued(working.uuid, {
+      type: 'queued_command',
+      prompt: 'also check the docs',
+      source_uuid: steerInput,
+      delivery_id: randomUUID(),
+      commandMode: 'prompt',
+      hostsOwnTurn: true,
+    });
+    const blocksInput = randomUUID();
+    const blocks = queued(steer.uuid, {
+      type: 'queued_command',
+      prompt: [{ type: 'text', text: 'and the tests' }],
+      source_uuid: blocksInput,
+      commandMode: 'prompt',
+    });
+    const notification = queued(blocks.uuid, {
+      type: 'queued_command',
+      prompt: '<task-notification>done</task-notification>',
+      source_uuid: randomUUID(),
+      commandMode: 'task-notification',
+    });
+    const answer = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: notification.uuid,
+      text: 'done',
+    });
+    await writeFile(
+      transcript(nativeId),
+      [prompt, working, steer, blocks, notification, answer]
+        .map((record) => JSON.stringify(record))
+        .join('\n') + '\n',
+    );
+    const items = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
+    expect(
+      items.kind === 'items' &&
+        items.result.data.map((item) => [
+          item.nativeId,
+          item.text,
+          item.turnId,
+          item.kind,
+          item.nativeType,
+          item.provenance.nativeInputId,
+        ]),
+    ).toStrictEqual([
+      [answer.uuid, 'done', prompt.uuid, 'agent-message', 'assistant', null],
+      [blocks.uuid, 'and the tests', prompt.uuid, 'user-message', 'user', blocksInput],
+      [steer.uuid, 'also check the docs', prompt.uuid, 'user-message', 'user', steerInput],
+      [working.uuid, 'working', prompt.uuid, 'agent-message', 'assistant', null],
+      [prompt.uuid, 'prompt', prompt.uuid, 'user-message', 'user', prompt.uuid],
+    ]);
+    const detail = await request({
+      kind: 'item-detail',
+      provider: 'claude',
+      workspaceRoot,
+      nativeId,
+      turnId: prompt.uuid,
+      nativeItemId: steer.uuid,
+    });
+    expect(
+      detail.kind === 'item-detail' && [detail.result?.item.text, detail.result?.images],
+    ).toStrictEqual(['also check the docs', []]);
+  });
+});
+
+test('a message queued while a turn ran that Claude Code writes before its parent keeps the session and its turn, in file order', async () => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const prompt = claudeRecord(workspaceRoot, nativeId, { text: 'prompt' });
+    const working = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: prompt.uuid,
+      text: 'working',
+    });
+    const steer = {
+      ...claudeRecord(workspaceRoot, nativeId, { parentUuid: working.uuid }),
+      type: 'attachment',
+      message: undefined,
+      attachment: {
+        type: 'queued_command',
+        prompt: 'also check the docs',
+        source_uuid: randomUUID(),
+        commandMode: 'prompt',
+      },
+    };
+    const answer = claudeRecord(workspaceRoot, nativeId, {
+      type: 'assistant',
+      parentUuid: steer.uuid,
+      text: 'done',
+    });
+    await writeFile(
+      transcript(nativeId),
+      [prompt, steer, working, answer].map((record) => JSON.stringify(record)).join('\n') + '\n',
+    );
+    const items = await request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId });
+    expect(
+      items.kind === 'items' && items.result.data.map((item) => [item.text, item.turnId]),
+    ).toStrictEqual([
+      ['done', prompt.uuid],
+      ['working', prompt.uuid],
+      ['also check the docs', prompt.uuid],
       ['prompt', prompt.uuid],
     ]);
   });

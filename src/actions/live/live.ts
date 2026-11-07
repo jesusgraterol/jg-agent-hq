@@ -188,7 +188,8 @@ export class LiveItems {
    * content, or, for an item with an outcome, the same final outcome, since a provider can shorten
    * long output when it saves it, as Codex does. An item its turn ended before the provider
    * finished goes once persisted history holds that turn, which then shows what was saved of it.
-   * Claude saves queued input under a graph UUID; its exact source UUID and hash identify the replay.
+   * A message saved under another record than the live input it came from, as Claude Code saves a
+   * message sent while a turn ran, matches that input by the native input it names.
    */
   public reconcile(nativeId: string, persisted: IHistoryItem[]): void {
     const thread = this.__threads.get(nativeId);
@@ -201,30 +202,29 @@ export class LiveItems {
         thread.revision = this.__change();
       }
     for (const item of persisted) {
-      let key = JSON.stringify([item.turnId, item.nativeId]);
-      const isQueuedInput =
-        item.nativeType === 'attachment' &&
-        item.kind === 'user-message' &&
-        item.provenance.nativeInputId !== null &&
-        item.provenance.nativeInputSha256 !== null;
-      if (!thread.items.has(key) && isQueuedInput)
-        key = JSON.stringify([item.turnId, item.provenance.nativeInputId]);
-      const entry = thread.items.get(key);
-      const isQueuedReplay =
-        isQueuedInput &&
-        entry?.item.nativeType === 'user' &&
-        entry.item.provenance.nativeInputId === item.provenance.nativeInputId &&
-        entry.item.provenance.nativeInputSha256 === item.provenance.nativeInputSha256;
-      if (
-        entry?.isComplete &&
-        (entry.item.nativeType === item.nativeType || isQueuedReplay) &&
-        entry.item.kind === item.kind &&
-        ((entry.item.text === item.text && entry.item.isTruncated === item.isTruncated) ||
-          (item.outcome !== null && entry.item.outcome === item.outcome))
-      ) {
-        this.__bytes -= entry.bytes;
-        thread.items.delete(key);
-        thread.revision = this.__change();
+      const { nativeInputId } = item.provenance;
+      const liveIds =
+        item.kind === 'user-message' && nativeInputId !== null && nativeInputId !== item.nativeId
+          ? [item.nativeId, nativeInputId]
+          : [item.nativeId];
+      for (const liveId of liveIds) {
+        const key = JSON.stringify([item.turnId, liveId]);
+        const entry = thread.items.get(key);
+        if (
+          entry?.isComplete &&
+          (liveId === item.nativeId ||
+            (item.provenance.nativeInputSha256 !== null &&
+              entry.item.provenance.nativeInputId === nativeInputId &&
+              entry.item.provenance.nativeInputSha256 === item.provenance.nativeInputSha256)) &&
+          entry.item.nativeType === item.nativeType &&
+          entry.item.kind === item.kind &&
+          ((entry.item.text === item.text && entry.item.isTruncated === item.isTruncated) ||
+            (item.outcome !== null && entry.item.outcome === item.outcome))
+        ) {
+          this.__bytes -= entry.bytes;
+          thread.items.delete(key);
+          thread.revision = this.__change();
+        }
       }
     }
   }
