@@ -1,5 +1,10 @@
 # Changelog
 
+## 13.1.5
+
+- Show a message Claude Code takes into a running turn, such as a steer at a tool boundary, in that turn's saved history. Claude Code saves it as a `queued_command` attachment rather than a user record, so it was missing from history and its live row never flushed. It reads as a `user-message` whose `provenance.nativeInputId` is the input the attachment names; background task notifications stay hidden. The reader's projection revision changes, so existing transcripts are indexed again on their next read.
+- Flush a live input once history holds the queued record that names it, matching its turn, kind and text.
+
 ## 13.1.4
 
 - Correlate live user inputs against the same acknowledged native identity, turn and content fingerprint as saved history. Verified browser inputs also expose their original optional `browserActionId`, allowing an optimistic row to reconcile before the HTTP receipt arrives.
