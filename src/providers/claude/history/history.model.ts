@@ -47,6 +47,7 @@ import {
   openTranscript,
   projectDirectory,
   readClaudeParentUuid,
+  readClaudeQueuedInput,
   readContinuedIn,
   toClaudeDetail,
   toClaudeImageData,
@@ -59,7 +60,7 @@ const itemCursors = createRequestCursors(EntrySeekSchema);
 const THREAD_CURSOR = /^(\d{1,16}):(.+)$/;
 
 // identifies the path and record interpretation used by persisted projection entries
-const HISTORY_PROJECTION_VERSION = 10;
+const HISTORY_PROJECTION_VERSION = 11;
 // the transcripts whose continuing session is remembered, oldest dropped first
 const MAX_CONTINUED_ANSWERS = 1_024;
 // one record, such as a tool result holding images
@@ -985,13 +986,18 @@ export class ClaudeHistoryModel {
     const nativeParent = nativeParentUuid
       ? this.__statements.get<IParentTurnRow>(PARENT_TURN, root, nativeId, nativeParentUuid)
       : undefined;
+    // a message sent while a turn ran is an attachment that shows, though it starts no turn
+    const isQueuedInput = readClaudeQueuedInput(record) !== null;
     // the CLI's presentation decides what is shown, the kind evidence filters on and where turns start
     const item =
-      record.message !== undefined && !record.isMeta ? toClaudeItem(record, record.uuid) : null;
+      (record.message !== undefined || isQueuedInput) && !record.isMeta
+        ? toClaudeItem(record, record.uuid)
+        : null;
     const visible = item !== null;
     if (nativeParentUuid === record.uuid) this.__unavailable();
     if (nativeParentUuid && !nativeParent) {
-      if (visible) this.__unavailable();
+      // an attachment may come a few lines before its parent, so a queued message waits like one
+      if (visible && !isQueuedInput) this.__unavailable();
       /*
        * A compaction's boundary has no parent and names the record before it, which is indexed
        * by then when this transcript holds it. Otherwise it is the old session's, in the
@@ -1021,7 +1027,7 @@ export class ClaudeHistoryModel {
       parentUuid === nativeParentUuid
         ? nativeParent
         : this.__statements.get<IParentTurnRow>(PARENT_TURN, root, nativeId, parentUuid!);
-    const textPrompt = item?.kind === 'user-message';
+    const textPrompt = item?.kind === 'user-message' && !isQueuedInput;
     const turnId = textPrompt
       ? record.uuid
       : typeof parent?.turn_id === 'string'

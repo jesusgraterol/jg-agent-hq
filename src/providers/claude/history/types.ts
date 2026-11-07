@@ -63,8 +63,21 @@ export const RecordSchema = z.object({
   toolUseResult: z.unknown().optional(),
   // the call a tool result answers, which Claude Code also writes as the result's parent
   sourceToolAssistantUUID: z.string().optional(),
+  // what an attachment record carries, such as a message queued while a turn ran
+  attachment: z.unknown().optional(),
 });
 export type IRecord = z.infer<typeof RecordSchema>;
+/*
+ * A message sent while a turn ran, which Claude Code takes into that turn and records as a queued
+ * command attachment instead of a user record; `source_uuid` names the native input it came from.
+ * Other queued commands, such as background task notifications, aren't messages.
+ */
+export const QueuedPromptSchema = z.object({
+  type: z.literal('queued_command'),
+  commandMode: z.literal('prompt'),
+  prompt: z.union([z.string(), z.array(z.unknown())]),
+  source_uuid: z.string().min(1).max(4096).optional(),
+});
 // the file Claude Code records on an Edit or Write result; a created file's patch is empty
 export const FilePatchSchema = z.object({
   filePath: z.string().min(1).max(4096),

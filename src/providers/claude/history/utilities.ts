@@ -29,7 +29,7 @@ import {
 import { nativeProvenance } from '../../../sessions/evidence/index.js';
 import { HQ_ERRORS } from '../../../errors/index.js';
 
-import { FilePatchSchema, type IFilePatch, type IRecord } from './types.js';
+import { FilePatchSchema, QueuedPromptSchema, type IFilePatch, type IRecord } from './types.js';
 
 const EXCLUDED = new Set(['_archive', '_archives', '_backup', '_backups']);
 
@@ -426,22 +426,49 @@ const toPresentation = (record: IRecord): IPresentation | null => {
 };
 
 /**
+ * Reads the message a queued command attachment holds: input Claude Code took into a running turn,
+ * which it records as an attachment rather than a user record.
+ * @param record The record.
+ * @returns The message as a user record's content and the native input it came from, or null for
+ * any other record, such as a background task notification.
+ */
+export const readClaudeQueuedInput = (
+  record: IRecord,
+): { content: string | unknown[]; inputId: string | null } | null => {
+  if (record.type !== 'attachment') return null;
+  const queued = QueuedPromptSchema.safeParse(record.attachment);
+  return queued.success
+    ? { content: queued.data.prompt, inputId: queued.data.source_uuid ?? null }
+    : null;
+};
+
+// presents a queued command's message as the user record it stands for, and any other record as is
+const toMessageRecord = (record: IRecord): IRecord => {
+  const queued = readClaudeQueuedInput(record);
+  return queued
+    ? { ...record, type: 'user', message: { role: 'user', content: queued.content } }
+    : record;
+};
+
+/**
  * Presents one native record as the CLI shows it, shared by history pages, live items and
  * evidence. Outcome and files come from the full record, before the text is cut, and its time
- * from the record's `timestamp`.
+ * from the record's `timestamp`. A message queued while a turn ran shows as the user message it
+ * is, whose native input is the one Claude Code names.
  * @returns The item, or null for a record the CLI leaves out, such as thinking or a task notification.
  * @throws
  * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
  */
 export const toClaudeItem = (
-  record: IRecord,
+  native: IRecord,
   turnId: string,
   fullBody = false,
 ): IHistoryItem | null => {
-  if (!record.uuid)
+  if (!native.uuid)
     throw HQ_ERRORS.create('claudeHistoryUnavailable', {
       data: { kind: 'agent-unavailable' },
     });
+  const record = toMessageRecord(native);
   const presentation = toPresentation(record);
   if (!presentation) return null;
   const { text } = presentation;
@@ -450,11 +477,15 @@ export const toClaudeItem = (
   const createdAt = Date.parse(record.timestamp ?? '');
   return {
     ...presentation,
-    nativeId: record.uuid,
+    nativeId: native.uuid,
     turnId,
     provenance:
       presentation.kind === 'user-message'
-        ? nativeProvenance(presentation.kind, record.uuid, readInputText(record))
+        ? nativeProvenance(
+            presentation.kind,
+            readClaudeQueuedInput(native)?.inputId ?? native.uuid,
+            readInputText(record),
+          )
         : nativeProvenance(presentation.kind),
     text: text.slice(0, end),
     isTruncated: end < text.length,
@@ -529,12 +560,13 @@ const toShellCommand = (input: unknown): string | null =>
   z.object({ command: z.string() }).safeParse(input).data?.command ?? null;
 
 /**
- * Lists the images a record holds, in its message and in its tool results' content, in order.
+ * Lists the images a record holds, in its message, a queued message included, and in its tool
+ * results' content, in order.
  * @param record The record.
  * @returns At most 64 images, each its base64 data, or null for one that has no base64 source.
  */
 export const toClaudeImageData = (record: IRecord): (string | null)[] =>
-  toBlocks(record)
+  toBlocks(toMessageRecord(record))
     .flatMap((block) =>
       block.type === 'tool_result' && Array.isArray(block.content)
         ? block.content.flatMap((part: unknown) => BlockSchema.safeParse(part).data ?? [])
@@ -576,15 +608,17 @@ export const isClaudeCallFor = (candidate: IRecord, item: IHistoryItem): boolean
 /**
  * Reads what a developer inspects in one record beyond its display text: a Bash command or `!`
  * shell input with its output, a tool call or result, an Edit or Write patch, and the images it
- * holds. A result takes its command or tool name from the call it answers.
- * @param record The item's record.
+ * holds. A result takes its command or tool name from the call it answers, and a queued message
+ * reads as the user message it is.
+ * @param native The item's record.
  * @param call The call it answers, or null when it answers none or the call isn't found.
  * @returns The detail's parts; the item itself comes from `toClaudeItem`.
  */
 export const toClaudeDetail = (
-  record: IRecord,
+  native: IRecord,
   call: IRecord | null,
 ): Omit<IItemDetail, 'item'> => {
+  const record = toMessageRecord(native);
   const detail: Omit<IItemDetail, 'item'> = {
     command: null,
     tool: null,
