@@ -75,8 +75,11 @@ export type IRecord = z.infer<typeof RecordSchema>;
 export const QueuedPromptSchema = z.object({
   type: z.literal('queued_command'),
   commandMode: z.literal('prompt'),
-  prompt: z.union([z.string(), z.array(z.unknown())]),
-  source_uuid: z.string().min(1).max(4096).optional(),
+  prompt: z.union([
+    z.string().min(1),
+    z.tuple([z.object({ type: z.literal('text'), text: z.string().min(1) })]).rest(z.unknown()),
+  ]),
+  source_uuid: z.uuid(),
 });
 // the file Claude Code records on an Edit or Write result; a created file's patch is empty
 export const FilePatchSchema = z.object({

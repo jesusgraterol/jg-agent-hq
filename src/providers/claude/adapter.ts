@@ -18,7 +18,7 @@ import {
 } from '../index.js';
 import { HQ_ERRORS } from '../../errors/index.js';
 import { createClaudeProvider } from './claude.js';
-import { createClaudeControl } from './control/index.js';
+import { CLAUDE_STEER_MEDIA_TYPES, createClaudeControl } from './control/index.js';
 import { deleteTranscript } from './history/index.js';
 
 /**
@@ -82,6 +82,7 @@ export const createClaudeProviderFactory = (
             'application/pdf',
             'text/plain',
           ],
+          steerMediaTypes: CLAUDE_STEER_MEDIA_TYPES,
           configurationSchema: {
             session: z.json().parse(z.toJSONSchema(SessionSettingsSchema.omit({ sandbox: true }))),
             turn: z.json().parse(z.toJSONSchema(TurnSettingsSchema.omit({ outputSchema: true }))),
@@ -158,8 +159,8 @@ export const createClaudeProviderFactory = (
       },
       startTurn: (requestId, nativeId, text, _skill, settings, files, call) =>
         control.startTurn(requestId, nativeId, text, settings, call.signal, files),
-      steer: (requestId, nativeId, expectedTurnId, text) =>
-        control.steer(requestId, nativeId, expectedTurnId, text),
+      steer: (requestId, nativeId, expectedTurnId, text, files) =>
+        control.steer(requestId, nativeId, expectedTurnId, text, files),
       interrupt: (requestId, nativeId, nativeTurnId) =>
         control.interrupt(requestId, nativeId, nativeTurnId),
       cleanThread: (requestId, nativeId) => control.stopSession(requestId, nativeId),

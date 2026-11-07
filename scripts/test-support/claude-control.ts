@@ -33,6 +33,11 @@ export const startClaudeControl = () => {
  // 'next' holds it until the turn's result, as for text written while the answer streams
  let steers=[];
  let leaf=null;
+ const recordQueued=message=>{
+  const uuid=randomUUID();
+  appendFileSync(transcript,JSON.stringify({type:'attachment',uuid,parentUuid:leaf,sessionId:id,cwd:process.cwd(),version:'2.1.319',timestamp:new Date().toISOString(),isSidechain:false,attachment:{type:'queued_command',prompt:message.message.content,source_uuid:message.uuid,delivery_id:randomUUID(),commandMode:'prompt',hostsOwnTurn:true}})+'\n');
+  leaf=uuid;
+ };
  let hasPrompt=false;
  let isClosing=false;
  // a turn the CLI starts on its own, as Claude does after a background command finishes
@@ -138,7 +143,7 @@ export const startClaudeControl = () => {
     return;
    }
   }else if(message.type==='user'){
-   if(input&&settings.steer==='join'){record(message.uuid,'user',message.message.content,leaf);leaf=message.uuid;out({...message,isReplay:true});return;}
+   if(input&&settings.steer==='join'){recordQueued(message);out({...message,isReplay:true});return;}
    if(input&&settings.steer==='next'){steers.push(message);return;}
    if(input)throw new Error('Native input duplicated');
    input=message;

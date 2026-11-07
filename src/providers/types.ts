@@ -251,12 +251,23 @@ export type IAgentProvider = {
     files: IProviderInputFile[],
     call: IProviderCall,
   ): Promise<{ id: string }>;
-  /** @returns The acknowledged active turn identity, without creating a new turn. */
+  /**
+   * Sends text and qualified attachments to the exact active turn.
+   * @returns The acknowledged active turn identity, without creating a new turn.
+   * @throws
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
+   * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+   * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+   */
   steer(
     requestId: string,
     nativeId: string,
     expectedTurnId: string,
     text: string,
+    files: IProviderInputFile[],
     call: IProviderCall,
   ): Promise<string>;
   /** @returns Acknowledgement of the interruption request, without implying completion. */

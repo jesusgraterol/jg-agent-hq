@@ -13,6 +13,7 @@ import { decodeBase64Image, imageUnavailable, readImageFile } from '../../sessio
 import { HQ_ERRORS } from '../../errors/index.js';
 
 import {
+  CODEX_SUPPORTED_MEDIA_TYPES,
   LOADED_THREADS_PAGE_SIZE,
   NO_ROLLOUT_MESSAGE,
   SKILL_HINT_READ_CONCURRENCY,
@@ -42,6 +43,8 @@ import {
   toUsageSnapshot,
 } from './transformers.js';
 import { parseNative } from './validations.js';
+import type { IProviderInputFile } from '../inputs/index.js';
+
 import { toCodexModels } from './models/index.js';
 import {
   HOST_SKILL_SCOPE,
@@ -55,6 +58,20 @@ import {
   toCodexSessionSettings,
   readCodexConfigurationObservation,
 } from './configuration/index.js';
+
+/** Builds the same checked file items for turn start and Steer. */
+const toFileItems = (files: IProviderInputFile[]) =>
+  files.map((file) =>
+    file.mediaType === 'text/plain'
+      ? {
+          type: 'text',
+          text: `File ${file.path} (SHA-256 ${file.sha256}):\n${new TextDecoder('utf-8', { fatal: true }).decode(file.content)}`,
+        }
+      : {
+          type: 'image',
+          url: `data:${file.mediaType};base64,${Buffer.from(file.content).toString('base64')}`,
+        },
+  );
 
 /**
  * Connects native history, usage observations and explicitly admitted runtime controls.
@@ -483,24 +500,16 @@ export const createCodexProvider = async (
             input: [
               { type: 'text', text },
               ...(skill ? [{ type: 'skill', name: skill.name, path: skill.path }] : []),
-              ...files.map((file) =>
-                file.mediaType === 'text/plain'
-                  ? {
-                      type: 'text',
-                      text: `File ${file.path} (SHA-256 ${file.sha256}):\n${new TextDecoder('utf-8', { fatal: true }).decode(file.content)}`,
-                    }
-                  : {
-                      type: 'image',
-                      url: `data:${file.mediaType};base64,${Buffer.from(file.content).toString('base64')}`,
-                    },
-              ),
+              ...toFileItems(files),
             ],
           },
           requestId,
         ),
       ).turn;
     },
-    async steer(requestId, nativeId, expectedTurnId, text) {
+    async steer(requestId, nativeId, expectedTurnId, text, files = []) {
+      if (files.some((file) => !CODEX_SUPPORTED_MEDIA_TYPES.includes(file.mediaType)))
+        throw HQ_ERRORS.create('capabilityUnavailable', { data: { kind: 'agent-unavailable' } });
       const result = parseNative(
         z.object({ turnId: z.literal(expectedTurnId) }),
         await connection.request(
@@ -509,7 +518,7 @@ export const createCodexProvider = async (
             threadId: nativeId,
             expectedTurnId,
             clientUserMessageId: requestId,
-            input: [{ type: 'text', text }],
+            input: [{ type: 'text', text }, ...toFileItems(files)],
           },
           requestId,
         ),

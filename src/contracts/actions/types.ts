@@ -7,7 +7,7 @@ import { SessionSettingsSchema, TurnSettingsSchema } from '../configuration/inde
 import { MessageInputSchema, NativeSkillInputSchema } from '../skills/index.js';
 
 import { NativeIdSchema, NativeLineageSchema } from '../identities/index.js';
-import { BoundInputFileSchema, MAX_INPUT_FILES } from '../inputs/index.js';
+import { BoundInputFileSchema, InputFileSchema, MAX_INPUT_FILES } from '../inputs/index.js';
 import { TurnResultSchema, OutputSchemaSchema } from '../results/index.js';
 
 // queue payloads preserve the exact native selection, content hashes and turn options
@@ -83,7 +83,12 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
     input: MessageInputSchema,
     settings: TurnSettingsSchema.optional(),
   }),
-  z.strictObject({ kind: z.literal('steer'), ...ActiveTargetFields, text: TextSchema }),
+  z.strictObject({
+    kind: z.literal('steer'),
+    ...ActiveTargetFields,
+    text: TextSchema,
+    files: z.array(InputFileSchema).max(MAX_INPUT_FILES).optional(),
+  }),
   z.strictObject({
     kind: z.literal('queue'),
     ...ActiveTargetFields,

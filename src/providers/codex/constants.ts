@@ -1,5 +1,13 @@
 import type { IResyncLoss } from '../index.js';
 
+// file types accepted by both Codex turn start and Steer
+export const CODEX_SUPPORTED_MEDIA_TYPES: readonly string[] = [
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'text/plain',
+];
+
 // threads read per page of the daemon's loaded threads, and the most pages one connection reads
 export const LOADED_THREADS_PAGE_SIZE = 128;
 export const MAX_LOADED_THREAD_PAGES = 8;

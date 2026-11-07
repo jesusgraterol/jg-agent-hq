@@ -358,17 +358,18 @@ const toUserPresentation = (record: IRecord, text: string): IPresentation | null
 /*
  * The text a user record's input sent: its whole content, or its first block when that is text,
  * with a slash command or skill as the `/name args` that was sent, not the markup Claude records.
+ * Queued prompt text is already the original input and is never stripped as command markup.
  */
-const readInputText = (record: IRecord): string | null => {
+const readInputText = (record: IRecord, isQueuedInput = false): string | null => {
   const content = record.message?.content;
   const first = Array.isArray(content) ? BlockSchema.safeParse(content[0]).data : undefined;
   const text =
     typeof content === 'string' ? content : first?.type === 'text' ? (first.text ?? null) : null;
-  return text === null ? null : (readCommandText(text) ?? text);
+  return text === null || isQueuedInput ? text : (readCommandText(text) ?? text);
 };
 
 /** Presents a native record as the CLI shows it, or null for one it leaves out. */
-const toPresentation = (record: IRecord): IPresentation | null => {
+const toPresentation = (record: IRecord, isQueuedInput = false): IPresentation | null => {
   const base = { nativeType: record.type, callId: null, outcome: null, files: [] };
   if (record.type !== 'user' && record.type !== 'assistant')
     return { ...base, kind: 'unsupported', text: UNSUPPORTED };
@@ -392,9 +393,11 @@ const toPresentation = (record: IRecord): IPresentation | null => {
         : undefined;
   if (record.isCompactSummary) return { ...base, kind: 'notice', text: text ?? UNSUPPORTED };
   if (text !== undefined)
-    return record.type === 'user'
-      ? toUserPresentation(record, text)
-      : { ...base, kind: 'agent-message', text };
+    return isQueuedInput
+      ? { ...base, kind: 'user-message', text }
+      : record.type === 'user'
+        ? toUserPresentation(record, text)
+        : { ...base, kind: 'agent-message', text };
   if (blocks.every((block) => block?.type === 'tool_result')) {
     const patch = FilePatchSchema.safeParse(record.toolUseResult);
     return {
@@ -407,7 +410,9 @@ const toPresentation = (record: IRecord): IPresentation | null => {
       outcome: blocks.some((block) => block!.is_error) ? 'failed' : 'succeeded',
     };
   }
-  const calls = blocks.filter((block) => block?.type === 'tool_use' && block.name);
+  const calls = isQueuedInput
+    ? []
+    : blocks.filter((block) => block?.type === 'tool_use' && block.name);
   return {
     ...base,
     kind: calls.length > 0 ? 'tool' : message,
@@ -431,18 +436,31 @@ const toPresentation = (record: IRecord): IPresentation | null => {
  * @param record The record.
  * @returns The message as a user record's content and the native input it came from, or null for
  * any other record, such as a background task notification.
+ * @throws
+ * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
  */
 export const readClaudeQueuedInput = (
   record: IRecord,
 ): { content: string | unknown[]; inputId: string | null } | null => {
-  if (record.type !== 'attachment') return null;
+  if (record.type !== 'attachment' || record.isMeta) return null;
+  const header = z
+    .object({ type: z.string(), commandMode: z.unknown().optional() })
+    .safeParse(record.attachment);
+  if (!header.success || header.data.type !== 'queued_command') return null;
+  if (typeof header.data.commandMode === 'string' && header.data.commandMode !== 'prompt')
+    return null;
   const queued = QueuedPromptSchema.safeParse(record.attachment);
-  return queued.success
-    ? { content: queued.data.prompt, inputId: queued.data.source_uuid ?? null }
-    : null;
+  if (!queued.success || !z.uuid().safeParse(record.uuid).success)
+    throw HQ_ERRORS.create('claudeHistoryUnavailable', { data: { kind: 'agent-unavailable' } });
+  return { content: queued.data.prompt, inputId: queued.data.source_uuid };
 };
 
-// presents a queued command's message as the user record it stands for, and any other record as is
+/**
+ * Presents a queued prompt as its user record while retaining the graph identity.
+ * @returns The normalized message record, or the original non-prompt record.
+ * @throws
+ * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+ */
 const toMessageRecord = (record: IRecord): IRecord => {
   const queued = readClaudeQueuedInput(record);
   return queued
@@ -468,8 +486,9 @@ export const toClaudeItem = (
     throw HQ_ERRORS.create('claudeHistoryUnavailable', {
       data: { kind: 'agent-unavailable' },
     });
+  const queued = readClaudeQueuedInput(native);
   const record = toMessageRecord(native);
-  const presentation = toPresentation(record);
+  const presentation = toPresentation(record, queued !== null);
   if (!presentation) return null;
   const { text } = presentation;
   let end = fullBody ? text.length : Math.min(text.length, MAX_ITEM_TEXT_LENGTH);
@@ -483,8 +502,8 @@ export const toClaudeItem = (
       presentation.kind === 'user-message'
         ? nativeProvenance(
             presentation.kind,
-            readClaudeQueuedInput(native)?.inputId ?? native.uuid,
-            readInputText(record),
+            queued?.inputId ?? native.uuid,
+            readInputText(record, queued !== null),
           )
         : nativeProvenance(presentation.kind),
     text: text.slice(0, end),
@@ -564,6 +583,8 @@ const toShellCommand = (input: unknown): string | null =>
  * results' content, in order.
  * @param record The record.
  * @returns At most 64 images, each its base64 data, or null for one that has no base64 source.
+ * @throws
+ * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
  */
 export const toClaudeImageData = (record: IRecord): (string | null)[] =>
   toBlocks(toMessageRecord(record))
@@ -613,6 +634,8 @@ export const isClaudeCallFor = (candidate: IRecord, item: IHistoryItem): boolean
  * @param native The item's record.
  * @param call The call it answers, or null when it answers none or the call isn't found.
  * @returns The detail's parts; the item itself comes from `toClaudeItem`.
+ * @throws
+ * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
  */
 export const toClaudeDetail = (
   native: IRecord,
@@ -625,6 +648,7 @@ export const toClaudeDetail = (
     files: [],
     images: toImages(record),
   };
+  if (native.type === 'attachment' && readClaudeQueuedInput(native) !== null) return detail;
   const text = toText(record);
   if (record.type === 'user' && text !== undefined) {
     const input = SHELL_INPUT.exec(text);

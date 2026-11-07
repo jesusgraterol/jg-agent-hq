@@ -60,7 +60,7 @@ const itemCursors = createRequestCursors(EntrySeekSchema);
 const THREAD_CURSOR = /^(\d{1,16}):(.+)$/;
 
 // identifies the path and record interpretation used by persisted projection entries
-const HISTORY_PROJECTION_VERSION = 11;
+const HISTORY_PROJECTION_VERSION = 12;
 // the transcripts whose continuing session is remembered, oldest dropped first
 const MAX_CONTINUED_ANSWERS = 1_024;
 // one record, such as a tool result holding images

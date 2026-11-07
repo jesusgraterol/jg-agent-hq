@@ -212,6 +212,10 @@ export class LiveItems {
         const entry = thread.items.get(key);
         if (
           entry?.isComplete &&
+          (liveId === item.nativeId ||
+            (item.provenance.nativeInputSha256 !== null &&
+              entry.item.provenance.nativeInputId === nativeInputId &&
+              entry.item.provenance.nativeInputSha256 === item.provenance.nativeInputSha256)) &&
           entry.item.nativeType === item.nativeType &&
           entry.item.kind === item.kind &&
           ((entry.item.text === item.text && entry.item.isTruncated === item.isTruncated) ||

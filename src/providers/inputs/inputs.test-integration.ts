@@ -1,10 +1,11 @@
 // @vitest-environment node
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createAgentHq } from 'jg-agent-hq';
 import {
   MAX_RESULT_BYTES,
+  PUBLIC_ERROR_CODES,
   type IActionCommand,
   type IActionReceipt,
   type IHqRequestInput,
@@ -14,6 +15,7 @@ import { expect, test } from 'vitest';
 
 import {
   withClaudeRuntime,
+  waitForWarmUp,
   writeFixtureControl,
   type IClaudeFixture,
 } from '../../../scripts/test-support/index.js';
@@ -82,6 +84,266 @@ const createClient = async (
       .map((line): unknown => JSON.parse(line));
   return { threadId, receipt, send, envelope, thread, control, inputs };
 };
+
+test.each(['codex', 'claude'] as const)(
+  '%s steers exact checked image/text bytes and replays without reading files again',
+  async (provider) => {
+    await withClaudeRuntime(async (fixture) => {
+      await waitForWarmUp(fixture.runtime);
+      const api = await createClient(fixture, provider);
+      const note = 'A separate UTF-8 steer attachment.';
+      const notePath = join(fixture.workspaceRoot, 'steer.txt');
+      const imagePath = join(fixture.workspaceRoot, 'steer.png');
+      await writeFile(notePath, note);
+      await writeFile(imagePath, image);
+      await api.control({ holdTurn: true, steer: 'join' });
+      const first = await api.send({
+        kind: 'message',
+        threadId: api.threadId,
+        input: { kind: 'text', text: 'First turn' },
+      });
+      await expect.poll(() => api.receipt(first.id)).toMatchObject({ delivery: 'acknowledged' });
+      const turnId = (await api.thread()).activeTurnId!;
+      const command = {
+        kind: 'steer' as const,
+        threadId: api.threadId,
+        expectedTurnId: turnId,
+        text: 'Inspect these attachments',
+        files: [
+          { path: 'steer.png', mediaType: 'image/png' as const },
+          { path: 'steer.txt', mediaType: 'text/plain' as const },
+        ],
+      };
+      const request = api.envelope(command);
+      const admitted = await fixture.request(request);
+      expect(admitted.kind).toBe('action');
+      if (admitted.kind !== 'action') throw new Error('Missing steer admission');
+      await expect
+        .poll(() => api.receipt(admitted.result.id))
+        .toMatchObject({ delivery: 'acknowledged', nativeTurnId: turnId });
+      const calls = await api.inputs();
+      const expectedFrame =
+        provider === 'codex'
+          ? {
+              method: 'turn/steer',
+              params: {
+                input: [
+                  { type: 'text', text: command.text },
+                  { type: 'image', url: `data:image/png;base64,${image.toString('base64')}` },
+                  {
+                    type: 'text',
+                    text: `File ${notePath} (SHA-256 ${createHash('sha256').update(note).digest('hex')}):\n${note}`,
+                  },
+                ],
+                expectedTurnId: turnId,
+              },
+            }
+          : {
+              type: 'user',
+              message: {
+                role: 'user',
+                content: [
+                  { type: 'text', text: command.text },
+                  {
+                    type: 'image',
+                    source: {
+                      type: 'base64',
+                      media_type: 'image/png',
+                      data: image.toString('base64'),
+                    },
+                  },
+                  {
+                    type: 'text',
+                    text: `File ${notePath} (SHA-256 ${createHash('sha256').update(note).digest('hex')}):\n${note}`,
+                  },
+                ],
+              },
+            };
+      expect(calls.at(-1)).toMatchObject(expectedFrame);
+      await rm(notePath);
+      await rm(imagePath);
+      expect(await fixture.request(request)).toMatchObject({
+        kind: 'action',
+        result: { id: admitted.result.id, delivery: 'acknowledged' },
+      });
+      expect(await api.inputs()).toStrictEqual(calls);
+      if (request.kind !== 'action') throw new Error('Missing action envelope');
+      await expectToRejectCode(
+        fixture.request({
+          ...request,
+          action: { ...request.action, command: { ...command, files: [] } },
+        }),
+        PUBLIC_ERROR_CODES['state-conflict'],
+      );
+    });
+  },
+);
+
+test('Claude rejects an entire mixed PDF steer before native writing while ordinary PDF input stays supported', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    await waitForWarmUp(fixture.runtime);
+    const api = await createClient(fixture, 'claude');
+    await writeFile(join(fixture.workspaceRoot, 'document.pdf'), '%PDF-1.7\n');
+    await writeFile(join(fixture.workspaceRoot, 'note.txt'), 'Keep this entire input');
+    await api.control({ holdTurn: true, steer: 'join' });
+    const first = await api.send({
+      kind: 'message',
+      threadId: api.threadId,
+      input: {
+        kind: 'text',
+        text: 'PDF at turn start',
+        files: [{ path: 'document.pdf', mediaType: 'application/pdf' }],
+      },
+    });
+    await expect.poll(() => api.receipt(first.id)).toMatchObject({ delivery: 'acknowledged' });
+    const before = await api.inputs();
+    expect(before.at(-1)).toMatchObject({
+      type: 'user',
+      message: {
+        content: [
+          { type: 'text', text: 'PDF at turn start' },
+          { type: 'document', source: { media_type: 'application/pdf', type: 'base64' } },
+        ],
+      },
+    });
+    const steer = await api.send({
+      kind: 'steer',
+      threadId: api.threadId,
+      expectedTurnId: (await api.thread()).activeTurnId!,
+      text: 'PDF mid turn',
+      files: [
+        { path: 'note.txt', mediaType: 'text/plain' },
+        { path: 'document.pdf', mediaType: 'application/pdf' },
+      ],
+    });
+    await expect
+      .poll(() => api.receipt(steer.id))
+      .toMatchObject({ delivery: 'failed', failure: 'agent-unavailable' });
+    expect(await api.inputs()).toStrictEqual(before);
+    for (const target of [
+      { provider: 'claude' as const },
+      { provider: 'claude' as const, threadId: api.threadId },
+    ]) {
+      const capabilities = (await fixture.request({ kind: 'capabilities', ...target })).result
+        .inputSchema!;
+      expect(capabilities.supportedMediaTypes).toContain('application/pdf');
+      expect(capabilities.steerMediaTypes).toStrictEqual([
+        'image/png',
+        'image/jpeg',
+        'image/webp',
+        'image/gif',
+        'text/plain',
+      ]);
+    }
+  });
+});
+
+test.each(['codex', 'claude'] as const)(
+  '%s maximum attachment steer fits the native frame and rejects excess files or bytes',
+  { timeout: 15_000 }, // the admitted input serializes about 30 MiB of escaped text and image data
+  async (provider) => {
+    await withClaudeRuntime(async (fixture) => {
+      await waitForWarmUp(fixture.runtime);
+      const api = await createClient(fixture, provider);
+      await api.control({ holdTurn: true, steer: 'join' });
+      const first = await api.send({
+        kind: 'message',
+        threadId: api.threadId,
+        input: { kind: 'text', text: 'Keep working' },
+      });
+      await expect.poll(() => api.receipt(first.id)).toMatchObject({ delivery: 'acknowledged' });
+      const turnId = (await api.thread()).activeTurnId!;
+      await writeFile(join(fixture.workspaceRoot, 'boundary.txt'), '\u0001'.repeat(262_144));
+      const bytes = Buffer.alloc(16_777_216 - 7 * 262_144);
+      image.copy(bytes);
+      await writeFile(join(fixture.workspaceRoot, 'boundary.png'), bytes);
+      const files = [
+        ...Array.from({ length: 7 }, () => ({
+          path: 'boundary.txt',
+          mediaType: 'text/plain' as const,
+        })),
+        { path: 'boundary.png', mediaType: 'image/png' as const },
+      ];
+      const command = {
+        kind: 'steer' as const,
+        threadId: api.threadId,
+        expectedTurnId: turnId,
+        text: 'Maximum attachments',
+        files,
+      };
+      const admitted = await api.send(command);
+      await expect
+        .poll(() => api.receipt(admitted.id), { timeout: 10_000 })
+        .toMatchObject({ delivery: 'acknowledged', nativeTurnId: turnId });
+      const calls = await api.inputs();
+      const largest = Math.max(...calls.map((call) => Buffer.byteLength(JSON.stringify(call))));
+      expect(largest).toBeGreaterThan(16_777_216);
+      expect(largest).toBeLessThan(33_554_432);
+      await expectToRejectCode(
+        fixture.request(api.envelope({ ...command, files: [...files, files[0]!] })),
+        'JG_AGENT_HQ_REQUEST_INVALID',
+      );
+      const excess = Buffer.alloc(bytes.length + 1);
+      image.copy(excess);
+      await writeFile(join(fixture.workspaceRoot, 'excess.png'), excess);
+      await expectToRejectCode(
+        fixture.request(
+          api.envelope({
+            ...command,
+            files: [...files.slice(0, 7), { path: 'excess.png', mediaType: 'image/png' }],
+          }),
+        ),
+        PUBLIC_ERROR_CODES['invalid-request'],
+      );
+      expect(await api.inputs()).toStrictEqual(calls);
+    });
+  },
+);
+
+test.each([
+  ['codex', 'missing'],
+  ['claude', 'missing'],
+  ['codex', 'malformed'],
+  ['claude', 'malformed'],
+  ['codex', 'oversized'],
+  ['claude', 'oversized'],
+  ['codex', 'escape'],
+  ['claude', 'escape'],
+] as const)('%s rejects a %s steer file without a native write', async (provider, mode) => {
+  await withClaudeRuntime(async (fixture) => {
+    await waitForWarmUp(fixture.runtime);
+    const api = await createClient(fixture, provider);
+    await api.control({ holdTurn: true, steer: 'join' });
+    const first = await api.send({
+      kind: 'message',
+      threadId: api.threadId,
+      input: { kind: 'text', text: 'Keep working' },
+    });
+    await expect.poll(() => api.receipt(first.id)).toMatchObject({ delivery: 'acknowledged' });
+    const path = join(fixture.workspaceRoot, 'invalid.txt');
+    if (mode === 'malformed') await writeFile(path, Buffer.from([0xff, 0xfe]));
+    if (mode === 'oversized') await writeFile(path, 'x'.repeat(262_145));
+    if (mode === 'escape') {
+      const external = join(fixture.root, 'external.txt');
+      await writeFile(external, 'Outside the allowed workspace');
+      await symlink(external, path);
+    }
+    const before = await api.inputs();
+    await expectToRejectCode(
+      fixture.request(
+        api.envelope({
+          kind: 'steer',
+          threadId: api.threadId,
+          expectedTurnId: (await api.thread()).activeTurnId!,
+          text: 'Rejected input',
+          files: [{ path, mediaType: 'text/plain' }],
+        }),
+      ),
+      PUBLIC_ERROR_CODES[mode === 'escape' ? 'access-denied' : 'invalid-request'],
+    );
+    expect(await api.inputs()).toStrictEqual(before);
+  });
+});
 
 test.each(['codex', 'claude'] as const)(
   '%s transmits bounded image/text files and retains complete structured output across reconnect',

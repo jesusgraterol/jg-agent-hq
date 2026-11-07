@@ -1,5 +1,11 @@
 # Changelog
 
+## 13.2.0
+
+- Allow an exact-turn `steer` to carry optional workspace files through the existing file integrity and size checks. Codex reuses its turn-start encoding; Claude sends text files as labeled text blocks and images as native image blocks. Claude rejects PDF steers before writing; ordinary PDF and text-document turn starts retain their encoding.
+- Publish provider and session `inputSchema.steerMediaTypes` alongside general attachment support so consumers can determine eligibility before canceling queued work.
+- Preserve Claude steer action UUIDs and extend 13.1.5's queued-prompt reader with exact original-text and source-UUID checks across history, evidence, details and images. Keep its record-before-parent behavior and original running turn. Projection version 12 rebuilds cached version-10/11 entries without a storage migration; exact acknowledged ledger and browser identity checks apply to live, saved and restarted reads.
+
 ## 13.1.5
 
 - Show a message Claude Code takes into a running turn, such as a steer at a tool boundary, in that turn's saved history. Claude Code saves it as a `queued_command` attachment rather than a user record, so it was missing from history and its live row never flushed. It reads as a `user-message` whose `provenance.nativeInputId` is the input the attachment names; background task notifications stay hidden. The reader's projection revision changes, so existing transcripts are indexed again on their next read.

@@ -33,7 +33,7 @@ import { capabilityUnavailable } from '../registry/index.js';
 import { HQ_ERRORS } from '../../errors/index.js';
 
 import { createCodexProvider } from './codex.js';
-import { MAX_LOADED_THREAD_PAGES } from './constants.js';
+import { CODEX_SUPPORTED_MEDIA_TYPES, MAX_LOADED_THREAD_PAGES } from './constants.js';
 import { createCodexEvents, toProviderThread } from './events.js';
 
 /**
@@ -237,7 +237,8 @@ export const createCodexProviderFactory = (
         return buildProviderCapabilities({
           provider: 'codex',
           operations: { models },
-          supportedMediaTypes: ['image/png', 'image/jpeg', 'image/webp', 'text/plain'],
+          supportedMediaTypes: CODEX_SUPPORTED_MEDIA_TYPES,
+          steerMediaTypes: CODEX_SUPPORTED_MEDIA_TYPES,
           configurationSchema: {
             session: z
               .json()
@@ -314,17 +315,13 @@ export const createCodexProviderFactory = (
         toProviderThread(await native.resumeThread(requestId, nativeId, settings, call.signal)),
       nameThread: (requestId, nativeId, name) => native.nameThread(requestId, nativeId, name),
       async validateInput(_nativeId, input) {
-        if (
-          input.files.some(
-            (file) => file.mediaType === 'application/pdf' || file.mediaType === 'image/gif',
-          )
-        )
+        if (input.files.some((file) => !CODEX_SUPPORTED_MEDIA_TYPES.includes(file.mediaType)))
           capabilityUnavailable();
       },
       startTurn: (requestId, nativeId, text, skill, settings, files) =>
         native.startTurn(requestId, nativeId, text, skill, settings, files),
-      steer: (requestId, nativeId, expectedTurnId, text) =>
-        native.steer(requestId, nativeId, expectedTurnId, text),
+      steer: (requestId, nativeId, expectedTurnId, text, files) =>
+        native.steer(requestId, nativeId, expectedTurnId, text, files),
       interrupt: (requestId, nativeId, nativeTurnId) =>
         native.interrupt(requestId, nativeId, nativeTurnId),
       cleanThread: (requestId, nativeId) => native.cleanTerminals(requestId, nativeId),

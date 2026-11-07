@@ -43,14 +43,15 @@ export class ControlReads extends ControlModel {
 
   /**
    * Resolves exact native input identities and content hashes; native roles grant no identity.
-   * An input matches the action and phase its native ID names, or the turn it started.
+   * Claude steers name their action UUID while retaining the original target turn.
    */
   public getEvidenceOrigins(command: IEvidenceOriginsRequest): (IHistoryProvenance | null)[] {
+    const selection = `SELECT a.id, (SELECT b.id FROM agent_hq_browser_action b WHERE b.native_action_id = a.id AND b.native_thread_id = a.thread_id AND b.native_input_sha256 = a.input_sha256) AS browser_action_id
+      FROM agent_hq_action a JOIN agent_hq_thread t ON t.id = a.thread_id`;
     return command.items.map((item) => {
       if (item.nativeInputId === null || item.sha256 === null) return null;
       const rows = this._statements.all<{ id: string; browser_action_id: string | null }>(
-        `SELECT a.id, (SELECT b.id FROM agent_hq_browser_action b WHERE b.native_action_id = a.id AND b.native_thread_id = a.thread_id AND b.native_input_sha256 = a.input_sha256) AS browser_action_id
-      FROM agent_hq_action a JOIN agent_hq_thread t ON t.id = a.thread_id
+        `${selection}
       WHERE t.provider = ? AND t.native_id = ? AND a.native_turn_id = ? AND a.input_sha256 = ?
       AND a.delivery = 'acknowledged' AND ((a.id = ? AND a.phase = ?) OR a.native_turn_id = ?)
       ORDER BY a.id LIMIT 2`,
@@ -62,6 +63,22 @@ export class ControlReads extends ControlModel {
         item.request?.phase ?? null,
         item.nativeInputId,
       );
+      if (command.provider === 'claude') {
+        const steer = this._statements.get<{ id: string; browser_action_id: string | null }>(
+          `${selection}
+      WHERE a.id = ? AND t.provider = 'claude' AND t.native_id = ?
+      AND a.kind = 'steer' AND a.phase = 'steer' AND a.delivery = 'acknowledged'
+      AND a.native_turn_id IS NOT NULL AND a.native_turn_id = a.expected_turn_id
+      AND a.input_sha256 = ? AND (a.native_turn_id = ? OR a.id = ?)
+      LIMIT 1`,
+          item.nativeInputId,
+          command.nativeId,
+          item.sha256,
+          item.turnId,
+          item.turnId,
+        );
+        if (steer && !rows.some((row) => row.id === steer.id)) rows.push(steer);
+      }
       if (rows.length !== 1) return null;
       const row = rows[0]!;
       return {

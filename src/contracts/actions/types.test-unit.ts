@@ -3,6 +3,26 @@ import { expect, test } from 'vitest';
 
 const threadId = '0b5e2c4a-7b84-4d6c-9a52-3f1d6a8e9c10';
 
+test('steer accepts the existing optional file contract without skill or turn-setting fields', () => {
+  const text = { kind: 'steer', threadId, expectedTurnId: 'native-turn', text: 'Keep working' };
+  expect(ActionCommandSchema.parse(text)).toStrictEqual(text);
+  const file = { path: '/workspace/note.txt', mediaType: 'text/plain' };
+  expect(ActionCommandSchema.parse({ ...text, files: [file] })).toStrictEqual({
+    ...text,
+    files: [file],
+  });
+  expect(
+    ActionCommandSchema.safeParse({ ...text, files: Array.from({ length: 9 }, () => file) })
+      .success,
+  ).toBe(false);
+  for (const extra of [
+    { skill: 'example' },
+    { settings: { model: 'example' } },
+    { input: { files: [file] } },
+  ])
+    expect(ActionCommandSchema.safeParse({ ...text, ...extra }).success).toBe(false);
+});
+
 test.each([
   [1, true],
   [32, true],

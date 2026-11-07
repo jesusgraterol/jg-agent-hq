@@ -256,14 +256,19 @@ export const createAdmission = (
         conflict();
       prompt.native.validate(command.response);
     }
-    if (command.kind === 'message' || command.kind === 'queue') {
+    if (command.kind === 'message' || command.kind === 'queue' || command.kind === 'steer') {
       const thread = await store.call('reads', 'getThread', command.threadId);
       if (!thread?.nativeId) conflict();
       // a terminal that resumed a Claude session HQ runs has it now, so HQ sends nothing
       if (thread.provider === 'claude' && claudeTerminalOf(thread.nativeId)) conflict();
-      input = await prepareInput(command.input, command.settings ?? {}, thread.workspaceRoot, {
-        threadId: command.threadId,
-      });
+      input = await prepareInput(
+        command.kind === 'steer'
+          ? { kind: 'text', text: command.text, files: command.files }
+          : command.input,
+        command.kind === 'steer' ? {} : (command.settings ?? {}),
+        thread.workspaceRoot,
+        { threadId: command.threadId },
+      );
       await control.validateInput(thread.nativeId, input);
       prepared.input = input;
     }

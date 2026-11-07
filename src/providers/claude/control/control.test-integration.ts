@@ -20,6 +20,8 @@ import {
   startHoldingDelays,
 } from '../../../../scripts/test-support/delays.js';
 
+import { createClaudeControl } from './control.js';
+
 // the 60-minute idle period is released by the tests instead of waited out
 vi.mock('jg-utilities', async (original) => {
   const actual = await original<typeof import('jg-utilities')>();
@@ -27,6 +29,18 @@ vi.mock('jg-utilities', async (original) => {
   return { ...actual, delay: holdDelays(actual.delay) };
 });
 startHoldingDelays(3_600);
+
+test.each(['missing', `${randomUUID()}:turn`, `${randomUUID()}:steer:steer`, 'not-a-uuid:steer'])(
+  'Claude rejects an invalid internal steer request identity before opening a native session: %s',
+  async (requestId) => {
+    const control = createClaudeControl();
+    await expectToRejectCode(
+      control.steer(requestId, randomUUID(), randomUUID(), 'Exact input'),
+      'JG_AGENT_HQ_ACTION_CONFLICT',
+      'The HQ action conflicts with its recorded state',
+    );
+  },
+);
 
 const readStarts = async (fixture: IClaudeFixture) =>
   (await readFile(join(fixture.root, 'claude-starts.jsonl'), 'utf8'))
@@ -415,6 +429,7 @@ test('Claude steers the running turn, which takes the text in and ends once, and
       expectedTurnId: accepted.nativeTurnId!,
       text: 'Also check the logout path',
     });
+    steer.id = steer.id.toUpperCase();
     await api.submit(steer);
     expect(await api.settled(steer.id)).toMatchObject({ nativeTurnId: accepted.nativeTurnId });
     // the turn runs on, uninterrupted, with the text among its live items
@@ -428,6 +443,7 @@ test('Claude steers the running turn, which takes the text in and ends once, and
     ).toContainEqual(['Also check the logout path', accepted.nativeTurnId]);
     const users = (await api.calls()).filter((call) => call.type === 'user');
     expect(users).toHaveLength(2);
+    expect(users[1]!.uuid).toBe(steer.id);
     expect((await api.calls()).some((call) => call.request?.subtype === 'interrupt')).toBe(false);
 
     const stale = await api.submit(
@@ -503,6 +519,21 @@ test("a Claude steer written while the turn's answer streams runs as the next tu
     ]);
     // a turn of its own, after the turn the steer named
     expect(asked!.turnId).not.toBe(accepted.nativeTurnId);
+    const persisted = (
+      await fixture.request({
+        kind: 'items',
+        provider: 'claude',
+        workspaceRoot: fixture.workspaceRoot,
+        nativeId: thread.nativeId!,
+      })
+    ).result.data.find((item) => item.nativeId === steer.id)!;
+    expect(persisted.provenance).toMatchObject({
+      actionId: steer.id,
+      nativeInputId: steer.id,
+      source: 'host-action',
+      origin: 'unknown',
+      grantsAuthority: false,
+    });
     await api.until(
       () => api.thread(thread.id),
       (entry) => entry.activeTurnId === null && entry.state === 'completed',

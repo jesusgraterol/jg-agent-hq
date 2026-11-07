@@ -80,6 +80,27 @@ const createThread = async (fixture: IClaudeFixture, name: string) => {
   return (await thread(fixture, created.threadId!))!;
 };
 
+test('Codex reports the same qualified Steer types at provider and session scope without sharing mutable policy arrays', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const managed = await createThread(fixture, 'steer-capabilities');
+    const expected = ['image/png', 'image/jpeg', 'image/webp', 'text/plain'];
+    for (const target of [
+      { provider: 'codex' as const },
+      { provider: 'codex' as const, threadId: managed.id },
+    ]) {
+      const first = (await fixture.runtime.request({ kind: 'capabilities', ...target })).result;
+      expect(first.inputSchema?.steerMediaTypes).toStrictEqual(expected);
+      expect(first.inputSchema?.supportedMediaTypes).toStrictEqual(expected);
+      const media = first.inputSchema!.steerMediaTypes;
+      if (!Array.isArray(media)) throw new Error('Missing Steer media types');
+      media.push('application/pdf');
+      const second = (await fixture.runtime.request({ kind: 'capabilities', ...target })).result;
+      expect(second.inputSchema?.steerMediaTypes).toStrictEqual(expected);
+      expect(second.inputSchema?.supportedMediaTypes).toStrictEqual(expected);
+    }
+  });
+});
+
 test('a session another Codex client drives stays external, and HQ adopts it between turns without changing its settings', async () => {
   await withClaudeRuntime(async (fixture) => {
     await codex(fixture, { threadStatuses: { [EXTERNAL]: { type: 'active', activeFlags: [] } } });
