@@ -48,6 +48,7 @@ import {
   projectDirectory,
   readClaudeParentUuid,
   readContinuedIn,
+  readQueuedCommand,
   toClaudeDetail,
   toClaudeImageData,
   toClaudeItem,
@@ -59,7 +60,7 @@ const itemCursors = createRequestCursors(EntrySeekSchema);
 const THREAD_CURSOR = /^(\d{1,16}):(.+)$/;
 
 // identifies the path and record interpretation used by persisted projection entries
-const HISTORY_PROJECTION_VERSION = 10;
+const HISTORY_PROJECTION_VERSION = 11;
 // the transcripts whose continuing session is remembered, oldest dropped first
 const MAX_CONTINUED_ANSWERS = 1_024;
 // one record, such as a tool result holding images
@@ -986,8 +987,11 @@ export class ClaudeHistoryModel {
       ? this.__statements.get<IParentTurnRow>(PARENT_TURN, root, nativeId, nativeParentUuid)
       : undefined;
     // the CLI's presentation decides what is shown, the kind evidence filters on and where turns start
+    const queued = !record.isMeta ? readQueuedCommand(record) : null;
     const item =
-      record.message !== undefined && !record.isMeta ? toClaudeItem(record, record.uuid) : null;
+      !record.isMeta && (record.message !== undefined || queued !== null)
+        ? toClaudeItem(record, record.uuid)
+        : null;
     const visible = item !== null;
     if (nativeParentUuid === record.uuid) this.__unavailable();
     if (nativeParentUuid && !nativeParent) {
@@ -1021,7 +1025,7 @@ export class ClaudeHistoryModel {
       parentUuid === nativeParentUuid
         ? nativeParent
         : this.__statements.get<IParentTurnRow>(PARENT_TURN, root, nativeId, parentUuid!);
-    const textPrompt = item?.kind === 'user-message';
+    const textPrompt = item?.kind === 'user-message' && queued === null;
     const turnId = textPrompt
       ? record.uuid
       : typeof parent?.turn_id === 'string'

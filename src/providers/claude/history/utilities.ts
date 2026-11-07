@@ -29,9 +29,39 @@ import {
 import { nativeProvenance } from '../../../sessions/evidence/index.js';
 import { HQ_ERRORS } from '../../../errors/index.js';
 
-import { FilePatchSchema, type IFilePatch, type IRecord } from './types.js';
+import {
+  FilePatchSchema,
+  QueuedCommandSchema,
+  type IFilePatch,
+  type IQueuedCommand,
+  type IRecord,
+} from './types.js';
 
 const EXCLUDED = new Set(['_archive', '_archives', '_backup', '_backups']);
+
+/**
+ * Reads the qualified queued-prompt form without assigning authority from native metadata.
+ * @returns The prompt and source identity, or null for another native record kind.
+ * @throws
+ * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
+ */
+export const readQueuedCommand = (record: IRecord): IQueuedCommand | null => {
+  if (record.type !== 'attachment') return null;
+  const header = z
+    .object({ type: z.string(), commandMode: z.unknown().optional() })
+    .safeParse(record.attachment);
+  if (!header.success || header.data.type !== 'queued_command') return null;
+  if (typeof header.data.commandMode === 'string' && header.data.commandMode !== 'prompt')
+    return null;
+  const parsed = QueuedCommandSchema.safeParse(record.attachment);
+  if (!parsed.success || !z.uuid().safeParse(record.uuid).success)
+    throw HQ_ERRORS.create('claudeHistoryUnavailable', { data: { kind: 'agent-unavailable' } });
+  return parsed.data;
+};
+
+// persisted queued prompts and ordinary messages share the same presentation and image readers
+const readContent = (record: IRecord): unknown =>
+  readQueuedCommand(record)?.prompt ?? record.message?.content;
 
 const hasExcludedSegment = (path: string): boolean =>
   path.split(sep).some((part) => EXCLUDED.has(part));
@@ -359,21 +389,21 @@ const toUserPresentation = (record: IRecord, text: string): IPresentation | null
  * The text a user record's input sent: its whole content, or its first block when that is text,
  * with a slash command or skill as the `/name args` that was sent, not the markup Claude records.
  */
-const readInputText = (record: IRecord): string | null => {
-  const content = record.message?.content;
+const readInputText = (record: IRecord, queued: IQueuedCommand | null): string | null => {
+  const content = queued?.prompt ?? record.message?.content;
   const first = Array.isArray(content) ? BlockSchema.safeParse(content[0]).data : undefined;
   const text =
     typeof content === 'string' ? content : first?.type === 'text' ? (first.text ?? null) : null;
-  return text === null ? null : (readCommandText(text) ?? text);
+  return text === null || queued !== null ? text : (readCommandText(text) ?? text);
 };
 
 /** Presents a native record as the CLI shows it, or null for one it leaves out. */
-const toPresentation = (record: IRecord): IPresentation | null => {
+const toPresentation = (record: IRecord, queued: IQueuedCommand | null): IPresentation | null => {
   const base = { nativeType: record.type, callId: null, outcome: null, files: [] };
-  if (record.type !== 'user' && record.type !== 'assistant')
+  if (queued === null && record.type !== 'user' && record.type !== 'assistant')
     return { ...base, kind: 'unsupported', text: UNSUPPORTED };
-  const message = record.type === 'user' ? 'user-message' : 'agent-message';
-  const content = record.message?.content;
+  const message = queued !== null || record.type === 'user' ? 'user-message' : 'agent-message';
+  const content = queued?.prompt ?? record.message?.content;
   if (typeof content !== 'string' && !Array.isArray(content))
     return { ...base, kind: 'unsupported', text: UNSUPPORTED };
   // the model's thinking stays collapsed in the CLI, so a record holding only thinking is dropped
@@ -392,9 +422,11 @@ const toPresentation = (record: IRecord): IPresentation | null => {
         : undefined;
   if (record.isCompactSummary) return { ...base, kind: 'notice', text: text ?? UNSUPPORTED };
   if (text !== undefined)
-    return record.type === 'user'
-      ? toUserPresentation(record, text)
-      : { ...base, kind: 'agent-message', text };
+    return queued !== null
+      ? { ...base, kind: 'user-message', text }
+      : record.type === 'user'
+        ? toUserPresentation(record, text)
+        : { ...base, kind: 'agent-message', text };
   if (blocks.every((block) => block?.type === 'tool_result')) {
     const patch = FilePatchSchema.safeParse(record.toolUseResult);
     return {
@@ -407,7 +439,8 @@ const toPresentation = (record: IRecord): IPresentation | null => {
       outcome: blocks.some((block) => block!.is_error) ? 'failed' : 'succeeded',
     };
   }
-  const calls = blocks.filter((block) => block?.type === 'tool_use' && block.name);
+  const calls =
+    queued === null ? blocks.filter((block) => block?.type === 'tool_use' && block.name) : [];
   return {
     ...base,
     kind: calls.length > 0 ? 'tool' : message,
@@ -442,7 +475,8 @@ export const toClaudeItem = (
     throw HQ_ERRORS.create('claudeHistoryUnavailable', {
       data: { kind: 'agent-unavailable' },
     });
-  const presentation = toPresentation(record);
+  const queued = readQueuedCommand(record);
+  const presentation = toPresentation(record, queued);
   if (!presentation) return null;
   const { text } = presentation;
   let end = fullBody ? text.length : Math.min(text.length, MAX_ITEM_TEXT_LENGTH);
@@ -454,7 +488,11 @@ export const toClaudeItem = (
     turnId,
     provenance:
       presentation.kind === 'user-message'
-        ? nativeProvenance(presentation.kind, record.uuid, readInputText(record))
+        ? nativeProvenance(
+            presentation.kind,
+            queued?.source_uuid ?? record.uuid,
+            readInputText(record, queued),
+          )
         : nativeProvenance(presentation.kind),
     text: text.slice(0, end),
     isTruncated: end < text.length,
@@ -464,14 +502,14 @@ export const toClaudeItem = (
 
 // a record's content blocks, without the ones that don't parse
 const toBlocks = (record: IRecord): IBlock[] => {
-  const content = record.message?.content;
+  const content = readContent(record);
   return Array.isArray(content)
     ? content.flatMap((block: unknown) => BlockSchema.safeParse(block).data ?? [])
     : [];
 };
 // a record's text, when it holds text alone
 const toText = (record: IRecord): string | undefined => {
-  const content = record.message?.content;
+  const content = readContent(record);
   if (typeof content === 'string') return content;
   const blocks = toBlocks(record);
   return Array.isArray(content) &&
@@ -532,6 +570,8 @@ const toShellCommand = (input: unknown): string | null =>
  * Lists the images a record holds, in its message and in its tool results' content, in order.
  * @param record The record.
  * @returns At most 64 images, each its base64 data, or null for one that has no base64 source.
+ * @throws
+ * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
  */
 export const toClaudeImageData = (record: IRecord): (string | null)[] =>
   toBlocks(record)
@@ -567,6 +607,8 @@ export const isClaudeAnswer = (record: IRecord, item: IHistoryItem): boolean =>
  * @param candidate The record, one of the item's ancestors.
  * @param item The answering item.
  * @returns Whether the record holds the item's tool call, or is the shell input it follows.
+ * @throws
+ * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
  */
 export const isClaudeCallFor = (candidate: IRecord, item: IHistoryItem): boolean =>
   item.nativeType === 'tool-result'
@@ -580,6 +622,8 @@ export const isClaudeCallFor = (candidate: IRecord, item: IHistoryItem): boolean
  * @param record The item's record.
  * @param call The call it answers, or null when it answers none or the call isn't found.
  * @returns The detail's parts; the item itself comes from `toClaudeItem`.
+ * @throws
+ * - JG_AGENT_HQ_CLAUDE_HISTORY_UNAVAILABLE: The Claude history is unavailable
  */
 export const toClaudeDetail = (
   record: IRecord,

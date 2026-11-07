@@ -276,12 +276,17 @@ export const createDispatch = (context: IActionsContext) => {
             nativeTurnId: turn.id,
           });
         } else if (phase === 'steer') {
-          if (!nativeId || command?.kind !== 'steer') conflict();
+          if (!thread || !nativeId || command?.kind !== 'steer' || !input) conflict();
+          hasDispatched = false;
+          const files = await readInputFiles(input.files, thread.workspaceRoot, roots);
+          await control.validateInput(nativeId, input);
+          hasDispatched = true;
           const nativeTurnId = await control.steer(
             requestId,
             nativeId,
             command.expectedTurnId,
             command.text,
+            files,
           );
           next = await apply({ kind: 'steer-accepted', actionId: receipt.id, phase, nativeTurnId });
         } else if (phase === 'interrupt') {

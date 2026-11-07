@@ -3,6 +3,7 @@ import { Exception } from 'jg-exception';
 import { delay, isEqual } from 'jg-utilities';
 import { z } from 'zod';
 
+import { ActionEnvelopeSchema } from '../../../contracts/index.js';
 import type {
   IConfigurationRequest,
   ISessionSettings,
@@ -16,6 +17,7 @@ import { toClaudeConfiguration } from '../configuration/index.js';
 import { createClaudeRpc } from '../rpc.js';
 import { HQ_ERRORS, isCleanupUnconfirmed } from '../../../errors/index.js';
 
+import { CLAUDE_STEER_MEDIA_TYPES } from './constants.js';
 import type { IClaudeControlEvents, IClaudeSession } from './types.js';
 import {
   failSteers,
@@ -24,6 +26,29 @@ import {
   setBackgroundCommands,
 } from './stream.js';
 import { toClaudeSkills } from './skills.js';
+
+/** Keeps turn-start document encoding and uses labeled text for mid-turn text files. */
+const toFileBlocks = (files: IProviderInputFile[], isSteer = false) =>
+  files.map((file) => {
+    if (file.mediaType === 'text/plain') {
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(file.content);
+      return isSteer
+        ? { type: 'text', text: `File ${file.path} (SHA-256 ${file.sha256}):\n${text}` }
+        : {
+            type: 'document',
+            source: { type: 'text', media_type: 'text/plain', data: text },
+            title: file.path,
+          };
+    }
+    return {
+      type: file.mediaType.startsWith('image/') ? 'image' : 'document',
+      source: {
+        type: 'base64',
+        media_type: file.mediaType,
+        data: Buffer.from(file.content).toString('base64'),
+      },
+    };
+  });
 
 // a session idle this long since its last turn ended gives up its process until it is needed
 const IDLE_STOP_SECONDS = 3_600;
@@ -516,33 +541,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
                 session_id: nativeId,
                 message: {
                   role: 'user',
-                  content: files.length
-                    ? [
-                        { type: 'text', text },
-                        ...files.map((file) =>
-                          file.mediaType === 'text/plain'
-                            ? {
-                                type: 'document',
-                                source: {
-                                  type: 'text',
-                                  media_type: 'text/plain',
-                                  data: new TextDecoder('utf-8', { fatal: true }).decode(
-                                    file.content,
-                                  ),
-                                },
-                                title: file.path,
-                              }
-                            : {
-                                type: file.mediaType.startsWith('image/') ? 'image' : 'document',
-                                source: {
-                                  type: 'base64',
-                                  media_type: file.mediaType,
-                                  data: Buffer.from(file.content).toString('base64'),
-                                },
-                              },
-                        ),
-                      ]
-                    : text,
+                  content: files.length ? [{ type: 'text', text }, ...toFileBlocks(files)] : text,
                 },
                 parent_tool_use_id: null,
               })
@@ -567,24 +566,36 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
      * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
      */
     async steer(
-      _requestId: string,
+      requestId: string,
       nativeId: string,
       turnId: string,
       text: string,
+      files: IProviderInputFile[] = [],
     ): Promise<string> {
+      const parsedId = ActionEnvelopeSchema.shape.id.safeParse(
+        requestId.endsWith(':steer') ? requestId.slice(0, -':steer'.length) : null,
+      );
+      if (!parsedId.success) conflict();
+      if (files.some((file) => !CLAUDE_STEER_MEDIA_TYPES.includes(file.mediaType)))
+        capabilityUnavailable();
       // a parked session is idle, so it has no turn to steer
       return withSession(nativeId, false, (session) => {
         if (getActiveTurn(session)?.id !== turnId) conflict();
         if (session.isClosing || !session.connection?.isAvailable) unavailable();
         return new Promise<string>((resolve, reject) => {
-          const id = randomUUID();
+          const id = parsedId.data;
           session.steers.set(id, { id, turnId, resolve, reject });
           void session
             .connection!.write({
               type: 'user',
               uuid: id,
               session_id: nativeId,
-              message: { role: 'user', content: text },
+              message: {
+                role: 'user',
+                content: files.length
+                  ? [{ type: 'text', text }, ...toFileBlocks(files, true)]
+                  : text,
+              },
               parent_tool_use_id: null,
             })
             .catch((error: unknown) => {

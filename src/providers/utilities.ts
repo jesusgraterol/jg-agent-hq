@@ -39,24 +39,27 @@ export const parseActionRequest = (
  * Builds a provider's capabilities from its operation support and the input limits both providers
  * share.
  * @param overrides The provider, the operations its native CLI reports now, the media types it
- * accepts, and its configuration schema.
+ * accepts at turn start and during steering, and its configuration schema.
  * @returns The provider's capability set.
  */
 export const buildProviderCapabilities = ({
   provider,
   operations,
   supportedMediaTypes,
+  steerMediaTypes,
   configurationSchema,
 }: {
   provider: IProviderId;
   operations: Partial<IProviderCapabilitySet['operations']>;
-  supportedMediaTypes: string[];
+  supportedMediaTypes: readonly string[];
+  steerMediaTypes: readonly string[];
   configurationSchema: IProviderCapabilitySet['configurationSchema'];
 }): IProviderCapabilitySet => ({
   operations: { ...PROVIDER_OPERATIONS[provider], ...operations },
   inputSchema: {
     ...PROVIDER_INPUT_SCHEMA,
-    supportedMediaTypes,
+    supportedMediaTypes: [...supportedMediaTypes],
+    steerMediaTypes: [...steerMediaTypes],
     maxFiles: MAX_INPUT_FILES,
     maxFileBytes: MAX_INPUT_FILE_BYTES,
     maxTextFileBytes: MAX_TEXT_FILE_BYTES,

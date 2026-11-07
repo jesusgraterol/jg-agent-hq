@@ -10,7 +10,8 @@ type IProvenanceItem = Pick<IHistoryItem, 'kind' | 'provenance'> &
 
 /**
  * Replaces provider assertions with provenance verified against acknowledged native inputs.
- * Only input identities and hashes cross the worker boundary; message bodies stay in their owner.
+ * Only input identities and hashes cross the worker boundary; Claude queued prompts use their
+ * source UUID, independently of the transcript's graph UUID. Bodies stay in their owner.
  * @param items Fresh presentation rows, including full-input fingerprints before preview cuts.
  * @param provider The provider whose native session supplied the rows.
  * @param nativeId The selected native session.

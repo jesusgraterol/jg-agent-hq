@@ -138,6 +138,40 @@ test('host provenance enrichment does not keep an already persisted native body 
   expect(live.read('thread').data).toStrictEqual([]);
 });
 
+test.each(['matching', 'source', 'hash', 'turn', 'body', 'kind'])(
+  'Claude queued history reconciles its live replay only with matching identity: %s',
+  (scenario) => {
+    const live = new LiveItems();
+    const input = {
+      ...item,
+      nativeId: 'source-uuid',
+      nativeType: 'user',
+      kind: 'user-message' as const,
+      provenance: nativeProvenance('user-message', 'source-uuid', item.text),
+    };
+    live.put('thread', input, true);
+    live.reconcile('thread', [
+      {
+        ...input,
+        nativeId: 'saved-graph-uuid',
+        nativeType: 'attachment',
+        turnId: scenario === 'turn' ? 'another-turn' : input.turnId,
+        text: scenario === 'body' ? 'another body' : input.text,
+        kind: scenario === 'kind' ? 'notice' : input.kind,
+        provenance: {
+          ...input.provenance,
+          nativeInputId: scenario === 'source' ? 'another-source' : input.provenance.nativeInputId,
+          nativeInputSha256:
+            scenario === 'hash' ? 'another-hash' : input.provenance.nativeInputSha256,
+        },
+      },
+    ]);
+    expect(live.read('thread').data).toStrictEqual(
+      scenario === 'matching' ? [] : [{ ...input, state: 'awaiting-flush' }],
+    );
+  },
+);
+
 test('a message its turn ended before the provider finished goes once history holds that turn', () => {
   const live = new LiveItems();
   const answer = { ...item, nativeId: 'answer', text: 'The answer, after the steer' };

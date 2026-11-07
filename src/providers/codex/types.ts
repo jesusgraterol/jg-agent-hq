@@ -264,9 +264,16 @@ export type ICodexProvider = {
    * Steers only the required active native turn and verifies its response identity.
    * @returns The acknowledged native turn identity.
    * @throws
+   * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
    * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
    */
-  steer(requestId: string, nativeId: string, expectedTurnId: string, text: string): Promise<string>;
+  steer(
+    requestId: string,
+    nativeId: string,
+    expectedTurnId: string,
+    text: string,
+    files?: IProviderInputFile[],
+  ): Promise<string>;
   /**
    * Requests interruption; its acknowledgement does not prove completion.
    * @returns A promise resolved after native interruption-request acknowledgement.

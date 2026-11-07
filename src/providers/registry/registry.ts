@@ -303,8 +303,10 @@ export const createProviderRegistry = (
             invokeControl((call) =>
               adapter.startTurn(requestId, nativeId, text, skill, settings, files, call),
             ),
-          steer: (requestId, nativeId, expectedTurnId, text) =>
-            invokeControl((call) => adapter.steer(requestId, nativeId, expectedTurnId, text, call)),
+          steer: (requestId, nativeId, expectedTurnId, text, files) =>
+            invokeControl((call) =>
+              adapter.steer(requestId, nativeId, expectedTurnId, text, files, call),
+            ),
           interrupt: (requestId, nativeId, nativeTurnId) =>
             invokeControl((call) => adapter.interrupt(requestId, nativeId, nativeTurnId, call)),
           cleanThread: (requestId, nativeId) =>

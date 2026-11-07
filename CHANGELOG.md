@@ -1,5 +1,11 @@
 # Changelog
 
+## 13.2.0
+
+- Allow an exact-turn `steer` to carry optional workspace files through the existing file integrity and size checks. Codex reuses its turn-start encoding; Claude sends text files as labeled text blocks and images as native image blocks. Claude rejects PDF steers before writing; ordinary PDF and text-document turn starts retain their encoding.
+- Publish provider and session `inputSchema.steerMediaTypes` alongside general attachment support so consumers can determine eligibility before canceling queued work.
+- Preserve Claude steer action UUIDs and project native queued prompts into normal history, evidence, details and images, retaining the running turn and original text fingerprint. Exact acknowledged ledger and browser identity checks apply to live, saved and restarted reads; older cached projections rebuild without a storage migration.
+
 ## 13.1.4
 
 - Correlate live user inputs against the same acknowledged native identity, turn and content fingerprint as saved history. Verified browser inputs also expose their original optional `browserActionId`, allowing an optimistic row to reconcile before the HTTP receipt arrives.

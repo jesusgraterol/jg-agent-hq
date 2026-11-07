@@ -139,6 +139,172 @@ const compaction = (
 };
 const toLines = (records: object[]) => records.map((row) => JSON.stringify(row)).join('\n') + '\n';
 
+test.each(['text', 'files'])(
+  'queued-command %s input keeps its source identity and running turn',
+  async (mode) => {
+    await withClaudeRuntime(async ({ workspaceRoot, transcript, request, runtime, stateRoot }) => {
+      const nativeId = randomUUID();
+      const sourceUuid = randomUUID().toUpperCase();
+      const text = 'Also inspect the attached example.';
+      const first = claudeRecord(workspaceRoot, nativeId, { text: 'Keep working' });
+      const content =
+        mode === 'text'
+          ? text
+          : [
+              { type: 'text', text },
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: 'image/png',
+                  data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a0l0AAAAASUVORK5CYII=',
+                },
+              },
+              { type: 'text', text: 'File /native-probe/notes.txt:\nSeparate attachment text' },
+            ];
+      const queued = {
+        ...claudeRecord(workspaceRoot, nativeId, { parentUuid: first.uuid }),
+        type: 'attachment',
+        message: undefined,
+        attachment: {
+          type: 'queued_command',
+          prompt: content,
+          source_uuid: sourceUuid,
+          delivery_id: randomUUID(),
+          commandMode: 'prompt',
+          hostsOwnTurn: true,
+        },
+      };
+      const answer = claudeRecord(workspaceRoot, nativeId, {
+        type: 'assistant',
+        parentUuid: queued.uuid,
+        text: 'Continuing with the steer',
+      });
+      await writeFile(transcript(nativeId), toLines([first, queued, answer]));
+      const target = { provider: 'claude' as const, workspaceRoot, nativeId };
+      const read = await request({ kind: 'items', ...target });
+      expect(read.result.data.map((item) => [item.nativeId, item.kind, item.turnId])).toStrictEqual(
+        [
+          [answer.uuid, 'agent-message', first.uuid],
+          [queued.uuid, 'user-message', first.uuid],
+          [first.uuid, 'user-message', first.uuid],
+        ],
+      );
+      const item = read.result.data[1]!;
+      expect(item.provenance).toStrictEqual({
+        origin: 'unknown',
+        source: 'unknown',
+        nativeInputId: sourceUuid,
+        nativeInputSha256: createHash('sha256').update(text).digest('hex'),
+        actionId: null,
+        contentBoundary: 'untrusted',
+        grantsAuthority: false,
+      });
+      const detail = await request({
+        kind: 'item-detail',
+        ...target,
+        turnId: first.uuid,
+        nativeItemId: queued.uuid,
+      });
+      expect(detail.result?.item).toStrictEqual(item);
+      const evidence = await request({
+        kind: 'session-evidence',
+        ...target,
+        kinds: ['user-message'],
+      });
+      expect(evidence.result.data[0]!.provenance).toStrictEqual(item.provenance);
+      const firstPage = (await request({ kind: 'items', ...target, limit: 1 })).result;
+      const secondPage = (
+        await request({ kind: 'items', ...target, limit: 1, cursor: firstPage.nextCursor! })
+      ).result;
+      expect(secondPage.data).toStrictEqual([item]);
+      if (mode === 'files') {
+        const image = (
+          await request({
+            kind: 'item-image',
+            ...target,
+            turnId: first.uuid,
+            nativeItemId: queued.uuid,
+            index: 0,
+          })
+        ).result;
+        expect(image).toStrictEqual({
+          mediaType: 'image/png',
+          data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a0l0AAAAASUVORK5CYII=',
+        });
+      }
+      await runtime.close();
+      const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'));
+      try {
+        database
+          .prepare(
+            "UPDATE agent_hq_claude_file SET identity = '10' || substr(identity, instr(identity, ':')) WHERE native_id = ?",
+          )
+          .run(nativeId);
+        database
+          .prepare('DELETE FROM agent_hq_claude_entry WHERE native_id = ? AND uuid = ?')
+          .run(nativeId, queued.uuid);
+      } finally {
+        database.close();
+      }
+      const replacement = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
+      try {
+        const rebuilt = (await replacement.request({ kind: 'items', ...target })).result;
+        expect(rebuilt.data).toStrictEqual(read.result.data);
+      } finally {
+        await replacement.close();
+      }
+    });
+  },
+);
+
+test.each([
+  'missing source',
+  'invalid source',
+  'empty prompt',
+  'first image',
+  'empty text',
+  'invalid graph',
+  'missing mode',
+  'invalid mode',
+])('malformed queued prompt fails closed: %s', async (scenario) => {
+  await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
+    const nativeId = randomUUID();
+    const first = claudeRecord(workspaceRoot, nativeId);
+    const attachment = {
+      type: 'queued_command',
+      commandMode:
+        scenario === 'missing mode' ? undefined : scenario === 'invalid mode' ? 42 : 'prompt',
+      source_uuid:
+        scenario === 'missing source'
+          ? undefined
+          : scenario === 'invalid source'
+            ? 'invalid'
+            : randomUUID(),
+      prompt:
+        scenario === 'empty prompt'
+          ? []
+          : scenario === 'first image'
+            ? [{ type: 'image' }, { type: 'text', text: 'Later text' }]
+            : scenario === 'empty text'
+              ? [{ type: 'text', text: '' }]
+              : 'Exact steer',
+    };
+    const queued = {
+      ...claudeRecord(workspaceRoot, nativeId, { parentUuid: first.uuid }),
+      type: 'attachment',
+      uuid: scenario === 'invalid graph' ? 'invalid' : randomUUID(),
+      message: undefined,
+      attachment,
+    };
+    await writeFile(transcript(nativeId), toLines([first, queued]));
+    await expectToRejectCode(
+      request({ kind: 'items', provider: 'claude', workspaceRoot, nativeId }),
+      'JG_AGENT_HQ_CLIENT_AGENT_UNAVAILABLE',
+    );
+  });
+});
+
 test("a chat Claude Code moved into a new session reads from its summary, though its compaction names a record of the old session's transcript", async () => {
   await withClaudeRuntime(async ({ workspaceRoot, transcript, request }) => {
     const nativeId = randomUUID();

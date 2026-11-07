@@ -3,7 +3,7 @@ import type { IActionPhase, IProviderId } from '../../contracts/index.js';
 
 /*
  * Only hashes and exact native input identities cross the provenance worker boundary, with the
- * action phase an input's ID names when HQ sent it, as Codex echoes its request IDs.
+ * action phase Codex echoes, or Claude's exact steer source UUID within its original turn.
  */
 export type IEvidenceOriginsRequest = {
   provider: IProviderId;
