@@ -430,6 +430,8 @@ const addSteer = (session: IClaudeSession) => {
   session.input!.id = INPUT;
   const settled: { turnId?: string; error?: unknown } = {};
   session.steers.set(STEER, {
+    inputSha256: 'a'.repeat(64),
+    isAcknowledged: false,
     id: STEER,
     turnId: INPUT,
     resolve: (turnId) => {

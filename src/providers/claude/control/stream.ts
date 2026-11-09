@@ -182,7 +182,7 @@ export const setBackgroundCommands = (
 };
 
 /**
- * Fails the steers Claude never replayed, as when its process stops, so no steer waits forever.
+ * Releases retained steering identities and rejects any input still unconfirmed when it stops.
  * @param session The session.
  * @param turnId The turn whose steers fail, or every pending steer when omitted.
  */
@@ -191,7 +191,8 @@ export const failSteers = (session: IClaudeSession, turnId?: string): void => {
     if (turnId !== undefined && steer.turnId !== turnId) continue;
     clearTimeout(steer.timer);
     session.steers.delete(steer.id);
-    steer.reject(HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } }));
+    if (!steer.isAcknowledged)
+      steer.reject(HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } }));
   }
 };
 

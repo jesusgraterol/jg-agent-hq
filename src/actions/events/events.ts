@@ -8,6 +8,7 @@ import { HQ_ERRORS, getErrorKind } from '../../errors/index.js';
 import type { IProviderReattachment } from '../../providers/index.js';
 import { capabilityUnavailable } from '../../providers/registry/index.js';
 import type { INativeObservation } from '../../store/control/index.js';
+import { correlateEvidenceOrigins } from '../../sessions/index.js';
 
 import type { createDispatch } from '../dispatch/index.js';
 import {
@@ -185,6 +186,13 @@ export const createEvents = (
               textLimit: MAX_ITEM_TEXT_LENGTH,
             });
             if (response.kind !== 'items') return;
+            await correlateEvidenceOrigins(response.result.data, provider, nativeId, store, {
+              workspaceRoot,
+              onAcknowledged: (threadId) => {
+                waits.notifyThread(threadId);
+                live.invalidateProvenance(liveKey);
+              },
+            });
             live.reconcile(liveKey, response.result.data);
             if (response.result.nextCursor === null) break;
             cursor = response.result.nextCursor;

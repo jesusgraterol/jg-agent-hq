@@ -1,4 +1,4 @@
-import type { IHistoryItem, ISessionSettings } from '../../../contracts/index.js';
+import type { IEvidenceItem, IHistoryItem, ISessionSettings } from '../../../contracts/index.js';
 import type { INativeObservation } from '../../../store/control/index.js';
 import type { INativePrompt, IProviderSkills, IAgentProviderOutcome } from '../../index.js';
 
@@ -38,16 +38,22 @@ export type IClaudeNativeTurn = {
 /*
  * Text HQ wrote into an active turn, which Claude replays once it takes it in: within that turn,
  * at its next tool boundary, or after the turn's result, when it runs as the session's next turn.
- * Either replay acknowledges it against the turn it named; the timer fails it when that turn
- * ended and no replay followed.
+ * Saved input can also acknowledge it, retaining this identity for a later replay. The timer
+ * releases it after the turn ended and rejects it only when delivery remains unconfirmed.
  */
 export type IClaudeSteer = {
   id: string;
   turnId: string;
+  inputSha256: string;
+  isAcknowledged: boolean;
   resolve(turnId: string): void;
   reject(error: unknown): void;
   timer?: ReturnType<typeof setTimeout>;
 };
+
+// saved item/evidence identities, after the native reader validates the transcript and chain
+export type IClaudeSavedInput = Pick<IHistoryItem, 'kind' | 'provenance'> &
+  (Pick<IHistoryItem, 'turnId'> | Pick<IEvidenceItem, 'reference'>);
 
 // the turn the session's frames belong to: an acknowledged HQ input or a turn Claude started
 export type IClaudeTurn = IClaudeInput | IClaudeNativeTurn;

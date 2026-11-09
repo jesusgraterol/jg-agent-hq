@@ -121,19 +121,19 @@ An adapter reports normalized observations, items, deltas, prompts, outcomes, ob
 
 The current built-in surfaces map to these native entry points:
 
-| jg-agent-hq surface | Codex                                                                    | Claude                                                                           |
-| ------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
-| Create/adopt/resume | `thread/start`, `thread/read`, `thread/resume`                           | Structured session creation/resume and idle/session-ID fences                    |
-| Rename              | `thread/name/set`                                                        | `rename_session` control request                                                 |
-| Message/queue       | `turn/start` with explicit native input                                  | Structured user messages with matching acknowledgements                          |
-| Steer               | `turn/steer` for the exact active turn                                   | A structured user message into the exact active turn, acknowledged by its replay |
-| Interrupt           | `turn/interrupt`                                                         | `interrupt` control request; completion remains separate                         |
-| Close/recover       | Native background-terminal cleanup/verification and `thread/unsubscribe` | Confirmed process-group shutdown and explicit session release/resume             |
-| Runtime restart     | Sessions keep running, and the next runtime rejoins them                 | Turns stop with the runtime; sessions wait inactive for an explicit resume       |
-| History             | `thread/list`, `thread/read`, `thread/turns/list`, `thread/items/list`   | Bounded worker-owned indexing of native transcripts                              |
-| Skills              | `skills/list` and native skill input                                     | Initialization command metadata and native invocation text                       |
-| Models/settings     | `model/list`, `config/read`, native startup and next-turn parameters     | `list_models`, `get_settings`, native startup flags and `apply_flag_settings`    |
-| Usage               | `account/rateLimits/read`                                                | `get_usage` control request, with explicit unavailable observations              |
+| jg-agent-hq surface | Codex                                                                    | Claude                                                                                                |
+| ------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| Create/adopt/resume | `thread/start`, `thread/read`, `thread/resume`                           | Structured session creation/resume and idle/session-ID fences                                         |
+| Rename              | `thread/name/set`                                                        | `rename_session` control request                                                                      |
+| Message/queue       | `turn/start` with explicit native input                                  | Structured user messages with matching acknowledgements                                               |
+| Steer               | `turn/steer` for the exact active turn                                   | A structured user message into the exact active turn, confirmed by its replay or matching saved input |
+| Interrupt           | `turn/interrupt`                                                         | `interrupt` control request; completion remains separate                                              |
+| Close/recover       | Native background-terminal cleanup/verification and `thread/unsubscribe` | Confirmed process-group shutdown and explicit session release/resume                                  |
+| Runtime restart     | Sessions keep running, and the next runtime rejoins them                 | Turns stop with the runtime; sessions wait inactive for an explicit resume                            |
+| History             | `thread/list`, `thread/read`, `thread/turns/list`, `thread/items/list`   | Bounded worker-owned indexing of native transcripts                                                   |
+| Skills              | `skills/list` and native skill input                                     | Initialization command metadata and native invocation text                                            |
+| Models/settings     | `model/list`, `config/read`, native startup and next-turn parameters     | `list_models`, `get_settings`, native startup flags and `apply_flag_settings`                         |
+| Usage               | `account/rateLimits/read`                                                | `get_usage` control request, with explicit unavailable observations                                   |
 
 Availability depends on the selected native connection and, for session metadata, that session's initialization. Native settings, hooks, plugins and authentication remain with the harness. Codex protocol details are in the [official app-server reference](https://learn.chatgpt.com/docs/app-server); Claude flags and programmatic behavior are in the [CLI reference](https://code.claude.com/docs/en/cli-reference) and [programmatic guide](https://code.claude.com/docs/en/headless). Public-API integration tests exercise both native boundaries through the runtime's real persistence and IPC, including compatible version labels and missing-provider isolation.
 
@@ -285,7 +285,9 @@ Receipts separate `delivery` (`queued`, `submitted`, `acknowledged`, `uncertain`
 
 A missing acknowledgement never triggers an automatic resend. Exact late responses reconcile delivery, including completion that arrived first. Native output loss marks the affected provider controls and submitted work uncertain. A Claude process failure affects its own session; a Codex transport failure affects its Codex cohort. Restart quarantines controls from an interrupted runtime, except the Codex sessions the next runtime rejoins; explicit recovery preserves the managed identity and name. Successful shutdown proves native process-group exit before marking Claude controls inactive. Unknown creation without a native identity remains uncertain.
 
-Normal native turn completion may advance ready queued entries once, in creation/UUID order. Failure, interruption, explicit interrupt admission or restart pauses the queue. A rejoined Codex session's queue advances again once the turn it waits on completes. Permission prompts do not advance it. An unacknowledged start or metadata change blocks dependent starts until its outcome is reconciled or the stopped runtime is recovered explicitly. A turn's completion does not settle an unresolved steering receipt.
+Saved Claude input can acknowledge a submitted or uncertain steer without a live replay, including after restart. Authorized `items`, `item-detail` and `session-evidence` reads and the existing bounded turn-completion history flush match the exact source/action UUID, provider, native session, workspace, original target turn (or the steer's own follow-up turn) and full original-text SHA-256. Failed/canceled actions, mismatches and live-only presentation never establish this confirmation. Confirmation wakes receipt waits and refreshes live provenance; it changes neither control ownership nor completion, dispatches no work and restores no queued readiness. It reuses selected history pages and indexed action lookups without new scans, caches, storage or polling.
+
+Normal native turn completion may advance ready queued entries once, in creation/UUID order. Failure, interruption, explicit interrupt admission or restart pauses the queue. A rejoined Codex session's queue advances again once the turn it waits on completes. Permission prompts do not advance it. An unacknowledged start or metadata change blocks dependent starts until its outcome is reconciled or the stopped runtime is recovered explicitly. A turn's completion alone does not settle an unresolved steering receipt.
 
 Native replies use one of these closed response forms:
 

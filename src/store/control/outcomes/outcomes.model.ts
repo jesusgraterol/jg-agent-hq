@@ -1,4 +1,5 @@
 import type { IActionReceipt } from '../../../contracts/index.js';
+import type { IEvidenceOriginsRequest } from '../../../sessions/evidence/index.js';
 
 import { ControlModel } from '../control.model.js';
 import { toActionReceipt } from '../transformers.js';
@@ -6,6 +7,42 @@ import type { INativeOutcome } from '../types.js';
 
 /** Applies native request outcomes to the actions whose phases they answer. */
 export class ControlOutcomes extends ControlModel {
+  /**
+   * Confirms saved Claude input against its exact admitted steer, including an earlier runtime's
+   * uncertain receipt. This changes delivery only; it never restores control or dispatches work.
+   * @returns The thread IDs whose receipt changed.
+   */
+  public confirmClaudeSteers(
+    command: IEvidenceOriginsRequest & { workspaceRoot: string },
+  ): string[] {
+    if (command.provider !== 'claude') return [];
+    return this._transaction(() => {
+      const threads = new Set<string>();
+      for (const item of command.items) {
+        if (item.nativeInputId === null || item.sha256 === null) continue;
+        const updated = this._statements.get<{ thread_id: string }>(
+          `UPDATE agent_hq_action SET delivery = 'acknowledged', failure = NULL, updated_at = ?
+          WHERE id = ? AND provider = 'claude' AND kind = 'steer' AND phase = 'steer'
+          AND delivery IN ('submitted', 'uncertain') AND input_sha256 = ?
+          AND native_turn_id IS NOT NULL AND native_turn_id = expected_turn_id
+          AND (native_turn_id = ? OR id = ?)
+          AND thread_id IN (SELECT id FROM agent_hq_thread
+            WHERE provider = 'claude' AND native_id = ? AND workspace_root = ?)
+          RETURNING thread_id`,
+          Date.now(),
+          item.nativeInputId,
+          item.sha256,
+          item.turnId,
+          item.turnId,
+          command.nativeId,
+          command.workspaceRoot,
+        );
+        if (updated) threads.add(updated.thread_id);
+      }
+      return [...threads];
+    });
+  }
+
   /**
    * Applies an exact native request outcome without downgrading a known acknowledgement. An
    * outcome answers the phase its action takes now; one for a phase the action has left, or from

@@ -143,7 +143,7 @@ export const startClaudeControl = () => {
     return;
    }
   }else if(message.type==='user'){
-   if(input&&settings.steer==='join'){recordQueued(message);out({...message,isReplay:true});return;}
+   if(input&&['join','saved','saved-next'].includes(settings.steer)){recordQueued(message);if(settings.steer==='join')out({...message,isReplay:true});if(settings.steer==='saved-next')steers.push(message);return;}
    if(input&&settings.steer==='next'){steers.push(message);return;}
    if(input)throw new Error('Native input duplicated');
    input=message;
