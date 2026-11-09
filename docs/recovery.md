@@ -20,6 +20,8 @@ The recovered runtime rebuilds the Claude history index from the transcripts on 
 
 Recover repositories and native files separately. Source paths are retained as evidence; never blindly replace repository files. Reconcile native ownership before enabling execution. The snapshot does not promise path translation or restore authentication.
 
+A saved Claude input can resolve an uncertain steering receipt when an authorized history, detail or evidence read verifies its exact action, session, workspace, turn and original-text fingerprint. This confirms delivery only. It does not recover ownership, resume a session, resend input or release queued work.
+
 ## Rollback
 
 Roll back by restoring an earlier snapshot into a new recovery workspace; never overwrite the current state root. A snapshot from another schema is refused with an error naming the package version that wrote it, so restore it with that version. Rollback accepts losing every change made after that snapshot, including host changes and later runtime receipts. Reconcile native ownership before enabling work.

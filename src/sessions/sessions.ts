@@ -39,6 +39,7 @@ export const readNativeHistory = async (
   projection: IStore,
   allowedRoots: string[],
   claude: IClaudeSessions,
+  onInputAcknowledged: (threadId: string, nativeId: string) => void,
 ): Promise<IHqResponse> => {
   const workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, allowedRoots);
   // a thread HQ created has no native history until its first turn, so its record answers
@@ -103,7 +104,10 @@ export const readNativeHistory = async (
         ? [response.result.item]
         : [];
   if (items.length && 'nativeId' in command)
-    await correlateEvidenceOrigins(items, command.provider, command.nativeId, projection);
+    await correlateEvidenceOrigins(items, command.provider, command.nativeId, projection, {
+      workspaceRoot,
+      onAcknowledged: (threadId) => onInputAcknowledged(threadId, command.nativeId),
+    });
   if (response.kind === 'session-evidence' && Buffer.byteLength(JSON.stringify(response)) > 65_280)
     throw HQ_ERRORS.create('providerFailed', { data: { kind: 'agent-unavailable' } });
   return response;

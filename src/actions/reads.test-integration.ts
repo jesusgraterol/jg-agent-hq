@@ -269,11 +269,178 @@ test('Claude browser steering correlates its exact action in live and persisted 
   });
 });
 
+test.each(['submitted', 'uncertain'] as const)(
+  'Claude saved steering acknowledges %s delivery without a live replay or another send',
+  // shutdown drains the native steer's real 30-second acknowledgement deadline
+  { timeout: 45_000 },
+  async (delivery) => {
+    await withClaudeRuntime(async (fixture) => {
+      const input = await startBrowserInput(fixture, false, 'claude');
+      await fixture.control({ holdTurn: true, steer: 'saved' });
+      const id = randomUUID();
+      const text = 'Confirm the saved steering receipt.';
+      await fixture.request({
+        kind: 'action',
+        action: {
+          id,
+          runtimeEpoch: input.browser.runtimeEpoch,
+          command: { kind: 'steer', threadId: input.thread.id, expectedTurnId: input.turnId, text },
+        },
+      });
+      await expect
+        .poll(async () =>
+          (await readFile(fixture.transcript(input.thread.nativeId!), 'utf8')).includes(id),
+        )
+        .toBe(true);
+      expect((await fixture.request({ kind: 'receipt', actionId: id })).result?.delivery).toBe(
+        'submitted',
+      );
+      let replacement: Awaited<ReturnType<typeof createAgentHq>> | undefined;
+      if (delivery === 'uncertain') {
+        await fixture.runtime.close();
+        replacement = await createAgentHq({
+          stateRoot: fixture.stateRoot,
+          allowedRoots: [fixture.workspaceRoot],
+        });
+      }
+      const runtime = replacement ?? fixture.runtime;
+      try {
+        expect((await runtime.request({ kind: 'receipt', actionId: id })).result?.delivery).toBe(
+          delivery,
+        );
+        const [saved, waited] = await Promise.all([
+          runtime.request({
+            kind: 'items',
+            provider: 'claude',
+            workspaceRoot: fixture.workspaceRoot,
+            nativeId: input.thread.nativeId!,
+          }),
+          runtime.request({ kind: 'action-wait', actionId: id, until: 'settled', timeoutMs: 5000 }),
+        ]);
+        expect(saved.result.data.find((item) => item.text === text)?.provenance).toMatchObject({
+          actionId: id,
+          nativeInputId: id,
+          source: 'host-action',
+          grantsAuthority: false,
+        });
+        expect((await runtime.request({ kind: 'receipt', actionId: id })).result).toMatchObject({
+          delivery: 'acknowledged',
+          nativeTurnId: input.turnId,
+          failure: null,
+        });
+        expect(waited.result).toMatchObject({
+          isTimedOut: false,
+          // uncertain is already settled; that waiter can answer before the history read
+          receipt: { delivery: delivery === 'uncertain' ? 'uncertain' : 'acknowledged' },
+        });
+        const calls = (await readFile(join(fixture.root, 'claude-calls.jsonl'), 'utf8'))
+          .trim()
+          .split('\n')
+          .map((line): { type: string; uuid?: string } => JSON.parse(line));
+        expect(calls.filter((call) => call.type === 'user' && call.uuid === id)).toHaveLength(1);
+      } finally {
+        await replacement?.close();
+      }
+    });
+  },
+);
+
+test('Claude preserves a late replay turn after saved history already confirmed its steer', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const input = await startBrowserInput(fixture, false, 'claude');
+    await fixture.control({ holdTurn: true, steer: 'saved-next' });
+    const id = randomUUID();
+    await fixture.request({
+      kind: 'action',
+      action: {
+        id,
+        runtimeEpoch: input.browser.runtimeEpoch,
+        command: {
+          kind: 'steer',
+          threadId: input.thread.id,
+          expectedTurnId: input.turnId,
+          text: 'Preserve the exact late native turn.',
+        },
+      },
+    });
+    await expect
+      .poll(async () =>
+        (await readFile(fixture.transcript(input.thread.nativeId!), 'utf8')).includes(id),
+      )
+      .toBe(true);
+    await fixture.request({
+      kind: 'items',
+      provider: 'claude',
+      nativeId: input.thread.nativeId!,
+      workspaceRoot: fixture.workspaceRoot,
+    });
+    expect((await fixture.request({ kind: 'receipt', actionId: id })).result?.delivery).toBe(
+      'acknowledged',
+    );
+    await fixture.control({ release: true, steer: 'saved-next' });
+    await expect
+      .poll(
+        async () =>
+          (await fixture.request({ kind: 'managed-thread', threadId: input.thread.id })).result,
+      )
+      .toMatchObject({
+        state: 'completed',
+        activeTurnId: null,
+        ownership: 'managed',
+      });
+    const history = await fixture.request({
+      kind: 'items',
+      provider: 'claude',
+      nativeId: input.thread.nativeId!,
+      workspaceRoot: fixture.workspaceRoot,
+    });
+    expect(
+      history.result.data.find(
+        (item) => item.text === 'Native response to Preserve the exact late native turn.',
+      ),
+    ).toMatchObject({ turnId: id, kind: 'agent-message' });
+  });
+});
+
+test('Claude turn completion confirms saved steering without a client history read', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const input = await startBrowserInput(fixture, false, 'claude');
+    await fixture.control({ holdTurn: true, steer: 'saved' });
+    const id = randomUUID();
+    await fixture.request({
+      kind: 'action',
+      action: {
+        id,
+        runtimeEpoch: input.browser.runtimeEpoch,
+        command: {
+          kind: 'steer',
+          threadId: input.thread.id,
+          expectedTurnId: input.turnId,
+          text: 'Confirm through the existing completion flush.',
+        },
+      },
+    });
+    await expect
+      .poll(async () =>
+        (await readFile(fixture.transcript(input.thread.nativeId!), 'utf8')).includes(id),
+      )
+      .toBe(true);
+    await fixture.control({ release: true, steer: 'saved' });
+    await expect
+      .poll(async () => (await fixture.request({ kind: 'receipt', actionId: id })).result?.delivery)
+      .toBe('acknowledged');
+    expect(
+      (await fixture.request({ kind: 'managed-thread', threadId: input.thread.id })).result,
+    ).toMatchObject({ activeTurnId: null, ownership: 'managed' });
+  });
+});
+
 test.each([
   'source',
   'hash',
   'provider',
   'session',
+  'workspace',
   'phase',
   'kind',
   'acknowledgement',
@@ -321,9 +488,13 @@ test.each([
       }
       await writeFile(path, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
     }
-    if (scenario !== 'source' && scenario !== 'hash') {
+    {
       const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
       try {
+        if (scenario !== 'host')
+          database
+            .prepare("UPDATE agent_hq_action SET delivery = 'uncertain' WHERE id = ?")
+            .run(id);
         if (scenario === 'provider')
           database
             .prepare("UPDATE agent_hq_thread SET provider = 'codex' WHERE id = ?")
@@ -332,14 +503,16 @@ test.each([
           database
             .prepare('UPDATE agent_hq_thread SET native_id = ? WHERE id = ?')
             .run(randomUUID(), input.thread.id);
+        if (scenario === 'workspace')
+          database
+            .prepare('UPDATE agent_hq_thread SET workspace_root = ? WHERE id = ?')
+            .run(join(fixture.root, 'another-workspace'), input.thread.id);
         if (scenario === 'phase')
           database.prepare("UPDATE agent_hq_action SET phase = 'turn' WHERE id = ?").run(id);
         if (scenario === 'kind')
           database.prepare("UPDATE agent_hq_action SET kind = 'message' WHERE id = ?").run(id);
         if (scenario === 'acknowledgement')
-          database
-            .prepare("UPDATE agent_hq_action SET delivery = 'submitted' WHERE id = ?")
-            .run(id);
+          database.prepare("UPDATE agent_hq_action SET delivery = 'failed' WHERE id = ?").run(id);
         if (scenario === 'target')
           database
             .prepare('UPDATE agent_hq_action SET expected_turn_id = ? WHERE id = ?')

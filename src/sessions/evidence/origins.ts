@@ -3,6 +3,7 @@ import { parseActionRequest } from '../../providers/index.js';
 import type { IStore } from '../../store/index.js';
 
 import { resetProvenance } from './utilities.js';
+import type { IEvidenceOriginsRequest } from './types.js';
 
 // native history fragments and live rows share the same exact input correlation boundary
 type IProvenanceItem = Pick<IHistoryItem, 'kind' | 'provenance'> &
@@ -16,6 +17,7 @@ type IProvenanceItem = Pick<IHistoryItem, 'kind' | 'provenance'> &
  * @param provider The provider whose native session supplied the rows.
  * @param nativeId The selected native session.
  * @param store The authoritative action ledger.
+ * @param persisted Authorized saved history can confirm an exact Claude steer without a replay.
  * @mutates Replaces provenance on the supplied presentation rows.
  * @returns Completion after the eligible user inputs have been correlated.
  * @throws
@@ -26,6 +28,7 @@ export const correlateEvidenceOrigins = async (
   provider: IProviderId,
   nativeId: string,
   store: IStore,
+  persisted?: { workspaceRoot: string; onAcknowledged(threadId: string): void },
 ): Promise<void> => {
   for (const item of items) item.provenance = resetProvenance(item.kind, item.provenance);
   const inputs = items.filter(
@@ -35,7 +38,7 @@ export const correlateEvidenceOrigins = async (
       provenance.nativeInputSha256 !== null,
   );
   if (inputs.length === 0) return;
-  const origins = await store.call('reads', 'getEvidenceOrigins', {
+  const command: IEvidenceOriginsRequest = {
     provider,
     nativeId,
     items: inputs.map(({ provenance, ...item }) => ({
@@ -44,6 +47,14 @@ export const correlateEvidenceOrigins = async (
       turnId: 'reference' in item ? item.reference.turnId : item.turnId,
       sha256: provenance.nativeInputSha256,
     })),
-  });
+  };
+  if (persisted && provider === 'claude') {
+    const threads = await store.call('outcomes', 'confirmClaudeSteers', {
+      ...command,
+      workspaceRoot: persisted.workspaceRoot,
+    });
+    for (const threadId of threads) persisted.onAcknowledged(threadId);
+  }
+  const origins = await store.call('reads', 'getEvidenceOrigins', command);
   for (const [index, origin] of origins.entries()) if (origin) inputs[index]!.provenance = origin;
 };

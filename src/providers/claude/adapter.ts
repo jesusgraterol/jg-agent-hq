@@ -102,7 +102,17 @@ export const createClaudeProviderFactory = (
       },
       listThreads: (workspaceRoot, page, call) =>
         reader.listThreads(workspaceRoot, page, call.signal),
-      readHistory: (command) => reader.readHistory(command),
+      async readHistory(command) {
+        const response = await reader.readHistory(command);
+        const items =
+          response.kind === 'items' || response.kind === 'session-evidence'
+            ? response.result.data
+            : response.kind === 'item-detail' && response.result
+              ? [response.result.item]
+              : [];
+        control.confirmSavedSteers(command.nativeId, command.workspaceRoot, items);
+        return response;
+      },
       readModels: (command) => reader.readModels(command),
       readConfiguration: (command, nativeId, call) =>
         nativeId

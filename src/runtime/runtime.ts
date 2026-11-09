@@ -347,6 +347,10 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
           projection,
           allowedRoots,
           claudeSessions,
+          (threadId, nativeId) => {
+            actions.waits.notifyThread(threadId);
+            actions.live.invalidateProvenance(JSON.stringify(['claude', nativeId]));
+          },
         );
         if (command.kind !== 'items' || response.kind !== 'items') return response;
         // live items reconcile against the persisted text before it is cut

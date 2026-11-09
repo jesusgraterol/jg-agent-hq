@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { hashValue } from 'jg-crypto';
 import { Exception } from 'jg-exception';
 import { delay, isEqual } from 'jg-utilities';
 import { z } from 'zod';
@@ -18,7 +19,7 @@ import { createClaudeRpc } from '../rpc.js';
 import { HQ_ERRORS, isCleanupUnconfirmed } from '../../../errors/index.js';
 
 import { CLAUDE_STEER_MEDIA_TYPES } from './constants.js';
-import type { IClaudeControlEvents, IClaudeSession } from './types.js';
+import type { IClaudeControlEvents, IClaudeSavedInput, IClaudeSession } from './types.js';
 import {
   failSteers,
   getActiveTurn,
@@ -367,6 +368,33 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     setEvents(handlers: IClaudeControlEvents): void {
       events = handlers;
     },
+    /** Settles pending native waits from exact saved input without starting another turn. */
+    confirmSavedSteers(nativeId: string, workspaceRoot: string, items: IClaudeSavedInput[]): void {
+      const session = sessions.get(nativeId);
+      if (!session || session.workspaceRoot !== workspaceRoot) return;
+      for (const item of items) {
+        const inputId = item.provenance.nativeInputId;
+        const steer = inputId === null ? undefined : session.steers.get(inputId);
+        const turnId = 'reference' in item ? item.reference.turnId : item.turnId;
+        if (
+          !steer ||
+          steer.isAcknowledged ||
+          item.kind !== 'user-message' ||
+          item.provenance.nativeInputSha256 !== steer.inputSha256 ||
+          (turnId !== steer.turnId && turnId !== steer.id)
+        )
+          continue;
+        // a later live replay still needs its exact identity to start its own native turn
+        steer.isAcknowledged = true;
+        steer.resolve(steer.turnId);
+        events?.outcome({
+          kind: 'steer-accepted',
+          actionId: steer.id,
+          phase: 'steer',
+          nativeTurnId: steer.turnId,
+        });
+      }
+    },
     /**
      * Starts an idle native session with normal local instructions and settings.
      * @returns The exact native session identity and workspace.
@@ -584,7 +612,14 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
         if (session.isClosing || !session.connection?.isAvailable) unavailable();
         return new Promise<string>((resolve, reject) => {
           const id = parsedId.data;
-          session.steers.set(id, { id, turnId, resolve, reject });
+          session.steers.set(id, {
+            id,
+            turnId,
+            inputSha256: hashValue(text),
+            isAcknowledged: false,
+            resolve,
+            reject,
+          });
           void session
             .connection!.write({
               type: 'user',

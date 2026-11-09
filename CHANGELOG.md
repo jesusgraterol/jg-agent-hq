@@ -1,5 +1,10 @@
 # Changelog
 
+## 13.2.1
+
+- Confirm a submitted or uncertain Claude steer from saved native input when its exact action UUID, session, workspace, turn and original-text fingerprint match. History, details, evidence and the existing turn-completion flush can resolve delivery even when Claude never echoes a live user-message replay, including after runtime restart.
+- Wake receipt waits and refresh live provenance after confirmation. Preserve control ownership, completion, queued work, storage schema and action keys; no input is resent.
+
 ## 13.2.0
 
 - Allow an exact-turn `steer` to carry optional workspace files through the existing file integrity and size checks. Codex reuses its turn-start encoding; Claude sends text files as labeled text blocks and images as native image blocks. Claude rejects PDF steers before writing; ordinary PDF and text-document turn starts retain their encoding.
