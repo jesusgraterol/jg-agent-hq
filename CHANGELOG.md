@@ -1,5 +1,9 @@
 # Changelog
 
+## 13.3.1
+
+- Document `pnpm install --frozen-lockfile` for development setup so installs use the committed dependency set.
+
 ## 13.3.0
 
 - Preserve explicit Codex asynchronous question metadata across live items, saved history, details and bounded evidence. Malformed or oversized question contracts remain explicitly unavailable instead of becoming ordinary messages or shortened choices.
