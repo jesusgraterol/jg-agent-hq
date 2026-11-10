@@ -2,6 +2,79 @@ import { expect, test } from 'vitest';
 
 import { toHistoryItem, toSessionState } from './index.js';
 
+test('explicit asynchronous questions retain their ordered native contract', () => {
+  expect(
+    toHistoryItem({
+      turnId: 'turn',
+      item: {
+        id: 'question',
+        type: 'agentMessage',
+        delivery: 'async',
+        text: 'Which environment?',
+        questions: [
+          { title: 'Which environment?', options: ['Staging', 'Production'], future: true },
+          { title: 'Any constraints?' },
+        ],
+      },
+    }),
+  ).toMatchObject({
+    nativeId: 'question',
+    turnId: 'turn',
+    asyncInput: {
+      delivery: 'async',
+      state: 'available',
+      questions: [
+        { title: 'Which environment?', options: ['Staging', 'Production'] },
+        { title: 'Any constraints?' },
+      ],
+    },
+  });
+});
+
+test.each([
+  [undefined, 'invalid'],
+  [[], 'invalid'],
+  [[{ title: '' }], 'invalid'],
+  [[{ title: 'x'.repeat(8193) }], 'invalid'],
+  [[{ title: 'Pick one', options: [1] }], 'invalid'],
+  [Array.from({ length: 33 }, () => ({ title: 'Question' })), 'invalid'],
+  [[{ title: 'Pick one', options: Array.from({ length: 33 }, () => 'Choice') }], 'invalid'],
+  [[{ title: '🐈'.repeat(4096), options: ['🐈'.repeat(4096)] }], 'too-large'],
+  [[{ title: '\u0000'.repeat(8192) }], 'too-large'],
+])(
+  'explicit async metadata %o is unavailable (%s) without losing its text',
+  (questions, reason) => {
+    expect(
+      toHistoryItem({
+        turnId: 'turn',
+        item: {
+          id: 'question',
+          type: 'agentMessage',
+          delivery: 'async',
+          text: 'Question preview',
+          questions,
+        },
+      }),
+    ).toMatchObject({
+      text: 'Question preview',
+      asyncInput: { state: 'unavailable', delivery: 'async', reason },
+    });
+  },
+);
+
+test('ordinary prose and a questions field without explicit async delivery acquire no async semantics', () => {
+  const item = toHistoryItem({
+    turnId: 'turn',
+    item: {
+      id: 'message',
+      type: 'agentMessage',
+      text: 'Which environment?',
+      questions: [{ title: 'Which environment?' }],
+    },
+  });
+  expect(item).not.toHaveProperty('asyncInput');
+});
+
 test('native MCP tool activity retains its identity, input and bounded output', () => {
   const item = toHistoryItem({
     turnId: 'turn',

@@ -3,6 +3,7 @@ import type { INativePrompt } from '../providers/index.js';
 import type { createProviderRegistry } from '../providers/registry/index.js';
 import type { createSkills } from '../skills/index.js';
 import type { IStore } from '../store/index.js';
+import type { createAsyncInputs } from '../runtime/async-inputs/index.js';
 
 import type { LiveItems } from './live/index.js';
 import type { ActionWaits, ChangeWaits } from './waits/index.js';
@@ -30,6 +31,7 @@ export type IActionsState = {
 // what admission, dispatch, native events and reattachment share for one runtime
 export type IActionsContext = {
   registry: ReturnType<typeof createProviderRegistry>;
+  asyncInputs: ReturnType<typeof createAsyncInputs>;
   store: IStore;
   roots: string[];
   epoch: string;

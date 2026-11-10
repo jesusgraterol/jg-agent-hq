@@ -9,6 +9,7 @@ import type {
 } from '../contracts/index.js';
 import type { IHqSnapshotInspection } from '../snapshots/index.js';
 import type { IStorageDescriptor, IStorageMaintenanceOperation } from '../storage/index.js';
+import type { IAsyncInputListener } from './async-inputs/index.js';
 
 // construction receives trusted operator configuration, never a browser-selected root
 export const AgentHqOptionsSchema = z.strictObject({
@@ -36,6 +37,14 @@ export type IPreviousRuntimeCheck = (owner: IPreviousRuntimeOwner) => Promise<bo
 // the runtime owns resources independently of every client connection
 export type IAgentHq = {
   readonly storage: IStorageDescriptor;
+  /**
+   * Observes complete controlled-session async items independently of browser reads. The listener
+   * synchronously enqueues bounded host work. Recovery signals request native-history catch-up;
+   * observations grant no authority. Exceptions are isolated and request recovery. No replay log
+   * is retained. Runtime shutdown removes all subscriptions.
+   * @returns An idempotent unsubscribe function; a closed runtime retains no listener.
+   */
+  observeAsyncInputs(listener: IAsyncInputListener): () => void;
   /**
    * Drains the runtime's admitted work and runs a host callback under exclusive maintenance
    * admission. The callback owns its SQLite connection; its errors propagate unchanged.

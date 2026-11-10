@@ -1,4 +1,5 @@
 // native runtime and local client
+export type { IAsyncInputSource, IAsyncInputEvent, IAsyncInputListener } from './runtime/index.js';
 export { createAgentHq } from './runtime/index.js';
 export type {
   IAgentHq,

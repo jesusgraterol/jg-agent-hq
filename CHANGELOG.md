@@ -1,5 +1,11 @@
 # Changelog
 
+## 13.3.0
+
+- Preserve explicit Codex asynchronous question metadata across live items, saved history, details and bounded evidence. Malformed or oversized question contracts remain explicitly unavailable instead of becoming ordinary messages or shortened choices.
+- Add the trusted Node `observeAsyncInputs` subscription for complete controlled-session questions and recovery signals, with isolated synchronous listeners and shutdown cleanup. Hosts own durable resolution and bounded history catch-up.
+- Keep asynchronous messages out of ordinary final-result capture, including oversized async text and structured-output turns. Preserve native approvals, storage schema 12.0.1 and existing action keys without migration or reset.
+
 ## 13.2.1
 
 - Confirm a submitted or uncertain Claude steer from saved native input when its exact action UUID, session, workspace, turn and original-text fingerprint match. History, details, evidence and the existing turn-completion flush can resolve delivery even when Claude never echoes a live user-message replay, including after runtime restart.

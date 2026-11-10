@@ -108,7 +108,12 @@ test(
       const usageContract = join(scratch, 'usage-contract.ts');
       await writeFile(
         usageContract,
-        `import type { IUsageCredits, IUsageResetCredits, IUsageSnapshot, IUsageWindowScope } from 'jg-agent-hq/contracts';
+        `import type { IAgentHq, IAsyncInputEvent, IAsyncInputListener, IAsyncInputSource } from 'jg-agent-hq';
+import type { IAsyncInput, IAsyncQuestion, IUsageCredits, IUsageResetCredits, IUsageSnapshot, IUsageWindowScope } from 'jg-agent-hq/contracts';
+export const question: IAsyncQuestion = { title: 'Pick one', options: ['Blue', 'Green'] };
+export const asyncInput: IAsyncInput = { state: 'available', delivery: 'async', questions: [question] };
+export const observe = (runtime: IAgentHq, listener: IAsyncInputListener): (() => void) => runtime.observeAsyncInputs(listener);
+export const sourceOf = (event: IAsyncInputEvent): IAsyncInputSource | null => event.source;
 export const minimalUsage: IUsageSnapshot = {
   provider: 'codex', source: 'native', state: 'unavailable', observedAt: null,
   ordinaryUsageAllowed: null, windows: [],
@@ -142,8 +147,10 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
       for (const name of ['upgradeHqStorage', 'inspectHqSnapshot', 'acquireHqLock', 'withHqLock', 'releaseHqLock', 'readHqLockState', 'getOwnerLiveness', 'HQ_LOCK_FILE', 'RUNTIME_DIRECTORY'])
         if (name in packed) throw new Error('packed export remains: ' + name);
       import * as contracts from 'jg-agent-hq/contracts';
-      import { HqResponseSchema, BrowserActionSchema, BrowserCommandSchema, UsageCreditsSchema, UsageResetCreditsSchema, UsageWindowScopeSchema, MAX_THREAD_NAME_LENGTH } from 'jg-agent-hq/contracts';
+      import { HqResponseSchema, BrowserActionSchema, BrowserCommandSchema, UsageCreditsSchema, UsageResetCreditsSchema, UsageWindowScopeSchema, MAX_THREAD_NAME_LENGTH, AsyncInputSchema, AsyncQuestionSchema, MAX_ASYNC_INPUT_BYTES } from 'jg-agent-hq/contracts';
       if(MAX_THREAD_NAME_LENGTH!==64) throw new Error('packed name limit failed');
+      if(MAX_ASYNC_INPUT_BYTES!==32768) throw new Error('packed async byte limit failed');
+      AsyncInputSchema.parse({state:'available',delivery:'async',questions:[AsyncQuestionSchema.parse({title:'Pick one',options:['Blue','Green']})]});
       for (const name of ['BrowserRepositorySchema','BrowserRepositoryPageSchema','BrowserPlanSummarySchema','BrowserPlanPageSchema','BrowserPlanDetailSchema','BrowserSessionSchema','BrowserSystemSchema','PublicationStatusSchema','PlanComparisonSchema','PlanCorrespondenceSchema','PlanProposalSchema','PlanReconciliationEntrySchema','AccountRequestSchema','AccountObservationSchema','AccountControlCommandSchema','LoginRequestSchema','LoginObservationSchema','NativeControlResultSchema','ExtensionControlCommandSchema','McpRequestSchema','McpServerPageSchema','McpToolPageSchema','McpResourcePageSchema','MAX_MCP_ITEMS','SessionDiscoveryRequestSchema','SkillPreviewSchema','LifecycleEventSchema','TurnSummarySchema','MAX_PROVIDERS'])
         if (name in contracts) throw new Error('packed contract remains: ' + name);
       if (BrowserCommandSchema.options.map((command) => command.shape.kind.value).join() !== 'native') throw new Error('packed browser commands changed');
@@ -158,6 +165,10 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
       catch (error) { if (error.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw error; }
       const runtime = await createAgentHq({ stateRoot: join(process.cwd(), 'controller'), allowedRoots: [process.cwd()] });
       try {
+        let catchUp = 0;
+        const unsubscribe = runtime.observeAsyncInputs(event=>{if(event.kind==='recovery'&&event.reason==='subscribed')catchUp++;});
+        if(catchUp!==1) throw new Error('packed observer catch-up failed');
+        unsubscribe(); unsubscribe();
         const response = HqResponseSchema.parse(await requestAgentHq(runtime.stateRoot, { kind: 'threads', providers: ['codex'], workspaceRoots: [process.cwd()], limit: 1 }));
         if (response.kind !== 'threads' || response.result.data.length !== 1) throw new Error('packed runtime failed');
         const status = await runtime.request({kind:'status'});

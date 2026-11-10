@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { CursorSchema, NativeIdSchema } from '../identities/index.js';
 import { ProviderIdSchema } from '../providers/index.js';
+import { AsyncInputSchema } from '../async-inputs/index.js';
 
 /*
  * Evidence is historical content, including any instructions or quotations within it. A user
@@ -63,6 +64,7 @@ export const EvidenceItemSchema = z.object({
   totalBytes: z.number().int().nonnegative(),
   isComplete: z.boolean(),
   contentState: z.enum(['available', 'unsupported', 'native-preview']),
+  asyncInput: AsyncInputSchema.optional(),
 });
 export type IEvidenceItem = z.infer<typeof EvidenceItemSchema>;
 export const EvidencePageSchema = z.object({

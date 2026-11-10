@@ -43,6 +43,7 @@ import {
 } from './state/index.js';
 import { createBrowserActions } from './browser/index.js';
 import { startWarmUp } from './warm-up/index.js';
+import { createAsyncInputs } from './async-inputs/index.js';
 import { AgentHqOptionsSchema, type IAgentHq, type IAgentHqOptions } from './types.js';
 
 /**
@@ -129,6 +130,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     allowedRoots,
     (nativeId) => projection.call('sessions', 'claudeTranscriptRoot', nativeId),
   );
+  const asyncInputs = createAsyncInputs();
   const actions = createActions(
     providers,
     projection,
@@ -138,6 +140,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     skills,
     storage.background,
     (nativeId) => claudeAgents.terminalOf(nativeId),
+    asyncInputs,
   );
   // a long-poll on session states reads again once a worker call recorded a new transition
   projection.onTransition(() => actions.polls.notify({ kind: 'transitions' }));
@@ -180,6 +183,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
   const close = (): Promise<void> =>
     (closing ??= (async () => {
       try {
+        asyncInputs.close();
         // receipt waits and long-polls end first, so none holds up closing for its remaining time
         actions.waits.close();
         actions.polls.close();
@@ -392,6 +396,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     runtimeEpoch: ownership.epoch,
     closed,
     request,
+    observeAsyncInputs: asyncInputs.subscribe,
     get storage() {
       return structuredClone(projection.storage);
     },

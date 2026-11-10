@@ -218,6 +218,7 @@ export class LiveItems {
               entry.item.provenance.nativeInputSha256 === item.provenance.nativeInputSha256)) &&
           entry.item.nativeType === item.nativeType &&
           entry.item.kind === item.kind &&
+          JSON.stringify(entry.item.asyncInput) === JSON.stringify(item.asyncInput) &&
           ((entry.item.text === item.text && entry.item.isTruncated === item.isTruncated) ||
             (item.outcome !== null && entry.item.outcome === item.outcome))
         ) {

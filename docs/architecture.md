@@ -1,5 +1,7 @@
 # Runtime ownership
 
+Completed controlled Codex async questions cross the trusted `observeAsyncInputs` boundary after their managed source is resolved. The in-process subscription holds only callbacks, supplies independent item copies, and isolates synchronous listener failures with recovery signals. It keeps no event queue, transcript bodies or durable question state. Hosts synchronously enqueue bounded persistence/recovery work and use native history for catch-up after subscription, connection loss or output gaps. Structured question bytes count toward live-memory and evidence-response bounds; saved/live reconciliation compares the complete metadata. Async messages never enter ordinary final-result capture. This additive contract preserves schema 12.0.1 and existing action keys.
+
 ## Providers
 
 Usage observations remain owned by the selected native adapter. Concurrent reads share its pending refresh; failed refreshes retain explicitly stale observations, and account changes discard all quota, credit and reset metadata. The Claude adapter keeps its last result in memory for 60 seconds, so frequent usage polls ask Claude at most once a minute; auth, rate-limit and connection changes end it early. The runtime stores no derived quota history. Credit balances remain opaque exact strings, and independent account/model meters are never aggregated.

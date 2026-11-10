@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { AsyncInputSchema } from './async-inputs/index.js';
+
 import {
   EvidenceRequestSchema,
   EvidencePageSchema,
@@ -273,6 +275,7 @@ export const HistoryItemSchema = z.object({
   provenance: HistoryProvenanceSchema,
   text: z.string(),
   isTruncated: z.boolean(),
+  asyncInput: AsyncInputSchema.optional(),
   callId: z.string().min(1).max(4096).nullable(),
   outcome: z.enum(['succeeded', 'failed']).nullable(),
   files: z.array(HistoryFileSchema).max(MAX_PAGE_SIZE),
