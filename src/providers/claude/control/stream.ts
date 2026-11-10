@@ -311,6 +311,8 @@ export const receiveClaudeMessage = (
       if (session.nativeTurn) unavailable();
       acknowledge(session, events);
     }
+    // settings and local-command replays are not inference; an autonomous turn starts on output
+    if (frame.type === 'user' && getActiveTurn(session) === undefined) return;
     const turn = getActiveTurn(session) ?? startNativeTurn(session, events);
     if (
       frame.type === 'user' &&

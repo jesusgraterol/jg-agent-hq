@@ -122,7 +122,15 @@ export const startClaudeControl = () => {
    // nativeOnSettings starts a turn of its own just before answering a settings read
    if(subtype==='get_settings'&&settings.nativeOnSettings&&!native&&!input)startNative();
    if(subtype==='get_settings'){response({effective:{model,effortLevel:'stale-effort',agent:flag('--agent'),...(fast===null?{}:{fastMode:fast}),secret:'must-not-leak'},applied:settings.unavailableSettings?{model:null,effort:null}:{model,effort}});return;}
-   if(subtype==='apply_flag_settings'){model=message.request.settings.model??model;effort=message.request.settings.effortLevel??effort;fast=message.request.settings.fastMode??fast;response();return;}
+   if(subtype==='apply_flag_settings'){
+    model=message.request.settings.model??model;effort=message.request.settings.effortLevel??effort;fast=message.request.settings.fastMode??fast;
+    if(settings.modelNotice&&message.request.settings.model){
+     const command=randomUUID();record(command,'user','<command-name>/model</command-name>\n<command-args>'+model+'</command-args>',leaf);leaf=command;
+     const uuid=randomUUID(),content='<local-command-stdout>Set model to '+model+'</local-command-stdout>';
+     record(uuid,'user',content,leaf);leaf=uuid;out({type:'user',uuid,isReplay:true,message:{role:'user',content}});
+    }
+    response();return;
+   }
    if(subtype==='initialize'){response({...(settings.omitVersion?{}:{claude_code_version:settings.version??'2.1.304'}),futureMetadata:settings.futureMetadata,agents:settings.agentsUnavailable?undefined:Array.from({length:settings.agentCount??4},(_,index)=>({name:'agent-'+String(index).padStart(4,'0'),description:settings.configRevision?'Updated agent':'Native agent',model:'model-0000'})),current_permission_mode:flag('--permission-mode')??'default',session_state:settings.omitIdle?undefined:settings.nativeState??'idle',commands:fixtureCommands(settings)});return;}
    if(subtype==='rename_session'){
     if(settings.rejectName){out({type:'control_response',response:{subtype:'error',request_id:message.request_id,error:'Synthetic name rejection'}});return;}
