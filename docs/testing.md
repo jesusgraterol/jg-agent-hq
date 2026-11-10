@@ -32,6 +32,8 @@ Root `test`, `check:package`, and `check` select essential coverage. `test:full`
 
 Live input provenance remains essential. The real runtime, IPC and SQLite ledger correlate native messages without pre-tagged SDK rows, retain the same identity after persistence, and reject mismatched request, turn, content and session evidence. A held native acknowledgement qualifies live-before-acknowledgement ordering and revision-based wake-up without another output token. Identical text sent through another action never acquires the browser action's identity. All rows retain `grantsAuthority: false`.
 
+Claude settings-notice regressions remain essential: the native double emits the local-command user replay before acknowledging applied model settings, as the actual CLI does. Repeated text and skill inputs retain one exact acknowledged live/saved identity without a phantom turn, replay or lost control. Autonomous output still starts a real native turn; idle notices and task notifications do not.
+
 Async question coverage remains essential: exact native identity and ordered choices across live/saved/detail/evidence reads, complete serialized-byte bounds and evidence continuation, controlled-session observation without browser polling, subscriber failure isolation/unsubscribe/shutdown, output-gap/reconnect catch-up, and separation from native approvals and ordinary final results. Final-result cases cover both event orderings, oversized async text, async-only turns and a validated structured ordinary result. Before releasing this contract, qualify the built public API against an actual owned Codex session; synthetic CLI fixtures do not establish real async emission or reconnect behavior.
 
 ## Website boundary

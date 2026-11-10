@@ -294,6 +294,46 @@ test("a result without a user message while no turn of Claude's own runs makes t
   );
 });
 
+test.each([
+  '<local-command-stdout>Set model to `model-0001`</local-command-stdout>',
+  [
+    {
+      type: 'text',
+      text: '<local-command-stdout>Set model to `model-0001`</local-command-stdout>',
+    },
+  ],
+  '<task-notification>Background work finished</task-notification>',
+])('an idle user notice starts no turn before the real input replay: %o', (content) => {
+  const session: IClaudeSession = { ...createSession(), input: undefined };
+  const { events, items } = createEvents();
+  const observed: string[] = [];
+  events.observe = (observation) => observed.push(observation.kind);
+
+  receiveClaudeMessage(
+    session,
+    { type: 'user', session_id: 'session', uuid: 'notice', message: { role: 'user', content } },
+    events,
+  );
+  expect(session.nativeTurn).toBeUndefined();
+  expect(observed).toStrictEqual([]);
+  expect(items).toStrictEqual([]);
+
+  session.input = { ...createSession().input!, isAcknowledged: false };
+  receiveClaudeMessage(
+    session,
+    {
+      type: 'user',
+      session_id: 'session',
+      uuid: 'input',
+      message: { role: 'user', content: 'The actual request' },
+    },
+    events,
+  );
+  expect(session.input.isAcknowledged).toBe(true);
+  expect(observed).toStrictEqual(['turn-started']);
+  expect(items.map(({ item }) => item.text)).toStrictEqual(['The actual request']);
+});
+
 test('input replayed while a turn Claude started still runs makes the session unavailable', () => {
   const session: IClaudeSession = {
     ...createSession(),

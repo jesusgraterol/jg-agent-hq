@@ -230,6 +230,71 @@ test('Claude creates and names an idle native session, deduplicates input and re
   });
 });
 
+test.each(['text', 'skill'] as const)(
+  'Claude settings notices preserve exact acknowledgement and one live/saved input for %s messages',
+  async (kind) => {
+    await withClaudeRuntime(async (fixture) => {
+      const api = await actions(fixture);
+      const { thread } = await api.create();
+      const text = kind === 'text' ? 'Inspect the selected session' : '/explicit-skill inspect';
+      const catalog = await fixture.request({
+        kind: 'skills',
+        provider: 'claude',
+        workspaceRoot: fixture.workspaceRoot,
+        threadId: thread.id,
+      });
+      const skill = catalog.result.data.find((entry) => entry.name === 'explicit-skill')!;
+      for (let index = 0; index < 2; index += 1) {
+        await fixture.control({ modelNotice: true, holdResult: true });
+        const action = api.envelope({
+          kind: 'message',
+          threadId: thread.id,
+          input:
+            kind === 'text'
+              ? { kind: 'text', text }
+              : { kind: 'skill', skillId: skill.id, arguments: 'inspect' },
+          settings: { model: 'model-0001' },
+        });
+        await api.submit(action);
+        const accepted = await api.settled(action.id);
+        expect(accepted.nativeTurnId).not.toBeNull();
+        const live = await fixture.request({ kind: 'live-items', threadId: thread.id });
+        const inputs = live.result.data.filter(
+          (item) => item.kind === 'user-message' && item.turnId === accepted.nativeTurnId,
+        );
+        expect(inputs).toHaveLength(1);
+        expect(inputs[0]).toMatchObject({
+          text,
+          provenance: { actionId: action.id, nativeInputId: accepted.nativeTurnId },
+        });
+        await fixture.control({ modelNotice: true, holdResult: true, releaseResult: true });
+        await api.until(
+          () => api.receipt(action.id),
+          (receipt) => receipt.completion === 'completed',
+        );
+        const saved = await fixture.request({
+          kind: 'items',
+          provider: 'claude',
+          workspaceRoot: fixture.workspaceRoot,
+          nativeId: thread.nativeId!,
+          turnId: accepted.nativeTurnId!,
+        });
+        const savedInputs = saved.result.data.filter((item) => item.kind === 'user-message');
+        expect(savedInputs).toHaveLength(1);
+        expect(savedInputs[0]).toMatchObject({
+          text,
+          provenance: { actionId: action.id, nativeInputId: accepted.nativeTurnId },
+        });
+        expect(await api.thread(thread.id)).toMatchObject({
+          ownership: 'managed',
+          state: 'completed',
+        });
+      }
+      expect((await api.calls()).filter((call) => call.type === 'user')).toHaveLength(2);
+    });
+  },
+);
+
 test('Claude live items present what history will: thinking and notifications left out, a live edit as a file change', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture);

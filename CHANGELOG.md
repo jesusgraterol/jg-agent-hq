@@ -1,5 +1,10 @@
 # Changelog
 
+## 13.3.2
+
+- Keep Claude's model-setting and local-command user replays from starting phantom turns. Only the exact pending input replay acknowledges an HQ turn; autonomous turns start on model output. Settings notices remain available in saved native history.
+- Preserve message acknowledgement and input provenance after model changes and repeated settings updates, allowing pending, live and saved messages to reconcile without another send or a duplicate bubble. Native skills and genuine background turns retain their existing control paths.
+
 ## 13.3.1
 
 - Document `pnpm install --frozen-lockfile` for development setup so installs use the committed dependency set.
