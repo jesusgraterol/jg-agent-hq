@@ -34,6 +34,8 @@ The expanded name contract is still a breaking change for older consumers: 12.x 
 
 ## Codex connection recovery
 
+Async question subscriptions are ephemeral. Recreate the host's `observeAsyncInputs` subscription after startup and recover from authorized bounded native history when it requests catch-up. Persist host resolution/checkpoint metadata in application-owned tables; the package stores neither question bodies nor an observation replay log. Deduplicate exact session/turn/item identities, preserve unresolved questions after turn completion, and never resend an answer merely because its observation or acknowledgement was lost. Snapshot rollback can lose host resolution metadata even when native input already arrived, so reconcile native action evidence before allowing a replacement answer. This feature does not change the package storage stamp or action key.
+
 A quarantined session can still be monitored while a CLI runs it. Native observations update its live state without recovering ownership; the summary keeps uncertain ownership and its existing managed identity. Monitoring sends no input and leaves the control ledger and earlier queued entries unchanged.
 
 A shared Codex daemon restart can interrupt every managed Codex session's live connection while HQ stays running. The runtime rechecks only its previously controlled sessions with no action in flight and rejoins matching native turns without changing settings or repeating input. Confirmed completions advance their waiting queues; unacknowledged actions and changed turns remain uncertain. Native command handles may have been lost, so rejoining establishes session control rather than successful command execution. See [runtime lifecycle](../api/README.md#runtime-lifecycle).

@@ -32,6 +32,8 @@ Root `test`, `check:package`, and `check` select essential coverage. `test:full`
 
 Live input provenance remains essential. The real runtime, IPC and SQLite ledger correlate native messages without pre-tagged SDK rows, retain the same identity after persistence, and reject mismatched request, turn, content and session evidence. A held native acknowledgement qualifies live-before-acknowledgement ordering and revision-based wake-up without another output token. Identical text sent through another action never acquires the browser action's identity. All rows retain `grantsAuthority: false`.
 
+Async question coverage remains essential: exact native identity and ordered choices across live/saved/detail/evidence reads, complete serialized-byte bounds and evidence continuation, controlled-session observation without browser polling, subscriber failure isolation/unsubscribe/shutdown, output-gap/reconnect catch-up, and separation from native approvals and ordinary final results. Final-result cases cover both event orderings, oversized async text, async-only turns and a validated structured ordinary result. Before releasing this contract, qualify the built public API against an actual owned Codex session; synthetic CLI fixtures do not establish real async emission or reconnect behavior.
+
 ## Website boundary
 
 `pnpm --dir website test` and `check` select essential; `test:full` and `check:full` include every existing category. Granular unit, integration, E2E, and `:artifact` commands remain complete. Both aggregate checks build once. Full runs locally only when explicitly requested; changed website behavior still requires complete focused coverage.

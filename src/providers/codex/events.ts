@@ -136,7 +136,8 @@ export const createCodexEvents = (
       if (
         captured?.turnId === turnId &&
         method === 'item/completed' &&
-        item.type === 'agentMessage'
+        item.type === 'agentMessage' &&
+        item.delivery !== 'async'
       ) {
         const message = parseNative(
           z.object({ text: z.string(), phase: z.string().nullish() }),

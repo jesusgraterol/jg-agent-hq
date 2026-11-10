@@ -17,6 +17,30 @@ const item = {
   createdAt: null,
 };
 
+test('saved text cannot flush complete async choices until the structured metadata matches', () => {
+  const live = new LiveItems();
+  const question = {
+    ...item,
+    asyncInput: {
+      delivery: 'async' as const,
+      state: 'available' as const,
+      questions: [{ title: 'Choose', options: ['A', 'B'] }],
+    },
+  };
+  live.put('thread', question, true);
+  live.reconcile('thread', [item]);
+  expect(live.read('thread').data).toHaveLength(1);
+  live.reconcile('thread', [
+    {
+      ...question,
+      asyncInput: { ...question.asyncInput, questions: [{ title: 'Choose', options: ['A', 'C'] }] },
+    },
+  ]);
+  expect(live.read('thread').data).toHaveLength(1);
+  live.reconcile('thread', [structuredClone(question)]);
+  expect(live.read('thread').data).toStrictEqual([]);
+});
+
 test('unchanged live reads avoid copying bodies; append, completion, reconciliation and eviction invalidate the revision', () => {
   const live = new LiveItems();
   live.open('thread');

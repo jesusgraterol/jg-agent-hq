@@ -5,10 +5,13 @@ import {
   UsageCreditsSchema,
   ThreadSummarySchema,
   HistoryItemSchema,
+  AsyncQuestionSchema,
+  AsyncInputSchema,
   MAX_ITEM_IMAGES,
   MAX_ITEM_TEXT_LENGTH,
   type IHistoryFile,
   type IHistoryItem,
+  type IAsyncInput,
   type IItemDetail,
   type IThreadSummary,
   type IUsageSnapshot,
@@ -116,6 +119,21 @@ const TextPartsSchema = z.object({
     .max(128),
 });
 const MessageSchema = z.object({ text: z.string() });
+
+/** Preserves explicit async delivery even when its structured presentation cannot be trusted. */
+const toAsyncInput = (item: INativeItem['item']): IAsyncInput | undefined => {
+  if (item.type !== 'agentMessage' || item.delivery !== 'async') return undefined;
+  const questions = z.array(AsyncQuestionSchema).min(1).max(32).safeParse(item.questions);
+  if (!questions.success) return { delivery: 'async', state: 'unavailable', reason: 'invalid' };
+  const input = AsyncInputSchema.safeParse({
+    delivery: 'async',
+    state: 'available',
+    questions: questions.data,
+  });
+  return input.success
+    ? input.data
+    : { delivery: 'async', state: 'unavailable', reason: 'too-large' };
+};
 const StatusSchema = z.object({ status: z.string() });
 const CommandSchema = z.object({
   command: z.string(),
@@ -256,6 +274,9 @@ export const toHistoryItem = (
     ),
     text: text.slice(0, end),
     isTruncated: end < text.length,
+    ...(item.type === 'agentMessage' && item.delivery === 'async'
+      ? { asyncInput: toAsyncInput(item) }
+      : {}),
     // a Codex item holds its call and its result together
     callId: null,
     outcome,

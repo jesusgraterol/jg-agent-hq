@@ -80,6 +80,92 @@ const createThread = async (fixture: IClaudeFixture, name: string) => {
   return (await thread(fixture, created.threadId!))!;
 };
 
+test.each(['after', 'before', 'oversized', 'only'])(
+  'async question %s an ordinary final cannot become the turn result',
+  async (ordering) => {
+    await withClaudeRuntime(async (fixture) => {
+      const managed = await createThread(fixture, 'async-result');
+      await codex(fixture, { holdTurn: true });
+      const message = await submit(fixture, {
+        kind: 'message',
+        threadId: managed.id,
+        input: { kind: 'text', text: 'Return the result and ask a separate question' },
+        ...(ordering === 'only'
+          ? {}
+          : {
+              settings: {
+                outputSchema: {
+                  type: 'object',
+                  properties: { ok: { type: 'boolean' } },
+                  required: ['ok'],
+                  additionalProperties: false,
+                },
+              },
+            }),
+      });
+      await expect.poll(async () => (await thread(fixture, managed.id))?.activeTurnId).toBeTruthy();
+      const turnId = (await thread(fixture, managed.id))!.activeTurnId!;
+      const target = { threadId: managed.nativeId, turnId };
+      const question = {
+        method: 'item/completed',
+        params: {
+          ...target,
+          item: {
+            id: 'async-question',
+            type: 'agentMessage',
+            delivery: 'async',
+            phase: 'final_answer',
+            text: ordering === 'oversized' ? 'q'.repeat(8_388_608) : 'Which environment?',
+            questions: [{ title: 'Which environment?', options: ['Staging', 'Production'] }],
+          },
+        },
+      };
+      const final = {
+        method: 'item/completed',
+        params: {
+          ...target,
+          item: {
+            id: 'ordinary-final',
+            type: 'agentMessage',
+            phase: 'final_answer',
+            text: '{"ok":true}',
+          },
+        },
+      };
+      await codex(fixture, {
+        holdTurn: true,
+        emitOnce: true,
+        emit: [
+          ...(ordering === 'only'
+            ? [question]
+            : ordering === 'before'
+              ? [question, final]
+              : [final, question]),
+          {
+            method: 'turn/completed',
+            params: { threadId: managed.nativeId, turn: { id: turnId, status: 'completed' } },
+          },
+        ],
+      });
+      await fixture.runtime.request({ kind: 'usage', provider: 'codex' });
+      await expect
+        .poll(async () => (await receipt(fixture, message.id))?.completion)
+        .toBe('completed');
+      expect((await receipt(fixture, message.id))?.result).toMatchObject(
+        ordering === 'only'
+          ? { state: 'completed', text: null, failure: 'missing-result', isComplete: false }
+          : {
+              state: 'completed',
+              text: null,
+              structuredOutput: { ok: true },
+              failure: null,
+              isComplete: true,
+            },
+      );
+    });
+  },
+);
+
 test('Codex reports the same qualified Steer types at provider and session scope without sharing mutable policy arrays', async () => {
   await withClaudeRuntime(async (fixture) => {
     const managed = await createThread(fixture, 'steer-capabilities');

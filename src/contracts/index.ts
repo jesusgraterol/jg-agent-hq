@@ -1,3 +1,11 @@
+// asynchronous agent questions
+export {
+  AsyncQuestionSchema,
+  AsyncInputSchema,
+  MAX_ASYNC_INPUT_BYTES,
+} from './async-inputs/index.js';
+export type { IAsyncQuestion, IAsyncInput } from './async-inputs/index.js';
+
 // constants
 export {
   ACTION_PHASES,

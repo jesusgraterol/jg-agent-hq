@@ -3,7 +3,12 @@ import { signHmac } from 'jg-crypto';
 import { isException } from 'jg-exception';
 import { delay } from 'jg-utilities';
 
-import { MAX_ITEM_TEXT_LENGTH, MAX_PAGE_SIZE, type IManagedThread } from '../../contracts/index.js';
+import {
+  MAX_ITEM_TEXT_LENGTH,
+  MAX_PAGE_SIZE,
+  type IManagedThread,
+  type IHistoryItem,
+} from '../../contracts/index.js';
 import { HQ_ERRORS, getErrorKind } from '../../errors/index.js';
 import type { IProviderReattachment } from '../../providers/index.js';
 import { capabilityUnavailable } from '../../providers/registry/index.js';
@@ -39,6 +44,39 @@ export const createEvents = (
   const eventCounts = new Map<IManagedThread['provider'], number>();
   // providers whose connection reports the sessions other clients drive
   const observingProviders = new Set<IManagedThread['provider']>();
+
+  /** Resolves event identity through the controlled record before exposing it to a trusted host. */
+  const observeAsyncInput = (
+    provider: IManagedThread['provider'],
+    nativeId: string,
+    item?: IHistoryItem,
+  ): void => {
+    if (state.isClosing || !context.asyncInputs.hasListeners()) return;
+    enqueue(provider, async () => {
+      const thread = await store.call('reads', 'getThreadByNativeId', provider, nativeId);
+      if (!thread || !controlled.has(key(provider, nativeId))) return;
+      if (thread.ownership !== 'managed' || thread.runtimeEpoch !== epoch) {
+        context.asyncInputs.emit({
+          kind: 'recovery',
+          provider,
+          source: null,
+          reason: 'output-gap',
+        });
+        return;
+      }
+      const source = {
+        threadId: thread.id,
+        provider,
+        nativeId,
+        workspaceRoot: thread.workspaceRoot,
+      };
+      context.asyncInputs.emit(
+        item
+          ? { kind: 'item', source, item }
+          : { kind: 'recovery', provider, source, reason: 'output-gap' },
+      );
+    });
+  };
 
   /**
    * Records native evidence, then wakes the receipt waits it can affect: a lost connection's on
@@ -326,6 +364,7 @@ export const createEvents = (
     observe: receiveObservation,
     resync(provider, nativeId, lost) {
       if (state.isClosing) return;
+      context.asyncInputs.emit({ kind: 'recovery', provider, source: null, reason: 'output-gap' });
       const request: IResyncRequest = { lost, isLastAttempt: false, turnId: null };
       // without a session, every session this runtime controls through the provider is read
       if (nativeId === undefined) {
@@ -340,9 +379,13 @@ export const createEvents = (
       for (const replacedId of replacedIds ?? [])
         live.replace(key(provider, nativeId), item.turnId, replacedId);
       live.put(key(provider, nativeId), item, isComplete);
+      if (isComplete && item.asyncInput) observeAsyncInput(provider, nativeId, item);
     },
     gap(provider, nativeId) {
-      if (controlled.has(key(provider, nativeId))) live.markGap(key(provider, nativeId));
+      if (controlled.has(key(provider, nativeId))) {
+        live.markGap(key(provider, nativeId));
+        observeAsyncInput(provider, nativeId);
+      }
     },
     background(provider, nativeId, count) {
       if (controlled.has(key(provider, nativeId)))
@@ -448,6 +491,7 @@ export const createEvents = (
     },
     unavailable(provider, nativeId) {
       if (state.isClosing || context.blockedProviders.has(provider)) return;
+      context.asyncInputs.emit({ kind: 'recovery', provider, source: null, reason: 'output-gap' });
       const canReconnect = provider === 'codex' && nativeId === undefined;
       let reconnectable: IManagedThread[] = [];
       enqueue(provider, async () => {
@@ -474,8 +518,15 @@ export const createEvents = (
         const persisted = state.lane;
         runOwned(async () => {
           await persisted;
-          if (!state.isClosing && !state.isUnavailable && !context.blockedProviders.has(provider))
+          if (!state.isClosing && !state.isUnavailable && !context.blockedProviders.has(provider)) {
             await reconnect(reconnectable);
+            context.asyncInputs.emit({
+              kind: 'recovery',
+              provider,
+              source: null,
+              reason: 'reconnect',
+            });
+          }
         });
       } else
         runNativeOwned(provider, nativeId, async () => registry.stopControl(provider, nativeId));

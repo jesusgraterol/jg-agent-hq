@@ -167,6 +167,7 @@ export const buildEvidencePage = (
       },
       kind: item.kind,
       nativeType: item.nativeType,
+      ...(item.asyncInput ? { asyncInput: item.asyncInput } : {}),
       provenance: item.provenance,
       text,
       offsetBytes: offset,

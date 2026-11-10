@@ -14,6 +14,7 @@ import { MAX_CONNECTIONS } from '../ipc/index.js';
 import type { createProviderRegistry } from '../providers/registry/index.js';
 import type { createSkills } from '../skills/index.js';
 import type { IStore } from '../store/index.js';
+import type { createAsyncInputs } from '../runtime/async-inputs/index.js';
 
 import { LiveItems } from './live/index.js';
 import { ActionWaits, ChangeWaits } from './waits/index.js';
@@ -37,6 +38,7 @@ export const createActions = (
   skills: ReturnType<typeof createSkills>,
   runBackground: (operation: () => Promise<void>) => Promise<void>,
   claudeTerminalOf: (nativeId: string) => ISessionTerminal | null,
+  asyncInputs: ReturnType<typeof createAsyncInputs>,
 ) => {
   const admissions = new Set<Promise<IActionReceipt>>();
   // native work the runtime owns, which close stops admitting and drains
@@ -47,6 +49,7 @@ export const createActions = (
   const polls = new ChangeWaits<IPollTopic>(MAX_CONNECTIONS);
   const context: IActionsContext = {
     registry,
+    asyncInputs,
     store,
     roots,
     epoch,
