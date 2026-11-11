@@ -1,5 +1,7 @@
 # Snapshot recovery
 
+Hosts can prepare their own supported schema through `initializeHostStorage` before native rejoin, including when a retained Codex turn still runs. This startup phase does not alter native schema compatibility, authorize snapshot rollback, or permit changing reserved runtime tables. A rejected host initialization closes startup resources; the host must roll back its SQL transaction and close its connection. Existing live maintenance still refuses active native execution.
+
 The runtime supplies local capture, encrypted packing and offline restore primitives, each of which inspects the complete snapshot. The Node signatures and inventory contract live in [the API reference](../api/README.md#snapshot-and-restore).
 
 ## Capture

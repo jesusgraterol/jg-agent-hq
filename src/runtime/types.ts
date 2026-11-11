@@ -20,6 +20,13 @@ export const AgentHqOptionsSchema = z.strictObject({
   codexDaemonLauncher: z.array(z.string().min(1)).min(1).max(16).optional(),
   claudeAdditionalDirectories: z.array(z.string().min(1).refine(isAbsolute)).max(128).optional(),
   /*
+   * Runs under exclusive runtime ownership after storage opens, before providers or IPC start.
+   * The host owns its connection and rollback; errors propagate unchanged through startup cleanup.
+   */
+  initializeHostStorage: z
+    .custom<IStorageMaintenanceOperation<void>>((input) => typeof input === 'function')
+    .optional(),
+  /*
    * Proves no process of a runtime that stopped without releasing the state root remains, which
    * lets startup take its runtime lock over and clear the snapshot lock and socket it left.
    */

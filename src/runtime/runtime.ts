@@ -48,7 +48,8 @@ import { AgentHqOptionsSchema, type IAgentHq, type IAgentHqOptions } from './typ
 
 /**
  * Starts one local controller with private IPC, a SQLite worker and native providers, which it
- * connects in the background without waiting for them.
+ * connects in the background without waiting for them. Optional host storage initialization
+ * finishes before providers or admission start; its errors propagate unchanged after cleanup.
  * @returns The owned runtime. Client disconnects do not close it.
  * @throws
  * - JG_AGENT_HQ_REQUEST_INVALID: The HQ request is invalid
@@ -98,6 +99,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
     const databasePath = await prepareDatabase(stateRoot);
     actionKey = await prepareActionKey(stateRoot, databasePath);
     store = await createStore(databasePath, ownership.epoch, actionKey);
+    await parsed.data.initializeHostStorage?.(structuredClone(store.storage));
     registry = createProviderRegistry(
       [
         createCodexProviderFactory(codexExtraSkillRoots, parsed.data.codexDaemonLauncher ?? []),
