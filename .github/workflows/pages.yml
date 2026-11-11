@@ -1,0 +1,104 @@
+name: Deploy website
+
+on:
+  workflow_run:
+    workflows: ['Verify and publish']
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  website:
+    name: Verify website
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.event != 'pull_request')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24.15.0'
+          package-manager-cache: false
+
+      - name: Install the frozen workspace
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium for production artifact verification
+        run: pnpm --dir website exec playwright install --with-deps chromium
+
+      - name: Check the production website
+        run: pnpm --dir website check
+
+      - name: Upload verified website
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: website/dist
+
+  deploy:
+    name: Deploy verified website
+    needs: website
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out verification scripts
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24.15.0'
+          package-manager-cache: false
+
+      - name: Install verification dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Require the exact npm release and public destinations
+        run: pnpm --dir website verify:public-destinations
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
+
+      - name: Deploy the verified artifact without rebuilding
+        id: deployment
+        uses: actions/deploy-pages@v5
+
+      - name: Verify the live HTTPS website
+        run: pnpm --dir website verify:deployment

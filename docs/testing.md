@@ -2,6 +2,8 @@
 
 Package tests consume built public exports. Run `pnpm build` before focused tests; `pnpm check:package` builds once, runs the unit and integration categories, typechecks, and checks formatting. `pnpm test:unit` and `pnpm test:integration` keep their complete categories. The website has its own README and verification boundary.
 
+The publication workflow runs only `pnpm check:package` on its two Node versions, then publishes the exact consumer-tested archive. It installs no browser. The separate Pages workflow verifies and deploys the site after successful main publication; website failure cannot fail the publication workflow.
+
 ## Essential and full selections
 
 Essential protects consequential guarantees, including expensive ones. All unassessed cases remain selected until their family is reviewed. Granular and focused commands stay complete by default; native `full` tags exclude secondary coverage only when an essential filter is explicitly applied.
@@ -42,7 +44,7 @@ Async question coverage remains essential: exact native identity and ordered cho
 
 Essential website tests enforce unsafe URL/Markdown rejection, exact bounded regular-file source access, rejection of adjacent private/test sources, real damaged-output privacy checks, and the exact-release/deployment gate. Ordinary content/link rendering, names, metadata/image permutations, asset reproduction, and all production-browser E2E are full-only. Entirely full-only unit/asset files are excluded by essential commands before imports.
 
-The existing production build always runs its DOM/artifact verifier. It uses Chromium to reject leaked tests, private paths and invalid output, so essential CI retains the required Chromium installation. This is required build preparation, not an additional browser smoke test. Removing it would break the build; the production verifier and its guarantees are unchanged.
+The existing production build always runs its DOM/artifact verifier. It uses Chromium to reject leaked tests, private paths and invalid output, so Pages retains the required Chromium installation. Package publication does not install Chromium. This is required website build preparation, not an additional browser smoke test. The production verifier and its guarantees are unchanged.
 
 ## Integration isolation
 

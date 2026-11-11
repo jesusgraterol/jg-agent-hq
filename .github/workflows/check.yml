@@ -1,4 +1,4 @@
-name: Verify, publish and deploy
+name: Verify and publish
 
 on:
   pull_request:
@@ -22,7 +22,6 @@ jobs:
   check:
     name: Verify Node ${{ matrix.node }}
     runs-on: ubuntu-24.04
-    # includes Chromium OS setup required by the existing production artifact verifier
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -44,15 +43,12 @@ jobs:
           package-manager-cache: false
 
       - name: Install the frozen workspace
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter=.
 
-      - name: Install Chromium for production artifact verification
-        run: pnpm --dir website exec playwright install --with-deps chromium
-
-      - name: Check package and production website
+      - name: Check essential package guarantees
         env:
           JG_HQ_RELEASE_DIRECTORY: ${{ runner.temp }}/hq-release
-        run: pnpm check
+        run: pnpm check:package
 
       - name: Upload the consumer-tested release
         if: matrix.node == '24.15.0' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
@@ -62,12 +58,6 @@ jobs:
           path: ${{ runner.temp }}/hq-release/*
           if-no-files-found: error
           retention-days: 1
-
-      - name: Upload verified floor-Node website
-        if: matrix.node == '24.15.0' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: website/dist
 
   publish:
     name: Publish verified npm package
@@ -96,7 +86,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install the frozen workspace
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter=.
 
       - name: Download the consumer-tested release
         uses: actions/download-artifact@v8
@@ -108,47 +98,3 @@ jobs:
         env:
           JG_HQ_RELEASE_DIRECTORY: ${{ runner.temp }}/hq-release
         run: node scripts/release/index.ts
-
-  deploy:
-    name: Deploy verified website
-    needs: [check, publish]
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Check out verification scripts
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-
-      - name: Set up Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: '24.15.0'
-          package-manager-cache: false
-
-      - name: Install verification dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Require the exact npm release and public destinations
-        run: pnpm --dir website verify:public-destinations
-
-      - name: Configure Pages
-        uses: actions/configure-pages@v6
-
-      - name: Deploy the verified artifact without rebuilding
-        id: deployment
-        uses: actions/deploy-pages@v5
-
-      - name: Verify the live HTTPS website
-        run: pnpm --dir website verify:deployment
