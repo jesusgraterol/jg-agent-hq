@@ -66,7 +66,7 @@ test('trusted async observations preserve controlled identity and saved/live/det
       text: 'Choose an environment',
       questions: [
         { title: 'Choose an environment', options: ['Staging', 'Production'] },
-        { title: 'Anything else?' },
+        { title: 'Anything else?', options: null },
       ],
     };
     const target = {
@@ -97,7 +97,14 @@ test('trusted async observations preserve controlled identity and saved/live/det
       nativeId: 'question',
       turnId: 'source-turn',
       createdAt: 1_800_000_001_123,
-      asyncInput: { delivery: 'async', state: 'available', questions: item.questions },
+      asyncInput: {
+        delivery: 'async',
+        state: 'available',
+        questions: [
+          { title: 'Choose an environment', options: ['Staging', 'Production'] },
+          { title: 'Anything else?' },
+        ],
+      },
     });
     expect(failures.at(-1)).toStrictEqual({
       kind: 'recovery',

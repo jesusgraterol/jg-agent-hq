@@ -1,5 +1,9 @@
 # Changelog
 
+## 13.4.1
+
+- Normalize Codex asynchronous questions with native `options: null` to free-text questions without suggested choices. Preserve the existing public question shape, bounds and malformed-input rejection across live observations, saved history, details and evidence.
+
 ## 13.4.0
 
 - Add the optional trusted Node `initializeHostStorage` startup callback for host schema preparation under exclusive ownership, before providers, native rejoin or request admission start. Callback errors retain their identity through startup cleanup; hosts own their SQL transaction and connection.

@@ -120,10 +120,15 @@ const TextPartsSchema = z.object({
 });
 const MessageSchema = z.object({ text: z.string() });
 
+// Codex serializes absent suggested choices as null; the public contract omits them.
+const NativeAsyncQuestionSchema = AsyncQuestionSchema.extend({
+  options: AsyncQuestionSchema.shape.options.nullable(),
+}).transform(({ options, ...question }) => (options == null ? question : { ...question, options }));
+
 /** Preserves explicit async delivery even when its structured presentation cannot be trusted. */
 const toAsyncInput = (item: INativeItem['item']): IAsyncInput | undefined => {
   if (item.type !== 'agentMessage' || item.delivery !== 'async') return undefined;
-  const questions = z.array(AsyncQuestionSchema).min(1).max(32).safeParse(item.questions);
+  const questions = z.array(NativeAsyncQuestionSchema).min(1).max(32).safeParse(item.questions);
   if (!questions.success) return { delivery: 'async', state: 'unavailable', reason: 'invalid' };
   const input = AsyncInputSchema.safeParse({
     delivery: 'async',
