@@ -64,6 +64,8 @@ Important guarantees remain required regardless of cost. A timeout, privacy or o
 
 ## Verification
 
+Startup host initialization coverage is essential: trusted function validation, exclusive ownership before provider/IPC admission, reserved-table protection, callback error identity and transactional rollback, failed-start cleanup/retry, and host migration before a retained running Codex turn rejoins without input replay. It preserves native schema/action keys and the live-maintenance refusal. Repeat the changed storage integration file three retry-free times. Before publishing this startup contract, qualify an owned actual Codex running turn across runtime restart and host initialization; synthetic CLI tests do not establish independent native survival.
+
 Prefer complete focused checks during development. Run a changed integration file three consecutive times with retries disabled:
 
 ```sh

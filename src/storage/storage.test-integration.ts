@@ -12,6 +12,7 @@ import {
   createAgentHq,
   openHostDatabase,
   restoreHqSnapshot,
+  type IAgentHqOptions,
   type IStorageDescriptor,
 } from 'jg-agent-hq';
 import type { IBrowserAction } from 'jg-agent-hq/contracts';
@@ -23,6 +24,7 @@ import {
   stateLocks,
   withClaudeRuntime,
   writeFixtureControl,
+  waitForWarmUp,
 } from '../../scripts/test-support/index.js';
 
 const createGate = () => {
@@ -57,6 +59,244 @@ const openStorage = (storage: IStorageDescriptor): DatabaseSync =>
     timeout: storage.connectionSettings.busyTimeoutMs,
     enableForeignKeyConstraints: storage.connectionSettings.foreignKeys,
   });
+
+test('startup host initialization rejects a non-function before taking ownership', async () => {
+  await withClaudeRuntime(async ({ runtime, stateRoot, workspaceRoot }) => {
+    await runtime.close();
+    await expectToRejectCode(
+      createAgentHq({
+        stateRoot,
+        allowedRoots: [workspaceRoot],
+        initializeHostStorage: false,
+      } as unknown as IAgentHqOptions),
+      'JG_AGENT_HQ_REQUEST_INVALID',
+    );
+    expect((await inspectLock('runtime', stateLocks(stateRoot))).state).toBe('free');
+  });
+});
+
+test('startup host initialization holds ownership before provider calls or IPC admission', async () => {
+  await withClaudeRuntime(async ({ runtime, stateRoot, workspaceRoot, root }) => {
+    await waitForWarmUp(runtime);
+    await runtime.close();
+    const calls = await readFile(join(root, 'calls.jsonl'), 'utf8');
+    const claudeCalls = await readFile(join(root, 'claude-calls.jsonl'), 'utf8');
+    const key = await readFile(join(stateRoot, 'action.key'));
+    const entered = createGate();
+    const release = createGate();
+    const initializeHostStorage = vi.fn(async (storage: IStorageDescriptor) => {
+      const database = openHostDatabase(storage);
+      try {
+        database.exec('CREATE TABLE app_startup (id INTEGER PRIMARY KEY) STRICT');
+        expect(() => database.exec('DELETE FROM agent_hq_schema')).toThrow('not authorized');
+        entered.resolve();
+        await release.promise;
+      } finally {
+        database.close();
+      }
+    });
+    const starting = createAgentHq({
+      stateRoot,
+      allowedRoots: [workspaceRoot],
+      initializeHostStorage,
+    });
+    // observe rejection immediately, including when exercising the pre-fix options schema
+    const outcome = starting.then(
+      (started) => ({ started }),
+      (error: unknown) => ({ error }),
+    );
+    try {
+      await expect.poll(() => initializeHostStorage.mock.calls.length).toBe(1);
+      await entered.promise;
+      expect(await readFile(join(root, 'calls.jsonl'), 'utf8')).toBe(calls);
+      expect(await readFile(join(root, 'claude-calls.jsonl'), 'utf8')).toBe(claudeCalls);
+      await expect(stat(join(stateRoot, 'hq.sock'))).rejects.toMatchObject({ code: 'ENOENT' });
+      await expectToRejectCode(
+        createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] }),
+        'JG_AGENT_HQ_RUNTIME_ALREADY_OWNED',
+      );
+    } finally {
+      release.resolve();
+      const result = await outcome;
+      if ('started' in result) await result.started.close();
+    }
+    await expect(starting).resolves.toMatchObject({ storage: runtime.storage });
+    expect(initializeHostStorage).toHaveBeenCalledTimes(1);
+    expect(await readFile(join(stateRoot, 'action.key'))).toStrictEqual(key);
+  });
+});
+
+test('failed startup host initialization rolls back and releases ownership without starting providers', async () => {
+  await withClaudeRuntime(async ({ runtime, stateRoot, workspaceRoot, root }) => {
+    await waitForWarmUp(runtime);
+    await runtime.close();
+    const calls = await readFile(join(root, 'calls.jsonl'), 'utf8');
+    const claudeCalls = await readFile(join(root, 'claude-calls.jsonl'), 'utf8');
+    const key = await readFile(join(stateRoot, 'action.key'));
+    const failure = new Error('Host migration rejected');
+    await expect(
+      createAgentHq({
+        stateRoot,
+        allowedRoots: [workspaceRoot],
+        initializeHostStorage: async (storage) => {
+          const database = openHostDatabase(storage);
+          try {
+            database.exec(
+              'BEGIN IMMEDIATE; CREATE TABLE app_partial (id INTEGER); PRAGMA user_version = 99',
+            );
+            throw failure;
+          } finally {
+            database.exec('ROLLBACK');
+            database.close();
+          }
+        },
+      }),
+    ).rejects.toBe(failure);
+    expect(await readFile(join(root, 'calls.jsonl'), 'utf8')).toBe(calls);
+    expect(await readFile(join(root, 'claude-calls.jsonl'), 'utf8')).toBe(claudeCalls);
+    expect((await inspectLock('runtime', stateLocks(stateRoot))).state).toBe('free');
+    const retry = await createAgentHq({
+      stateRoot,
+      allowedRoots: [workspaceRoot],
+      initializeHostStorage: async (storage) => {
+        const database = openHostDatabase(storage);
+        try {
+          expect(database.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 0 });
+          expect(
+            database.prepare("SELECT name FROM sqlite_schema WHERE name = 'app_partial'").get(),
+          ).toBeUndefined();
+          expect(database.prepare('SELECT schema_hash FROM agent_hq_schema').get()).toMatchObject({
+            schema_hash: runtime.storage.schemaHash,
+          });
+        } finally {
+          database.close();
+        }
+      },
+    });
+    try {
+      expect(await readFile(join(stateRoot, 'action.key'))).toStrictEqual(key);
+    } finally {
+      await retry.close();
+    }
+  });
+});
+
+test('startup host initialization migrates before a retained Codex turn rejoins without replay', async () => {
+  await withClaudeRuntime(async ({ runtime, stateRoot, workspaceRoot, root }) => {
+    await writeFixtureControl(root, 'control.json', { holdTurn: true });
+    const created = await runtime.request({
+      kind: 'action',
+      action: {
+        id: randomUUID(),
+        runtimeEpoch: runtime.runtimeEpoch,
+        command: {
+          kind: 'thread-create',
+          provider: 'codex',
+          workspaceRoot,
+          name: 'startup-storage',
+        },
+      },
+    });
+    const threadId = created.result.threadId!;
+    await expect
+      .poll(() => runtime.request({ kind: 'managed-thread', threadId }))
+      .toMatchObject({ result: { state: 'idle' } });
+    const actionId = randomUUID();
+    await runtime.request({
+      kind: 'action',
+      action: {
+        id: actionId,
+        runtimeEpoch: runtime.runtimeEpoch,
+        command: {
+          kind: 'message',
+          threadId,
+          input: { kind: 'text', text: 'Keep this exact running turn' },
+        },
+      },
+    });
+    await expect
+      .poll(() => runtime.request({ kind: 'managed-thread', threadId }))
+      .toMatchObject({ result: { state: 'running' } });
+    const active = (await runtime.request({ kind: 'managed-thread', threadId })).result!;
+    const receipt = (await runtime.request({ kind: 'receipt', actionId })).result!;
+    const key = await readFile(join(stateRoot, 'action.key'));
+    await runtime.close();
+    await writeFixtureControl(root, 'control.json', {
+      holdTurn: true,
+      threadStatuses: { [active.nativeId!]: { type: 'active' } },
+      threadTurns: {
+        [active.nativeId!]: [{ id: active.activeTurnId, status: 'inProgress', items: [] }],
+      },
+    });
+    const initializeHostStorage = vi.fn(async (storage: IStorageDescriptor) => {
+      const database = openHostDatabase(storage);
+      try {
+        expect(
+          database
+            .prepare('SELECT active_turn_id, runtime_epoch FROM agent_hq_thread WHERE id = ?')
+            .get(threadId),
+        ).toMatchObject({
+          active_turn_id: active.activeTurnId,
+          runtime_epoch: runtime.runtimeEpoch,
+        });
+        database.exec(
+          'BEGIN IMMEDIATE; CREATE TABLE app_restart (id INTEGER PRIMARY KEY, body TEXT NOT NULL) STRICT',
+        );
+        database.prepare('INSERT INTO app_restart VALUES (?, ?)').run(1, 'Retained through rejoin');
+        database.exec('PRAGMA user_version = 38; COMMIT');
+      } finally {
+        database.close();
+      }
+    });
+    const restarted = await createAgentHq({
+      stateRoot,
+      allowedRoots: [workspaceRoot],
+      initializeHostStorage,
+    });
+    try {
+      await expect
+        .poll(() => restarted.request({ kind: 'managed-thread', threadId }))
+        .toMatchObject({
+          result: {
+            ownership: 'managed',
+            runtimeEpoch: restarted.runtimeEpoch,
+            state: 'running',
+            nativeId: active.nativeId,
+            activeTurnId: active.activeTurnId,
+          },
+        });
+      expect(initializeHostStorage).toHaveBeenCalledTimes(1);
+      expect((await restarted.request({ kind: 'receipt', actionId })).result).toStrictEqual(
+        receipt,
+      );
+      expect(await readFile(join(stateRoot, 'action.key'))).toStrictEqual(key);
+      expect(restarted.storage.schemaHash).toBe(runtime.storage.schemaHash);
+      const database = openHostDatabase(restarted.storage);
+      try {
+        expect(database.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 38 });
+        expect(database.prepare('SELECT body FROM app_restart').get()).toMatchObject({
+          body: 'Retained through rejoin',
+        });
+      } finally {
+        database.close();
+      }
+      const maintenance = vi.fn(async () => undefined);
+      await expectToRejectCode(
+        restarted.withStorageMaintenance(maintenance),
+        'JG_AGENT_HQ_ACTION_CONFLICT',
+      );
+      expect(maintenance).not.toHaveBeenCalled();
+      const calls = (await readFile(join(root, 'calls.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { method: string });
+      expect(calls.filter((call) => call.method === 'turn/start')).toHaveLength(1);
+      expect(calls.filter((call) => call.method === 'turn/steer')).toHaveLength(0);
+    } finally {
+      await restarted.close();
+    }
+  });
+});
 
 test('12.0.1 storage opens unchanged and longer names survive restart and snapshot restore', async () => {
   await withClaudeRuntime(async ({ runtime, stateRoot, workspaceRoot, root }) => {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 13.4.0
+
+- Add the optional trusted Node `initializeHostStorage` startup callback for host schema preparation under exclusive ownership, before providers, native rejoin or request admission start. Callback errors retain their identity through startup cleanup; hosts own their SQL transaction and connection.
+- Preserve running Codex turns, native schema 12.0.1, action keys and the existing active-execution refusal for live storage maintenance. No input is replayed by initialization.
+
 ## 13.3.2
 
 - Keep Claude's model-setting and local-command user replays from starting phantom turns. Only the exact pending input replay acknowledges an HQ turn; autonomous turns start on model output. Settings notices remain available in saved native history.

@@ -1,5 +1,7 @@
 # Runtime ownership
 
+Optional trusted host storage initialization runs after exclusive ownership and SQLite setup, before provider registry, action controllers, Claude observation, IPC or native warm-up/rejoin exist. Its callback receives a copied descriptor and owns its connection, transaction and rollback. Startup failure uses the existing worker/ownership cleanup and preserves the original callback error when cleanup succeeds. Retained native Codex execution can continue independently without a second input or native event writer in this phase. Live storage maintenance keeps its active-native-execution refusal. No additional cache is useful for a once-per-start correctness boundary.
+
 Completed controlled Codex async questions cross the trusted `observeAsyncInputs` boundary after their managed source is resolved. The in-process subscription holds only callbacks, supplies independent item copies, and isolates synchronous listener failures with recovery signals. It keeps no event queue, transcript bodies or durable question state. Hosts synchronously enqueue bounded persistence/recovery work and use native history for catch-up after subscription, connection loss or output gaps. Structured question bytes count toward live-memory and evidence-response bounds; saved/live reconciliation compares the complete metadata. Async messages never enter ordinary final-result capture. This additive contract preserves schema 12.0.1 and existing action keys.
 
 ## Providers

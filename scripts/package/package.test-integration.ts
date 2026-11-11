@@ -108,12 +108,13 @@ test(
       const usageContract = join(scratch, 'usage-contract.ts');
       await writeFile(
         usageContract,
-        `import type { IAgentHq, IAsyncInputEvent, IAsyncInputListener, IAsyncInputSource } from 'jg-agent-hq';
+        `import type { IAgentHq, IAgentHqOptions, IAsyncInputEvent, IAsyncInputListener, IAsyncInputSource, IStorageDescriptor } from 'jg-agent-hq';
 import type { IAsyncInput, IAsyncQuestion, IUsageCredits, IUsageResetCredits, IUsageSnapshot, IUsageWindowScope } from 'jg-agent-hq/contracts';
 export const question: IAsyncQuestion = { title: 'Pick one', options: ['Blue', 'Green'] };
 export const asyncInput: IAsyncInput = { state: 'available', delivery: 'async', questions: [question] };
 export const observe = (runtime: IAgentHq, listener: IAsyncInputListener): (() => void) => runtime.observeAsyncInputs(listener);
 export const sourceOf = (event: IAsyncInputEvent): IAsyncInputSource | null => event.source;
+export const startupOptions = (storage: IStorageDescriptor): IAgentHqOptions => ({stateRoot: '/state',allowedRoots: ['/workspace'],initializeHostStorage: async descriptor => { const same: IStorageDescriptor = descriptor; if(same.schemaHash!==storage.schemaHash) throw new Error('Unexpected storage'); }});
 export const minimalUsage: IUsageSnapshot = {
   provider: 'codex', source: 'native', state: 'unavailable', observedAt: null,
   ordinaryUsageAllowed: null, windows: [],
@@ -163,8 +164,11 @@ export const scope: IUsageWindowScope = { model: { id: null, displayName: 'Model
       import { join } from 'node:path';
       try { await import('jg-agent-hq/dist/runtime/state/state.js'); throw new Error('private path was exposed'); }
       catch (error) { if (error.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw error; }
-      const runtime = await createAgentHq({ stateRoot: join(process.cwd(), 'controller'), allowedRoots: [process.cwd()] });
+      let initializedStorage;
+      let initializationCount = 0;
+      const runtime = await createAgentHq({ stateRoot: join(process.cwd(), 'controller'), allowedRoots: [process.cwd()], initializeHostStorage: async storage => { initializedStorage=storage; initializationCount++; } });
       try {
+        if(initializationCount!==1 || initializedStorage.schemaHash!==runtime.storage.schemaHash) throw new Error('packed startup initialization failed');
         let catchUp = 0;
         const unsubscribe = runtime.observeAsyncInputs(event=>{if(event.kind==='recovery'&&event.reason==='subscribed')catchUp++;});
         if(catchUp!==1) throw new Error('packed observer catch-up failed');
