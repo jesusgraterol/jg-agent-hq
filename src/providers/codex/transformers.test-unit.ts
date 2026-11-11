@@ -13,7 +13,9 @@ test('explicit asynchronous questions retain their ordered native contract', () 
         text: 'Which environment?',
         questions: [
           { title: 'Which environment?', options: ['Staging', 'Production'], future: true },
-          { title: 'Any constraints?' },
+          { title: 'Any constraints?', options: null },
+          { title: 'Any details?' },
+          { title: 'Anything else?', options: [] },
         ],
       },
     }),
@@ -26,6 +28,8 @@ test('explicit asynchronous questions retain their ordered native contract', () 
       questions: [
         { title: 'Which environment?', options: ['Staging', 'Production'] },
         { title: 'Any constraints?' },
+        { title: 'Any details?' },
+        { title: 'Anything else?', options: [] },
       ],
     },
   });
@@ -37,6 +41,7 @@ test.each([
   [[{ title: '' }], 'invalid'],
   [[{ title: 'x'.repeat(8193) }], 'invalid'],
   [[{ title: 'Pick one', options: [1] }], 'invalid'],
+  [[{ title: 'Pick one', options: 'Staging' }], 'invalid'],
   [Array.from({ length: 33 }, () => ({ title: 'Question' })), 'invalid'],
   [[{ title: 'Pick one', options: Array.from({ length: 33 }, () => 'Choice') }], 'invalid'],
   [[{ title: '🐈'.repeat(4096), options: ['🐈'.repeat(4096)] }], 'too-large'],
