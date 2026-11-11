@@ -31,6 +31,8 @@ Work on `development`; reviewed changes reach `main` through a pull request. Aft
 
 `pnpm test`, `pnpm check:package`, and `pnpm check` run essential coverage. Their `:full` counterparts retain complete package or package/website checks. Granular and focused commands remain complete by default. Full runs locally only on explicit request; see the [testing policy](https://github.com/jesusgraterol/jg-agent-hq/blob/main/docs/testing.md) for classification and affected-consumer checks.
 
+CI qualifies the package on both supported Node versions through `pnpm check:package`. Website verification and deployment run separately through Pages after successful main publication; a website failure does not block npm publication.
+
 Testing maintenance can reuse an existing version when only these six aggregate scripts and this marked testing-command block differ. All runtime files, dependencies, exports, installation scripts, other documentation, and file permissions remain protected by the release check. This narrow exception to the general version rule above skips publication; it does not change the installed package.
 
 [testing-commands:end]: #
