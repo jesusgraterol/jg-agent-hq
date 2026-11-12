@@ -1,4 +1,4 @@
-import type { IHistoryItem } from '../../contracts/index.js';
+import type { IHistoryItem, IProviderId } from '../../contracts/index.js';
 
 /*
  * An unfinished entry's turn ended before its provider finished it, as when an interrupt or a
@@ -190,8 +190,10 @@ export class LiveItems {
    * finished goes once persisted history holds that turn, which then shows what was saved of it.
    * A message saved under another record than the live input it came from, as Claude Code saves a
    * message sent while a turn ran, matches that input by the native input it names.
+   * Claude output UUIDs identify messages within the session even when a generated live turn
+   * differs from history's input-based grouping. Operator input still requires the exact turn.
    */
-  public reconcile(nativeId: string, persisted: IHistoryItem[]): void {
+  public reconcile(provider: IProviderId, nativeId: string, persisted: IHistoryItem[]): void {
     const thread = this.__threads.get(nativeId);
     if (!thread) return;
     const turns = new Set(persisted.map((item) => item.turnId));
@@ -201,6 +203,14 @@ export class LiveItems {
         thread.items.delete(key);
         thread.revision = this.__change();
       }
+    const outputKeys =
+      provider === 'claude'
+        ? new Map(
+            [...thread.items]
+              .filter(([, entry]) => entry.item.kind !== 'user-message')
+              .map(([key, entry]) => [entry.item.nativeId, key]),
+          )
+        : null;
     for (const item of persisted) {
       const { nativeInputId } = item.provenance;
       const liveIds =
@@ -208,7 +218,9 @@ export class LiveItems {
           ? [item.nativeId, nativeInputId]
           : [item.nativeId];
       for (const liveId of liveIds) {
-        const key = JSON.stringify([item.turnId, liveId]);
+        const key =
+          (item.kind === 'user-message' ? undefined : outputKeys?.get(liveId)) ??
+          JSON.stringify([item.turnId, liveId]);
         const entry = thread.items.get(key);
         if (
           entry?.isComplete &&

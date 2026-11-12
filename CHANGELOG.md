@@ -1,5 +1,10 @@
 # Changelog
 
+## 13.4.2
+
+- Reconcile completed Claude messages and tool activity by their session-scoped native UUID when autonomous follow-ups have a generated live turn ID but saved history groups them under the preceding input. Completed activity no longer remains live below later answers. Operator inputs retain exact turn/provenance checks, and Codex reconciliation is unchanged.
+- Read bounded recent Claude history at turn completion so autonomous output flushes without waiting for a client history read. Preserve the existing page, retry and live-memory bounds, storage schema and action key.
+
 ## 13.4.1
 
 - Normalize Codex asynchronous questions with native `options: null` to free-text questions without suggested choices. Preserve the existing public question shape, bounds and malformed-input rejection across live observations, saved history, details and evidence.

@@ -1689,6 +1689,74 @@ test('a turn Claude starts on its own runs as session activity, streams live ite
   });
 });
 
+test.each(['turn completion', 'history read'])(
+  'completed Claude background follow-ups flush under their saved input turn on %s',
+  async (readMode) => {
+    await withClaudeRuntime(async (fixture) => {
+      const api = await actions(fixture),
+        { thread } = await api.create();
+      await fixture.control({ backgroundTask: true });
+      const input = await api.message(thread.id, 'Start a background command');
+      const accepted = await api.until(
+        () => api.receipt(input.id),
+        (entry) => entry.completion === 'completed',
+      );
+      for (const trigger of ['first-follow-up', 'second-follow-up']) {
+        await fixture.control({
+          finishBackgroundTask: true,
+          nativeTurn: trigger,
+          nativeHold: true,
+        });
+        const turnId = await awaitNativeTurn(api, thread.id);
+        expect(turnId).not.toBe(accepted.nativeTurnId);
+        await expect
+          .poll(
+            async () =>
+              (await fixture.request({ kind: 'live-items', threadId: thread.id })).result.data,
+          )
+          .toEqual(
+            expect.arrayContaining([expect.objectContaining({ turnId, text: 'Native follow-up' })]),
+          );
+        if (readMode === 'history read') {
+          await fixture.request({
+            kind: 'items',
+            provider: 'claude',
+            workspaceRoot: fixture.workspaceRoot,
+            nativeId: thread.nativeId!,
+          });
+          expect(
+            (await fixture.request({ kind: 'live-items', threadId: thread.id })).result.data,
+          ).toStrictEqual([]);
+        }
+        await fixture.control({ nativeRelease: true });
+        await api.until(
+          () => api.thread(thread.id),
+          (entry) => entry.state === 'completed' && entry.activeTurnId === null,
+        );
+        await expect
+          .poll(
+            async () =>
+              (await fixture.request({ kind: 'live-items', threadId: thread.id })).result.data,
+          )
+          .toStrictEqual([]);
+      }
+      const history = await fixture.request({
+        kind: 'items',
+        provider: 'claude',
+        workspaceRoot: fixture.workspaceRoot,
+        nativeId: thread.nativeId!,
+      });
+      expect(history.result.data.filter((entry) => entry.text === 'Native follow-up')).toHaveLength(
+        2,
+      );
+      expect(history.result.data.every((entry) => entry.turnId === accepted.nativeTurnId)).toBe(
+        true,
+      );
+      expect(await writtenInputs(api)).toHaveLength(1);
+    });
+  },
+);
+
 test('Stop interrupts a turn Claude started on its own and completes it as interrupted', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture),
