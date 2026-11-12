@@ -137,6 +137,7 @@ The [qualification matrix](api/README.md#qualification) records native journeys,
 - `docs/website.md`: durable website architecture, verification and generated-asset sources.
 - `docs/architecture.md`: provider and database ownership, schema initialization and host maintenance.
 - `docs/recovery.md`: local snapshot coverage, offline recovery and the host's remote durability responsibilities.
+- [`docs/delivery.md`](https://github.com/jesusgraterol/jg-agent-hq/blob/main/docs/delivery.md): ordered development, main and npm publication stops, operators and release verification.
 
 `/docs` is reserved for concise, quickly scannable documentation of essential durable concepts and processes. API references remain outside `/docs`.
 

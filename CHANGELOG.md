@@ -1,5 +1,16 @@
 # Changelog
 
+## 13.5.0
+
+- Quarantine attributable Claude interpretation, registry and persisted-evidence failures without terminating native work or other controlled sessions. Suspend rich interpretation and controls; require fresh native idle, a known empty full task snapshot and no unresolved requests before automatic cleanup. Partial task activity invalidates older emptiness, and ordinary idle parking cannot bypass quarantine.
+- Return only the matching conversation to managed/inactive after its exact owned process group is proven stopped and its controller is released. Resume keeps its native identity and history; uncertain input stays uncertain, pending approvals expire and queued work stays paused without replay. The storage schema and action key are unchanged.
+- Reuse confirmed `thread-close` with `interrupt: true` to stop a current-runtime owned quarantined Claude session and unfinished background work. Preserve action deduplication, close/cleanup races and ownership fences without guessing a turn or adding a recovery command.
+
+## 13.4.2
+
+- Reconcile completed Claude messages and tool activity by their session-scoped native UUID when autonomous follow-ups have a generated live turn ID but saved history groups them under the preceding input. Completed activity no longer remains live below later answers. Operator inputs retain exact turn/provenance checks, and Codex reconciliation is unchanged.
+- Read bounded recent Claude history at turn completion so autonomous output flushes without waiting for a client history read. Preserve the existing page, retry and live-memory bounds, storage schema and action key.
+
 ## 13.4.1
 
 - Normalize Codex asynchronous questions with native `options: null` to free-text questions without suggested choices. Preserve the existing public question shape, bounds and malformed-input rejection across live observations, saved history, details and evidence.

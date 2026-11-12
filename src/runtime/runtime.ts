@@ -366,6 +366,7 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
         if (command.kind !== 'items' || response.kind !== 'items') return response;
         // live items reconcile against the persisted text before it is cut
         actions.live.reconcile(
+          command.provider,
           JSON.stringify([command.provider, command.nativeId]),
           response.result.data,
         );

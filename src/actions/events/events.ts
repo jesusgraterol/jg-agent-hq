@@ -328,7 +328,8 @@ export const createEvents = (
   /*
    * A saved item leaves the live window only once a native history page holds it, and a client may
    * never read the pages that do, so a finished turn's own history is read here, newest first,
-   * until none of its saved items remain. Codex's saved state can trail its turn's end, so a turn
+   * until none of its saved items remain. Claude's native follow-ups have no saved turn ID, so
+   * its read spans recent history instead. Codex's saved state can trail its turn's end, so a turn
    * whose items remain is read once more after the re-check wait. An aborted wait or a failed read
    * leaves them to the next history read, as before, and never fails the session's events.
    */
@@ -356,7 +357,7 @@ export const createEvents = (
               provider,
               workspaceRoot,
               nativeId,
-              turnId,
+              ...(provider === 'claude' ? {} : { turnId }),
               limit: MAX_PAGE_SIZE,
               cursor,
               textLimit: MAX_ITEM_TEXT_LENGTH,
@@ -369,7 +370,7 @@ export const createEvents = (
                 live.invalidateProvenance(liveKey);
               },
             });
-            live.reconcile(liveKey, response.result.data);
+            live.reconcile(provider, liveKey, response.result.data);
             if (response.result.nextCursor === null) break;
             cursor = response.result.nextCursor;
           }

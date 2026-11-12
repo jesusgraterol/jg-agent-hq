@@ -28,18 +28,71 @@ test('saved text cannot flush complete async choices until the structured metada
     },
   };
   live.put('thread', question, true);
-  live.reconcile('thread', [item]);
+  live.reconcile('codex', 'thread', [item]);
   expect(live.read('thread').data).toHaveLength(1);
-  live.reconcile('thread', [
+  live.reconcile('codex', 'thread', [
     {
       ...question,
       asyncInput: { ...question.asyncInput, questions: [{ title: 'Choose', options: ['A', 'C'] }] },
     },
   ]);
   expect(live.read('thread').data).toHaveLength(1);
-  live.reconcile('thread', [structuredClone(question)]);
+  live.reconcile('codex', 'thread', [structuredClone(question)]);
   expect(live.read('thread').data).toStrictEqual([]);
 });
+
+test.each([
+  ['claude', 'agent-message', 'assistant', null],
+  ['claude', 'tool', 'assistant', null],
+  ['claude', 'tool', 'tool-result', 'succeeded'],
+  ['claude', 'file-change', 'tool-result', 'succeeded'],
+  ['codex', 'agent-message', 'agentMessage', null],
+] as const)(
+  '%s %s (%s) reconciles output UUIDs across saved turn groupings only for Claude',
+  (provider, kind, nativeType, outcome) => {
+    const live = new LiveItems();
+    const output = { ...item, kind, nativeType, outcome };
+    live.put('thread', output, true);
+    live.put('other-thread', output, true);
+    const before = live.read('thread');
+    live.reconcile(provider, 'thread', [{ ...output, turnId: 'saved-input-turn' }]);
+    expect(live.read('thread').data).toStrictEqual(
+      provider === 'claude' ? [] : [{ ...output, state: 'awaiting-flush' }],
+    );
+    expect(live.read('thread', before.revision).unchanged).toBe(provider !== 'claude');
+    expect(live.read('other-thread').data).toStrictEqual([{ ...output, state: 'awaiting-flush' }]);
+  },
+);
+
+test.each(['active', 'uuid', 'body', 'kind', 'type', 'input-turn'])(
+  'Claude does not flush different or unfinished saved output: %s',
+  (scenario) => {
+    const live = new LiveItems();
+    const output = {
+      ...item,
+      kind: scenario === 'input-turn' ? ('user-message' as const) : item.kind,
+      nativeType: 'assistant',
+    };
+    live.put('thread', output, scenario !== 'active');
+    const before = live.read('thread');
+    live.reconcile('claude', 'thread', [
+      {
+        ...output,
+        turnId: 'saved-input-turn',
+        nativeId: scenario === 'uuid' ? 'different-message' : output.nativeId,
+        text: scenario === 'body' ? 'different text' : output.text,
+        kind: scenario === 'kind' ? 'notice' : output.kind,
+        nativeType: scenario === 'type' ? 'tool-result' : output.nativeType,
+      },
+    ]);
+    expect(live.read('thread', before.revision)).toMatchObject({
+      unchanged: true,
+    });
+    expect(live.read('thread').data).toStrictEqual([
+      { ...output, state: scenario === 'active' ? 'active' : 'awaiting-flush' },
+    ]);
+  },
+);
 
 test('unchanged live reads avoid copying bodies; append, completion, reconciliation and eviction invalidate the revision', () => {
   const live = new LiveItems();
@@ -60,7 +113,7 @@ test('unchanged live reads avoid copying bodies; append, completion, reconciliat
   live.completeTurn('thread', 'turn');
   const completed = live.read('thread', appended.revision);
   expect(completed.data[0]?.state).toBe('awaiting-flush');
-  live.reconcile('thread', [{ ...item, text: 'hello world' }]);
+  live.reconcile('codex', 'thread', [{ ...item, text: 'hello world' }]);
   const flushed = live.read('thread', completed.revision);
   expect(flushed.unchanged).toBe(false);
   expect(flushed.data).toStrictEqual([]);
@@ -112,7 +165,7 @@ test('a finished command whose saved output the provider shortened is no longer 
   };
   live.open('thread');
   live.put('thread', command, true);
-  live.reconcile('thread', [
+  live.reconcile('codex', 'thread', [
     {
       ...command,
       text: "/bin/bash -lc 'cat README.md'\nline\n... command output truncated for persistence ...\nline\n",
@@ -135,7 +188,7 @@ test.each([
   };
   live.open('thread');
   live.put('thread', command, true);
-  live.reconcile('thread', [{ ...command, text: "/bin/bash -lc 'pnpm test'\n", outcome }]);
+  live.reconcile('codex', 'thread', [{ ...command, text: "/bin/bash -lc 'pnpm test'\n", outcome }]);
   expect(live.read('thread').data).toStrictEqual([{ ...command, state: 'awaiting-flush' }]);
 });
 
@@ -149,7 +202,7 @@ test('host provenance enrichment does not keep an already persisted native body 
   };
   live.open('thread');
   live.put('thread', input, true);
-  live.reconcile('thread', [
+  live.reconcile('codex', 'thread', [
     {
       ...input,
       provenance: {
@@ -174,7 +227,7 @@ test.each(['matching', 'source', 'hash', 'turn', 'body', 'kind'])(
       provenance: nativeProvenance('user-message', 'source-uuid', item.text),
     };
     live.put('thread', input, true);
-    live.reconcile('thread', [
+    live.reconcile('claude', 'thread', [
       {
         ...input,
         nativeId: 'saved-graph-uuid',
@@ -204,15 +257,15 @@ test('a message its turn ended before the provider finished goes once history ho
   live.put('thread', answer, true);
   live.completeTurn('thread', 'turn');
   // a page of another turn says nothing about this one
-  live.reconcile('thread', [{ ...item, nativeId: 'earlier', turnId: 'earlier-turn' }]);
+  live.reconcile('claude', 'thread', [{ ...item, nativeId: 'earlier', turnId: 'earlier-turn' }]);
   expect(live.read('thread').data).toStrictEqual([
     { ...item, state: 'awaiting-flush' },
     { ...answer, state: 'awaiting-flush' },
   ]);
   // the prompt saved before the answer leaves the finished answer waiting for its own copy
-  live.reconcile('thread', [{ ...item, nativeId: 'prompt', kind: 'user-message' }]);
+  live.reconcile('claude', 'thread', [{ ...item, nativeId: 'prompt', kind: 'user-message' }]);
   expect(live.read('thread').data).toStrictEqual([{ ...answer, state: 'awaiting-flush' }]);
-  live.reconcile('thread', [answer]);
+  live.reconcile('claude', 'thread', [answer]);
   expect(live.read('thread').data).toStrictEqual([]);
 });
 
@@ -227,7 +280,7 @@ test("a turn awaits flush while its window holds a finished item no history page
   expect(live.awaitsFlush('thread', 'turn')).toBe(false);
   live.put('thread', item, true);
   expect(live.awaitsFlush('thread', 'turn')).toBe(true);
-  live.reconcile('thread', [item]);
+  live.reconcile('codex', 'thread', [item]);
   expect(live.awaitsFlush('thread', 'turn')).toBe(false);
   expect(live.awaitsFlush('missing', 'turn')).toBe(false);
 });
@@ -238,7 +291,7 @@ test('an unfinished message the provider finishes after its turn ended waits for
   live.put('thread', item, false);
   live.completeTurn('thread', 'turn');
   live.put('thread', { ...item, text: 'hello world' }, true);
-  live.reconcile('thread', [{ ...item, nativeId: 'prompt', kind: 'user-message' }]);
+  live.reconcile('codex', 'thread', [{ ...item, nativeId: 'prompt', kind: 'user-message' }]);
   expect(live.read('thread').data).toStrictEqual([
     { ...item, text: 'hello world', state: 'awaiting-flush' },
   ]);
@@ -289,10 +342,12 @@ test('a message sent while a turn ran leaves once history holds the queued recor
   const live = new LiveItems();
   live.put('thread', steer, true);
   const before = live.read('thread');
-  live.reconcile('thread', [{ ...saved, text: 'another message' }]);
+  live.reconcile('claude', 'thread', [{ ...saved, text: 'another message' }]);
   expect(live.read('thread', before.revision).unchanged).toBe(true);
-  live.reconcile('thread', [{ ...saved, provenance: nativeProvenance('user-message', 'other') }]);
+  live.reconcile('claude', 'thread', [
+    { ...saved, provenance: nativeProvenance('user-message', 'other') },
+  ]);
   expect(live.read('thread', before.revision).unchanged).toBe(true);
-  live.reconcile('thread', [saved]);
+  live.reconcile('claude', 'thread', [saved]);
   expect(live.read('thread', before.revision)).toMatchObject({ unchanged: false, data: [] });
 });
