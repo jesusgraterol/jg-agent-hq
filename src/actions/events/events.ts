@@ -10,7 +10,7 @@ import {
   type IHistoryItem,
 } from '../../contracts/index.js';
 import { HQ_ERRORS, getErrorKind } from '../../errors/index.js';
-import type { IProviderReattachment } from '../../providers/index.js';
+import type { IProviderReattachment, IStoppedControl } from '../../providers/index.js';
 import { capabilityUnavailable } from '../../providers/registry/index.js';
 import type { INativeObservation } from '../../store/control/index.js';
 import { correlateEvidenceOrigins } from '../../sessions/index.js';
@@ -22,7 +22,7 @@ import {
   decideResync,
   type IResyncRequest,
 } from '../resync/index.js';
-import type { IActionsContext } from '../types.js';
+import type { IActionsContext, IOwnedControl } from '../types.js';
 import { agentUnavailable, keepsSessions } from '../utilities.js';
 
 import { TURN_FLUSH_PAGES } from './constants.js';
@@ -132,20 +132,23 @@ export const createEvents = (
     provider: IManagedThread['provider'],
     nativeId: string | undefined,
     operation: () => Promise<void>,
+    controlScope?: string,
   ): void => {
+    const expectedControl = nativeId ? controlled.get(key(provider, nativeId)) : undefined;
     runOwned(async () => {
       try {
         await operation();
       } catch {
+        if (expectedControl && controlled.get(key(provider, nativeId!)) !== expectedControl) return;
         await recordObservation({
           kind: 'native-unavailable',
           provider,
           ...(nativeId ? { nativeThreadId: nativeId } : {}),
         });
         try {
-          await registry.stopControl(provider, nativeId);
+          await stopFailedControl(provider, nativeId, controlScope, expectedControl);
         } catch {
-          /* the registry retains failed cleanup and quarantines this provider */
+          // failed cleanup remains with its controller and cannot establish stopped ownership
         }
       }
     });
@@ -183,6 +186,83 @@ export const createEvents = (
         failProvider(provider, error);
       else failEvents(error);
     });
+  };
+
+  /**
+   * Settles proven shutdown only while the same in-memory owner still names that conversation.
+   * @returns Completion after release, or no change for stale or competing ownership.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  const settleStoppedControl = async (
+    stopped: IStoppedControl,
+    expectedControl: IOwnedControl,
+  ): Promise<void> => {
+    const liveKey = key(expectedControl.provider, expectedControl.nativeId);
+    if (expectedControl.provider !== 'claude' || controlled.get(liveKey) !== expectedControl)
+      return;
+    try {
+      if (state.isClosing || context.claudeTerminalOf(stopped.nativeId)) return;
+      const thread = await store.call('reads', 'getThreadByNativeId', 'claude', stopped.nativeId);
+      if (
+        !thread ||
+        thread.runtimeEpoch !== epoch ||
+        thread.workspaceRoot !== stopped.workspaceRoot ||
+        controlled.get(liveKey) !== expectedControl ||
+        context.claudeTerminalOf(stopped.nativeId)
+      )
+        return;
+      const released = await store.call(
+        'lifecycle',
+        'releaseControl',
+        thread.id,
+        stopped.nativeId,
+        stopped.workspaceRoot,
+        epoch,
+      );
+      if (released) waits.notifyThread(thread.id);
+    } finally {
+      // proof released this old controller even when its ledger ownership has since changed
+      if (controlled.get(liveKey) === expectedControl) {
+        controlled.delete(liveKey);
+        watched.delete(liveKey);
+        for (const [id, prompt] of prompts)
+          if (
+            prompt.native.provider === 'claude' &&
+            prompt.native.nativeThreadId === stopped.nativeId
+          )
+            prompts.delete(id);
+      }
+    }
+  };
+
+  /**
+   * Delivers an exact owned shutdown proof to the serialized thread-settlement owner.
+   * @returns Confirmed native cleanup with any matching ledger release queued behind prior evidence.
+   * @throws
+   * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+   * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   */
+  const stopFailedControl = async (
+    provider: IManagedThread['provider'],
+    nativeId: string | undefined,
+    controlScope: string | undefined,
+    expectedControl: IOwnedControl | undefined,
+  ): Promise<void> => {
+    if (expectedControl && controlled.get(key(provider, nativeId!)) !== expectedControl) return;
+    const stopped = await registry.stopControl(provider, nativeId, controlScope);
+    if (
+      !stopped ||
+      !expectedControl ||
+      provider !== 'claude' ||
+      stopped.nativeId !== nativeId ||
+      (controlScope !== undefined && stopped.scope !== controlScope)
+    )
+      return;
+    enqueue(provider, () => settleStoppedControl(stopped, expectedControl));
   };
 
   // finished turns whose own history is being read, so a turn is read by one task at a time
@@ -489,12 +569,14 @@ export const createEvents = (
           });
       });
     },
-    unavailable(provider, nativeId) {
+    unavailable(provider, nativeId, controlScope) {
       if (state.isClosing || context.blockedProviders.has(provider)) return;
+      const expectedControl = nativeId ? controlled.get(key(provider, nativeId)) : undefined;
       context.asyncInputs.emit({ kind: 'recovery', provider, source: null, reason: 'output-gap' });
       const canReconnect = provider === 'codex' && nativeId === undefined;
       let reconnectable: IManagedThread[] = [];
       enqueue(provider, async () => {
+        if (expectedControl && controlled.get(key(provider, nativeId!)) !== expectedControl) return;
         if (canReconnect) reconnectable = await store.call('lifecycle', 'listReconnectable');
         await recordObservation({
           kind: 'native-unavailable',
@@ -529,7 +611,12 @@ export const createEvents = (
           }
         });
       } else
-        runNativeOwned(provider, nativeId, async () => registry.stopControl(provider, nativeId));
+        runNativeOwned(
+          provider,
+          nativeId,
+          () => stopFailedControl(provider, nativeId, controlScope, expectedControl),
+          controlScope,
+        );
     },
   });
 

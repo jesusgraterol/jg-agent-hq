@@ -40,6 +40,7 @@ export const startClaudeControl = () => {
  };
  let hasPrompt=false;
  let isClosing=false;
+ let shutdownHeld=false;
  // a turn the CLI starts on its own, as Claude does after a background command finishes
  let native=null,nativeTrigger=null,isTaskRunning=false,hasRaced=false;
  const endNative=interrupted=>{
@@ -107,6 +108,7 @@ export const startClaudeControl = () => {
   if(input&&!native&&control().release&&!hasPrompt){if(control().releaseOnce)writeFileSync(join(root,'claude-control.json'),JSON.stringify({...control(),release:false,releaseOnce:false}));complete();}
   if(heldResult&&control().releaseResult){const held=heldResult;heldResult=null;held();}
   const settings=control();
+  if(shutdownHeld&&(!settings.holdShutdown||settings.releaseShutdown)){shutdown();return;}
   if(isTaskRunning&&settings.finishBackgroundTask){isTaskRunning=false;out({type:'system',subtype:'task_updated',task_id:'task-1',run_id:'run-1',patch:{status:'completed',end_time:Date.now()}});out({type:'system',subtype:'task_notification',task_id:'task-1',run_id:'run-1',tool_use_id:'tool-task',status:'completed',output_file:'',summary:'done'});out({type:'system',subtype:'background_tasks_changed',tasks:[]});}
   if(native&&!native.hasPrompt&&settings.nativeRelease)endNative(false);
   // nativeAbandonPrompt ends the turn with its permission request still unanswered
@@ -139,6 +141,7 @@ export const startClaudeControl = () => {
     out({type:'system',subtype:'session_title_changed',title:message.request.title});if(settings.lateName)setTimeout(()=>response(),31000);else response();return;
    }
    if(subtype==='interrupt'){
+    if(settings.malformedInterrupt){process.stdout.write('not-json\n');return;}
     if(native){if(native.hasPrompt)out({type:'control_cancel_request',request_id:'native-turn-request'});response();setTimeout(()=>endNative(true),settings.interruptDelay??1);return;}
     if(hasPrompt)out({type:'control_cancel_request',request_id:'native-request'});
     const acknowledge=()=>{response();setTimeout(()=>complete(!settings.completeOnInterrupt),settings.interruptDelay??1);};
@@ -194,6 +197,7 @@ export const startClaudeControl = () => {
   }
  });
  const shutdown=()=>{
+  if(!isClosing&&control().holdShutdown&&!control().releaseShutdown){if(!shutdownHeld)appendFileSync(join(root,'claude-calls.jsonl'),JSON.stringify({type:'fixture_shutdown_held',uuid:id})+'\n');shutdownHeld=true;return;}
   if(isClosing)return;isClosing=true;clearInterval(interval);lines.close();process.stdin.destroy();
   child.once('close',()=>{process.exitCode=0;});child.kill('SIGTERM');
  };

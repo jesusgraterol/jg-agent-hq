@@ -10,6 +10,10 @@ import { z } from 'zod';
 
 import { withClaudeRuntime, writeFixtureControl } from '../../../../scripts/test-support/index.js';
 
+import { createStatements } from '../../utilities.js';
+
+import { ControlLifecycle } from './lifecycle.model.js';
+
 // the runtime epoch of each native observation the state root holds to recognize a repeated one
 const readEventEpochs = (stateRoot: string): string[] => {
   const database = new DatabaseSync(join(stateRoot, 'hq.sqlite'), { readOnly: true });
@@ -105,6 +109,88 @@ test('startup deletes the observations earlier runtimes recorded, and the new ru
       });
     } finally {
       await reopened.close();
+    }
+  });
+});
+
+test('targeted release refuses mismatched identity, workspace or epoch and changes only its thread', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const { runtime, workspaceRoot } = fixture;
+    const created = await Promise.all(
+      ['release-left', 'release-right'].map(async (name) => {
+        const response = await runtime.request({
+          kind: 'action',
+          action: {
+            id: randomUUID(),
+            runtimeEpoch: runtime.runtimeEpoch,
+            command: { kind: 'thread-create', provider: 'claude', workspaceRoot, name },
+          },
+        });
+        await expect
+          .poll(
+            async () =>
+              (await runtime.request({ kind: 'receipt', actionId: response.result.id })).result,
+          )
+          .toMatchObject({ delivery: 'acknowledged' });
+        return (
+          await runtime.request({ kind: 'managed-thread', threadId: response.result.threadId! })
+        ).result!;
+      }),
+    );
+    // the owning runtime proves shutdown before the isolated model exercises release predicates
+    await runtime.close();
+    const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
+    try {
+      const epoch = randomUUID();
+      const [left, right] = created;
+      database
+        .prepare(
+          "UPDATE agent_hq_thread SET runtime_epoch = ?, ownership = 'uncertain', state = 'unknown' WHERE id IN (?, ?)",
+        )
+        .run(epoch, left!.id, right!.id);
+      const lifecycle = new ControlLifecycle(
+        database,
+        createStatements(database),
+        epoch,
+        await readFile(join(fixture.stateRoot, 'action.key')),
+      );
+      const readState = (threadId: string) =>
+        database
+          .prepare('SELECT ownership, state, runtime_epoch FROM agent_hq_thread WHERE id = ?')
+          .get(threadId);
+      const original = readState(right!.id);
+      for (const target of [
+        { threadId: right!.id, nativeId: left!.nativeId!, workspaceRoot, epoch },
+        { threadId: left!.id, nativeId: randomUUID(), workspaceRoot, epoch },
+        {
+          threadId: left!.id,
+          nativeId: left!.nativeId!,
+          workspaceRoot: join(workspaceRoot, 'other'),
+          epoch,
+        },
+        { threadId: left!.id, nativeId: left!.nativeId!, workspaceRoot, epoch: randomUUID() },
+      ])
+        expect(
+          lifecycle.releaseControl(
+            target.threadId,
+            target.nativeId,
+            target.workspaceRoot,
+            target.epoch,
+          ),
+        ).toBeNull();
+      expect(readState(left!.id)).toStrictEqual(original);
+      expect(
+        lifecycle.releaseControl(left!.id, left!.nativeId!, workspaceRoot, epoch),
+      ).toMatchObject({
+        id: left!.id,
+        ownership: 'managed',
+        state: 'inactive',
+        runtimeEpoch: null,
+      });
+      expect(readState(right!.id)).toStrictEqual(original);
+      expect(lifecycle.releaseControl(left!.id, left!.nativeId!, workspaceRoot, epoch)).toBeNull();
+    } finally {
+      database.close();
     }
   });
 });

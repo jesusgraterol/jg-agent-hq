@@ -28,6 +28,9 @@ export type IActionsState = {
   ownedCount: number;
 };
 
+// identity of one in-memory controller ownership; replacing this entry invalidates old callbacks
+export type IOwnedControl = { provider: IManagedThread['provider']; nativeId: string };
+
 // what admission, dispatch, native events and reattachment share for one runtime
 export type IActionsContext = {
   registry: ReturnType<typeof createProviderRegistry>;
@@ -43,7 +46,7 @@ export type IActionsContext = {
   // the native requests waiting on an answer, by approval ID; their bodies stay in memory
   prompts: Map<string, { native: INativePrompt; threadId: string }>;
   // the native sessions this runtime controls, by live key
-  controlled: Map<string, { provider: IManagedThread['provider']; nativeId: string }>;
+  controlled: Map<string, IOwnedControl>;
   /*
    * Sessions a re-check after an unidentified loss left running, or skipped while an action was in
    * flight. Codex reporting one idle while its turn is recorded as active triggers the re-check a

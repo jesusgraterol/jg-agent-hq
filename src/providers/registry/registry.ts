@@ -16,6 +16,7 @@ import type {
   IAgentProviderFactory,
   INativePrompt,
   IProviderCall,
+  IStoppedControl,
 } from '../index.js';
 import { isCleanupUnconfirmed } from '../../errors/index.js';
 
@@ -29,7 +30,7 @@ type IProviderEntry = {
   adapter?: IAgentProvider;
   closing?: Promise<void>;
   failure?: unknown;
-  stopping: Map<string | undefined, Promise<void>>;
+  stopping: Map<string, Promise<IStoppedControl | void>>;
 };
 
 /** Returns an explicit observation when no usable capability descriptor could be obtained. */
@@ -194,7 +195,8 @@ export const createProviderRegistry = (
             thread,
           ),
         ),
-      unavailable: (nativeId) => deliver(() => handlers?.unavailable(provider, nativeId)),
+      unavailable: (nativeId, controlScope) =>
+        deliver(() => handlers?.unavailable(provider, nativeId, controlScope)),
     };
   };
 
@@ -382,31 +384,44 @@ export const createProviderRegistry = (
     },
     /**
      * Stops the selected failed control even after the entry has been quarantined.
-     * @returns Confirmed shutdown of that provider's affected control connection.
+     * @returns Confirmed shutdown, with exact identity proof when a controller was released.
      * @throws
      * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
      * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
      * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      */
-    async stopControl(provider: IProviderId, nativeId?: string): Promise<void> {
+    async stopControl(
+      provider: IProviderId,
+      nativeId?: string,
+      controlScope?: string,
+    ): Promise<IStoppedControl | void> {
       const entry = entries.get(provider);
       if (!entry?.adapter) return;
-      const existing = entry.stopping.get(nativeId);
+      const stoppingKey = JSON.stringify([nativeId ?? null, controlScope ?? null]);
+      const existing = entry.stopping.get(stoppingKey);
       if (existing) return existing;
       const stop = (async () => {
         // register ownership before a native close can synchronously report unavailability
         await Promise.resolve();
         try {
-          await bounded((call) => entry.adapter!.stopControl(nativeId, call));
+          return await bounded((call) =>
+            entry.adapter!.stopControl(nativeId, {
+              ...call,
+              ...(controlScope ? { controlScope } : {}),
+            }),
+          );
         } catch (cause) {
+          // a failed Claude group proof belongs to its retained controller, not its peers
+          if (provider === 'claude' && nativeId !== undefined) throw normalizeProviderError(cause);
           entry.failure ??= normalizeProviderError(cause);
           throw entry.failure;
         } finally {
-          entry.stopping.delete(nativeId);
+          entry.stopping.delete(stoppingKey);
         }
       })();
-      entry.stopping.set(nativeId, stop);
+      entry.stopping.set(stoppingKey, stop);
       return stop;
     },
     /**

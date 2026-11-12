@@ -11,7 +11,7 @@ export type IClaudeControlEvents = {
   delta(nativeId: string, turnId: string, itemId: string, text: string): void;
   prompt(prompt: INativePrompt): void;
   outcome(outcome: IAgentProviderOutcome): void;
-  unavailable(nativeId: string): void;
+  unavailable(nativeId: string, controlScope?: string): void;
 };
 
 // per-process ownership and bounded native correlation metadata

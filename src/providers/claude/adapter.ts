@@ -182,9 +182,19 @@ export const createClaudeProviderFactory = (
       },
       prepareShutdown: (nativeId) =>
         control.stopSession(`${randomUUID()}:shutdown-clean`, nativeId),
-      async stopControl(nativeId) {
-        if (nativeId) await control.stopSession(`${randomUUID()}:reject`, nativeId);
-        else await control.close();
+      async stopControl(nativeId, call) {
+        if (!nativeId) {
+          await control.close();
+          return;
+        }
+        const identity = control.getControlIdentity(nativeId, call.controlScope);
+        if (!identity) return;
+        const requestId = `${randomUUID()}:reject`;
+        await control.stopSession(requestId, nativeId, identity.scope);
+        // an admitted close already owns this controller's release and receipt
+        if (identity.isClosing) return;
+        await control.releaseSession(requestId, nativeId, identity.scope);
+        return { nativeId, workspaceRoot: identity.workspaceRoot, scope: identity.scope };
       },
       async close() {
         const results = await Promise.allSettled([reader.close(), control.close()]);

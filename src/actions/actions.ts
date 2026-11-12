@@ -185,7 +185,9 @@ export const createActions = (
         const providerStates = new Map(
           registry.statuses().map((status) => [status.provider, status.state]),
         );
-        for (const { provider, nativeId } of stopped) {
+        for (const entry of stopped) {
+          const { provider, nativeId } = entry;
+          if (controlled.get(key(provider, nativeId)) !== entry) continue;
           if (providerStates.get(provider) === 'unavailable') continue;
           const control = await registry.get(provider);
           if (control.isAvailable) await control.prepareShutdown(nativeId);

@@ -151,7 +151,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
         session.connection = undefined;
       } catch {
         session.parked = undefined;
-        events?.unavailable(session.id);
+        events?.unavailable(session.id, session.scope);
       }
     })().finally(() => {
       session.transition = undefined;
@@ -170,7 +170,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     try {
       await session.opening;
     } catch (error) {
-      events?.unavailable(session.id);
+      events?.unavailable(session.id, session.scope);
       throw error;
     }
   };
@@ -233,16 +233,22 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     signal?: AbortSignal,
   ): Promise<void> => {
     const nativeId = session.id;
+    const scope = session.scope;
     session.isResumed = isResume;
     // a new process has no turn of its own and no background commands yet
     session.nativeTurn = undefined;
     setBackgroundCommands(session, 0, events);
     const connection = await createClaudeRpc(
       (reason) => {
-        if (reason !== 'unavailable' || session.isClosing || session.parked) return;
+        if (
+          reason !== 'unavailable' ||
+          session.isClosing ||
+          session.parked ||
+          sessions.get(nativeId) !== session ||
+          session.scope !== scope
+        )
+          return;
         failSteers(session);
-        // the commands stopped with the process
-        setBackgroundCommands(session, 0, events);
         if (session.input) {
           clearTimeout(session.input.timer);
           session.input.reject(
@@ -251,7 +257,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
             }),
           );
         }
-        events?.unavailable(session.id);
+        events?.unavailable(session.id, scope);
       },
       {
         nativeId,
@@ -658,6 +664,22 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       });
     },
     /**
+     * Reads the owned identity without opening or changing its process.
+     * @returns Current controller identity, or undefined for a missing or replaced scope.
+     */
+    getControlIdentity(
+      nativeId: string,
+      expectedScope?: string,
+    ): { scope: string; workspaceRoot: string; isClosing: boolean } | undefined {
+      const session = sessions.get(nativeId);
+      if (!session || (expectedScope !== undefined && session.scope !== expectedScope)) return;
+      return {
+        scope: session.scope,
+        workspaceRoot: session.workspaceRoot,
+        isClosing: session.isClosing,
+      };
+    },
+    /**
      * Closes the owned CLI and proves that its process group has stopped.
      * @returns Confirmed shutdown including owned background processes.
      * @throws
@@ -665,20 +687,20 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
      * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
      */
-    async stopSession(_requestId: string, nativeId: string): Promise<void> {
+    async stopSession(_requestId: string, nativeId: string, expectedScope?: string): Promise<void> {
       const session = sessions.get(nativeId);
-      if (!session) conflict();
+      if (!session || (expectedScope !== undefined && session.scope !== expectedScope)) conflict();
       cancelIdleStop(session);
       session.isClosing = true;
-      // a stopped process replays nothing more, and its background commands stop with it
+      // a closing controller accepts no more steers, but its group is not proven stopped yet
       failSteers(session);
-      setBackgroundCommands(session, 0, events);
       // a parked session finishes without a process
       await session.transition?.catch(() => undefined);
       await session.opening.catch((cause: unknown) => {
         if (isCleanupUnconfirmed(cause)) throw cause;
       });
       await session.connection?.close();
+      setBackgroundCommands(session, 0, events);
     },
     /**
      * Releases a stopped session only after rechecking its shutdown promise.
@@ -687,10 +709,16 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
      */
-    async releaseSession(_requestId: string, nativeId: string): Promise<void> {
+    async releaseSession(
+      _requestId: string,
+      nativeId: string,
+      expectedScope?: string,
+    ): Promise<void> {
       const session = sessions.get(nativeId);
-      if (!session?.isClosing) conflict();
+      if (!session?.isClosing || (expectedScope !== undefined && session.scope !== expectedScope))
+        conflict();
       await session.connection?.close();
+      if (sessions.get(nativeId) !== session) conflict();
       sessions.delete(nativeId);
     },
     /**

@@ -68,7 +68,10 @@ export const ResyncLossSchema = z.enum([
 export type IResyncLoss = z.infer<typeof ResyncLossSchema>;
 
 // adapters must honor cancellation and keep delivery uncertain when native consumption is unproven
-export type IProviderCall = { signal: AbortSignal };
+export type IProviderCall = { signal: AbortSignal; controlScope?: string };
+
+// proof returned only after an exact owned controller and its process group have been released
+export type IStoppedControl = { nativeId: string; workspaceRoot: string; scope: string };
 
 /*
  * One page of a workspace's sessions, last activity first: its `cursor` is the continuation an
@@ -109,7 +112,7 @@ export type IAgentProviderEvents = {
   // the live state of a session another client drives, inside the allowed workspaces, with what
   // the adapter's first read of it found
   session(nativeId: string, state: ISessionState, thread: IObservedThread): void;
-  unavailable(nativeId?: string): void;
+  unavailable(nativeId?: string, controlScope?: string): void;
 };
 
 // factories receive trusted configuration and runtime lifetime ownership
@@ -299,8 +302,15 @@ export type IAgentProvider = {
   ): Promise<void>;
   /** @returns Confirmed native background cleanup before the runtime closes its transports. */
   prepareShutdown(nativeId: string, call: IProviderCall): Promise<void>;
-  /** @returns Confirmed shutdown of the affected native control connection. */
-  stopControl(nativeId: string | undefined, call: IProviderCall): Promise<void>;
+  /**
+   * @returns Confirmed shutdown, with identity proof when an owned controller was released.
+   * @throws
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
+   * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+   * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+   */
+  stopControl(nativeId: string | undefined, call: IProviderCall): Promise<IStoppedControl | void>;
   /** @returns Confirmed shutdown of every process and resource owned by this adapter. */
   close(): Promise<void>;
 };
