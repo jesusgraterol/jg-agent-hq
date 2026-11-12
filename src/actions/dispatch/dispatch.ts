@@ -8,12 +8,12 @@ import type {
   IPreparedInput,
 } from '../../contracts/index.js';
 import { HQ_ERRORS, toActionFailure } from '../../errors/index.js';
-import type { IProviderThread } from '../../providers/index.js';
+import type { IControlSource, IProviderThread } from '../../providers/index.js';
 import { retainNativeLineage, readInputFiles, toActionRequestId } from '../../providers/index.js';
 import { resolveWorkspaceTarget } from '../../runtime/state/index.js';
 import type { INativeOutcome } from '../../store/control/index.js';
 
-import type { IActionsContext } from '../types.js';
+import type { IActionsContext, IOwnedControl } from '../types.js';
 import { agentUnavailable, assertKnownTurn, conflict } from '../utilities.js';
 
 import { NEXT_PHASES } from './constants.js';
@@ -28,7 +28,10 @@ const NativeRejectionSchema = z.union([
  * phase's outcome to the action ledger.
  * @returns The dispatch operations the runtime's events, admission and reattachment share.
  */
-export const createDispatch = (context: IActionsContext) => {
+export const createDispatch = (
+  context: IActionsContext,
+  finishControlAction: (actionId: string, owner: IOwnedControl | undefined) => Promise<void>,
+) => {
   const { registry, store, roots, state, controlled, watched, waits } = context;
 
   const validateRoot = async (thread: IManagedThread): Promise<void> => {
@@ -122,6 +125,7 @@ export const createDispatch = (context: IActionsContext) => {
    * @param command The admitted command, when dispatch starts from admission.
    * @param input The prepared input of a turn, unless the receipt holds it as queued input.
    * @param recoveryTurn The verified current turn for explicit recovery of a loaded Codex session.
+   * @param quarantinedControl The exact owned Claude controller admitted for an explicit Stop.
    * @returns A promise resolved after delivery evidence or uncertainty is persisted, to the
    * failure it recorded, if any.
    * @throws
@@ -134,10 +138,14 @@ export const createDispatch = (context: IActionsContext) => {
     command?: IActionEnvelope['command'],
     input?: IPreparedInput,
     recoveryTurn?: Extract<INativeOutcome, { kind: 'resumed' }>['latestTurn'],
+    quarantinedControl?: IControlSource,
   ): Promise<unknown> => {
     let receipt = initial;
     let thread = originalThread;
     let hasDispatched = false;
+    let owner = thread?.nativeId
+      ? controlled.get(context.key(thread.provider, thread.nativeId))
+      : undefined;
     try {
       const provider = thread?.provider ?? receipt.provider;
       if (!provider) conflict();
@@ -169,6 +177,22 @@ export const createDispatch = (context: IActionsContext) => {
       for (;;) {
         const { phase } = receipt;
         if (!phase) conflict();
+        if (quarantinedControl) {
+          hasDispatched = false;
+          if (
+            command?.kind !== 'thread-close' ||
+            command.interrupt !== true ||
+            thread?.provider !== 'claude' ||
+            thread.runtimeEpoch !== context.epoch ||
+            thread.nativeId !== quarantinedControl.nativeId ||
+            thread.workspaceRoot !== quarantinedControl.workspaceRoot ||
+            controlled.get(context.key(thread.provider, thread.nativeId)) !== owner ||
+            !registry.isCurrentControl('claude', quarantinedControl) ||
+            !registry.isControlQuarantined('claude', quarantinedControl) ||
+            (phase !== 'clean' && phase !== 'close')
+          )
+            conflict();
+        }
         const requestId = toActionRequestId(receipt.id, phase);
         const nativeId = thread?.nativeId;
         hasDispatched = true;
@@ -185,6 +209,7 @@ export const createDispatch = (context: IActionsContext) => {
           );
           // bind the exact response before attempting the next, independently receipted phase
           context.own(thread.provider, created.nativeId);
+          owner = controlled.get(context.key(thread.provider, created.nativeId));
           next = await apply({
             kind: 'created',
             actionId: receipt.id,
@@ -195,6 +220,7 @@ export const createDispatch = (context: IActionsContext) => {
         } else if (phase === 'resume') {
           if (!thread || !nativeId) conflict();
           context.own(thread.provider, nativeId);
+          owner = controlled.get(context.key(thread.provider, nativeId));
           if (recoveryTurn !== undefined) {
             if (!control.reattachThread) conflict();
             // only the verified join may acknowledge this recovery, after its second turn read
@@ -356,6 +382,8 @@ export const createDispatch = (context: IActionsContext) => {
           : { kind: 'uncertain', actionId: receipt.id, phase: receipt.phase! },
       );
       return error;
+    } finally {
+      await finishControlAction(initial.id, owner);
     }
   };
 

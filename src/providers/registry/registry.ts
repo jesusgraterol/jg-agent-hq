@@ -16,6 +16,10 @@ import type {
   IAgentProviderFactory,
   INativePrompt,
   IProviderCall,
+  IStoppedControl,
+  IControlSource,
+  IControlSnapshot,
+  IControlObservation,
 } from '../index.js';
 import { isCleanupUnconfirmed } from '../../errors/index.js';
 
@@ -29,7 +33,7 @@ type IProviderEntry = {
   adapter?: IAgentProvider;
   closing?: Promise<void>;
   failure?: unknown;
-  stopping: Map<string | undefined, Promise<void>>;
+  stopping: Map<string, Promise<IStoppedControl | void>>;
 };
 
 /** Returns an explicit observation when no usable capability descriptor could be obtained. */
@@ -118,83 +122,193 @@ export const createProviderRegistry = (
     handlers?.unavailable(entry.factory.id);
     if (entry.adapter) void closeEntry(entry).catch(() => undefined);
   };
+  /** Verifies controller attribution against the adapter's live handle in this registry epoch. */
+  const matchesSource = (entry: IProviderEntry, source: IControlSource): boolean => {
+    const current = entry.adapter?.getControlSource?.(source.nativeId);
+    return current?.scope === source.scope && current.workspaceRoot === source.workspaceRoot;
+  };
+  /** Contains an attributable Claude interpretation failure without closing a provider. */
+  const quarantineOwned = (
+    entry: IProviderEntry,
+    source: IControlSource | undefined,
+    cause?: unknown,
+  ): boolean =>
+    entry.factory.id === 'claude' &&
+    source !== undefined &&
+    matchesSource(entry, source) &&
+    entry.adapter?.quarantineControl?.(source, cause) === true;
 
   /** Binds provider identity to the adapter's evidence and bounds its native replies. */
   const eventsFor = (entry: IProviderEntry): IAgentProviderEvents => {
     const provider = entry.factory.id;
-    const deliver = (operation: () => void): void => {
+    const deliver = (
+      operation: () => void,
+      source?: IControlSource,
+      isLifecycle = false,
+      nativeId?: string,
+    ): void => {
       if (entry.failure || isClosing) return;
+      if (
+        source &&
+        (!matchesSource(entry, source) ||
+          (!isLifecycle && entry.adapter?.isControlQuarantined?.(source)))
+      )
+        return;
+      if (source && nativeId !== undefined && source.nativeId !== nativeId) {
+        quarantineOwned(entry, source);
+        return;
+      }
       try {
         operation();
       } catch (cause) {
+        if (
+          !(isException(cause) && cause.code === 'JG_AGENT_HQ_STORE_FAILED') &&
+          quarantineOwned(entry, source, cause)
+        )
+          return;
         quarantine(entry, cause);
       }
     };
     return {
-      observe: (observation) => deliver(() => handlers?.observe(provider, observation)),
-      item: (nativeId, item, isComplete, replacedIds) =>
-        deliver(() => handlers?.item(provider, nativeId, item, isComplete, replacedIds)),
-      gap: (nativeId) => deliver(() => handlers?.gap(provider, nativeId)),
-      background: (nativeId, count) =>
-        deliver(() => handlers?.background(provider, nativeId, count)),
-      session: (nativeId, state, thread) =>
-        deliver(() => handlers?.session(provider, nativeId, state, thread)),
-      delta: (nativeId, turnId, itemId, text) =>
-        deliver(() => handlers?.delta(provider, nativeId, turnId, itemId, text)),
-      prompt: (prompt) =>
-        deliver(() => {
-          const bound: INativePrompt = {
-            ...prompt,
-            validate(response) {
-              try {
-                return prompt.validate(response);
-              } catch (cause) {
-                throw normalizeProviderError(cause);
-              }
-            },
-            async reply(response) {
-              try {
-                await bounded(() => prompt.reply(response), lifetime.signal);
-              } catch (cause) {
-                throw normalizeProviderError(cause);
-              }
-            },
-            async reject() {
-              try {
-                await bounded(() => prompt.reject(), lifetime.signal);
-              } catch (cause) {
-                throw normalizeProviderError(cause);
-              }
-            },
-          };
-          if (handlers) handlers.prompt(provider, bound);
-          else void bound.reject().catch((cause) => quarantine(entry, cause));
-        }),
-      unpresentable: (nativeId, reject) =>
-        deliver(() => {
-          const bound = async (): Promise<void> => {
-            try {
-              await bounded(() => reject(), lifetime.signal);
-            } catch (cause) {
-              throw normalizeProviderError(cause);
-            }
-          };
-          if (handlers) handlers.unpresentable(provider, nativeId, bound);
-          else void bound().catch((cause) => quarantine(entry, cause));
-        }),
-      resync: (nativeId, lost) => deliver(() => handlers?.resync(provider, nativeId, lost)),
-      // a created or resumed session's lineage comes from the native thread the adapter read
-      outcome: (outcome, thread) =>
-        deliver(() =>
-          handlers?.outcome(
-            provider,
-            outcome.kind === 'created' || outcome.kind === 'resumed'
-              ? { ...outcome, nativeLineage: thread?.nativeLineage ?? null }
-              : outcome,
-            thread,
-          ),
+      observe: (observation, source) =>
+        deliver(
+          () =>
+            handlers?.observe(
+              provider,
+              {
+                ...observation,
+                provider,
+                ...(source &&
+                observation.kind === 'native-unavailable' &&
+                observation.nativeThreadId === undefined
+                  ? { nativeThreadId: source.nativeId }
+                  : {}),
+              },
+              source,
+            ),
+          source,
+          false,
+          observation.nativeThreadId,
         ),
-      unavailable: (nativeId) => deliver(() => handlers?.unavailable(provider, nativeId)),
+      item: (nativeId, item, isComplete, replacedIds, source) =>
+        deliver(
+          () => handlers?.item(provider, nativeId, item, isComplete, replacedIds, source),
+          source,
+          false,
+          nativeId,
+        ),
+      gap: (nativeId, source) =>
+        deliver(() => handlers?.gap(provider, nativeId, source), source, false, nativeId),
+      background: (nativeId, count, source) =>
+        deliver(
+          () => handlers?.background(provider, nativeId, count, source),
+          source,
+          true,
+          nativeId,
+        ),
+      session: (nativeId, state, thread, source) =>
+        deliver(
+          () => handlers?.session(provider, nativeId, state, thread, source),
+          source,
+          false,
+          nativeId,
+        ),
+      delta: (nativeId, turnId, itemId, text, source) =>
+        deliver(
+          () => handlers?.delta(provider, nativeId, turnId, itemId, text, source),
+          source,
+          false,
+          nativeId,
+        ),
+      prompt: (prompt, source) =>
+        deliver(
+          () => {
+            const bound: INativePrompt = {
+              ...prompt,
+              validate(response) {
+                try {
+                  return prompt.validate(response);
+                } catch (cause) {
+                  throw normalizeProviderError(cause);
+                }
+              },
+              async reply(response) {
+                try {
+                  await bounded(() => prompt.reply(response), lifetime.signal);
+                } catch (cause) {
+                  throw normalizeProviderError(cause);
+                }
+              },
+              async reject() {
+                try {
+                  await bounded(() => prompt.reject(), lifetime.signal);
+                } catch (cause) {
+                  throw normalizeProviderError(cause);
+                }
+              },
+            };
+            if (handlers) handlers.prompt(provider, bound, source);
+            else
+              void bound.reject().catch((cause) => {
+                if (!quarantineOwned(entry, source, cause)) quarantine(entry, cause);
+              });
+          },
+          source,
+          false,
+          prompt.nativeThreadId,
+        ),
+      unpresentable: (nativeId, reject, source) =>
+        deliver(
+          () => {
+            const bound = async (): Promise<void> => {
+              try {
+                await bounded(() => reject(), lifetime.signal);
+              } catch (cause) {
+                throw normalizeProviderError(cause);
+              }
+            };
+            if (handlers) handlers.unpresentable(provider, nativeId, bound, source);
+            else
+              void bound().catch((cause) => {
+                if (!quarantineOwned(entry, source, cause)) quarantine(entry, cause);
+              });
+          },
+          source,
+          false,
+          nativeId,
+        ),
+      resync: (nativeId, lost, source) =>
+        deliver(
+          () => handlers?.resync(provider, nativeId ?? source?.nativeId, lost, source),
+          source,
+          false,
+          nativeId,
+        ),
+      // a created or resumed session's lineage comes from the native thread the adapter read
+      outcome: (outcome, thread, source) =>
+        deliver(
+          () =>
+            handlers?.outcome(
+              provider,
+              outcome.kind === 'created' || outcome.kind === 'resumed'
+                ? { ...outcome, nativeLineage: thread?.nativeLineage ?? null }
+                : outcome,
+              thread,
+              source,
+            ),
+          source,
+          false,
+          thread?.nativeId,
+        ),
+      unavailable: (nativeId, controlScope, source) =>
+        deliver(
+          () => handlers?.unavailable(provider, nativeId ?? source?.nativeId, controlScope, source),
+          source,
+          true,
+          nativeId,
+        ),
+      quarantined: (source) => deliver(() => handlers?.quarantined(provider, source), source, true),
+      quiescent: (source) => deliver(() => handlers?.quiescent(provider, source), source, true),
     };
   };
 
@@ -242,16 +356,22 @@ export const createProviderRegistry = (
         // a control the adapter couldn't parse leaves its native state unknown, so it quarantines
         const invokeControl = async <T>(
           operation: (call: IProviderCall) => Promise<T>,
+          nativeId?: string,
         ): Promise<T> =>
           invoke(async (call) => {
+            const source = nativeId ? adapter.getControlSource?.(nativeId) : undefined;
             try {
               return await operation(call);
             } catch (cause) {
               if (
                 cause instanceof z.ZodError ||
                 (isException(cause) && cause.cause instanceof z.ZodError)
-              )
-                quarantine(entry, cause);
+              ) {
+                const current = nativeId ? adapter.getControlSource?.(nativeId) : undefined;
+                if (source) quarantineOwned(entry, source, cause);
+                else if (!current || !adapter.isControlQuarantined?.(current))
+                  quarantine(entry, cause);
+              }
               throw cause;
             }
           });
@@ -272,7 +392,7 @@ export const createProviderRegistry = (
           readHistory: (command) => invoke((call) => adapter.readHistory(command, call)),
           readModels: (command) => invoke((call) => adapter.readModels(command, call)),
           inspectThread: (nativeId, workspaceRoot) =>
-            invokeControl((call) => adapter.inspectThread(nativeId, workspaceRoot, call)),
+            invokeControl((call) => adapter.inspectThread(nativeId, workspaceRoot, call), nativeId),
           readConfiguration: (command, nativeId) =>
             invoke((call) => adapter.readConfiguration(command, nativeId, call)),
           readUsage: () => invoke((call) => adapter.readUsage(call)),
@@ -282,8 +402,10 @@ export const createProviderRegistry = (
           startThread: (requestId, workspaceRoot, settings) =>
             invokeControl((call) => adapter.startThread(requestId, workspaceRoot, settings, call)),
           resumeThread: (requestId, nativeId, workspaceRoot, name, settings) =>
-            invokeControl((call) =>
-              adapter.resumeThread(requestId, nativeId, workspaceRoot, name, settings, call),
+            invokeControl(
+              (call) =>
+                adapter.resumeThread(requestId, nativeId, workspaceRoot, name, settings, call),
+              nativeId,
             ),
           ...(adapter.readReattachment && adapter.reattachThread
             ? {
@@ -296,25 +418,33 @@ export const createProviderRegistry = (
               }
             : {}),
           nameThread: (requestId, nativeId, name) =>
-            invokeControl((call) => adapter.nameThread(requestId, nativeId, name, call)),
+            invokeControl((call) => adapter.nameThread(requestId, nativeId, name, call), nativeId),
           validateInput: (nativeId, input) =>
             invoke((call) => adapter.validateInput(nativeId, input, call)),
           startTurn: (requestId, nativeId, text, skill, settings, files) =>
-            invokeControl((call) =>
-              adapter.startTurn(requestId, nativeId, text, skill, settings, files, call),
+            invokeControl(
+              (call) => adapter.startTurn(requestId, nativeId, text, skill, settings, files, call),
+              nativeId,
             ),
           steer: (requestId, nativeId, expectedTurnId, text, files) =>
-            invokeControl((call) =>
-              adapter.steer(requestId, nativeId, expectedTurnId, text, files, call),
+            invokeControl(
+              (call) => adapter.steer(requestId, nativeId, expectedTurnId, text, files, call),
+              nativeId,
             ),
           interrupt: (requestId, nativeId, nativeTurnId) =>
-            invokeControl((call) => adapter.interrupt(requestId, nativeId, nativeTurnId, call)),
+            invokeControl(
+              (call) => adapter.interrupt(requestId, nativeId, nativeTurnId, call),
+              nativeId,
+            ),
           cleanThread: (requestId, nativeId) =>
-            invokeControl((call) => adapter.cleanThread(requestId, nativeId, call)),
+            invokeControl((call) => adapter.cleanThread(requestId, nativeId, call), nativeId),
           releaseThread: (requestId, nativeId) =>
-            invokeControl((call) => adapter.releaseThread(requestId, nativeId, call)),
+            invokeControl((call) => adapter.releaseThread(requestId, nativeId, call), nativeId),
           deleteThread: (requestId, nativeId, workspaceRoot) =>
-            invokeControl((call) => adapter.deleteThread(requestId, nativeId, workspaceRoot, call)),
+            invokeControl(
+              (call) => adapter.deleteThread(requestId, nativeId, workspaceRoot, call),
+              nativeId,
+            ),
           prepareShutdown: (nativeId) => invoke((call) => adapter.prepareShutdown(nativeId, call)),
           stopControl: (nativeId) => invoke((call) => adapter.stopControl(nativeId, call)),
           close: () => closeEntry(entry),
@@ -328,6 +458,46 @@ export const createProviderRegistry = (
 
   return {
     get,
+    /** @returns Whether this exact source still belongs to this runtime's adapter. */
+    isCurrentControl(provider: IProviderId, source: IControlSource): boolean {
+      const entry = entries.get(provider);
+      return !!entry && !entry.failure && !isClosing && matchesSource(entry, source);
+    },
+    /** @returns The private current controller identity without starting the adapter. */
+    getControlSource(provider: IProviderId, nativeId: string): IControlSource | undefined {
+      return entries.get(provider)?.adapter?.getControlSource?.(nativeId);
+    },
+    /** @returns Whether the exact owned controller remains quarantined in this runtime. */
+    isControlQuarantined(provider: IProviderId, source: IControlSource): boolean {
+      const entry = entries.get(provider);
+      return (
+        !!entry &&
+        matchesSource(entry, source) &&
+        entry.adapter?.isControlQuarantined?.(source) === true
+      );
+    },
+    /** @returns Whether an attributable evidence failure was contained by its controller. */
+    quarantineControl(provider: IProviderId, source: IControlSource, cause?: unknown): boolean {
+      const entry = entries.get(provider);
+      return !!entry && quarantineOwned(entry, source, cause);
+    },
+    /** @returns Current owned handles before a shared inventory, without opening an adapter. */
+    snapshotControls(provider: IProviderId): IControlSnapshot[] {
+      const entry = entries.get(provider);
+      return entry && !entry.failure && !isClosing
+        ? (entry.adapter?.snapshotControls?.() ?? [])
+        : [];
+    },
+    /** Applies bounded inventory evidence only to the adapter already owned by this runtime. */
+    observeControls(
+      provider: IProviderId,
+      snapshots: IControlSnapshot[],
+      observations: IControlObservation[] | null,
+    ): void {
+      const entry = entries.get(provider);
+      if (entry && !entry.failure && !isClosing)
+        entry.adapter?.observeControls?.(snapshots, observations);
+    },
     /** Quarantines one provider after a source-specific lifecycle gap or invalid control response. */
     quarantine(provider: IProviderId, cause: unknown): void {
       const entry = entries.get(provider);
@@ -382,31 +552,50 @@ export const createProviderRegistry = (
     },
     /**
      * Stops the selected failed control even after the entry has been quarantined.
-     * @returns Confirmed shutdown of that provider's affected control connection.
+     * @returns Confirmed shutdown, with exact identity proof when a controller was released.
      * @throws
      * - JG_AGENT_HQ_PROVIDER_FAILED: The HQ provider integration failed
      * - JG_AGENT_HQ_CODEX_FAILED: The Codex integration failed
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
      * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+     * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      */
-    async stopControl(provider: IProviderId, nativeId?: string): Promise<void> {
+    async stopControl(
+      provider: IProviderId,
+      nativeId?: string,
+      controlScope?: string,
+      requiresQuiescence = false,
+    ): Promise<IStoppedControl | void> {
       const entry = entries.get(provider);
       if (!entry?.adapter) return;
-      const existing = entry.stopping.get(nativeId);
+      const stoppingKey = JSON.stringify([
+        nativeId ?? null,
+        controlScope ?? null,
+        requiresQuiescence,
+      ]);
+      const existing = entry.stopping.get(stoppingKey);
       if (existing) return existing;
       const stop = (async () => {
         // register ownership before a native close can synchronously report unavailability
         await Promise.resolve();
         try {
-          await bounded((call) => entry.adapter!.stopControl(nativeId, call));
+          return await bounded((call) =>
+            entry.adapter!.stopControl(nativeId, {
+              ...call,
+              ...(controlScope ? { controlScope } : {}),
+              ...(requiresQuiescence ? { requiresQuiescence } : {}),
+            }),
+          );
         } catch (cause) {
+          // a failed Claude group proof belongs to its retained controller, not its peers
+          if (provider === 'claude' && nativeId !== undefined) throw normalizeProviderError(cause);
           entry.failure ??= normalizeProviderError(cause);
           throw entry.failure;
         } finally {
-          entry.stopping.delete(nativeId);
+          entry.stopping.delete(stoppingKey);
         }
       })();
-      entry.stopping.set(nativeId, stop);
+      entry.stopping.set(stoppingKey, stop);
       return stop;
     },
     /**

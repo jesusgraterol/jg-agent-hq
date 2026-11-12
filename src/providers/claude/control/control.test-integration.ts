@@ -1,13 +1,17 @@
 // @vitest-environment node
 import { randomUUID } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as wait } from 'node:timers/promises';
+import { signHmac } from 'jg-crypto';
 import { expectToRejectCode } from 'jg-exception/testing';
 import { hasErrorCode } from 'jg-exception';
 import type { IActionCommand, IActionEnvelope, IManagedThread } from 'jg-agent-hq/contracts';
 import { expect, test, vi } from 'vitest';
 import { z } from 'zod';
+
+import { writeFixtureControl } from '../../../../scripts/test-support/index.js';
 
 import {
   claudeRecord,
@@ -18,6 +22,7 @@ import {
   countHeldDelays,
   releaseHeldDelays,
   startHoldingDelays,
+  stopHoldingDelays,
 } from '../../../../scripts/test-support/delays.js';
 
 import { createClaudeControl } from './control.js';
@@ -135,6 +140,7 @@ const actions = async (fixture: IClaudeFixture) => {
           JSON.parse(line) as {
             type: string;
             uuid?: string;
+            batch?: string;
             request?: { subtype: string };
             response?: { request_id: string; response: unknown };
           },
@@ -162,6 +168,106 @@ const actions = async (fixture: IClaudeFixture) => {
     approvals,
     message,
   };
+};
+
+type IQuarantinedInventory = {
+  fixture: IClaudeFixture;
+  api: Awaited<ReturnType<typeof actions>>;
+  left: IManagedThread;
+  right: IManagedThread;
+  leftPid: number;
+  rightPid: number;
+  agent: {
+    sessionId: string;
+    cwd: string;
+    pid: number;
+    kind: string;
+    status: string;
+    startedAt: number;
+  };
+  poll(): Promise<void>;
+  background(): Promise<number>;
+};
+
+/** Owns controlled observer intervals alongside the existing complete runtime fixture teardown. */
+const withControlledObserver = async (
+  run: (fixture: IClaudeFixture) => Promise<void>,
+): Promise<void> => {
+  startHoldingDelays(5, 30);
+  try {
+    await withClaudeRuntime(run);
+  } finally {
+    stopHoldingDelays();
+    startHoldingDelays(3_600);
+  }
+  expect(countHeldDelays(5)).toBe(0);
+  expect(countHeldDelays(30)).toBe(0);
+};
+
+/** Runs the complete runtime/registry/store path with one controlled native inventory poll. */
+const withQuarantinedInventory = async (
+  run: (context: IQuarantinedInventory) => Promise<void>,
+  hasBackgroundTask = true,
+): Promise<void> => {
+  await withControlledObserver(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread: left } = await api.create('quarantined-native-inventory');
+    const { thread: right } = await api.create('native-inventory-peer');
+    const [leftPid, rightPid] = await readPids(fixture);
+    await fixture.control({
+      backgroundTask: hasBackgroundTask,
+      frames: [
+        {
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'No preceding block' },
+          },
+        },
+      ],
+    });
+    await api.message(left.id);
+    await expect
+      .poll(() => api.thread(left.id))
+      .toMatchObject({ ownership: 'uncertain', state: 'unknown' });
+    const background = async () =>
+      (await fixture.request({ kind: 'live-items', threadId: left.id })).result.backgroundCommands;
+    await expect.poll(background).toBe(hasBackgroundTask ? 1 : 0);
+    const agent = {
+      sessionId: left.nativeId!,
+      cwd: fixture.workspaceRoot,
+      pid: leftPid!,
+      kind: 'interactive',
+      status: 'idle',
+      startedAt: 1_700_000_000_000,
+    };
+    const runs = async () =>
+      (await readFile(join(fixture.root, 'claude-agents-runs.jsonl'), 'utf8')).trim().split('\n')
+        .length;
+    const poll = async () => {
+      await expect.poll(() => countHeldDelays(5)).toBe(1);
+      const before = await runs();
+      expect(releaseHeldDelays(5)).toBe(1);
+      await expect.poll(() => countHeldDelays(5)).toBe(1);
+      expect(await runs()).toBe(before + 1);
+    };
+    await writeFixtureControl(fixture.root, 'claude-agents.json', { agents: [agent] });
+    await fixture.request({ kind: 'observation-pace', pace: 'live' });
+    await poll();
+    expect(isRunning(-leftPid!)).toBe(true);
+    await run({
+      fixture,
+      api,
+      left,
+      right,
+      leftPid: leftPid!,
+      rightPid: rightPid!,
+      agent,
+      poll,
+      background,
+    });
+  });
 };
 
 test('Claude creates and names an idle native session, deduplicates input and reconciles live items with native history', async () => {
@@ -817,19 +923,1340 @@ test('identical native request IDs in different Claude processes cannot cross-an
   });
 });
 
+test('a constructed Claude stream interpretation mismatch preserves its process and its peer controls', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const left = await api.create('semantic-mismatch');
+    const right = await api.create('semantic-peer');
+    const [leftPid, rightPid] = await readPids(fixture);
+    await fixture.control({
+      frames: [
+        {
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'No preceding block' },
+          },
+        },
+      ],
+    });
+    const input = await api.message(left.thread.id);
+    await expect.poll(() => api.receipt(input.id)).toMatchObject({ delivery: 'acknowledged' });
+    // drain owned/event work, whether maintenance admits or refuses the resulting checkpoint
+    try {
+      await fixture.runtime.withStorageMaintenance(async () => undefined);
+    } catch (error) {
+      if (!hasErrorCode(error, 'JG_AGENT_HQ_ACTION_CONFLICT')) throw error;
+    }
+    expect(isRunning(-leftPid!)).toBe(true);
+    expect(isRunning(-rightPid!)).toBe(true);
+    expect(await api.thread(left.thread.id)).toMatchObject({
+      ownership: 'uncertain',
+      state: 'unknown',
+    });
+    await fixture.control({});
+    const next = await api.message(right.thread.id);
+    await expect.poll(() => api.receipt(next.id)).toMatchObject({ completion: 'completed' });
+  });
+});
+
+test('a constructed conflicting Claude observation quarantines only its controller and keeps both processes alive', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const left = await api.create('conflicting-observation');
+    const right = await api.create('observation-peer');
+    const [leftPid, rightPid] = await readPids(fixture);
+    await fixture.control({ holdReplay: true, holdTurn: true });
+    await api.message(left.thread.id);
+    await expect
+      .poll(async () => (await api.calls()).find((call) => call.type === 'user')?.uuid)
+      .toBeDefined();
+    const nativeTurnId = (await api.calls()).find((call) => call.type === 'user')!.uuid!;
+    const actionKey = await readFile(join(fixture.stateRoot, 'action.key'));
+    // the fixture previously recorded the same valid observation with a different serialized digest
+    const prior = {
+      provider: 'claude',
+      kind: 'turn-started',
+      nativeThreadId: left.thread.nativeId!,
+      nativeTurnId,
+    };
+    const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
+    try {
+      database
+        .prepare('INSERT INTO agent_hq_event (runtime_epoch, event_key, digest) VALUES (?, ?, ?)')
+        .run(
+          api.status.result.runtimeEpoch,
+          signHmac(
+            JSON.stringify(['claude', 'turn-started', left.thread.nativeId, nativeTurnId, null]),
+            actionKey,
+          ),
+          signHmac(JSON.stringify(prior), actionKey),
+        );
+    } finally {
+      database.close();
+    }
+    await fixture.control({ releaseReplay: true, holdTurn: true });
+    await expect
+      .poll(() => api.thread(left.thread.id))
+      .toMatchObject({ ownership: 'uncertain', state: 'unknown' });
+    try {
+      await fixture.runtime.withStorageMaintenance(async () => undefined);
+    } catch (error) {
+      if (!hasErrorCode(error, 'JG_AGENT_HQ_ACTION_CONFLICT')) throw error;
+    }
+    expect(isRunning(-leftPid!)).toBe(true);
+    expect(isRunning(-rightPid!)).toBe(true);
+    expect(await api.thread(right.thread.id)).toMatchObject({
+      ownership: 'managed',
+      state: 'idle',
+    });
+    await fixture.control({});
+    const next = await api.message(right.thread.id);
+    await expect.poll(() => api.receipt(next.id)).toMatchObject({ completion: 'completed' });
+  });
+});
+
+test.each(['digest', 'global-capacity', 'native-capacity'])(
+  'Claude approval %s failure contains only the attributed controller and preserves peer approval',
+  async (mode) => {
+    await withClaudeRuntime(async (fixture) => {
+      const api = await actions(fixture);
+      const { thread: left } = await api.create('approval-conflict');
+      const { thread: right } = await api.create('approval-conflict-peer');
+      const [leftPid, rightPid] = await readPids(fixture);
+      await fixture.control({ holdTurn: true });
+      const leftInput = await api.message(left.id);
+      const rightInput = await api.message(right.id);
+      await api.settled(leftInput.id);
+      const rightReceipt = await api.settled(rightInput.id);
+      const permission = (id: string, command = 'echo permission') => ({
+        type: 'control_request',
+        request_id: id,
+        request: {
+          subtype: 'can_use_tool',
+          tool_name: 'Bash',
+          tool_use_id: id,
+          input: { command },
+        },
+      });
+      const emit = async (nativeId: string, frames: object[]) => {
+        const batch = randomUUID();
+        await fixture.control({ holdTurn: true, frameBatch: { id: batch, nativeId, frames } });
+        await expect
+          .poll(async () =>
+            (await api.calls()).some(
+              (call) => call.type === 'fixture_frames_sent' && call.batch === batch,
+            ),
+          )
+          .toBe(true);
+      };
+      await emit(right.nativeId!, [permission('peer-request')]);
+      await expect.poll(() => api.approvals(right.id)).toHaveLength(1);
+      let originalDigest: unknown;
+      if (mode === 'digest') {
+        await emit(left.nativeId!, [permission('conflicting-request')]);
+        await expect.poll(() => api.approvals(left.id)).toHaveLength(1);
+        const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
+        try {
+          originalDigest = database
+            .prepare('SELECT digest FROM agent_hq_native_approval WHERE thread_id = ?')
+            .get(left.id)?.digest;
+        } finally {
+          database.close();
+        }
+        await emit(left.nativeId!, [
+          { type: 'control_cancel_request', request_id: 'conflicting-request' },
+        ]);
+        await expect.poll(() => api.approvals(left.id)).toHaveLength(0);
+        // the interpreter released this identity; the ledger must still reject its changed fingerprint
+        await emit(left.nativeId!, [permission('conflicting-request', 'echo different')]);
+      } else {
+        const count = mode === 'global-capacity' ? 32 : 33;
+        await emit(
+          left.nativeId!,
+          Array.from({ length: count }, (_, index) => permission(`request-${index}`)),
+        );
+      }
+      await expect
+        .poll(() => api.thread(left.id))
+        .toMatchObject({ ownership: 'uncertain', state: 'unknown' });
+      expect(isRunning(-leftPid!)).toBe(true);
+      expect(isRunning(-rightPid!)).toBe(true);
+      expect(await api.approvals(left.id)).toStrictEqual([]);
+      const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
+      try {
+        expect(
+          database
+            .prepare(
+              "SELECT count(*) AS count FROM agent_hq_native_approval WHERE state = 'pending'",
+            )
+            .get()?.count,
+        ).toBe(1);
+        if (mode === 'digest')
+          expect(
+            database
+              .prepare('SELECT digest FROM agent_hq_native_approval WHERE thread_id = ?')
+              .get(left.id)?.digest,
+          ).toBe(originalDigest);
+      } finally {
+        database.close();
+      }
+      const [prompt] = await api.approvals(right.id);
+      const reply = api.envelope({
+        kind: 'native-reply',
+        threadId: right.id,
+        expectedTurnId: rightReceipt.nativeTurnId!,
+        approvalId: prompt!.id,
+        response: { kind: 'decision', decision: 'decline' },
+      });
+      await api.submit(reply);
+      await expect
+        .poll(async () => (await api.calls()).filter((call) => call.type === 'control_response'))
+        .toHaveLength(1);
+      expect(
+        (await api.calls()).find((call) => call.type === 'control_response')?.response?.request_id,
+      ).toBe('peer-request');
+      expect((await api.thread(right.id)).ownership).toBe('managed');
+      expect(isRunning(-leftPid!)).toBe(true);
+    });
+  },
+);
+
+test('Claude quarantine immediately after a result cancels the idle period and cannot rearm it', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create('quarantine-idle-timer');
+    const [pid] = await readPids(fixture);
+    await fixture.control({
+      afterResultFrames: [
+        {
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'No preceding block' },
+          },
+        },
+      ],
+    });
+    await api.message(thread.id);
+    await expect
+      .poll(() => api.thread(thread.id))
+      .toMatchObject({ ownership: 'uncertain', state: 'unknown' });
+    // releasing the controlled 3,600-second period finds no quarantined idle wait to fire
+    expect(releaseHeldDelays(3_600)).toBe(0);
+    expect(countHeldDelays(3_600)).toBe(0);
+    expect(isRunning(-pid!)).toBe(true);
+  });
+});
+
+test('Claude quarantine fences a park whose settings acknowledgement already resolved in the same frame batch', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create('quarantine-awaiting-settings');
+    const [pid] = await readPids(fixture);
+    const input = await api.message(thread.id);
+    await expect.poll(() => api.receipt(input.id)).toMatchObject({ completion: 'completed' });
+    await expect.poll(() => countHeldDelays(3_600)).toBe(1);
+    await fixture.control({ holdSettings: true });
+    try {
+      expect(releaseHeldDelays(3_600)).toBe(1);
+      await expect
+        .poll(() => api.calls())
+        .toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ type: 'fixture_settings_held', uuid: thread.nativeId }),
+          ]),
+        );
+      // one write resolves get_settings then triggers quarantine before park's await continues
+      await fixture.control({ releaseSettings: true, mismatchAfterSettings: true });
+      await expect
+        .poll(() => api.thread(thread.id))
+        .toMatchObject({ ownership: 'uncertain', state: 'unknown' });
+      try {
+        await fixture.runtime.withStorageMaintenance(async () => undefined);
+      } catch (error) {
+        if (!hasErrorCode(error, 'JG_AGENT_HQ_ACTION_CONFLICT')) throw error;
+      }
+      expect(isRunning(-pid!)).toBe(true);
+      expect(countHeldDelays(3_600)).toBe(0);
+    } finally {
+      await fixture.control({});
+    }
+  });
+});
+
+test('Claude quarantine leaves a held settings response unanswered and a later response cannot rearm parking', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create('quarantine-late-settings');
+    const [pid] = await readPids(fixture);
+    const input = await api.message(thread.id);
+    await expect.poll(() => api.receipt(input.id)).toMatchObject({ completion: 'completed' });
+    await expect.poll(() => countHeldDelays(3_600)).toBe(1);
+    await fixture.control({ holdSettings: true });
+    try {
+      releaseHeldDelays(3_600);
+      await expect
+        .poll(() => api.calls())
+        .toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ type: 'fixture_settings_held', uuid: thread.nativeId }),
+          ]),
+        );
+      await fixture.control({
+        holdSettings: true,
+        frameBatch: {
+          id: randomUUID(),
+          nativeId: thread.nativeId,
+          frames: [{ type: 'result', subtype: 'success', is_error: false }],
+        },
+      });
+      await expect
+        .poll(() => api.thread(thread.id))
+        .toMatchObject({ ownership: 'uncertain', state: 'unknown' });
+      await fixture.control({ releaseSettings: true });
+      try {
+        await fixture.runtime.withStorageMaintenance(async () => undefined);
+      } catch (error) {
+        if (!hasErrorCode(error, 'JG_AGENT_HQ_ACTION_CONFLICT')) throw error;
+      }
+      expect(countHeldDelays(3_600)).toBe(0);
+      expect(isRunning(-pid!)).toBe(true);
+    } finally {
+      await fixture.control({});
+    }
+  });
+});
+
+test('fresh owned Claude idle inventory waits for known empty tasks, then settles only its original conversation', async () => {
+  await withQuarantinedInventory(
+    async ({ fixture, api, left, right, leftPid, rightPid, agent, poll, background }) => {
+      expect(await background()).toBe(1);
+      await poll();
+      expect(isRunning(-leftPid)).toBe(true);
+      await fixture.control({ finishBackgroundTask: true });
+      await expect.poll(background).toBe(0);
+      await poll();
+      await expect
+        .poll(() => api.thread(left.id))
+        .toMatchObject({
+          ownership: 'managed',
+          state: 'inactive',
+          runtimeEpoch: null,
+          nativeId: agent.sessionId,
+        });
+      expect(isRunning(-leftPid)).toBe(false);
+      expect(isRunning(-rightPid)).toBe(true);
+      const next = await api.message(right.id);
+      await expect.poll(() => api.receipt(next.id)).toMatchObject({ completion: 'completed' });
+    },
+  );
+});
+
+test.each([
+  'missing',
+  'busy',
+  'unknown',
+  'wrong-pid',
+  'wrong-native',
+  'wrong-workspace',
+  'changed-start',
+  'missing-start',
+  'duplicate',
+  'malformed',
+  'oversized',
+])('owned Claude inventory %s provides no automatic shutdown authority', async (mode) => {
+  await withQuarantinedInventory(
+    async ({ fixture, api, left, leftPid, rightPid, agent, poll, background }) => {
+      await fixture.control({ finishBackgroundTask: true });
+      await expect.poll(background).toBe(0);
+      let report: object = { agents: [agent] };
+      if (mode === 'missing') report = { agents: [] };
+      else if (mode === 'busy' || mode === 'unknown')
+        report = { agents: [{ ...agent, status: mode }] };
+      else if (mode === 'wrong-pid') report = { agents: [{ ...agent, pid: rightPid }] };
+      else if (mode === 'wrong-native')
+        report = { agents: [{ ...agent, sessionId: randomUUID() }] };
+      else if (mode === 'wrong-workspace') {
+        const other = join(fixture.workspaceRoot, 'other');
+        await mkdir(other);
+        report = { agents: [{ ...agent, cwd: other }] };
+      } else if (mode === 'changed-start')
+        report = { agents: [{ ...agent, startedAt: agent.startedAt + 1 }] };
+      else if (mode === 'missing-start') {
+        const { startedAt: _startedAt, ...withoutStart } = agent;
+        report = { agents: [withoutStart] };
+      } else if (mode === 'duplicate') report = { agents: [agent, agent] };
+      else report = { [mode]: true };
+      await writeFixtureControl(fixture.root, 'claude-agents.json', report);
+      await poll();
+      expect(isRunning(-leftPid)).toBe(true);
+      expect(isRunning(-rightPid)).toBe(true);
+      expect(await api.thread(left.id)).toMatchObject({ ownership: 'uncertain', state: 'unknown' });
+      // a new complete matching inventory is required even when native activity did not change
+      await writeFixtureControl(fixture.root, 'claude-agents.json', { agents: [agent] });
+      await poll();
+      await expect
+        .poll(() => api.thread(left.id))
+        .toMatchObject({ ownership: 'managed', state: 'inactive' });
+    },
+  );
+});
+
+test('owned Claude idle inventory cannot replace a missing full task snapshot with default zero', async () => {
+  await withQuarantinedInventory(async ({ fixture, api, left, leftPid, poll, background }) => {
+    await poll();
+    expect(await background()).toBe(0);
+    expect(isRunning(-leftPid)).toBe(true);
+    await fixture.control({
+      frameBatch: {
+        id: randomUUID(),
+        nativeId: left.nativeId,
+        frames: [
+          { type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'task' }] },
+        ],
+      },
+    });
+    await expect.poll(background).toBe(1);
+    await fixture.control({
+      frameBatch: {
+        id: randomUUID(),
+        nativeId: left.nativeId,
+        frames: [{ type: 'system', subtype: 'background_tasks_changed', tasks: [] }],
+      },
+    });
+    await expect.poll(background).toBe(0);
+    await poll();
+    await expect
+      .poll(() => api.thread(left.id))
+      .toMatchObject({ ownership: 'managed', state: 'inactive' });
+  }, false);
+});
+
+test.each(['cancel', 'stop'])(
+  'an unanswered quarantined Claude request prevents idle cleanup until explicit %s',
+  async (resolution) => {
+    await withQuarantinedInventory(
+      async ({ fixture, api, left, leftPid, rightPid, poll, background }) => {
+        await fixture.control({ finishBackgroundTask: true });
+        await expect.poll(background).toBe(0);
+        await fixture.control({
+          frameBatch: {
+            id: randomUUID(),
+            nativeId: left.nativeId,
+            frames: [
+              {
+                type: 'control_request',
+                request_id: 'waiting-native-request',
+                request: {
+                  subtype: 'can_use_tool',
+                  tool_name: 'Bash',
+                  tool_use_id: 'waiting-tool',
+                  input: { command: 'echo waiting' },
+                },
+              },
+              {
+                type: 'system',
+                subtype: 'background_tasks_changed',
+                tasks: [{ task_id: 'barrier' }],
+              },
+            ],
+          },
+        });
+        await expect.poll(background).toBe(1);
+        await fixture.control({
+          frameBatch: {
+            id: randomUUID(),
+            nativeId: left.nativeId,
+            frames: [{ type: 'system', subtype: 'background_tasks_changed', tasks: [] }],
+          },
+        });
+        await expect.poll(background).toBe(0);
+        await poll();
+        expect(isRunning(-leftPid)).toBe(true);
+        expect(await api.approvals(left.id)).toStrictEqual([]);
+        expect(
+          (await api.calls()).filter((call) => call.type === 'control_response'),
+        ).toStrictEqual([]);
+        if (resolution === 'cancel') {
+          await fixture.control({
+            frameBatch: {
+              id: randomUUID(),
+              nativeId: left.nativeId,
+              frames: [
+                { type: 'control_cancel_request', request_id: 'waiting-native-request' },
+                {
+                  type: 'system',
+                  subtype: 'background_tasks_changed',
+                  tasks: [{ task_id: 'barrier' }],
+                },
+              ],
+            },
+          });
+          await expect.poll(background).toBe(1);
+          await fixture.control({
+            frameBatch: {
+              id: randomUUID(),
+              nativeId: left.nativeId,
+              frames: [{ type: 'system', subtype: 'background_tasks_changed', tasks: [] }],
+            },
+          });
+          await expect.poll(background).toBe(0);
+          await poll();
+        } else {
+          const close = api.envelope({ kind: 'thread-close', threadId: left.id, interrupt: true });
+          await api.submit(close);
+          await expect
+            .poll(() => api.receipt(close.id))
+            .toMatchObject({ delivery: 'acknowledged' });
+        }
+        await expect
+          .poll(() => api.thread(left.id))
+          .toMatchObject({ ownership: 'managed', state: 'inactive' });
+        expect(isRunning(-leftPid)).toBe(false);
+        expect(isRunning(-rightPid)).toBe(true);
+      },
+    );
+  },
+);
+
+test('a quarantined Claude lifecycle flood leaves native work and peer live controls available', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread: left } = await api.create('lifecycle-overflow');
+    const { thread: right } = await api.create('lifecycle-overflow-peer');
+    const [leftPid, rightPid] = await readPids(fixture);
+    await fixture.control({
+      frameBatch: {
+        id: randomUUID(),
+        nativeId: left.nativeId,
+        frames: Array.from({ length: 256 }, () => [
+          {
+            type: 'assistant',
+            uuid: randomUUID(),
+            message: { role: 'assistant', content: [{ type: 'text', text: 'Native follow-up' }] },
+          },
+          { type: 'result', subtype: 'success', is_error: false },
+        ]).flat(),
+      },
+    });
+    await expect
+      .poll(() => api.thread(left.id))
+      .toMatchObject({ ownership: 'uncertain', state: 'unknown' });
+    expect(isRunning(-leftPid!)).toBe(true);
+    expect(isRunning(-rightPid!)).toBe(true);
+    await fixture.control({ holdResult: true });
+    const input = await api.message(right.id);
+    await expect.poll(() => api.receipt(input.id)).toMatchObject({ delivery: 'acknowledged' });
+    await expect
+      .poll(
+        async () =>
+          (await fixture.request({ kind: 'live-items', threadId: right.id })).result.data.length,
+      )
+      .toBeGreaterThan(0);
+    await fixture.control({ releaseResult: true });
+    await expect.poll(() => api.receipt(input.id)).toMatchObject({ completion: 'completed' });
+    expect(isRunning(-leftPid!)).toBe(true);
+  });
+});
+
+test('a late quarantined Claude control response removes only the monitor wait and never acknowledges its uncertain action', async () => {
+  await withControlledObserver(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create('quarantined-late-control');
+    const [pid] = await readPids(fixture);
+    await fixture.control({ badNameResponse: true });
+    const rename = api.envelope({
+      kind: 'thread-rename',
+      threadId: thread.id,
+      name: 'unconfirmed-late-name',
+    });
+    await api.submit(rename);
+    await expect.poll(() => api.receipt(rename.id)).toMatchObject({ delivery: 'uncertain' });
+    await expect
+      .poll(() => api.thread(thread.id))
+      .toMatchObject({ ownership: 'uncertain', state: 'unknown' });
+    const background = async () =>
+      (await fixture.request({ kind: 'live-items', threadId: thread.id })).result
+        .backgroundCommands;
+    const snapshot = async (tasks: { task_id: string }[], extra: object = {}) => {
+      await fixture.control({
+        ...extra,
+        frameBatch: {
+          id: randomUUID(),
+          nativeId: thread.nativeId,
+          frames: [{ type: 'system', subtype: 'background_tasks_changed', tasks }],
+        },
+      });
+      await expect.poll(background).toBe(tasks.length);
+    };
+    await snapshot([{ task_id: 'barrier' }]);
+    await snapshot([]);
+    await writeFixtureControl(fixture.root, 'claude-agents.json', {
+      agents: [
+        {
+          sessionId: thread.nativeId,
+          cwd: fixture.workspaceRoot,
+          pid,
+          kind: 'interactive',
+          status: 'idle',
+        },
+      ],
+    });
+    const poll = async () => {
+      await expect.poll(() => countHeldDelays(5)).toBe(1);
+      expect(releaseHeldDelays(5)).toBe(1);
+      await expect.poll(() => countHeldDelays(5)).toBe(1);
+    };
+    await fixture.request({ kind: 'observation-pace', pace: 'live' });
+    await poll();
+    expect(isRunning(-pid!)).toBe(true);
+    expect(await api.receipt(rename.id)).toMatchObject({ delivery: 'uncertain' });
+    // the actual late response precedes this observable task snapshot in the native byte stream
+    await snapshot([{ task_id: 'barrier' }], { releaseNameResponse: true });
+    await snapshot([]);
+    await poll();
+    await expect
+      .poll(() => api.thread(thread.id))
+      .toMatchObject({ ownership: 'managed', state: 'inactive' });
+    expect(await api.receipt(rename.id)).toMatchObject({ delivery: 'uncertain' });
+    expect((await api.thread(thread.id)).name).toBe('quarantined-late-control');
+  });
+});
+
+test('Claude automatic close rechecks activity and exact inventory ownership immediately before group shutdown', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const control = createClaudeControl();
+    const counts = new Map<string, number>();
+    let quiescent = 0;
+    control.setEvents({
+      observe: () => undefined,
+      item: () => undefined,
+      gap: () => undefined,
+      background: (nativeId, count) => {
+        counts.set(nativeId, count);
+      },
+      delta: () => undefined,
+      prompt: () => undefined,
+      outcome: () => undefined,
+      unavailable: () => undefined,
+      quiescent: () => {
+        quiescent += 1;
+      },
+    });
+    try {
+      const created = await control.startThread(randomUUID(), fixture.workspaceRoot);
+      const source = control.getControlSource(created.id)!;
+      expect(control.quarantineControl(source)).toBe(true);
+      const tasks = async (items: { task_id: string }[]) => {
+        const revision = control.snapshotControls()[0]!.revision;
+        await fixture.control({
+          frameBatch: {
+            id: randomUUID(),
+            nativeId: created.id,
+            frames: [{ type: 'system', subtype: 'background_tasks_changed', tasks: items }],
+          },
+        });
+        await expect.poll(() => control.snapshotControls()[0]?.revision).toBeGreaterThan(revision);
+        await expect.poll(() => counts.get(created.id)).toBe(items.length);
+      };
+      await tasks([{ task_id: 'barrier' }]);
+      await tasks([]);
+      const snapshot = control.snapshotControls()[0]!;
+      const observation = {
+        nativeId: created.id,
+        workspaceRoot: fixture.workspaceRoot,
+        pid: snapshot.pid,
+        state: 'idle' as const,
+        startedAt: null,
+      };
+      for (const invalid of [
+        { ...snapshot, scope: randomUUID() },
+        { ...snapshot, nativeId: randomUUID() },
+        { ...snapshot, workspaceRoot: join(fixture.workspaceRoot, 'other') },
+        { ...snapshot, pid: process.pid },
+      ]) {
+        control.observeControls([invalid], [observation]);
+        await expectToRejectCode(
+          control.stopSession(randomUUID(), created.id, source.scope, true),
+          'JG_AGENT_HQ_ACTION_CONFLICT',
+        );
+      }
+      expect(quiescent).toBe(0);
+      control.observeControls([snapshot], [observation]);
+      expect(quiescent).toBe(1);
+      await tasks([{ task_id: 'new-work' }]);
+      await expectToRejectCode(
+        control.stopSession(randomUUID(), created.id, source.scope, true),
+        'JG_AGENT_HQ_ACTION_CONFLICT',
+      );
+      expect(isRunning(-snapshot.pid)).toBe(true);
+      await tasks([]);
+      // the old inventory revision remains unusable even after tasks become empty again
+      control.observeControls([snapshot], [observation]);
+      expect(quiescent).toBe(1);
+      await expectToRejectCode(
+        control.stopSession(randomUUID(), created.id, source.scope, true),
+        'JG_AGENT_HQ_ACTION_CONFLICT',
+      );
+      const beforePartialTask = control.snapshotControls()[0]!.revision;
+      await fixture.control({
+        frameBatch: {
+          id: randomUUID(),
+          nativeId: created.id,
+          frames: [{ type: 'system', subtype: 'task_started', task_id: 'new-native-work' }],
+        },
+      });
+      await expect
+        .poll(() => control.snapshotControls()[0]?.revision)
+        .toBeGreaterThan(beforePartialTask);
+      control.observeControls(control.snapshotControls(), [observation]);
+      expect(quiescent).toBe(1);
+      await expectToRejectCode(
+        control.stopSession(randomUUID(), created.id, source.scope, true),
+        'JG_AGENT_HQ_ACTION_CONFLICT',
+      );
+      expect(isRunning(-snapshot.pid)).toBe(true);
+      await tasks([]);
+      control.observeControls(control.snapshotControls(), [observation]);
+      expect(quiescent).toBe(2);
+      await control.stopSession(randomUUID(), created.id, source.scope, true);
+      await control.releaseSession(randomUUID(), created.id, source.scope);
+      expect(isRunning(-snapshot.pid)).toBe(false);
+    } finally {
+      await control.close();
+    }
+  });
+});
+
+test.each(['close', 'message', 'steer', 'rename', 'interrupt'])(
+  'quarantined Claude control refuses %s mutations without writing to native stdin',
+  async (kind) => {
+    await withQuarantinedInventory(async ({ api, left, leftPid, rightPid }) => {
+      const before = await api.calls();
+      const turnId = (await api.thread(left.id)).activeTurnId!;
+      const command: IActionCommand =
+        kind === 'close'
+          ? { kind: 'thread-close', threadId: left.id }
+          : kind === 'message'
+            ? {
+                kind: 'message',
+                threadId: left.id,
+                input: { kind: 'text', text: 'Do not send this' },
+              }
+            : kind === 'steer'
+              ? {
+                  kind: 'steer',
+                  threadId: left.id,
+                  expectedTurnId: turnId,
+                  text: 'Do not steer this',
+                }
+              : kind === 'rename'
+                ? { kind: 'thread-rename', threadId: left.id, name: 'do-not-rename' }
+                : { kind: 'interrupt', threadId: left.id, expectedTurnId: turnId };
+      const action = api.envelope(command);
+      await api.submit(action);
+      await expect
+        .poll(() => api.receipt(action.id))
+        .toMatchObject({ delivery: 'failed', failure: 'state-conflict' });
+      expect(await api.calls()).toStrictEqual(before);
+      expect(await api.thread(left.id)).toMatchObject({ ownership: 'uncertain', state: 'unknown' });
+      expect(isRunning(-leftPid)).toBe(true);
+      expect(isRunning(-rightPid)).toBe(true);
+    });
+  },
+);
+
+test('explicit Stop closes only its quarantined Claude group without a guessed turn or queue replay', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread: left } = await api.create('explicit-quarantine-stop');
+    const { thread: right } = await api.create('quarantine-stop-peer');
+    const [leftPid, rightPid] = await readPids(fixture);
+    await fixture.control({ holdTurn: true });
+    const input = await api.message(left.id);
+    await expect.poll(() => api.receipt(input.id)).toMatchObject({ delivery: 'acknowledged' });
+    const queued = api.envelope({
+      kind: 'queue',
+      threadId: left.id,
+      expectedTurnId: (await api.thread(left.id)).activeTurnId!,
+      input: { kind: 'text', text: 'Keep queued input paused' },
+    });
+    await api.submit(queued);
+    await fixture.control({
+      frameBatch: {
+        id: randomUUID(),
+        nativeId: left.nativeId,
+        frames: [
+          {
+            type: 'system',
+            subtype: 'background_tasks_changed',
+            tasks: [{ task_id: 'still-running' }],
+          },
+          {
+            type: 'stream_event',
+            event: {
+              type: 'content_block_delta',
+              index: 0,
+              delta: { type: 'text_delta', text: 'No preceding block' },
+            },
+          },
+        ],
+      },
+    });
+    await expect
+      .poll(() => api.thread(left.id))
+      .toMatchObject({ ownership: 'uncertain', state: 'unknown' });
+    const close = api.envelope({ kind: 'thread-close', threadId: left.id, interrupt: true });
+    await api.submit(close);
+    await expect.poll(() => api.receipt(close.id)).toMatchObject({ delivery: 'acknowledged' });
+    await expect
+      .poll(() => api.thread(left.id))
+      .toMatchObject({
+        ownership: 'managed',
+        state: 'inactive',
+        runtimeEpoch: null,
+        activeTurnId: null,
+        nativeId: left.nativeId,
+      });
+    expect(isRunning(-leftPid!)).toBe(false);
+    expect(isRunning(-rightPid!)).toBe(true);
+    expect(
+      (await api.calls()).filter((call) => call.request?.subtype === 'interrupt'),
+    ).toStrictEqual([]);
+    expect(await api.receipt(input.id)).toMatchObject({
+      delivery: 'acknowledged',
+      completion: null,
+    });
+    expect(await api.receipt(queued.id)).toMatchObject({ delivery: 'queued' });
+    await fixture.control({});
+    const peer = await api.message(right.id);
+    await expect.poll(() => api.receipt(peer.id)).toMatchObject({ completion: 'completed' });
+    const resume = api.envelope({
+      kind: 'thread-resume',
+      threadId: left.id,
+      operatorConfirmation: 'Other native controllers are closed',
+    });
+    await api.submit(resume);
+    await expect
+      .poll(() => api.receipt(resume.id))
+      .toMatchObject({ delivery: 'acknowledged', nativeThreadId: left.nativeId });
+    const next = await api.message(left.id);
+    await expect.poll(() => api.receipt(next.id)).toMatchObject({ completion: 'completed' });
+    expect(await api.receipt(queued.id)).toMatchObject({ delivery: 'queued' });
+    expect((await api.calls()).filter((call) => call.type === 'user')).toHaveLength(3);
+  });
+});
+
+test.each(['previous-epoch', 'no-handle', 'competing-terminal'])(
+  'Claude Stop refuses %s ownership without writing native input',
+  async (mode) => {
+    await withQuarantinedInventory(
+      async ({ fixture, api, left, leftPid, rightPid, agent, poll }) => {
+        if (mode === 'no-handle') {
+          const stop = api.envelope({ kind: 'thread-close', threadId: left.id, interrupt: true });
+          await api.submit(stop);
+          await expect.poll(() => api.receipt(stop.id)).toMatchObject({ delivery: 'acknowledged' });
+        }
+        if (mode === 'competing-terminal') {
+          await writeFixtureControl(fixture.root, 'claude-agents.json', {
+            agents: [{ ...agent, pid: process.pid }],
+          });
+          await poll();
+        } else {
+          const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
+          try {
+            database
+              .prepare(
+                "UPDATE agent_hq_thread SET runtime_epoch = ?, ownership = 'uncertain', state = 'unknown' WHERE id = ?",
+              )
+              .run(
+                mode === 'previous-epoch' ? randomUUID() : api.status.result.runtimeEpoch,
+                left.id,
+              );
+          } finally {
+            database.close();
+          }
+        }
+        const before = await api.calls();
+        const stop = api.envelope({ kind: 'thread-close', threadId: left.id, interrupt: true });
+        if (mode === 'no-handle')
+          expect(await api.submit(stop)).toMatchObject({
+            delivery: 'failed',
+            failure: 'state-conflict',
+          });
+        else await expectToRejectCode(api.submit(stop), 'JG_AGENT_HQ_CLIENT_STATE_CONFLICT');
+        expect(await api.calls()).toStrictEqual(before);
+        expect(isRunning(-leftPid)).toBe(mode !== 'no-handle');
+        expect(isRunning(-rightPid)).toBe(true);
+        await writeFixtureControl(fixture.root, 'claude-agents.json', { agents: [agent] });
+      },
+    );
+  },
+);
+
+test('a quarantined Claude Stop deduplicates admission and rejects a competing close until group proof', async () => {
+  await withQuarantinedInventory(async ({ fixture, api, left, leftPid, rightPid }) => {
+    await fixture.control({ holdShutdown: true });
+    try {
+      const stop = api.envelope({ kind: 'thread-close', threadId: left.id, interrupt: true });
+      await api.submit(stop);
+      await expect
+        .poll(async () => (await api.calls()).some((call) => call.type === 'fixture_shutdown_held'))
+        .toBe(true);
+      expect((await api.submit(stop)).id).toBe(stop.id);
+      const competing = api.envelope({ kind: 'thread-close', threadId: left.id, interrupt: true });
+      expect(await api.submit(competing)).toMatchObject({
+        delivery: 'failed',
+        failure: 'state-conflict',
+      });
+      expect((await api.receipt(stop.id)).delivery).toBe('submitted');
+      expect((await api.thread(left.id)).ownership).toBe('uncertain');
+      expect(isRunning(-leftPid)).toBe(true);
+      expect(isRunning(-rightPid)).toBe(true);
+      await fixture.control({ releaseShutdown: true });
+      await expect.poll(() => api.receipt(stop.id)).toMatchObject({ delivery: 'acknowledged' });
+      expect((await api.submit(stop)).delivery).toBe('acknowledged');
+      expect((await api.thread(left.id)).state).toBe('inactive');
+      expect(isRunning(-leftPid)).toBe(false);
+      expect(isRunning(-rightPid)).toBe(true);
+    } finally {
+      await fixture.control({});
+    }
+  });
+});
+
+test('automatic Claude quarantine cleanup defers release to a close admitted while shutdown proof waits', async () => {
+  await withQuarantinedInventory(
+    async ({ fixture, api, left, leftPid, rightPid, poll, background }) => {
+      await fixture.control({ finishBackgroundTask: true, holdShutdown: true });
+      try {
+        await expect.poll(background).toBe(0);
+        await poll();
+        await expect
+          .poll(async () =>
+            (await api.calls()).some((call) => call.type === 'fixture_shutdown_held'),
+          )
+          .toBe(true);
+        const stop = api.envelope({ kind: 'thread-close', threadId: left.id, interrupt: true });
+        expect(await api.submit(stop)).toMatchObject({ delivery: 'submitted' });
+        await expect.poll(() => api.thread(left.id)).toMatchObject({ state: 'stopping' });
+        expect(isRunning(-leftPid)).toBe(true);
+        await fixture.control({ releaseShutdown: true });
+        await expect.poll(() => api.receipt(stop.id)).toMatchObject({ delivery: 'acknowledged' });
+        expect(await api.thread(left.id)).toMatchObject({
+          ownership: 'managed',
+          state: 'inactive',
+          runtimeEpoch: null,
+        });
+        expect(isRunning(-leftPid)).toBe(false);
+        expect(isRunning(-rightPid)).toBe(true);
+      } finally {
+        await fixture.control({});
+      }
+    },
+  );
+});
+
+test('late Claude interpretation loss during an admitted healthy close cannot strand its receipt or disable a peer', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread: left } = await api.create('late-close-evidence');
+    const { thread: right } = await api.create('late-close-peer');
+    const [leftPid, rightPid] = await readPids(fixture);
+    await fixture.control({ holdShutdown: true });
+    try {
+      const close = api.envelope({ kind: 'thread-close', threadId: left.id });
+      await api.submit(close);
+      await expect
+        .poll(async () => (await api.calls()).some((call) => call.type === 'fixture_shutdown_held'))
+        .toBe(true);
+      const batch = randomUUID();
+      await fixture.control({
+        holdShutdown: true,
+        frameBatch: {
+          id: batch,
+          nativeId: left.nativeId,
+          frames: [{ type: 'result', subtype: 'success', is_error: false }],
+        },
+      });
+      await expect
+        .poll(async () => (await api.calls()).some((call) => call.batch === batch))
+        .toBe(true);
+      await expect.poll(() => api.thread(left.id)).toMatchObject({ state: 'stopping' });
+      expect(isRunning(-rightPid!)).toBe(true);
+      await fixture.control({ releaseShutdown: true });
+      await expect.poll(() => api.receipt(close.id)).toMatchObject({ delivery: 'acknowledged' });
+      expect(await api.thread(left.id)).toMatchObject({ ownership: 'managed', state: 'inactive' });
+      expect(isRunning(-leftPid!)).toBe(false);
+      const next = await api.message(right.id);
+      await expect.poll(() => api.receipt(next.id)).toMatchObject({ completion: 'completed' });
+    } finally {
+      await fixture.control({});
+    }
+  });
+});
+
+test('an exact Claude source still contains evidence failure while its admitted close owns shutdown', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const control = createClaudeControl();
+    try {
+      const created = await control.startThread(randomUUID(), fixture.workspaceRoot);
+      const nativeId = created.id;
+      const source = control.getControlSource(nativeId)!;
+      await fixture.control({ holdShutdown: true });
+      const stopped = control.stopSession(randomUUID(), nativeId, source.scope, false, true);
+      try {
+        const api = await actions(fixture);
+        await expect
+          .poll(async () =>
+            (await api.calls()).some((call) => call.type === 'fixture_shutdown_held'),
+          )
+          .toBe(true);
+        expect(control.quarantineControl(source)).toBe(true);
+      } finally {
+        await fixture.control({ releaseShutdown: true });
+        await stopped;
+      }
+      await control.releaseSession(randomUUID(), nativeId, source.scope);
+    } finally {
+      await fixture.control({});
+      await control.close();
+    }
+  });
+});
+
+test('a quarantined Claude response releases only its ended action reservation before explicit Stop', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create('ended-quarantine-action');
+    const [pid] = await readPids(fixture);
+    await fixture.control({ badNameResponse: true });
+    const rename = api.envelope({
+      kind: 'thread-rename',
+      threadId: thread.id,
+      name: 'unconfirmed-native-name',
+    });
+    await api.submit(rename);
+    await expect.poll(() => api.receipt(rename.id)).toMatchObject({ delivery: 'uncertain' });
+    await expect
+      .poll(() => api.thread(thread.id))
+      .toMatchObject({ ownership: 'uncertain', state: 'unknown' });
+    const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
+    try {
+      await expect
+        .poll(
+          () =>
+            database
+              .prepare('SELECT pending_action_id FROM agent_hq_thread WHERE id = ?')
+              .get(thread.id)?.pending_action_id,
+        )
+        .toBeNull();
+    } finally {
+      database.close();
+    }
+    expect(isRunning(-pid!)).toBe(true);
+    await fixture.control({});
+    const close = api.envelope({ kind: 'thread-close', threadId: thread.id, interrupt: true });
+    await api.submit(close);
+    await expect.poll(() => api.receipt(close.id)).toMatchObject({ delivery: 'acknowledged' });
+    expect(await api.receipt(rename.id)).toMatchObject({ delivery: 'uncertain' });
+    expect(await api.thread(thread.id)).toMatchObject({ ownership: 'managed', state: 'inactive' });
+  });
+});
+
+test('confirmed Claude group shutdown releases one conversation without replaying its queue', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const left = await api.create('lost-controller');
+    const right = await api.create('unaffected-controller');
+    const [leftPid, rightPid] = await readPids(fixture);
+    expect(leftPid).toBeDefined();
+    expect(rightPid).toBeDefined();
+    await fixture.control({ prompt: 'question', holdAfterReply: true });
+    const input = await api.message(left.thread.id);
+    await expect.poll(() => api.receipt(input.id)).toMatchObject({ delivery: 'acknowledged' });
+    const running = await api.thread(left.thread.id);
+    await expect.poll(() => api.approvals(left.thread.id)).toHaveLength(1);
+    const queued = api.envelope({
+      kind: 'queue',
+      threadId: left.thread.id,
+      expectedTurnId: running.activeTurnId!,
+      input: { kind: 'text', text: 'Keep this queued input paused' },
+    });
+    await api.submit(queued);
+    const history = await readFile(fixture.transcript(left.thread.nativeId!), 'utf8');
+
+    // only this fixture's recorded parent is terminated; the owner must also prove group exit
+    process.kill(leftPid!, 'SIGTERM');
+    await expect.poll(() => isRunning(-leftPid!), { timeout: 5_000 }).toBe(false);
+    await expect
+      .poll(() => api.thread(left.thread.id))
+      .toMatchObject({
+        ownership: 'managed',
+        state: 'inactive',
+        runtimeEpoch: null,
+        activeTurnId: null,
+        nativeId: left.thread.nativeId,
+      });
+    const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
+    try {
+      expect(
+        database
+          .prepare('SELECT pending_action_id FROM agent_hq_thread WHERE id = ?')
+          .get(left.thread.id)?.pending_action_id,
+      ).toBeNull();
+    } finally {
+      database.close();
+    }
+    expect(await api.receipt(input.id)).toMatchObject({
+      delivery: 'acknowledged',
+      completion: null,
+    });
+    expect(await api.receipt(queued.id)).toMatchObject({ delivery: 'queued' });
+    expect(await api.approvals(left.thread.id)).toStrictEqual([]);
+    expect(isRunning(rightPid!)).toBe(true);
+    expect(await api.thread(right.thread.id)).toMatchObject({
+      ownership: 'managed',
+      state: 'idle',
+    });
+
+    await fixture.control({});
+    const rightInput = await api.message(right.thread.id);
+    await expect.poll(() => api.receipt(rightInput.id)).toMatchObject({ completion: 'completed' });
+    const resume = api.envelope({
+      kind: 'thread-resume',
+      threadId: left.thread.id,
+      operatorConfirmation: 'The other CLI controller is closed',
+    });
+    await api.submit(resume);
+    await expect.poll(() => api.receipt(resume.id)).toMatchObject({ delivery: 'acknowledged' });
+    expect(await api.thread(left.thread.id)).toMatchObject({ nativeId: left.thread.nativeId });
+    const next = await api.message(left.thread.id);
+    await expect.poll(() => api.receipt(next.id)).toMatchObject({ completion: 'completed' });
+    expect(await api.receipt(queued.id)).toMatchObject({ delivery: 'queued' });
+    expect((await api.calls()).filter((call) => call.type === 'user')).toHaveLength(3);
+    expect(await readFile(fixture.transcript(left.thread.nativeId!), 'utf8')).toContain(history);
+  });
+});
+
+test('Claude stays uncertain while native group shutdown is held, without disabling its peer', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const left = await api.create('held-shutdown');
+    const right = await api.create('live-peer');
+    const [leftPid] = await readPids(fixture);
+    await fixture.control({ malformed: true, holdShutdown: true });
+    try {
+      const input = await api.message(left.thread.id);
+      await expect
+        .poll(() => api.calls())
+        .toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ type: 'fixture_shutdown_held', uuid: left.thread.nativeId }),
+          ]),
+        );
+      expect(isRunning(-leftPid!)).toBe(true);
+      expect(await api.thread(left.thread.id)).toMatchObject({
+        ownership: 'uncertain',
+        state: 'unknown',
+        runtimeEpoch: api.status.result.runtimeEpoch,
+      });
+      expect(await api.receipt(input.id)).toMatchObject({ delivery: 'uncertain' });
+      await fixture.control({ holdShutdown: true });
+      const peerInput = await api.message(right.thread.id);
+      await expect.poll(() => api.receipt(peerInput.id)).toMatchObject({ completion: 'completed' });
+      expect(isRunning(-leftPid!)).toBe(true);
+      expect((await api.thread(left.thread.id)).ownership).toBe('uncertain');
+    } finally {
+      await fixture.control({});
+    }
+    await expect
+      .poll(() => api.thread(left.thread.id))
+      .toMatchObject({
+        ownership: 'managed',
+        state: 'inactive',
+        runtimeEpoch: null,
+      });
+    expect(isRunning(-leftPid!)).toBe(false);
+  });
+});
+
+test('a competing Claude terminal prevents inactive settlement after owned group exit', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create('external-owner-race');
+    const saved = await api.message(thread.id);
+    await expect.poll(() => api.receipt(saved.id)).toMatchObject({ completion: 'completed' });
+    await fixture.control({ malformed: true, holdShutdown: true });
+    try {
+      await api.message(thread.id);
+      await expect
+        .poll(() => api.calls())
+        .toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ type: 'fixture_shutdown_held', uuid: thread.nativeId }),
+          ]),
+        );
+      await writeFixtureControl(fixture.root, 'claude-agents.json', {
+        agents: [
+          {
+            sessionId: thread.nativeId,
+            cwd: fixture.workspaceRoot,
+            pid: process.pid,
+            kind: 'interactive',
+            status: 'idle',
+          },
+        ],
+      });
+      await fixture.request({ kind: 'observation-pace', pace: 'live' });
+      await expect
+        .poll(() =>
+          fixture.request({
+            kind: 'thread',
+            provider: 'claude',
+            workspaceRoot: fixture.workspaceRoot,
+            nativeId: thread.nativeId!,
+          }),
+        )
+        .toMatchObject({ result: { terminal: { kind: 'interactive' } } });
+      await fixture.control({});
+      let hasEnteredMaintenance = false;
+      // maintenance drains native/background work before refusing the still-uncertain checkpoint
+      await expectToRejectCode(
+        fixture.runtime.withStorageMaintenance(async () => {
+          hasEnteredMaintenance = true;
+        }),
+        'JG_AGENT_HQ_ACTION_CONFLICT',
+      );
+      expect(hasEnteredMaintenance).toBe(false);
+      expect(await api.thread(thread.id)).toMatchObject({
+        ownership: 'uncertain',
+        state: 'unknown',
+        runtimeEpoch: api.status.result.runtimeEpoch,
+      });
+    } finally {
+      await fixture.control({});
+    }
+  });
+});
+
+test('runtime shutdown drains a Claude exit already being verified', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create('shutdown-race');
+    await fixture.control({ malformed: true, holdShutdown: true });
+    try {
+      await api.message(thread.id);
+      await expect
+        .poll(() => api.calls())
+        .toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ type: 'fixture_shutdown_held', uuid: thread.nativeId }),
+          ]),
+        );
+      const closing = fixture.runtime.close();
+      await fixture.control({});
+      await closing;
+    } finally {
+      await fixture.control({});
+    }
+    const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
+    try {
+      expect(
+        database
+          .prepare(
+            'SELECT state, runtime_epoch, pending_action_id FROM agent_hq_thread WHERE id = ?',
+          )
+          .get(thread.id),
+      ).toMatchObject({ state: 'inactive', runtime_epoch: null, pending_action_id: null });
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test('Claude shutdown during an admitted close keeps its receipt uncertain and releases the conversation', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create('close-loses-transport');
+    await fixture.control({ holdTurn: true });
+    const input = await api.message(thread.id);
+    await expect.poll(() => api.receipt(input.id)).toMatchObject({ delivery: 'acknowledged' });
+    await fixture.control({ holdTurn: true, malformedInterrupt: true });
+    const close = api.envelope({ kind: 'thread-close', threadId: thread.id, interrupt: true });
+    await api.submit(close);
+    await expect.poll(() => api.receipt(close.id)).toMatchObject({ delivery: 'uncertain' });
+    await expect
+      .poll(() => api.thread(thread.id))
+      .toMatchObject({
+        ownership: 'managed',
+        state: 'inactive',
+        runtimeEpoch: null,
+        activeTurnId: null,
+      });
+    expect(await api.receipt(input.id)).toMatchObject({
+      delivery: 'acknowledged',
+      completion: null,
+    });
+  });
+});
+
+test('stale Claude controller scopes cannot stop or release a replacement process', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const control = createClaudeControl();
+    try {
+      const created = await control.startThread(randomUUID(), fixture.workspaceRoot);
+      const originalScope = control.getControlIdentity(created.id)!.scope;
+      await control.stopSession(randomUUID(), created.id, originalScope);
+      await control.releaseSession(randomUUID(), created.id, originalScope);
+      await control.resumeThread(
+        randomUUID(),
+        created.id,
+        fixture.workspaceRoot,
+        'same-conversation',
+      );
+      const replacement = control.getControlIdentity(created.id)!;
+      expect(replacement.scope).not.toBe(originalScope);
+      expect(control.getControlIdentity(created.id, originalScope)).toBeUndefined();
+      await expectToRejectCode(
+        control.stopSession(randomUUID(), created.id, originalScope),
+        'JG_AGENT_HQ_ACTION_CONFLICT',
+      );
+      await expectToRejectCode(
+        control.releaseSession(randomUUID(), created.id, originalScope),
+        'JG_AGENT_HQ_ACTION_CONFLICT',
+      );
+      const pids = await readPids(fixture);
+      expect(isRunning(pids.at(-1)!)).toBe(true);
+      expect(control.getControlIdentity(created.id)).toStrictEqual(replacement);
+    } finally {
+      await control.close();
+    }
+  });
+});
+
 test.each(['malformed', 'partial'])(
-  'Claude %s output quarantines only its own controlled session and stops its process tree',
+  'Claude %s output fails its own connection, proves group exit and releases its conversation',
   async (mode) => {
     await withClaudeRuntime(async (fixture) => {
       const api = await actions(fixture),
         good = await api.create('codex-task', 'codex'),
         broken = await api.create('claude-task');
+      const brokenPid = (await readPids(fixture)).at(-1)!;
       await fixture.control({ [mode]: true });
       const input = await api.message(broken.thread.id);
-      await api.until(
-        () => api.thread(broken.thread.id),
-        (thread) => thread.ownership === 'uncertain',
-      );
+      await expect
+        .poll(() => api.thread(broken.thread.id))
+        .toMatchObject({
+          ownership: 'managed',
+          state: 'inactive',
+          runtimeEpoch: null,
+          activeTurnId: null,
+        });
+      expect(isRunning(-brokenPid)).toBe(false);
       expect((await api.receipt(input.id)).delivery).toBe('uncertain');
       expect((await api.thread(good.thread.id)).ownership).toBe('managed');
       const codexInput = await api.message(good.thread.id);

@@ -185,14 +185,18 @@ export const setBackgroundCommands = (
  * Releases retained steering identities and rejects any input still unconfirmed when it stops.
  * @param session The session.
  * @param turnId The turn whose steers fail, or every pending steer when omitted.
+ * @param failure The shared control failure, when its diagnostic cause is available.
  */
-export const failSteers = (session: IClaudeSession, turnId?: string): void => {
+export const failSteers = (
+  session: IClaudeSession,
+  turnId?: string,
+  failure: unknown = HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } }),
+): void => {
   for (const steer of session.steers.values()) {
     if (turnId !== undefined && steer.turnId !== turnId) continue;
     clearTimeout(steer.timer);
     session.steers.delete(steer.id);
-    if (!steer.isAcknowledged)
-      steer.reject(HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } }));
+    if (!steer.isAcknowledged) steer.reject(failure);
   }
 };
 
@@ -479,7 +483,7 @@ export const receiveClaudeMessage = (
         // elicitation control replies have no tool_result acknowledgement on this native protocol
       },
     );
-    if (!parsed || session.requests.size >= 32) {
+    if (!parsed) {
       void session.connection
         .write({
           type: 'control_response',
@@ -497,6 +501,7 @@ export const receiveClaudeMessage = (
       if (existing.fingerprint !== parsed.prompt.fingerprint) unavailable();
       return;
     }
+    if (session.requests.size >= 32) unavailable();
     session.requests.set(request.request_id, {
       toolId: parsed.toolId,
       scopedId: parsed.prompt.requestId,

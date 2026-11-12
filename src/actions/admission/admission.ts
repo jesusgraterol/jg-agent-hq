@@ -255,6 +255,30 @@ export const createAdmission = (
       )
         conflict();
       prompt.native.validate(command.response);
+    } else if (command.kind === 'thread-close' && command.interrupt && provider === 'claude') {
+      const target = await store.call('reads', 'getThread', command.threadId);
+      const source = target?.nativeId
+        ? registry.getControlSource(provider, target.nativeId)
+        : undefined;
+      if (source && registry.isControlQuarantined(provider, source)) {
+        await state.lane.catch(() => undefined);
+        const current = await store.call('reads', 'getThread', command.threadId);
+        if (
+          state.isClosing ||
+          state.isUnavailable ||
+          !current ||
+          current.provider !== 'claude' ||
+          current.runtimeEpoch !== epoch ||
+          current.ownership !== 'uncertain' ||
+          current.nativeId !== source.nativeId ||
+          current.workspaceRoot !== source.workspaceRoot ||
+          claudeTerminalOf(source.nativeId) ||
+          !registry.isCurrentControl(provider, source) ||
+          !registry.isControlQuarantined(provider, source)
+        )
+          conflict();
+        prepared.quarantinedControl = source;
+      }
     }
     if (command.kind === 'message' || command.kind === 'queue' || command.kind === 'steer') {
       const thread = await store.call('reads', 'getThread', command.threadId);
@@ -305,7 +329,14 @@ export const createAdmission = (
         input = receipt.queuedInput;
       }
       context.runOwned(async () => {
-        await dispatch(receipt, thread, dispatchedCommand, input, prepared.recoveryTurn);
+        await dispatch(
+          receipt,
+          thread,
+          dispatchedCommand,
+          input,
+          prepared.recoveryTurn,
+          prepared.quarantinedControl,
+        );
       });
     }
     return admitted.receipt;

@@ -8,7 +8,38 @@ import type { IActionCommand } from 'jg-agent-hq/contracts';
 import { expect, test } from 'vitest';
 import { z } from 'zod';
 
-import { withClaudeRuntime, writeFixtureControl } from '../../../../scripts/test-support/index.js';
+import {
+  withClaudeRuntime,
+  writeFixtureControl,
+  type IClaudeFixture,
+} from '../../../../scripts/test-support/index.js';
+
+import { createStatements } from '../../utilities.js';
+
+import { ControlLifecycle } from './lifecycle.model.js';
+
+/** Creates a real controlled Claude identity and waits for its durable creation acknowledgement. */
+const createClaudeThread = async (fixture: IClaudeFixture, name: string) => {
+  const { runtime, workspaceRoot } = fixture;
+  const response = await runtime.request({
+    kind: 'action',
+    action: {
+      id: randomUUID(),
+      runtimeEpoch: runtime.runtimeEpoch,
+      command: { kind: 'thread-create', provider: 'claude', workspaceRoot, name },
+    },
+  });
+  await expect
+    .poll(
+      async () => (await runtime.request({ kind: 'receipt', actionId: response.result.id })).result,
+    )
+    .toMatchObject({ delivery: 'acknowledged' });
+  return {
+    actionId: response.result.id,
+    thread: (await runtime.request({ kind: 'managed-thread', threadId: response.result.threadId! }))
+      .result!,
+  };
+};
 
 // the runtime epoch of each native observation the state root holds to recognize a repeated one
 const readEventEpochs = (stateRoot: string): string[] => {
@@ -105,6 +136,182 @@ test('startup deletes the observations earlier runtimes recorded, and the new ru
       });
     } finally {
       await reopened.close();
+    }
+  });
+});
+
+test('targeted release refuses mismatched identity, workspace or epoch and changes only its thread', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const { runtime, workspaceRoot } = fixture;
+    const created = await Promise.all(
+      ['release-left', 'release-right'].map(
+        async (name) => (await createClaudeThread(fixture, name)).thread,
+      ),
+    );
+    // the owning runtime proves shutdown before the isolated model exercises release predicates
+    await runtime.close();
+    const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
+    try {
+      const epoch = randomUUID();
+      const [left, right] = created;
+      database
+        .prepare(
+          "UPDATE agent_hq_thread SET runtime_epoch = ?, ownership = 'uncertain', state = 'unknown' WHERE id IN (?, ?)",
+        )
+        .run(epoch, left!.id, right!.id);
+      const lifecycle = new ControlLifecycle(
+        database,
+        createStatements(database),
+        epoch,
+        await readFile(join(fixture.stateRoot, 'action.key')),
+      );
+      const readState = (threadId: string) =>
+        database
+          .prepare('SELECT ownership, state, runtime_epoch FROM agent_hq_thread WHERE id = ?')
+          .get(threadId);
+      const original = readState(right!.id);
+      for (const target of [
+        { threadId: right!.id, nativeId: left!.nativeId!, workspaceRoot, epoch },
+        { threadId: left!.id, nativeId: randomUUID(), workspaceRoot, epoch },
+        {
+          threadId: left!.id,
+          nativeId: left!.nativeId!,
+          workspaceRoot: join(workspaceRoot, 'other'),
+          epoch,
+        },
+        { threadId: left!.id, nativeId: left!.nativeId!, workspaceRoot, epoch: randomUUID() },
+      ])
+        expect(
+          lifecycle.releaseControl(
+            target.threadId,
+            target.nativeId,
+            target.workspaceRoot,
+            target.epoch,
+          ),
+        ).toBeNull();
+      expect(readState(left!.id)).toStrictEqual(original);
+      expect(
+        lifecycle.releaseControl(left!.id, left!.nativeId!, workspaceRoot, epoch),
+      ).toMatchObject({
+        id: left!.id,
+        ownership: 'managed',
+        state: 'inactive',
+        runtimeEpoch: null,
+      });
+      expect(readState(right!.id)).toStrictEqual(original);
+      expect(lifecycle.releaseControl(left!.id, left!.nativeId!, workspaceRoot, epoch)).toBeNull();
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test('an ended controller action cannot release another action, conversation or runtime reservation', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const { runtime, workspaceRoot } = fixture;
+    const { thread: left } = await createClaudeThread(fixture, 'ended-left');
+    const { thread: right } = await createClaudeThread(fixture, 'ended-right');
+    const rename = async (threadId: string, name: string) => {
+      const id = randomUUID();
+      await runtime.request({
+        kind: 'action',
+        action: {
+          id,
+          runtimeEpoch: runtime.runtimeEpoch,
+          command: { kind: 'thread-rename', threadId, name },
+        },
+      });
+      await expect
+        .poll(async () => (await runtime.request({ kind: 'receipt', actionId: id })).result)
+        .toMatchObject({ delivery: 'acknowledged' });
+      return id;
+    };
+    const older = await rename(left.id, 'ended-left-old');
+    const replacement = await rename(left.id, 'ended-left-new');
+    const peer = await rename(right.id, 'ended-right-current');
+    // no native process remains while the isolated real ledger exercises finalizer predicates
+    await runtime.close();
+    const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'));
+    try {
+      const epoch = randomUUID();
+      database
+        .prepare(
+          "UPDATE agent_hq_thread SET runtime_epoch = ?, ownership = 'uncertain', state = 'unknown', pending_action_id = ? WHERE id = ?",
+        )
+        .run(epoch, older, left.id);
+      database
+        .prepare(
+          "UPDATE agent_hq_thread SET runtime_epoch = ?, ownership = 'uncertain', state = 'unknown', pending_action_id = ? WHERE id = ?",
+        )
+        .run(epoch, peer, right.id);
+      database
+        .prepare(
+          "UPDATE agent_hq_action SET runtime_epoch = ?, delivery = 'uncertain' WHERE id IN (?, ?, ?)",
+        )
+        .run(epoch, older, replacement, peer);
+      const lifecycle = new ControlLifecycle(
+        database,
+        createStatements(database),
+        epoch,
+        await readFile(join(fixture.stateRoot, 'action.key')),
+      );
+      const read = (threadId: string) =>
+        database
+          .prepare(
+            'SELECT pending_action_id, ownership, state, runtime_epoch FROM agent_hq_thread WHERE id = ?',
+          )
+          .get(threadId);
+      const originalPeer = read(right.id);
+      for (const target of [
+        { actionId: randomUUID(), nativeId: left.nativeId!, workspaceRoot, epoch },
+        { actionId: older, nativeId: right.nativeId!, workspaceRoot, epoch },
+        {
+          actionId: older,
+          nativeId: left.nativeId!,
+          workspaceRoot: join(workspaceRoot, 'other'),
+          epoch,
+        },
+        { actionId: older, nativeId: left.nativeId!, workspaceRoot, epoch: randomUUID() },
+      ])
+        expect(
+          lifecycle.releaseEndedControlAction(
+            target.actionId,
+            target.nativeId,
+            target.workspaceRoot,
+            target.epoch,
+          ),
+        ).toBeNull();
+      expect(read(left.id)?.pending_action_id).toBe(older);
+      database.prepare("UPDATE agent_hq_action SET delivery = 'submitted' WHERE id = ?").run(older);
+      expect(
+        lifecycle.releaseEndedControlAction(older, left.nativeId!, workspaceRoot, epoch),
+      ).toBeNull();
+      database.prepare("UPDATE agent_hq_action SET delivery = 'uncertain' WHERE id = ?").run(older);
+      database
+        .prepare('UPDATE agent_hq_thread SET pending_action_id = ? WHERE id = ?')
+        .run(replacement, left.id);
+      expect(
+        lifecycle.releaseEndedControlAction(older, left.nativeId!, workspaceRoot, epoch),
+      ).toBeNull();
+      expect(read(left.id)?.pending_action_id).toBe(replacement);
+      expect(
+        lifecycle.releaseEndedControlAction(replacement, left.nativeId!, workspaceRoot, epoch),
+      ).toMatchObject({
+        id: left.id,
+        ownership: 'uncertain',
+        state: 'unknown',
+        runtimeEpoch: epoch,
+      });
+      expect(read(left.id)?.pending_action_id).toBeNull();
+      expect(read(right.id)).toStrictEqual(originalPeer);
+      expect(
+        database.prepare('SELECT delivery FROM agent_hq_action WHERE id = ?').get(older)?.delivery,
+      ).toBe('uncertain');
+      expect(
+        lifecycle.releaseEndedControlAction(replacement, left.nativeId!, workspaceRoot, epoch),
+      ).toBeNull();
+    } finally {
+      database.close();
     }
   });
 });

@@ -85,20 +85,78 @@ export class ControlLifecycle extends ControlModel {
         now,
         this._epoch,
       );
+      this.__settleReleasedWork('runtime_epoch', this._epoch, now);
+    });
+  }
+
+  /**
+   * Releases one known Claude conversation after its owner proves exact controller/group exit.
+   * @returns The inactive thread, or null when its identity or producing runtime changed.
+   */
+  public releaseControl(
+    threadId: string,
+    nativeId: string,
+    workspaceRoot: string,
+    runtimeEpoch: string,
+  ): IManagedThread | null {
+    if (runtimeEpoch !== this._epoch) return null;
+    return this._transaction(() => {
+      const thread = this._statements.get<IThreadRow>(
+        `SELECT ${THREAD_COLUMNS} FROM agent_hq_thread WHERE id = ? AND provider = 'claude' AND native_id = ? AND workspace_root = ? AND runtime_epoch = ? AND ownership = 'uncertain'`,
+        threadId,
+        nativeId,
+        workspaceRoot,
+        runtimeEpoch,
+      );
+      if (!thread) return null;
+      const now = Date.now();
       this._statements.run(
-        "UPDATE agent_hq_action SET delivery = 'uncertain', updated_at = ? WHERE runtime_epoch = ? AND delivery = 'submitted'",
+        "UPDATE agent_hq_thread SET runtime_epoch = NULL, pending_action_id = NULL, active_turn_id = NULL, ownership = 'managed', state = 'inactive', updated_at = ? WHERE id = ?",
         now,
-        this._epoch,
+        thread.id,
       );
+      this.__settleReleasedWork('thread_id', thread.id, now);
+      return this._managedThread(thread.id);
+    });
+  }
+
+  /**
+   * Releases a quarantined controller's reservation only after its matching dispatch has ended.
+   * @returns The still-uncertain thread, or null for a changed action, identity or runtime.
+   */
+  public releaseEndedControlAction(
+    actionId: string,
+    nativeId: string,
+    workspaceRoot: string,
+    runtimeEpoch: string,
+  ): IManagedThread | null {
+    if (runtimeEpoch !== this._epoch) return null;
+    return this._transaction(() => {
+      const action = this._action(actionId);
+      if (
+        !action?.thread_id ||
+        action.runtime_epoch !== this._epoch ||
+        action.delivery === 'submitted' ||
+        action.delivery === 'queued'
+      )
+        return null;
+      const thread = this._thread(action.thread_id);
+      if (
+        !thread ||
+        thread.provider !== 'claude' ||
+        thread.native_id !== nativeId ||
+        thread.workspace_root !== workspaceRoot ||
+        thread.runtime_epoch !== this._epoch ||
+        thread.ownership !== 'uncertain' ||
+        thread.pending_action_id !== actionId
+      )
+        return null;
       this._statements.run(
-        "UPDATE agent_hq_action SET queue_ready = 0 WHERE runtime_epoch = ? AND delivery = 'queued'",
-        this._epoch,
+        "UPDATE agent_hq_thread SET pending_action_id = NULL, state = 'unknown', updated_at = ? WHERE id = ?",
+        Date.now(),
+        thread.id,
       );
-      this._statements.run(
-        "UPDATE agent_hq_native_approval SET state = 'expired', updated_at = ? WHERE runtime_epoch = ? AND state = 'pending'",
-        now,
-        this._epoch,
-      );
+      return this._managedThread(thread.id);
     });
   }
 
@@ -210,6 +268,28 @@ export class ControlLifecycle extends ControlModel {
   /** Marks a session's ownership uncertain when this runtime can't rejoin it. */
   public quarantineThread(threadId: string): void {
     this._transaction(() => this.__quarantine(threadId, Date.now()));
+  }
+
+  /** Keeps released work uncertain or paused without acknowledging or dispatching it. */
+  private __settleReleasedWork(
+    scopeColumn: 'thread_id' | 'runtime_epoch',
+    scopeId: string,
+    now: number,
+  ): void {
+    this._statements.run(
+      `UPDATE agent_hq_action SET delivery = 'uncertain', updated_at = ? WHERE ${scopeColumn} = ? AND delivery = 'submitted'`,
+      now,
+      scopeId,
+    );
+    this._statements.run(
+      `UPDATE agent_hq_action SET queue_ready = 0 WHERE ${scopeColumn} = ? AND delivery = 'queued'`,
+      scopeId,
+    );
+    this._statements.run(
+      `UPDATE agent_hq_native_approval SET state = 'expired', updated_at = ? WHERE ${scopeColumn} = ? AND state = 'pending'`,
+      now,
+      scopeId,
+    );
   }
 
   /** Quarantines one session another runtime left bound to itself, once. */

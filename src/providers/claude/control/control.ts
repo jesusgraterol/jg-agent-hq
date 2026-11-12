@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { hashValue } from 'jg-crypto';
-import { Exception } from 'jg-exception';
+import { Exception, extractMessage, isException } from 'jg-exception';
 import { delay, isEqual } from 'jg-utilities';
 import { z } from 'zod';
 
@@ -11,6 +11,7 @@ import type {
   ITurnSettings,
 } from '../../../contracts/index.js';
 import type { IProviderInputFile } from '../../inputs/index.js';
+import type { IControlObservation, IControlSnapshot, IControlSource } from '../../index.js';
 import { parseActionRequest } from '../../utilities.js';
 import { capabilityUnavailable } from '../../registry/index.js';
 import { toClaudeConfiguration } from '../configuration/index.js';
@@ -27,6 +28,7 @@ import {
   setBackgroundCommands,
 } from './stream.js';
 import { toClaudeSkills } from './skills.js';
+import { createClaudeQuarantineMonitor } from './quarantine.js';
 
 /** Keeps turn-start document encoding and uses labeled text for mid-turn text files. */
 const toFileBlocks = (files: IProviderInputFile[], isSteer = false) =>
@@ -77,6 +79,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     if (
       !session ||
       session.isClosing ||
+      session.isQuarantined ||
       !(session.connection?.isAvailable || (isParkedAllowed && session.parked))
     )
       unavailable();
@@ -84,6 +87,48 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
   };
   const countOpen = (): number =>
     [...sessions.values()].filter((session) => !session.parked).length;
+  /** Binds native callbacks to the controller generation, independently of frame payload IDs. */
+  const eventsFor = (session: IClaudeSession, scope = session.scope): IClaudeControlEvents => {
+    const source = { nativeId: session.id, workspaceRoot: session.workspaceRoot, scope };
+    return {
+      observe: (observation) => events?.observe(observation, source),
+      item: (nativeId, item, complete, replacedIds) =>
+        events?.item(nativeId, item, complete, replacedIds, source),
+      gap: (nativeId) => events?.gap(nativeId, source),
+      background: (nativeId, count) => events?.background(nativeId, count, source),
+      delta: (nativeId, turnId, itemId, text) =>
+        events?.delta(nativeId, turnId, itemId, text, source),
+      prompt: (prompt) => events?.prompt(prompt, source),
+      outcome: (outcome, thread) => events?.outcome(outcome, thread, source),
+      unavailable: (nativeId, controlScope) => events?.unavailable(nativeId, controlScope, source),
+    };
+  };
+  /** Suspends HQ interpretation while leaving the owned native process and its work running. */
+  const quarantineSession = (session: IClaudeSession, scope: string, cause?: unknown): boolean => {
+    if (sessions.get(session.id) !== session || session.scope !== scope || session.parked)
+      return false;
+    if (session.isQuarantined) return true;
+    if (session.isClosing) {
+      // its existing close owns shutdown and settlement; late evidence must not escalate to peers
+      session.connection?.quarantine(cause);
+      return true;
+    }
+    session.isQuarantined = true;
+    session.quiescentRevision = undefined;
+    cancelIdleStop(session);
+    const failure = new Exception(
+      `The Claude integration failed${cause === undefined ? '' : `: ${extractMessage(cause)}`}`,
+      { code: 'JG_AGENT_HQ_CLAUDE_FAILED', data: { kind: 'agent-unavailable' }, cause },
+    );
+    failSteers(session, undefined, failure);
+    if (session.input) {
+      clearTimeout(session.input.timer);
+      session.input.reject(failure);
+    }
+    session.connection?.quarantine(cause);
+    events?.quarantined?.({ nativeId: session.id, workspaceRoot: session.workspaceRoot, scope });
+    return true;
+  };
   /** Stops the wait that parks an idle session, as a turn or a stop does. */
   const cancelIdleStop = (session: IClaudeSession): void => {
     session.idleStop?.abort();
@@ -95,28 +140,49 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
   /** Parks the session once it stays idle for the whole period, restarting any earlier wait. */
   const scheduleIdleStop = (session: IClaudeSession): void => {
     cancelIdleStop(session);
-    if (isClosing || session.isClosing) return;
+    if (
+      isClosing ||
+      session.isClosing ||
+      session.isQuarantined ||
+      sessions.get(session.id) !== session
+    )
+      return;
+    const scope = session.scope;
     const idleStop = new AbortController();
     session.idleStop = idleStop;
     void delay(IDLE_STOP_SECONDS, { signal: idleStop.signal }).then(
-      () => park(session),
+      () => park(session, scope),
       () => undefined,
     );
   };
   // whether a call, a request or a background command still uses an idle session's process
   const isHeld = (session: IClaudeSession): boolean =>
     activeCalls.has(session.id) || session.requests.size > 0 || session.backgroundTaskCount > 0;
+  /** Rechecks positive lifecycle proof at the owned close boundary, never using rich turn state. */
+  const canStopQuarantined = (session: IClaudeSession): boolean =>
+    !isClosing &&
+    !session.isClosing &&
+    session.isQuarantined === true &&
+    sessions.get(session.id) === session &&
+    session.connection?.isAvailable === true &&
+    session.quiescentRevision !== undefined &&
+    session.monitor?.canStop(session.quiescentRevision) === true &&
+    !session.connection.hasPendingRequests &&
+    !activeCalls.has(session.id);
   /**
    * Reads an idle session's native settings once, then closes its process. The session stays idle
    * and records nothing; a call that arrives first keeps the process, and a background command
    * still running holds the session for another idle period, since closing would end it. Both are
    * checked again once the read answers, along with a turn that started meanwhile.
    */
-  const park = async (session: IClaudeSession): Promise<void> => {
+  const park = async (session: IClaudeSession, expectedScope: string): Promise<void> => {
     const connection = session.connection;
     if (
       isClosing ||
       session.isClosing ||
+      session.isQuarantined ||
+      sessions.get(session.id) !== session ||
+      session.scope !== expectedScope ||
       isBusy(session) ||
       session.transition ||
       !connection?.isAvailable
@@ -131,11 +197,20 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       try {
         configuration = await connection.requestControl({ subtype: 'get_settings' });
       } catch {
-        scheduleIdleStop(session);
+        if (session.scope === expectedScope) scheduleIdleStop(session);
         return;
       }
       // a turn that started meanwhile schedules the next idle period once it ends
-      if (isClosing || session.isClosing || isBusy(session)) return;
+      if (
+        isClosing ||
+        session.isClosing ||
+        session.isQuarantined ||
+        isBusy(session) ||
+        sessions.get(session.id) !== session ||
+        session.scope !== expectedScope ||
+        session.connection !== connection
+      )
+        return;
       if (isHeld(session)) {
         scheduleIdleStop(session);
         return;
@@ -151,7 +226,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
         session.connection = undefined;
       } catch {
         session.parked = undefined;
-        events?.unavailable(session.id);
+        eventsFor(session, expectedScope).unavailable(session.id, expectedScope);
       }
     })().finally(() => {
       session.transition = undefined;
@@ -166,11 +241,12 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     if (isClosing || countOpen() >= 32) conflict();
     session.parked = undefined;
     session.scope = randomUUID();
+    const scope = session.scope;
     session.opening = start(session, session.hasInput, signal);
     try {
       await session.opening;
     } catch (error) {
-      events?.unavailable(session.id);
+      eventsFor(session, scope).unavailable(session.id, scope);
       throw error;
     }
   };
@@ -184,6 +260,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     isProcessNeeded: boolean,
     call: (session: IClaudeSession) => Promise<T>,
     signal?: AbortSignal,
+    isControl = false,
   ): Promise<T> => {
     activeCalls.set(nativeId, (activeCalls.get(nativeId) ?? 0) + 1);
     try {
@@ -199,7 +276,20 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
         });
         await parked.transition;
       }
-      return await call(get(nativeId, !isProcessNeeded));
+      const current = get(nativeId, !isProcessNeeded);
+      const scope = current.scope;
+      try {
+        const result = await call(current);
+        if (isControl && current.isQuarantined) unavailable();
+        return result;
+      } catch (cause) {
+        if (
+          isControl &&
+          (cause instanceof z.ZodError || (isException(cause) && cause.cause instanceof z.ZodError))
+        )
+          quarantineSession(current, scope, cause);
+        throw cause;
+      }
     } finally {
       const count = (activeCalls.get(nativeId) ?? 1) - 1;
       if (count > 0) activeCalls.set(nativeId, count);
@@ -233,16 +323,27 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     signal?: AbortSignal,
   ): Promise<void> => {
     const nativeId = session.id;
+    const scope = session.scope;
+    const nativeEvents = eventsFor(session, scope);
+    const monitor = createClaudeQuarantineMonitor();
+    session.monitor = monitor;
+    session.quiescentRevision = undefined;
+    session.nativeStartedAt = undefined;
     session.isResumed = isResume;
     // a new process has no turn of its own and no background commands yet
     session.nativeTurn = undefined;
-    setBackgroundCommands(session, 0, events);
+    setBackgroundCommands(session, 0, nativeEvents);
     const connection = await createClaudeRpc(
       (reason) => {
-        if (reason !== 'unavailable' || session.isClosing || session.parked) return;
+        if (
+          reason !== 'unavailable' ||
+          session.isClosing ||
+          session.parked ||
+          sessions.get(nativeId) !== session ||
+          session.scope !== scope
+        )
+          return;
         failSteers(session);
-        // the commands stopped with the process
-        setBackgroundCommands(session, 0, events);
         if (session.input) {
           clearTimeout(session.input.timer);
           session.input.reject(
@@ -251,7 +352,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
             }),
           );
         }
-        events?.unavailable(session.id);
+        nativeEvents.unavailable(session.id, scope);
       },
       {
         nativeId,
@@ -259,21 +360,46 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
         additionalDirectories,
         isResume,
         settings: session.settings,
+        quarantine: (cause) => quarantineSession(session, scope, cause),
+        observe(raw) {
+          if (sessions.get(nativeId) !== session || session.scope !== scope) return;
+          monitor.observe(raw);
+          session.quiescentRevision = undefined;
+          if (session.isQuarantined)
+            setBackgroundCommands(session, monitor.backgroundCount, nativeEvents);
+        },
+        written(raw) {
+          if (sessions.get(nativeId) !== session || session.scope !== scope) return;
+          monitor.written(raw);
+          session.quiescentRevision = undefined;
+        },
         receive: (raw) => {
+          if (
+            session.isQuarantined ||
+            sessions.get(nativeId) !== session ||
+            session.scope !== scope
+          )
+            return;
           const wasBusy = isBusy(session);
-          receiveClaudeMessage(session, raw, events);
+          receiveClaudeMessage(session, raw, nativeEvents);
           // a turn Claude starts holds the idle period back, and the end of the last turn starts it
           if (!wasBusy && isBusy(session)) cancelIdleStop(session);
           else if (wasBusy && !isBusy(session)) scheduleIdleStop(session);
         },
         lateResponse(id, _result, error) {
+          if (
+            session.isQuarantined ||
+            sessions.get(nativeId) !== session ||
+            session.scope !== scope
+          )
+            return;
           // only a name or an interrupt is a control request an action phase sends
           const request = parseActionRequest(id);
           if (request?.phase !== 'name' && request?.phase !== 'interrupt') return;
           if (error !== undefined)
-            events?.outcome({ kind: 'failed', ...request, failure: 'agent-unavailable' });
+            nativeEvents.outcome({ kind: 'failed', ...request, failure: 'agent-unavailable' });
           else
-            events?.outcome({
+            nativeEvents.outcome({
               kind: request.phase === 'name' ? 'renamed' : 'interrupt-accepted',
               ...request,
             });
@@ -340,6 +466,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     sessions.set(nativeId, session);
     session.opening = start(session, isResume, signal);
     await session.opening;
+    if (session.isQuarantined) unavailable();
     return { id: nativeId, cwd: workspaceRoot, status: { type: 'idle' as const } };
   };
   return {
@@ -371,7 +498,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     /** Settles pending native waits from exact saved input without starting another turn. */
     confirmSavedSteers(nativeId: string, workspaceRoot: string, items: IClaudeSavedInput[]): void {
       const session = sessions.get(nativeId);
-      if (!session || session.workspaceRoot !== workspaceRoot) return;
+      if (!session || session.isQuarantined || session.workspaceRoot !== workspaceRoot) return;
       for (const item of items) {
         const inputId = item.provenance.nativeInputId;
         const steer = inputId === null ? undefined : session.steers.get(inputId);
@@ -387,7 +514,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
         // a later live replay still needs its exact identity to start its own native turn
         steer.isAcknowledged = true;
         steer.resolve(steer.turnId);
-        events?.outcome({
+        eventsFor(session).outcome({
           kind: 'steer-accepted',
           actionId: steer.id,
           phase: 'steer',
@@ -485,11 +612,16 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
      * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
      */
     async nameThread(requestId: string, nativeId: string, name: string): Promise<void> {
-      await withSession(nativeId, true, (session) =>
-        session.connection!.requestControl(
-          { subtype: 'rename_session', title: name, source: 'host', session_id: nativeId },
-          requestId,
-        ),
+      await withSession(
+        nativeId,
+        true,
+        (session) =>
+          session.connection!.requestControl(
+            { subtype: 'rename_session', title: name, source: 'host', session_id: nativeId },
+            requestId,
+          ),
+        undefined,
+        true,
       );
     },
     validateInput,
@@ -577,6 +709,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
           });
         },
         signal,
+        true,
       );
     },
     /**
@@ -607,38 +740,44 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       if (files.some((file) => !CLAUDE_STEER_MEDIA_TYPES.includes(file.mediaType)))
         capabilityUnavailable();
       // a parked session is idle, so it has no turn to steer
-      return withSession(nativeId, false, (session) => {
-        if (getActiveTurn(session)?.id !== turnId) conflict();
-        if (session.isClosing || !session.connection?.isAvailable) unavailable();
-        return new Promise<string>((resolve, reject) => {
-          const id = parsedId.data;
-          session.steers.set(id, {
-            id,
-            turnId,
-            inputSha256: hashValue(text),
-            isAcknowledged: false,
-            resolve,
-            reject,
-          });
-          void session
-            .connection!.write({
-              type: 'user',
-              uuid: id,
-              session_id: nativeId,
-              message: {
-                role: 'user',
-                content: files.length
-                  ? [{ type: 'text', text }, ...toFileBlocks(files, true)]
-                  : text,
-              },
-              parent_tool_use_id: null,
-            })
-            .catch((error: unknown) => {
-              session.steers.delete(id);
-              reject(error);
+      return withSession(
+        nativeId,
+        false,
+        (session) => {
+          if (getActiveTurn(session)?.id !== turnId) conflict();
+          if (session.isClosing || !session.connection?.isAvailable) unavailable();
+          return new Promise<string>((resolve, reject) => {
+            const id = parsedId.data;
+            session.steers.set(id, {
+              id,
+              turnId,
+              inputSha256: hashValue(text),
+              isAcknowledged: false,
+              resolve,
+              reject,
             });
-        });
-      });
+            void session
+              .connection!.write({
+                type: 'user',
+                uuid: id,
+                session_id: nativeId,
+                message: {
+                  role: 'user',
+                  content: files.length
+                    ? [{ type: 'text', text }, ...toFileBlocks(files, true)]
+                    : text,
+                },
+                parent_tool_use_id: null,
+              })
+              .catch((error: unknown) => {
+                session.steers.delete(id);
+                reject(error);
+              });
+          });
+        },
+        undefined,
+        true,
+      );
     },
     /**
      * Requests interruption of the exact active turn, HQ input's or one Claude started; completion
@@ -650,35 +789,185 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
      */
     async interrupt(requestId: string, nativeId: string, turnId: string): Promise<void> {
       // a parked session is idle, so its interrupt is refused as any idle session's is
-      await withSession(nativeId, false, async (session) => {
-        const turn = session.nativeTurn ?? session.input;
-        if (turn?.id !== turnId) conflict();
-        turn.interruptRequested = true;
-        await session.connection!.requestControl({ subtype: 'interrupt' }, requestId);
-      });
+      await withSession(
+        nativeId,
+        false,
+        async (session) => {
+          const turn = session.nativeTurn ?? session.input;
+          if (turn?.id !== turnId) conflict();
+          turn.interruptRequested = true;
+          await session.connection!.requestControl({ subtype: 'interrupt' }, requestId);
+        },
+        undefined,
+        true,
+      );
+    },
+    /**
+     * Reads the owned identity without opening or changing its process.
+     * @returns Current controller identity, or undefined for a missing or replaced scope.
+     */
+    getControlIdentity(
+      nativeId: string,
+      expectedScope?: string,
+    ):
+      | { scope: string; workspaceRoot: string; isClosing: boolean; releaseActionId?: string }
+      | undefined {
+      const session = sessions.get(nativeId);
+      if (!session || (expectedScope !== undefined && session.scope !== expectedScope)) return;
+      return {
+        scope: session.scope,
+        workspaceRoot: session.workspaceRoot,
+        isClosing: session.isClosing,
+        ...(session.releaseActionId ? { releaseActionId: session.releaseActionId } : {}),
+      };
+    },
+    /** @returns Current process-bound identity without trusting native frame identifiers. */
+    getControlSource(nativeId: string): IControlSource | undefined {
+      const session = sessions.get(nativeId);
+      return session && { nativeId, workspaceRoot: session.workspaceRoot, scope: session.scope };
+    },
+    /** @returns Whether the exact retained controller suspended interpretation. */
+    isControlQuarantined(source: IControlSource): boolean {
+      const session = sessions.get(source.nativeId);
+      return (
+        !!session &&
+        session.scope === source.scope &&
+        session.workspaceRoot === source.workspaceRoot &&
+        session.isQuarantined === true
+      );
+    },
+    /** @returns Whether the exact current controller contained the evidence failure. */
+    quarantineControl(source: IControlSource, cause?: unknown): boolean {
+      const session = sessions.get(source.nativeId);
+      return (
+        !!session &&
+        session.workspaceRoot === source.workspaceRoot &&
+        quarantineSession(session, source.scope, cause)
+      );
+    },
+    /** @returns Live owned handles and activity revisions captured before the shared native poll. */
+    snapshotControls(): IControlSnapshot[] {
+      const snapshots: IControlSnapshot[] = [];
+      for (const session of sessions.values()) {
+        const connection = session.connection;
+        if (
+          !connection?.isAvailable ||
+          connection.pid === undefined ||
+          !session.monitor ||
+          session.isClosing ||
+          session.parked
+        )
+          continue;
+        snapshots.push({
+          nativeId: session.id,
+          workspaceRoot: session.workspaceRoot,
+          scope: session.scope,
+          pid: connection.pid,
+          revision: session.monitor.revision,
+        });
+      }
+      return snapshots;
+    },
+    /** Applies only exact owned inventory identities; missing or changed evidence clears idle proof. */
+    observeControls(
+      snapshots: IControlSnapshot[],
+      observations: IControlObservation[] | null,
+    ): void {
+      const byPid = new Map<number, IControlObservation | null>();
+      const byNativeId = new Map<string, IControlObservation | null>();
+      for (const observation of observations ?? []) {
+        byPid.set(observation.pid, byPid.has(observation.pid) ? null : observation);
+        byNativeId.set(
+          observation.nativeId,
+          byNativeId.has(observation.nativeId) ? null : observation,
+        );
+      }
+      for (const snapshot of snapshots) {
+        const session = sessions.get(snapshot.nativeId);
+        if (
+          !session ||
+          session.scope !== snapshot.scope ||
+          session.workspaceRoot !== snapshot.workspaceRoot
+        )
+          continue;
+        session.quiescentRevision = undefined;
+        const observation = byPid.get(snapshot.pid);
+        if (
+          !observation ||
+          byNativeId.get(snapshot.nativeId) !== observation ||
+          observation.nativeId !== session.id ||
+          observation.workspaceRoot !== session.workspaceRoot ||
+          session.connection?.pid !== snapshot.pid ||
+          !session.connection.isAvailable
+        )
+          continue;
+        if (
+          session.nativeStartedAt !== undefined &&
+          observation.startedAt !== session.nativeStartedAt
+        )
+          continue;
+        if (observation.startedAt !== null) session.nativeStartedAt = observation.startedAt;
+        if (
+          !session.isQuarantined ||
+          observation.state !== 'idle' ||
+          !session.monitor?.canStop(snapshot.revision) ||
+          session.connection.hasPendingRequests ||
+          activeCalls.has(session.id)
+        )
+          continue;
+        session.quiescentRevision = snapshot.revision;
+        events?.quiescent?.({
+          nativeId: session.id,
+          workspaceRoot: session.workspaceRoot,
+          scope: session.scope,
+        });
+      }
     },
     /**
      * Closes the owned CLI and proves that its process group has stopped.
+     * An admitted close reserves release before awaiting any automatic shutdown already running.
+     * @param requestId The exact cleanup request, retained when its action owns release.
+     * @param nativeId The controlled native conversation.
+     * @param expectedScope The controller generation to stop, when supplied.
+     * @param requiresQuiescence Whether fresh independent idle proof is required before closing.
+     * @param ownsRelease Whether an admitted close owns the later controller release.
      * @returns Confirmed shutdown including owned background processes.
      * @throws
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
      * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
      */
-    async stopSession(_requestId: string, nativeId: string): Promise<void> {
+    async stopSession(
+      requestId: string,
+      nativeId: string,
+      expectedScope?: string,
+      requiresQuiescence = false,
+      ownsRelease = false,
+    ): Promise<void> {
       const session = sessions.get(nativeId);
-      if (!session) conflict();
+      if (!session || (expectedScope !== undefined && session.scope !== expectedScope)) conflict();
+      if (ownsRelease) session.releaseActionId = requestId;
       cancelIdleStop(session);
-      session.isClosing = true;
-      // a stopped process replays nothing more, and its background commands stop with it
+      if (requiresQuiescence && !canStopQuarantined(session)) conflict();
+      if (!requiresQuiescence) session.isClosing = true;
+      // a closing controller accepts no more steers, but its group is not proven stopped yet
       failSteers(session);
-      setBackgroundCommands(session, 0, events);
       // a parked session finishes without a process
       await session.transition?.catch(() => undefined);
       await session.opening.catch((cause: unknown) => {
         if (isCleanupUnconfirmed(cause)) throw cause;
       });
+      if (requiresQuiescence) {
+        if (
+          sessions.get(nativeId) !== session ||
+          (expectedScope !== undefined && session.scope !== expectedScope) ||
+          !canStopQuarantined(session)
+        )
+          conflict();
+        session.isClosing = true;
+      }
       await session.connection?.close();
+      setBackgroundCommands(session, 0, eventsFor(session));
     },
     /**
      * Releases a stopped session only after rechecking its shutdown promise.
@@ -687,10 +976,16 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
      */
-    async releaseSession(_requestId: string, nativeId: string): Promise<void> {
+    async releaseSession(
+      _requestId: string,
+      nativeId: string,
+      expectedScope?: string,
+    ): Promise<void> {
       const session = sessions.get(nativeId);
-      if (!session?.isClosing) conflict();
+      if (!session?.isClosing || (expectedScope !== undefined && session.scope !== expectedScope))
+        conflict();
       await session.connection?.close();
+      if (sessions.get(nativeId) !== session) conflict();
       sessions.delete(nativeId);
     },
     /**

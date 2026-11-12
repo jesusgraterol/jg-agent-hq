@@ -29,6 +29,7 @@ export const isOwnedProcess = (pid: number): boolean => ownedPids.has(pid);
 
 /**
  * Owns one POSIX process group and bounded structured transport, without a shell.
+ * The stopped callback reports failure before cleanup; only close confirms owned-group exit.
  * @returns A transport whose close waits for owned process termination.
  * @throws
  * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
@@ -123,6 +124,7 @@ export const createProviderProcess = (
   if (framing.preamble) child.stdin.write(framing.preamble);
 
   return {
+    pid,
     get isRunning() {
       return isRunning;
     },

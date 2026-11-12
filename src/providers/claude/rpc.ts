@@ -21,6 +21,8 @@ const EnvelopeSchema = z.object({
     .optional(),
   request_id: z.string().optional(),
 });
+// identity remains a fatal fence outside recoverable interpretation of an owned lane
+const ControlIdentitySchema = z.object({ session_id: z.string().optional() });
 
 /**
  * Opens an idle native structured lane without a user prompt or inference: a session's, or a
@@ -39,6 +41,9 @@ export const createClaudeRpc = async (
     additionalDirectories: string[];
     isResume: boolean;
     settings?: ISessionSettings;
+    quarantine(cause?: unknown): boolean;
+    observe?(message: unknown): void;
+    written?(message: unknown): void;
     receive(message: unknown): void;
     lateResponse(id: string, result: unknown, error: unknown): void;
   },
@@ -48,6 +53,30 @@ export const createClaudeRpc = async (
   let sequence = 0;
   const late = new Set<string>();
   const pending = createPendingRequests<string>();
+  const inFlight = new Set<string>();
+  const quarantinedRequests = new Set<string>();
+  let isInitialized = false;
+  let isQuarantined = false;
+  let pendingWrites = 0;
+  let hasUnverifiableRequests = false;
+  /** Rejects HQ promises without closing the native transport or accepting late acknowledgements. */
+  const quarantine = (cause?: unknown): void => {
+    if (isQuarantined) return;
+    isQuarantined = true;
+    for (const id of inFlight) quarantinedRequests.add(id);
+    inFlight.clear();
+    pending.rejectAll(
+      new Exception(
+        `The Claude integration failed${cause === undefined ? '' : `: ${extractMessage(cause)}`}`,
+        { code: 'JG_AGENT_HQ_CLAUDE_FAILED', data: { kind: 'agent-unavailable' }, cause },
+      ),
+    );
+  };
+  /** Contains only an initialized owned controller; startup and unowned lane failures remain fatal. */
+  const contain = (cause: unknown): void => {
+    if (!isInitialized || !control?.quarantine(cause)) throw cause;
+    quarantine(cause);
+  };
   const fail = (cause: unknown): void => {
     invalidate('unavailable');
     pending.rejectAll(
@@ -80,19 +109,42 @@ export const createClaudeRpc = async (
         : (lane?.additionalDirectories.flatMap((directory) => ['--add-dir', directory]) ?? [])),
     ],
     (message) => {
+      if (control) {
+        const identity = ControlIdentitySchema.safeParse(message);
+        if (
+          !identity.success ||
+          (identity.data.session_id !== undefined && identity.data.session_id !== control.nativeId)
+        )
+          throw HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } });
+        control.observe?.(message);
+      }
       const parsed = EnvelopeSchema.safeParse(message);
-      if (!parsed.success)
-        throw HQ_ERRORS.create('claudeFailed', {
-          data: { kind: 'agent-unavailable' },
-          cause: parsed.error,
-        });
+      if (!parsed.success) {
+        contain(
+          HQ_ERRORS.create('claudeFailed', {
+            data: { kind: 'agent-unavailable' },
+            cause: parsed.error,
+          }),
+        );
+        return;
+      }
       const envelope = parsed.data;
       if (envelope.type === 'control_response') {
         const response = envelope.response;
-        if (!response)
-          throw HQ_ERRORS.create('claudeFailed', {
-            data: { kind: 'agent-unavailable' },
-          });
+        if (!response) {
+          contain(
+            HQ_ERRORS.create('claudeFailed', {
+              data: { kind: 'agent-unavailable' },
+            }),
+          );
+          return;
+        }
+        if (isQuarantined) {
+          quarantinedRequests.delete(response.request_id);
+          late.delete(response.request_id);
+          return;
+        }
+        inFlight.delete(response.request_id);
         const isPending =
           response.subtype === 'error'
             ? pending.reject(
@@ -115,7 +167,12 @@ export const createClaudeRpc = async (
               : undefined,
           );
       } else if (control) {
-        control.receive(message);
+        if (isQuarantined) return;
+        try {
+          control.receive(message);
+        } catch (cause) {
+          contain(cause);
+        }
       } else if (envelope.type === 'control_request' && envelope.request_id) {
         // this read-only lane never grants native tool permissions
         void transport
@@ -144,7 +201,7 @@ export const createClaudeRpc = async (
     requestBody: { subtype: string; [key: string]: unknown },
     requestId?: string,
   ): Promise<unknown> => {
-    if (!transport.isRunning || pending.size >= 32)
+    if (isQuarantined || !transport.isRunning || pending.size >= 32)
       return Promise.reject(
         HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } }),
       );
@@ -153,13 +210,20 @@ export const createClaudeRpc = async (
       return Promise.reject(
         HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } }),
       );
+    inFlight.add(id);
     const response = pending.add(id, 30_000, () => {
+      inFlight.delete(id);
       // a controlled session keeps a late answer's identity, to settle what it acknowledges
       if (control) {
         late.add(id);
         if (late.size > 64) {
-          fail(HQ_ERRORS.create('claudeFailed'));
-          void transport.close().catch(fail);
+          late.delete(id);
+          hasUnverifiableRequests = true;
+          if (control.quarantine()) quarantine();
+          else {
+            fail(HQ_ERRORS.create('claudeFailed'));
+            void transport.close().catch(fail);
+          }
         }
       }
       return new Exception('The Claude integration failed: request deadline exceeded', {
@@ -174,6 +238,7 @@ export const createClaudeRpc = async (
         request: requestBody,
       })
       .catch((cause: unknown) => {
+        inFlight.delete(id);
         pending.reject(
           id,
           new Exception(`The Claude integration failed: ${extractMessage(cause)}`, {
@@ -202,12 +267,49 @@ export const createClaudeRpc = async (
         data: { kind: 'agent-unavailable' },
         cause: initialized.error,
       });
+    isInitialized = true;
     return {
       version: initialized.data.claude_code_version ?? null,
       initialization: initialized.data,
       initializedAt: Date.now(),
       requestControl: request,
-      write: transport.write,
+      quarantine,
+      pid: transport.pid,
+      get hasPendingRequests() {
+        return (
+          hasUnverifiableRequests ||
+          pending.size > 0 ||
+          late.size > 0 ||
+          quarantinedRequests.size > 0 ||
+          pendingWrites > 0
+        );
+      },
+      /**
+       * Writes native input only while rich control remains available.
+       * @returns Confirmation that the transport accepted the write, never native consumption.
+       * @throws
+       * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+       * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+       */
+      async write(message: unknown): Promise<void> {
+        if (isQuarantined)
+          throw HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } });
+        pendingWrites += 1;
+        try {
+          await transport.write(message);
+          control?.written?.(message);
+        } catch (cause) {
+          // write integrity failures retain the transport shutdown path, unlike interpretation loss
+          fail(cause);
+          throw new Exception(`The HQ transport failed: ${extractMessage(cause)}`, {
+            code: 'JG_AGENT_HQ_TRANSPORT_FAILED',
+            data: { kind: 'agent-unavailable' },
+            cause,
+          });
+        } finally {
+          pendingWrites -= 1;
+        }
+      },
       get isAvailable() {
         return transport.isRunning;
       },

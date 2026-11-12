@@ -75,6 +75,10 @@ Use `models --provider <id>` for native model and effort choices, and `configura
 
 Native execution settings, instructions, skills and tool permissions remain with each CLI. Claude uses an owned structured process per controlled session, closes it after 60 idle minutes and reopens it for the next input, and steers its active turn with a structured user message. Close other CLI controllers before confirming adoption, resume or recovery. The runtime coordinates sessions sharing one state directory; it cannot lock independently running native CLIs. Integrating browser hosts can use durable host-action admission and operator-scoped reconciliation through the programmatic API; see the [browser host contract](api/README.md#browser-host-integration). The standalone CLI advertises only commands it implements.
 
+When Claude sends structurally valid evidence HQ cannot interpret, HQ suspends that session's controls and live interpretation while its native work continues. It closes the quarantined controller automatically only after fresh native idle, a known empty task snapshot and no unresolved requests establish that work has finished. Unknown evidence or an unanswered approval keeps it alive; confirmed `thread-close` with `interrupt: true` explicitly stops its owned process group, including unfinished background work. Identity and transport-integrity failures retain their shutdown handling.
+
+After verified owned-group shutdown and controller release, that conversation becomes managed and inactive without restarting HQ. Resume retains its native identity and history. Unacknowledged input stays uncertain, earlier queued work stays paused, and pending approvals expire. Unconfirmed shutdown or a competing native terminal keeps ownership uncertain; another controlled conversation remains usable. See [Claude connection recovery](docs/recovery.md#claude-connection-recovery).
+
 Approval reads return indexed, cursor-paginated pending, answered and expired metadata after reconnect or restart. Sensitive presentation is available only while the exact native request is live. Native permissions require explicit responses; unknown request kinds or scopes are denied. See [native replies and reconnect reads](api/README.md#thread-control-and-live-input).
 
 Codex asynchronous questions retain their explicit `asyncInput` metadata through live items, saved history, details and evidence. They do not replace ordinary final results or create native approval requests. Trusted Node hosts use `hq.observeAsyncInputs(listener)` to enqueue complete controlled-session observations and recovery work independently of browser reads. Hosts own durable question resolution and explicit ordinary-message or exact-turn steer answers. See [async questions](api/README.md#async-questions).
@@ -133,6 +137,7 @@ The [qualification matrix](api/README.md#qualification) records native journeys,
 - `docs/website.md`: durable website architecture, verification and generated-asset sources.
 - `docs/architecture.md`: provider and database ownership, schema initialization and host maintenance.
 - `docs/recovery.md`: local snapshot coverage, offline recovery and the host's remote durability responsibilities.
+- [`docs/delivery.md`](https://github.com/jesusgraterol/jg-agent-hq/blob/main/docs/delivery.md): ordered development, main and npm publication stops, operators and release verification.
 
 `/docs` is reserved for concise, quickly scannable documentation of essential durable concepts and processes. API references remain outside `/docs`.
 

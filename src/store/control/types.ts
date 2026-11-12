@@ -11,6 +11,7 @@ import type {
   IProviderId,
   ITurnResult,
 } from '../../contracts/index.js';
+import type { IControlSource } from '../../providers/index.js';
 
 // these shapes mirror SQLite columns; transformations retain the public camelCase contracts
 export type IThreadRow = {
@@ -110,6 +111,7 @@ export type IAdmission = {
     nativeId?: string;
     input?: IPreparedInput;
     recoveryTurn?: IReattachment['latestTurn'];
+    quarantinedControl?: IControlSource;
   };
 };
 export type IAdmissionResult = {

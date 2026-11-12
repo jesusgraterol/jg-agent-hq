@@ -1,6 +1,13 @@
 import { z } from 'zod';
 
 import type { IObservationPace, ISessionTerminal } from '../../../contracts/index.js';
+import type { IControlObservation, IControlSnapshot } from '../../index.js';
+
+// one shared inventory brackets owned activity without introducing session-specific polls
+export type IClaudeOwnedObserver = {
+  begin(): IControlSnapshot[];
+  complete(snapshots: IControlSnapshot[], observations: IControlObservation[] | null): void;
+};
 
 // one active session; interactive entries report a status and background entries a state
 export const ClaudeAgentSchema = z.object({

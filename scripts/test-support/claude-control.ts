@@ -40,6 +40,8 @@ export const startClaudeControl = () => {
  };
  let hasPrompt=false;
  let isClosing=false;
+ let shutdownHeld=false;
+ let emittedBatch=null;
  // a turn the CLI starts on its own, as Claude does after a background command finishes
  let native=null,nativeTrigger=null,isTaskRunning=false,hasRaced=false;
  const endNative=interrupted=>{
@@ -70,6 +72,9 @@ export const startClaudeControl = () => {
  };
  // holdResult streams and saves a turn's answer, then holds its result until releaseResult
  let heldResult=null;
+ let heldReplay=null;
+ let heldSettings=null;
+ let heldNameResponse=null;
  const complete=(interrupted=false)=>{
   if(!input||heldResult)return;
   // scripted frames are written to the transcript as the CLI would, with their result metadata
@@ -92,6 +97,7 @@ export const startClaudeControl = () => {
   if(!interrupted&&control().backgroundTask&&!isTaskRunning){isTaskRunning=true;out({type:'system',subtype:'background_tasks_changed',tasks:[{task_id:'task-1',run_id:'run-1',description:'sleep',task_type:'local_bash'}]});out({type:'system',subtype:'task_started',task_id:'task-1',run_id:'run-1',tool_use_id:'tool-task',description:'sleep',is_backgrounded:true,task_type:'local_bash'});}
   out({type:'result',subtype:interrupted?'error_during_execution':'success',is_error:interrupted,user_message_uuid:input.uuid,structured_output:control().structuredOutput,usage:control().usageMalformed?'unknown-usage':{input_tokens:7,output_tokens:3,cache_read_input_tokens:2},errors:interrupted?['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null']:undefined,...fastReport()});
   input=null;hasPrompt=false;
+  if(control().afterResultFrames)for(const frame of control().afterResultFrames)out(frame);
   // a held steer then runs as the session's next turn, which its result names
   for(const steer of steers.splice(0)){
    record(steer.uuid,'user',steer.message.content,leaf);leaf=steer.uuid;
@@ -106,7 +112,12 @@ export const startClaudeControl = () => {
  const interval=setInterval(()=>{
   if(input&&!native&&control().release&&!hasPrompt){if(control().releaseOnce)writeFileSync(join(root,'claude-control.json'),JSON.stringify({...control(),release:false,releaseOnce:false}));complete();}
   if(heldResult&&control().releaseResult){const held=heldResult;heldResult=null;held();}
+  if(heldReplay&&control().releaseReplay){const held=heldReplay;heldReplay=null;held();}
   const settings=control();
+  if(heldNameResponse&&settings.releaseNameResponse){const held=heldNameResponse;heldNameResponse=null;held();}
+  if(settings.frameBatch&&settings.frameBatch.id!==emittedBatch&&(!settings.frameBatch.nativeId||settings.frameBatch.nativeId===id)){emittedBatch=settings.frameBatch.id;for(const frame of settings.frameBatch.frames)out(frame);appendFileSync(join(root,'claude-calls.jsonl'),JSON.stringify({type:'fixture_frames_sent',uuid:id,batch:emittedBatch})+'\n');}
+  if(heldSettings&&(!settings.holdSettings||settings.releaseSettings)){const held=heldSettings;heldSettings=null;held();}
+  if(shutdownHeld&&(!settings.holdShutdown||settings.releaseShutdown)){shutdown();return;}
   if(isTaskRunning&&settings.finishBackgroundTask){isTaskRunning=false;out({type:'system',subtype:'task_updated',task_id:'task-1',run_id:'run-1',patch:{status:'completed',end_time:Date.now()}});out({type:'system',subtype:'task_notification',task_id:'task-1',run_id:'run-1',tool_use_id:'tool-task',status:'completed',output_file:'',summary:'done'});out({type:'system',subtype:'background_tasks_changed',tasks:[]});}
   if(native&&!native.hasPrompt&&settings.nativeRelease)endNative(false);
   // nativeAbandonPrompt ends the turn with its permission request still unanswered
@@ -121,7 +132,18 @@ export const startClaudeControl = () => {
    const response=body=>out({type:'control_response',response:{subtype:'success',request_id:message.request_id,response:body}});
    // nativeOnSettings starts a turn of its own just before answering a settings read
    if(subtype==='get_settings'&&settings.nativeOnSettings&&!native&&!input)startNative();
-   if(subtype==='get_settings'){response({effective:{model,effortLevel:'stale-effort',agent:flag('--agent'),...(fast===null?{}:{fastMode:fast}),secret:'must-not-leak'},applied:settings.unavailableSettings?{model:null,effort:null}:{model,effort}});return;}
+   if(subtype==='get_settings'){
+    const answer=()=>{
+     const body={effective:{model,effortLevel:'stale-effort',agent:flag('--agent'),...(fast===null?{}:{fastMode:fast}),secret:'must-not-leak'},applied:settings.unavailableSettings?{model:null,effort:null}:{model,effort}};
+     if(control().mismatchAfterSettings)process.stdout.write([
+      {type:'control_response',response:{subtype:'success',request_id:message.request_id,response:body}},
+      {type:'result',subtype:'success',is_error:false}
+     ].map(frame=>JSON.stringify({...frame,session_id:id})).join('\n')+'\n');
+     else response(body);
+    };
+    if(settings.holdSettings){heldSettings=answer;appendFileSync(join(root,'claude-calls.jsonl'),JSON.stringify({type:'fixture_settings_held',uuid:id})+'\n');return;}
+    answer();return;
+   }
    if(subtype==='apply_flag_settings'){
     model=message.request.settings.model??model;effort=message.request.settings.effortLevel??effort;fast=message.request.settings.fastMode??fast;
     if(settings.modelNotice&&message.request.settings.model){
@@ -133,12 +155,14 @@ export const startClaudeControl = () => {
    }
    if(subtype==='initialize'){response({...(settings.omitVersion?{}:{claude_code_version:settings.version??'2.1.304'}),futureMetadata:settings.futureMetadata,agents:settings.agentsUnavailable?undefined:Array.from({length:settings.agentCount??4},(_,index)=>({name:'agent-'+String(index).padStart(4,'0'),description:settings.configRevision?'Updated agent':'Native agent',model:'model-0000'})),current_permission_mode:flag('--permission-mode')??'default',session_state:settings.omitIdle?undefined:settings.nativeState??'idle',commands:fixtureCommands(settings)});return;}
    if(subtype==='rename_session'){
+    if(settings.badNameResponse){heldNameResponse=()=>response();out({type:'control_response',response:{subtype:'success',request_id:42}});return;}
     if(settings.rejectName){out({type:'control_response',response:{subtype:'error',request_id:message.request_id,error:'Synthetic name rejection'}});return;}
     if(message.request.session_id!==id){out({type:'control_response',response:{subtype:'error',request_id:message.request_id,error:'Wrong session'}});return;}
     appendFileSync(transcript,JSON.stringify({type:'custom-title',sessionId:id,customTitle:message.request.title})+'\n');
     out({type:'system',subtype:'session_title_changed',title:message.request.title});if(settings.lateName)setTimeout(()=>response(),31000);else response();return;
    }
    if(subtype==='interrupt'){
+    if(settings.malformedInterrupt){process.stdout.write('not-json\n');return;}
     if(native){if(native.hasPrompt)out({type:'control_cancel_request',request_id:'native-turn-request'});response();setTimeout(()=>endNative(true),settings.interruptDelay??1);return;}
     if(hasPrompt)out({type:'control_cancel_request',request_id:'native-request'});
     const acknowledge=()=>{response();setTimeout(()=>complete(!settings.completeOnInterrupt),settings.interruptDelay??1);};
@@ -175,6 +199,7 @@ export const startClaudeControl = () => {
    if(native)native.onEnd.push(acknowledge);
    // nativeBeforeReplay starts a turn of Claude's own once, just as input arrives
    else if(settings.nativeBeforeReplay&&!hasRaced){hasRaced=true;startNative(acknowledge);}
+   else if(settings.holdReplay)heldReplay=acknowledge;
    else if(settings.lateAck)setTimeout(acknowledge,31000);else acknowledge();
   }else if(message.type==='control_response'){
    if(settings.holdReply)return;
@@ -194,6 +219,7 @@ export const startClaudeControl = () => {
   }
  });
  const shutdown=()=>{
+  if(!isClosing&&control().holdShutdown&&!control().releaseShutdown){if(!shutdownHeld)appendFileSync(join(root,'claude-calls.jsonl'),JSON.stringify({type:'fixture_shutdown_held',uuid:id})+'\n');shutdownHeld=true;return;}
   if(isClosing)return;isClosing=true;clearInterval(interval);lines.close();process.stdin.destroy();
   child.once('close',()=>{process.exitCode=0;});child.kill('SIGTERM');
  };
