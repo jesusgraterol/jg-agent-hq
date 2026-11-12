@@ -89,7 +89,9 @@ export const createActions = (
     },
   };
   const { state, prompts, controlled, live, waits } = context;
-  const dispatcher = createDispatch(context);
+  const dispatcher = createDispatch(context, (actionId, owner) =>
+    events.finishControlAction(actionId, owner),
+  );
   const events = createEvents(
     context,
     dispatcher,

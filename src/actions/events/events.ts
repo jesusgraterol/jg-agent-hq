@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { signHmac } from 'jg-crypto';
 import { isException } from 'jg-exception';
 import { delay } from 'jg-utilities';
+import { z } from 'zod';
 
 import {
   MAX_ITEM_TEXT_LENGTH,
@@ -10,7 +11,11 @@ import {
   type IHistoryItem,
 } from '../../contracts/index.js';
 import { HQ_ERRORS, getErrorKind } from '../../errors/index.js';
-import type { IProviderReattachment, IStoppedControl } from '../../providers/index.js';
+import type {
+  IControlSource,
+  IProviderReattachment,
+  IStoppedControl,
+} from '../../providers/index.js';
 import { capabilityUnavailable } from '../../providers/registry/index.js';
 import type { INativeObservation } from '../../store/control/index.js';
 import { correlateEvidenceOrigins } from '../../sessions/index.js';
@@ -23,7 +28,7 @@ import {
   type IResyncRequest,
 } from '../resync/index.js';
 import type { IActionsContext, IOwnedControl } from '../types.js';
-import { agentUnavailable, keepsSessions } from '../utilities.js';
+import { agentUnavailable, conflict, keepsSessions } from '../utilities.js';
 
 import { TURN_FLUSH_PAGES } from './constants.js';
 
@@ -50,32 +55,37 @@ export const createEvents = (
     provider: IManagedThread['provider'],
     nativeId: string,
     item?: IHistoryItem,
+    source?: IControlSource,
   ): void => {
     if (state.isClosing || !context.asyncInputs.hasListeners()) return;
-    enqueue(provider, async () => {
-      const thread = await store.call('reads', 'getThreadByNativeId', provider, nativeId);
-      if (!thread || !controlled.has(key(provider, nativeId))) return;
-      if (thread.ownership !== 'managed' || thread.runtimeEpoch !== epoch) {
-        context.asyncInputs.emit({
-          kind: 'recovery',
+    enqueue(
+      provider,
+      async () => {
+        const thread = await store.call('reads', 'getThreadByNativeId', provider, nativeId);
+        if (!thread || !controlled.has(key(provider, nativeId))) return;
+        if (thread.ownership !== 'managed' || thread.runtimeEpoch !== epoch) {
+          context.asyncInputs.emit({
+            kind: 'recovery',
+            provider,
+            source: null,
+            reason: 'output-gap',
+          });
+          return;
+        }
+        const source = {
+          threadId: thread.id,
           provider,
-          source: null,
-          reason: 'output-gap',
-        });
-        return;
-      }
-      const source = {
-        threadId: thread.id,
-        provider,
-        nativeId,
-        workspaceRoot: thread.workspaceRoot,
-      };
-      context.asyncInputs.emit(
-        item
-          ? { kind: 'item', source, item }
-          : { kind: 'recovery', provider, source, reason: 'output-gap' },
-      );
-    });
+          nativeId,
+          workspaceRoot: thread.workspaceRoot,
+        };
+        context.asyncInputs.emit(
+          item
+            ? { kind: 'item', source, item }
+            : { kind: 'recovery', provider, source, reason: 'output-gap' },
+        );
+      },
+      source,
+    );
   };
 
   /**
@@ -127,19 +137,42 @@ export const createEvents = (
     registry.quarantine(provider, cause);
   };
 
+  /** Contains evidence loss only with a current trusted Claude controller and existing owner. */
+  const quarantineSource = (
+    provider: IManagedThread['provider'],
+    source: IControlSource | undefined,
+    hasEvidenceFailure = false,
+    cause?: unknown,
+  ): boolean => {
+    if (provider !== 'claude' || !source || !registry.isCurrentControl(provider, source))
+      return false;
+    const owner = controlled.get(key(provider, source.nativeId));
+    if (!owner) return false;
+    if (owner.quarantine?.source.scope !== source.scope)
+      owner.quarantine = { source, hasEvidenceFailure: false, hasNotice: false };
+    owner.quarantine.hasEvidenceFailure ||= hasEvidenceFailure;
+    return registry.quarantineControl(provider, source, cause);
+  };
+
   /** Contains native protocol failures to the affected controller before releasing its transport. */
   const runNativeOwned = (
     provider: IManagedThread['provider'],
     nativeId: string | undefined,
     operation: () => Promise<void>,
     controlScope?: string,
+    source?: IControlSource,
   ): void => {
     const expectedControl = nativeId ? controlled.get(key(provider, nativeId)) : undefined;
     runOwned(async () => {
       try {
         await operation();
-      } catch {
+      } catch (cause) {
         if (expectedControl && controlled.get(key(provider, nativeId!)) !== expectedControl) return;
+        const isFatal =
+          isException(cause) &&
+          (cause.code === 'JG_AGENT_HQ_TRANSPORT_FAILED' ||
+            cause.code === 'JG_AGENT_HQ_STORE_FAILED');
+        if (!isFatal && quarantineSource(provider, source, false, cause)) return;
         await recordObservation({
           kind: 'native-unavailable',
           provider,
@@ -154,9 +187,15 @@ export const createEvents = (
     });
   };
   /** Orders lifecycle persistence without buffering an unbounded stream. */
-  const enqueue = (provider: IManagedThread['provider'], operation: () => Promise<void>): void => {
+  const enqueue = (
+    provider: IManagedThread['provider'],
+    operation: () => Promise<void>,
+    source?: IControlSource,
+  ): void => {
     if (state.isUnavailable || context.blockedProviders.has(provider)) return;
+    if (source && !registry.isCurrentControl(provider, source)) return;
     if ((eventCounts.get(provider) ?? 0) >= 128) {
+      if (quarantineSource(provider, source, true)) return;
       failProvider(
         provider,
         HQ_ERRORS.create('providerFailed', { data: { kind: 'agent-unavailable' } }),
@@ -169,6 +208,12 @@ export const createEvents = (
       try {
         await previous.catch(() => undefined);
         if (state.isUnavailable) return;
+        if (
+          source &&
+          (!registry.isCurrentControl(provider, source) ||
+            controlled.get(key(provider, source.nativeId))?.quarantine?.hasEvidenceFailure)
+        )
+          return;
         await operation();
       } finally {
         const pending = (eventCounts.get(provider) ?? 1) - 1;
@@ -177,6 +222,13 @@ export const createEvents = (
       }
     });
     void state.lane.catch((error) => {
+      if (
+        (getErrorKind(error) === 'state-conflict' ||
+          error instanceof z.ZodError ||
+          (isException(error) && error.cause instanceof z.ZodError)) &&
+        quarantineSource(provider, source, true, error)
+      )
+        return;
       if (
         getErrorKind(error) === 'agent-unavailable' ||
         getErrorKind(error) === 'access-denied' ||
@@ -251,9 +303,15 @@ export const createEvents = (
     nativeId: string | undefined,
     controlScope: string | undefined,
     expectedControl: IOwnedControl | undefined,
+    requiresQuiescence = false,
   ): Promise<void> => {
     if (expectedControl && controlled.get(key(provider, nativeId!)) !== expectedControl) return;
-    const stopped = await registry.stopControl(provider, nativeId, controlScope);
+    const stopped = await registry.stopControl(
+      provider,
+      nativeId,
+      controlScope,
+      requiresQuiescence,
+    );
     if (
       !stopped ||
       !expectedControl ||
@@ -364,6 +422,7 @@ export const createEvents = (
   const receiveObservation = (
     provider: IManagedThread['provider'],
     observation: INativeObservation,
+    source?: IControlSource,
   ): void => {
     if (
       !('nativeThreadId' in observation) ||
@@ -373,7 +432,7 @@ export const createEvents = (
       return;
     if (observation.kind === 'turn-completed')
       live.completeTurn(key(provider, observation.nativeThreadId), observation.nativeTurnId);
-    enqueue(provider, () => observe(observation));
+    enqueue(provider, () => observe(observation), source);
   };
 
   /**
@@ -442,6 +501,74 @@ export const createEvents = (
 
   registry.setEvents({
     observe: receiveObservation,
+    quarantined(provider, source) {
+      if (state.isClosing || provider !== 'claude' || !registry.isCurrentControl(provider, source))
+        return;
+      const owner = controlled.get(key(provider, source.nativeId));
+      if (!owner || (owner.quarantine?.source.scope === source.scope && owner.quarantine.hasNotice))
+        return;
+      if (owner.quarantine?.source.scope !== source.scope)
+        owner.quarantine = { source, hasEvidenceFailure: false, hasNotice: false };
+      owner.quarantine.hasNotice = true;
+      live.markGap(key(provider, source.nativeId));
+      for (const [id, prompt] of prompts)
+        if (prompt.native.provider === provider && prompt.native.nativeThreadId === source.nativeId)
+          prompts.delete(id);
+      context.asyncInputs.emit({ kind: 'recovery', provider, source: null, reason: 'output-gap' });
+      // one control transition per owned slot follows prior valid evidence outside the native-event cap
+      const previous = state.lane;
+      state.lane = runBackground(async () => {
+        await previous.catch(() => undefined);
+        const thread = await store.call('reads', 'getThreadByNativeId', provider, source.nativeId);
+        if (
+          controlled.get(key(provider, source.nativeId)) !== owner ||
+          !registry.isCurrentControl(provider, source) ||
+          thread?.runtimeEpoch !== epoch ||
+          thread.workspaceRoot !== source.workspaceRoot
+        )
+          return;
+        await recordObservation({
+          kind: 'native-unavailable',
+          provider,
+          nativeThreadId: source.nativeId,
+        });
+      });
+      void state.lane.catch(failEvents);
+    },
+    quiescent(provider, source) {
+      if (
+        state.isClosing ||
+        !registry.isCurrentControl(provider, source) ||
+        !registry.isControlQuarantined(provider, source)
+      )
+        return;
+      const owner = controlled.get(key(provider, source.nativeId));
+      if (!owner) return;
+      runOwned(async () => {
+        try {
+          await state.lane.catch(() => undefined);
+          if (
+            controlled.get(key(provider, source.nativeId)) !== owner ||
+            !registry.isCurrentControl(provider, source)
+          )
+            return;
+          await stopFailedControl(provider, source.nativeId, source.scope, owner, true);
+        } catch (cause) {
+          // stale proof leaves work alive; an unconfirmed close stays on its retained controller
+          if (
+            isException(cause) &&
+            [
+              'JG_AGENT_HQ_ACTION_CONFLICT',
+              'JG_AGENT_HQ_TRANSPORT_FAILED',
+              'JG_AGENT_HQ_CLAUDE_FAILED',
+              'JG_AGENT_HQ_PROVIDER_FAILED',
+            ].includes(cause.code)
+          )
+            return;
+          failEvents(cause);
+        }
+      });
+    },
     resync(provider, nativeId, lost) {
       if (state.isClosing) return;
       context.asyncInputs.emit({ kind: 'recovery', provider, source: null, reason: 'output-gap' });
@@ -454,24 +581,24 @@ export const createEvents = (
         resyncs.request(provider, nativeId, request);
     },
     // a live item stays in the window, which keeps one entry per item, and never reaches the store
-    item(provider, nativeId, item, isComplete, replacedIds) {
+    item(provider, nativeId, item, isComplete, replacedIds, source) {
       if (!controlled.has(key(provider, nativeId))) return;
       for (const replacedId of replacedIds ?? [])
         live.replace(key(provider, nativeId), item.turnId, replacedId);
       live.put(key(provider, nativeId), item, isComplete);
-      if (isComplete && item.asyncInput) observeAsyncInput(provider, nativeId, item);
+      if (isComplete && item.asyncInput) observeAsyncInput(provider, nativeId, item, source);
     },
-    gap(provider, nativeId) {
+    gap(provider, nativeId, source) {
       if (controlled.has(key(provider, nativeId))) {
         live.markGap(key(provider, nativeId));
-        observeAsyncInput(provider, nativeId);
+        observeAsyncInput(provider, nativeId, undefined, source);
       }
     },
     background(provider, nativeId, count) {
       if (controlled.has(key(provider, nativeId)))
         live.setBackgroundCommands(key(provider, nativeId), count);
     },
-    session(provider, nativeId, sessionState, thread) {
+    session(provider, nativeId, sessionState, thread, source) {
       observingProviders.add(provider);
       const sessionKey = key(provider, nativeId);
       // a session this runtime controls reports its transitions through its own thread state
@@ -486,88 +613,112 @@ export const createEvents = (
         }
       }
       // the store suppresses controlled observations and retains status for uncertain controls
-      enqueue(provider, () =>
-        store.call(
-          'sessions',
-          'observe',
-          provider,
-          [{ nativeId, state: sessionState, thread }],
-          false,
-        ),
+      enqueue(
+        provider,
+        () =>
+          store.call(
+            'sessions',
+            'observe',
+            provider,
+            [{ nativeId, state: sessionState, thread }],
+            false,
+          ),
+        source,
       );
     },
     delta(provider, nativeId, turnId, itemId, text) {
       if (controlled.has(key(provider, nativeId)))
         live.append(key(provider, nativeId), turnId, itemId, text);
     },
-    prompt(provider, prompt) {
+    prompt(provider, prompt, source) {
       // a session that outlives the runtime keeps its request for the next runtime to answer
       if (state.isClosing && keepsSessions(provider)) return;
       // the client driving a session HQ doesn't control answers its requests, so HQ stays silent
       if (!controlled.has(key(provider, prompt.nativeThreadId))) return;
+      if (prompts.size >= 32 && quarantineSource(provider, source, true)) return;
       if (prompts.size >= 32 || state.isClosing) {
-        runNativeOwned(provider, prompt.nativeThreadId, prompt.reject);
+        runNativeOwned(provider, prompt.nativeThreadId, prompt.reject, source?.scope, source);
         return;
       }
-      enqueue(provider, async () => {
-        const recorded = await store.call('observations', 'openApproval', {
-          id: randomUUID(),
-          provider,
-          nativeThreadId: prompt.nativeThreadId,
-          nativeTurnId: prompt.nativeTurnId,
-          requestId: prompt.requestId,
-          kind: prompt.presentation.kind,
-          isBlocking: prompt.presentation.isBlocking,
-          digest: signHmac(prompt.fingerprint, actionKey),
-        });
-        if (!recorded) {
-          await prompt.reject();
-          return;
-        }
-        if (prompts.has(recorded.id)) return;
-        prompts.set(recorded.id, {
-          native: prompt,
-          threadId: recorded.thread.id,
-        });
-      });
+      enqueue(
+        provider,
+        async () => {
+          const recorded = await store.call('observations', 'openApproval', {
+            id: randomUUID(),
+            provider,
+            nativeThreadId: prompt.nativeThreadId,
+            nativeTurnId: prompt.nativeTurnId,
+            requestId: prompt.requestId,
+            kind: prompt.presentation.kind,
+            isBlocking: prompt.presentation.isBlocking,
+            digest: signHmac(prompt.fingerprint, actionKey),
+          });
+          if (!recorded) {
+            await prompt.reject();
+            return;
+          }
+          if (prompts.has(recorded.id)) return;
+          prompts.set(recorded.id, {
+            native: prompt,
+            threadId: recorded.thread.id,
+          });
+        },
+        source,
+      );
     },
-    unpresentable(provider, nativeId, reject) {
+    unpresentable(provider, nativeId, reject, source) {
       if (state.isClosing && keepsSessions(provider)) return;
       // only a session HQ controls waits on HQ for an answer
       if (!controlled.has(key(provider, nativeId))) return;
-      runNativeOwned(provider, nativeId, reject);
+      runNativeOwned(provider, nativeId, reject, source?.scope, source);
     },
-    outcome(provider, outcome, nativeThread) {
+    outcome(provider, outcome, nativeThread, source) {
       if (state.isClosing) return;
-      enqueue(provider, async () => {
-        const receipt = await store.call('reads', 'getAction', outcome.actionId);
-        if (
-          !receipt ||
-          receipt.runtimeEpoch !== epoch ||
-          receipt.phase !== outcome.phase ||
-          !['submitted', 'uncertain'].includes(receipt.delivery) ||
-          receipt.provider !== provider ||
-          !receipt.threadId
-        )
-          return;
-        const thread = await store.call('reads', 'getThread', receipt.threadId);
-        if (!thread || thread.provider !== provider) return;
-        let verifiedOutcome = outcome;
-        if (nativeThread && (outcome.kind === 'created' || outcome.kind === 'resumed')) {
-          if (outcome.kind === 'resumed' && nativeThread.nativeId !== thread.nativeId)
-            agentUnavailable();
-          const verified = await verifyThread(thread, nativeThread);
-          verifiedOutcome = { ...outcome, nativeLineage: verified.nativeLineage };
-          if (outcome.kind === 'created') own(provider, verified.nativeId);
-        }
-        const updated = await apply(verifiedOutcome);
-        // a late answer that moved its action to its next phase continues it
-        if (updated?.delivery === 'submitted' && updated.phase !== outcome.phase)
-          runOwned(async () => {
-            const current = await store.call('reads', 'getThread', thread.id);
-            if (current) await dispatch(updated, current);
-          });
-      });
+      enqueue(
+        provider,
+        async () => {
+          const receipt = await store.call('reads', 'getAction', outcome.actionId);
+          if (
+            !receipt ||
+            receipt.runtimeEpoch !== epoch ||
+            receipt.phase !== outcome.phase ||
+            !['submitted', 'uncertain'].includes(receipt.delivery) ||
+            receipt.provider !== provider ||
+            !receipt.threadId
+          )
+            return;
+          const thread = await store.call('reads', 'getThread', receipt.threadId);
+          if (!thread || thread.provider !== provider) return;
+          if (
+            source &&
+            (thread.runtimeEpoch !== epoch ||
+              thread.workspaceRoot !== source.workspaceRoot ||
+              (thread.nativeId !== source.nativeId &&
+                !(
+                  outcome.kind === 'created' &&
+                  thread.nativeId === null &&
+                  nativeThread?.nativeId === source.nativeId
+                )))
+          )
+            conflict();
+          let verifiedOutcome = outcome;
+          if (nativeThread && (outcome.kind === 'created' || outcome.kind === 'resumed')) {
+            if (outcome.kind === 'resumed' && nativeThread.nativeId !== thread.nativeId)
+              agentUnavailable();
+            const verified = await verifyThread(thread, nativeThread);
+            verifiedOutcome = { ...outcome, nativeLineage: verified.nativeLineage };
+            if (outcome.kind === 'created') own(provider, verified.nativeId);
+          }
+          const updated = await apply(verifiedOutcome);
+          // a late answer that moved its action to its next phase continues it
+          if (updated?.delivery === 'submitted' && updated.phase !== outcome.phase)
+            runOwned(async () => {
+              const current = await store.call('reads', 'getThread', thread.id);
+              if (current) await dispatch(updated, current);
+            });
+        },
+        source,
+      );
     },
     unavailable(provider, nativeId, controlScope) {
       if (state.isClosing || context.blockedProviders.has(provider)) return;
@@ -620,5 +771,37 @@ export const createEvents = (
     },
   });
 
-  return { recordObservation, failEvents, enqueue, observe };
+  /**
+   * Serializes an ended operation's exact reservation release after its quarantine notice.
+   * @returns Completion of the matching release, or no change for a replaced controller/action.
+   * @throws
+   * - JG_AGENT_HQ_STORE_FAILED: The HQ store failed
+   */
+  const finishControlAction = async (
+    actionId: string,
+    owner: IOwnedControl | undefined,
+  ): Promise<void> => {
+    const quarantine = owner?.quarantine;
+    if (!owner || !quarantine?.hasNotice || owner.provider !== 'claude') return;
+    const { source } = quarantine;
+    const liveKey = key(owner.provider, owner.nativeId);
+    const previous = state.lane;
+    state.lane = runBackground(async () => {
+      await previous.catch(() => undefined);
+      if (controlled.get(liveKey) !== owner || !registry.isCurrentControl('claude', source)) return;
+      const released = await store.call(
+        'lifecycle',
+        'releaseEndedControlAction',
+        actionId,
+        source.nativeId,
+        source.workspaceRoot,
+        epoch,
+      );
+      if (released) waits.notifyThread(released.id);
+    });
+    void state.lane.catch(failEvents);
+    await state.lane;
+  };
+
+  return { recordObservation, failEvents, enqueue, observe, finishControlAction };
 };

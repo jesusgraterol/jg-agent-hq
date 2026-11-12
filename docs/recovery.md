@@ -36,9 +36,17 @@ The expanded name contract is still a breaking change for older consumers: 12.x 
 
 ## Claude connection recovery
 
+An owned Claude controller is quarantined when structurally transported frames violate HQ's interpretation assumptions, or its attributed lifecycle/approval evidence conflicts. HQ suspends rich output, acknowledgements and new control mutations for that session, marks a live gap, and continues bounded draining. Its native work can still run; pending requests after quarantine are left unanswered and may block progress. A default background count of zero or a saved transcript does not establish that the work stopped.
+
+Automatic cleanup requires a fresh complete native inventory that matches the live child PID, native identity, authorized workspace and controller generation, plus an independently validated empty full task snapshot and no unresolved native or HQ requests. Native start identity is checked where available. New activity invalidates the proof; partial task activity makes earlier task emptiness unknown until another full snapshot arrives. Missing, malformed, stale or unknown evidence leaves the controller alive. Quarantine cancels idle parking and fences a park already awaiting settings; the ordinary 60-minute idle timer cannot stop quarantined work.
+
+An operator can instead confirm `thread-close` with `interrupt: true` for that exact current-runtime owned controller. This ends its native process group and unfinished background work without guessing a turn identity. Cancellation sends nothing. A repeated action ID returns its existing receipt; a competing close conflicts. An unconfirmed shutdown keeps control uncertain. Previous-runtime uncertainty and a competing terminal do not authorize this exception.
+
 A failed owned Claude connection leaves its conversation uncertain until the runtime proves that controller's entire process group has stopped. Confirmed exit releases only the matching conversation to managed, inactive state in the current runtime, unless a competing native terminal is observed. The native identity, saved history and receipts remain intact. A confirmed `thread-resume` then reopens that same conversation; the host can use its existing inactive-session input flow.
 
 Pending approvals expire and queued entries stay paused. Unacknowledged input remains uncertain, and acknowledged input whose completion was lost stays acknowledged without an invented completion. Inspect native evidence before deciding what work to send next. Neither confirmed shutdown nor resume repeats earlier input. If group exit cannot be confirmed, keep the conversation uncertain and investigate the retained controller; restarting HQ is not proof that its native work stopped.
+
+Session-identity violations, malformed JSON/framing, oversized or incomplete frames, broken pipes and genuine store/shared-provider failures retain their separate fatal handling. Quarantine contains an interpretation failure; it cannot repair corrupt transport or persistence.
 
 ## Codex connection recovery
 

@@ -68,10 +68,27 @@ export const ResyncLossSchema = z.enum([
 export type IResyncLoss = z.infer<typeof ResyncLossSchema>;
 
 // adapters must honor cancellation and keep delivery uncertain when native consumption is unproven
-export type IProviderCall = { signal: AbortSignal; controlScope?: string };
+export type IProviderCall = {
+  signal: AbortSignal;
+  controlScope?: string;
+  requiresQuiescence?: boolean;
+};
 
 // proof returned only after an exact owned controller and its process group have been released
 export type IStoppedControl = { nativeId: string; workspaceRoot: string; scope: string };
+
+// identity supplied by an owned controller; its factory/registry binds provider and runtime epoch
+export type IControlSource = { nativeId: string; workspaceRoot: string; scope: string };
+
+// a shared native inventory captures activity before its command starts, without a per-session poll
+export type IControlSnapshot = IControlSource & { pid: number; revision: number };
+export type IControlObservation = {
+  nativeId: string;
+  workspaceRoot: string;
+  pid: number;
+  state: ISessionState;
+  startedAt: number | null;
+};
 
 /*
  * One page of a workspace's sessions, last activity first: its `cursor` is the continuation an
@@ -94,25 +111,45 @@ export type IAgentProviderOutcome = INativeOutcome extends infer TOutcome
 
 // runtime-owned callbacks accept normalized evidence, never arbitrary native RPC
 export type IAgentProviderEvents = {
-  observe(observation: INativeObservation): void;
-  item(nativeId: string, item: IHistoryItem, isComplete: boolean, replacedIds?: string[]): void;
-  gap(nativeId: string): void;
+  observe(observation: INativeObservation, source?: IControlSource): void;
+  item(
+    nativeId: string,
+    item: IHistoryItem,
+    isComplete: boolean,
+    replacedIds?: string[],
+    source?: IControlSource,
+  ): void;
+  gap(nativeId: string, source?: IControlSource): void;
   // how many commands a session now runs in the background, between or during its turns
-  background(nativeId: string, count: number): void;
-  delta(nativeId: string, turnId: string, itemId: string, text: string): void;
-  prompt(prompt: INativePrompt): void;
+  background(nativeId: string, count: number, source?: IControlSource): void;
+  delta(
+    nativeId: string,
+    turnId: string,
+    itemId: string,
+    text: string,
+    source?: IControlSource,
+  ): void;
+  prompt(prompt: INativePrompt, source?: IControlSource): void;
   // a request on a session that HQ can't present, which HQ refuses only on a session it controls
-  unpresentable(nativeId: string, reject: () => Promise<void>): void;
+  unpresentable(nativeId: string, reject: () => Promise<void>, source?: IControlSource): void;
   /*
    * A notification the adapter lost, which HQ makes up for by reading the session. Without a
    * session, every session HQ controls through this adapter is read.
    */
-  resync(nativeId: string | undefined, lost: IResyncLoss): void;
-  outcome(outcome: IAgentProviderOutcome, thread?: IProviderThread): void;
+  resync(nativeId: string | undefined, lost: IResyncLoss, source?: IControlSource): void;
+  outcome(outcome: IAgentProviderOutcome, thread?: IProviderThread, source?: IControlSource): void;
   // the live state of a session another client drives, inside the allowed workspaces, with what
   // the adapter's first read of it found
-  session(nativeId: string, state: ISessionState, thread: IObservedThread): void;
-  unavailable(nativeId?: string, controlScope?: string): void;
+  session(
+    nativeId: string,
+    state: ISessionState,
+    thread: IObservedThread,
+    source?: IControlSource,
+  ): void;
+  unavailable(nativeId?: string, controlScope?: string, source?: IControlSource): void;
+  // interpretation loss is separate from native transport failure and shutdown proof
+  quarantined(source: IControlSource): void;
+  quiescent(source: IControlSource): void;
 };
 
 // factories receive trusted configuration and runtime lifetime ownership
@@ -137,6 +174,16 @@ export type IAgentProviderFactory = {
  * canonical provider/request/access/state/capability contracts documented in api/README.md.
  */
 export type IAgentProvider = {
+  /** @returns The exact current owned controller, without opening or changing native execution. */
+  getControlSource?(nativeId: string): IControlSource | undefined;
+  /** @returns Whether the exact controller has suspended rich interpretation. */
+  isControlQuarantined?(source: IControlSource): boolean;
+  /** @returns Whether the exact owned controller contained the interpretation failure. */
+  quarantineControl?(source: IControlSource, cause?: unknown): boolean;
+  /** @returns Snapshots of the live owned handles before a shared inventory request. */
+  snapshotControls?(): IControlSnapshot[];
+  /** Applies one complete native inventory, or unknown evidence after a failed request. */
+  observeControls?(snapshots: IControlSnapshot[], observations: IControlObservation[] | null): void;
   readonly state: 'idle' | 'ready' | 'unavailable';
   readonly version: string | null;
   readonly isAvailable: boolean;
@@ -318,6 +365,7 @@ export type IAgentProvider = {
 // owned native process transport; adapters own all provider protocol semantics
 export type IProviderProcess = {
   readonly isRunning: boolean;
+  readonly pid: number | undefined;
   write(message: unknown): Promise<void>;
   close(): Promise<void>;
 };

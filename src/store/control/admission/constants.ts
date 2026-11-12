@@ -53,7 +53,7 @@ export const ADMISSION_RULES: Record<IActionReceipt['kind'], IAdmissionRule> = {
     phase: 'name',
     delivery: 'dispatch',
   },
-  // with `interrupt`, a running turn is interrupted first instead of requiring an idle session
+  // with `interrupt`, a healthy turn is interrupted; a verified quarantined Claude control starts clean
   'thread-close': {
     ...NONE,
     target: 'thread',

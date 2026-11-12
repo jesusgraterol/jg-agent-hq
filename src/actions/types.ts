@@ -1,5 +1,5 @@
 import type { IManagedThread, ISessionTerminal } from '../contracts/index.js';
-import type { INativePrompt } from '../providers/index.js';
+import type { IControlSource, INativePrompt } from '../providers/index.js';
 import type { createProviderRegistry } from '../providers/registry/index.js';
 import type { createSkills } from '../skills/index.js';
 import type { IStore } from '../store/index.js';
@@ -29,7 +29,12 @@ export type IActionsState = {
 };
 
 // identity of one in-memory controller ownership; replacing this entry invalidates old callbacks
-export type IOwnedControl = { provider: IManagedThread['provider']; nativeId: string };
+export type IOwnedControl = {
+  provider: IManagedThread['provider'];
+  nativeId: string;
+  // bounded by the existing owned controller; a replacement entry invalidates this notice
+  quarantine?: { source: IControlSource; hasEvidenceFailure: boolean; hasNotice: boolean };
+};
 
 // what admission, dispatch, native events and reattachment share for one runtime
 export type IActionsContext = {

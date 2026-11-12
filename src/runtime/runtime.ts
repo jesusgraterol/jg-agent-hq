@@ -131,6 +131,11 @@ export const createAgentHq = async (options: IAgentHqOptions): Promise<IAgentHq>
       storage.background(() => projection.call('sessions', 'observe', 'claude', sessions, true)),
     allowedRoots,
     (nativeId) => projection.call('sessions', 'claudeTranscriptRoot', nativeId),
+    {
+      begin: () => providers.snapshotControls('claude'),
+      complete: (snapshots, observations) =>
+        providers.observeControls('claude', snapshots, observations),
+    },
   );
   const asyncInputs = createAsyncInputs();
   const actions = createActions(

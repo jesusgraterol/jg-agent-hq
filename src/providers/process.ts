@@ -124,6 +124,7 @@ export const createProviderProcess = (
   if (framing.preamble) child.stdin.write(framing.preamble);
 
   return {
+    pid,
     get isRunning() {
       return isRunning;
     },

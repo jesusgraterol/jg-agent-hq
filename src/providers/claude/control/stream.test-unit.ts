@@ -50,6 +50,51 @@ const createEvents = () => {
 };
 const streamEvent = (event: unknown) => ({ type: 'stream_event', session_id: 'session', event });
 
+test('a constructed peer handback, result, dequeue and transcript-only notification candidate creates no phantom turn', () => {
+  const session = createSession();
+  clearTimeout(session.input!.timer);
+  session.input = undefined;
+  const { events } = createEvents();
+  const transitions: string[] = [];
+  events.observe = (observation) => {
+    transitions.push(observation.kind);
+  };
+  // transcript metadata informed this candidate; the original rejected live frame was not retained
+  for (const frame of [
+    {
+      type: 'assistant',
+      uuid: 'peer-handback',
+      origin: { kind: 'peer' },
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Background task finished' }] },
+    },
+    { type: 'result', subtype: 'success', is_error: false },
+    { type: 'queue-operation', operation: 'dequeue' },
+    {
+      type: 'user',
+      uuid: 'task-notification',
+      queueTranscriptOnly: true,
+      isSynthetic: true,
+      origin: { kind: 'task-notification', taskId: 'same-task' },
+      message: {
+        role: 'user',
+        content: '<task-notification>Background task finished</task-notification>',
+      },
+    },
+    {
+      type: 'assistant',
+      uuid: 'sidechain-message',
+      parent_tool_use_id: 'agent-tool',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Sidechain output' }] },
+      additive: { version: 'future' },
+    },
+    { type: 'system', subtype: 'background_tasks_changed', tasks: [], additive: true },
+  ])
+    receiveClaudeMessage(session, { ...frame, session_id: session.id }, events);
+  expect(transitions).toStrictEqual(['turn-started', 'turn-completed']);
+  expect(session.nativeTurn).toBeUndefined();
+  expect(session.backgroundTaskCount).toBe(0);
+});
+
 afterEach(() => {
   vi.useRealTimers();
 });

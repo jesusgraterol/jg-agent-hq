@@ -5,6 +5,7 @@ import type {
   IAgentProviderEvents,
   IProviderCall,
   IProviderThread,
+  IControlSource,
 } from '../index.js';
 
 // runtime callers receive concrete operations with cancellation owned by the registry
@@ -21,6 +22,11 @@ export type IBoundAgentProvider = {
 // provider identity comes from the adapter's factory, independently of native event payloads
 export type IProviderRegistryEvents = {
   [K in keyof IAgentProviderEvents]: K extends 'outcome'
-    ? (provider: IProviderId, outcome: INativeOutcome, thread?: IProviderThread) => void
+    ? (
+        provider: IProviderId,
+        outcome: INativeOutcome,
+        thread?: IProviderThread,
+        source?: IControlSource,
+      ) => void
     : (provider: IProviderId, ...inputs: Parameters<IAgentProviderEvents[K]>) => void;
 };

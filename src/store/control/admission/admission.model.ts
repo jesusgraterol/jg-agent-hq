@@ -252,14 +252,35 @@ export class ControlAdmission extends ControlModel {
     else this._conflict();
     const thread = this._thread(threadId);
     if (!thread) this._conflict();
-    this.__requireControl(rule.control, thread);
+    // an uncertain Claude turn cannot authorize an exact-turn interrupt; explicit Stop starts clean
+    if (
+      command.kind === 'interrupt' &&
+      thread.provider === 'claude' &&
+      thread.ownership !== 'managed'
+    )
+      this._conflict();
+    const proof = prepared.quarantinedControl;
+    const isQuarantinedClose =
+      command.kind === 'thread-close' &&
+      command.interrupt === true &&
+      proof !== undefined &&
+      proof.scope.length > 0 &&
+      thread.provider === 'claude' &&
+      thread.ownership === 'uncertain' &&
+      thread.runtime_epoch === this._epoch &&
+      thread.native_id === proof.nativeId &&
+      thread.workspace_root === proof.workspaceRoot;
+    if (proof && !isQuarantinedClose) this._conflict();
+    this.__requireControl(isQuarantinedClose ? 'attached' : rule.control, thread);
+    if (isQuarantinedClose && thread.pending_action_id) this._conflict();
     if (rule.requiresNoPendingAction && thread.pending_action_id) this._conflict();
     // a close that interrupts a running turn first doesn't need an idle session
     const isInterrupting =
       command.kind === 'thread-close' &&
       command.interrupt === true &&
+      !isQuarantinedClose &&
       thread.active_turn_id !== null;
-    if (rule.requiresIdle && !isInterrupting) this.__requireIdle(thread);
+    if (rule.requiresIdle && !isInterrupting && !isQuarantinedClose) this.__requireIdle(thread);
     const expectedTurnId = 'expectedTurnId' in command ? command.expectedTurnId : null;
     if (rule.requiresActiveTurn && thread.active_turn_id !== expectedTurnId) this._conflict();
     let phase = rule.phase;

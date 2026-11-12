@@ -35,6 +35,11 @@ export const createClaudeProviderFactory = (
     const control = createClaudeControl(additionalDirectories);
     control.setEvents(context.events);
     return {
+      getControlSource: control.getControlSource,
+      isControlQuarantined: control.isControlQuarantined,
+      quarantineControl: control.quarantineControl,
+      snapshotControls: control.snapshotControls,
+      observeControls: control.observeControls,
       get state() {
         return control.state === 'ready'
           ? 'ready'
@@ -173,7 +178,8 @@ export const createClaudeProviderFactory = (
         control.steer(requestId, nativeId, expectedTurnId, text, files),
       interrupt: (requestId, nativeId, nativeTurnId) =>
         control.interrupt(requestId, nativeId, nativeTurnId),
-      cleanThread: (requestId, nativeId) => control.stopSession(requestId, nativeId),
+      cleanThread: (requestId, nativeId) =>
+        control.stopSession(requestId, nativeId, undefined, false, true),
       releaseThread: (requestId, nativeId) => control.releaseSession(requestId, nativeId),
       // a session's files go before its index rows, so no scan indexes them again once forgotten
       async deleteThread(_requestId, nativeId, workspaceRoot) {
@@ -190,9 +196,13 @@ export const createClaudeProviderFactory = (
         const identity = control.getControlIdentity(nativeId, call.controlScope);
         if (!identity) return;
         const requestId = `${randomUUID()}:reject`;
-        await control.stopSession(requestId, nativeId, identity.scope);
+        await control.stopSession(requestId, nativeId, identity.scope, call.requiresQuiescence);
         // an admitted close already owns this controller's release and receipt
-        if (identity.isClosing) return;
+        if (
+          identity.isClosing ||
+          control.getControlIdentity(nativeId, identity.scope)?.releaseActionId
+        )
+          return;
         await control.releaseSession(requestId, nativeId, identity.scope);
         return { nativeId, workspaceRoot: identity.workspaceRoot, scope: identity.scope };
       },

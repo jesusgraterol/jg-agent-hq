@@ -63,6 +63,24 @@ export class ControlOutcomes extends ControlModel {
         return toActionReceipt(action);
       const thread = action.thread_id ? this._thread(action.thread_id) : null;
       const ownsThread = thread?.runtime_epoch === this._epoch && thread.ownership === 'managed';
+      const ownsQuarantinedClose =
+        thread?.provider === 'claude' &&
+        thread.runtime_epoch === this._epoch &&
+        thread.ownership === 'uncertain' &&
+        thread.state === 'stopping' &&
+        thread.pending_action_id === action.id &&
+        action.kind === 'thread-close' &&
+        (action.phase === 'clean' || action.phase === 'close');
+      // suspended interpretation cannot promote an earlier uncertain native operation
+      if (
+        thread?.provider === 'claude' &&
+        thread.runtime_epoch === this._epoch &&
+        thread.ownership === 'uncertain' &&
+        !ownsQuarantinedClose &&
+        outcome.kind !== 'failed' &&
+        outcome.kind !== 'uncertain'
+      )
+        return toActionReceipt(action);
       const now = Date.now();
       if (outcome.kind === 'created') {
         const collision = thread ? this._nativeThread(thread.provider, outcome.nativeId) : null;
@@ -88,7 +106,8 @@ export class ControlOutcomes extends ControlModel {
           action.id,
         );
       } else if (outcome.kind === 'cleaned') {
-        if (!ownsThread || thread.pending_action_id !== action.id) this._conflict();
+        if ((!ownsThread && !ownsQuarantinedClose) || thread!.pending_action_id !== action.id)
+          this._conflict();
         // a cleaned session is closed next
         this._statements.run(
           "UPDATE agent_hq_action SET delivery = 'submitted', phase = 'close', updated_at = ? WHERE id = ?",
@@ -212,12 +231,12 @@ export class ControlOutcomes extends ControlModel {
           now,
           action.id,
         );
-        if (ownsThread) {
+        if (ownsThread || ownsQuarantinedClose) {
           if (outcome.kind === 'closed')
             this._statements.run(
-              "UPDATE agent_hq_thread SET runtime_epoch = NULL, pending_action_id = NULL, active_turn_id = NULL, state = 'inactive', updated_at = ? WHERE id = ? AND pending_action_id = ?",
+              "UPDATE agent_hq_thread SET runtime_epoch = NULL, pending_action_id = NULL, active_turn_id = NULL, ownership = 'managed', state = 'inactive', updated_at = ? WHERE id = ? AND pending_action_id = ?",
               now,
-              thread.id,
+              thread!.id,
               action.id,
             );
           else if (outcome.kind === 'resumed') {

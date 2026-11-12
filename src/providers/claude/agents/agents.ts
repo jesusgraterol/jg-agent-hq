@@ -7,6 +7,7 @@ import { z } from 'zod';
 
 import type { IObservationPace, ISessionState } from '../../../contracts/index.js';
 import { isOwnedProcess } from '../../process.js';
+import type { IControlObservation } from '../../index.js';
 import { resolveWorkspaceTarget } from '../../../runtime/state/index.js';
 import type { IObservedSession } from '../../../store/sessions/index.js';
 import { createClaudeBackgroundTasks, READ_BUDGET_BYTES } from '../background/index.js';
@@ -23,6 +24,7 @@ import {
   type IClaudeAgent,
   type IClaudeAgentsObserver,
   type IListedSession,
+  type IClaudeOwnedObserver,
 } from './types.js';
 
 const run = promisify(execFile);
@@ -55,6 +57,7 @@ export const toAgentState = (agent: IClaudeAgent): ISessionState =>
  * @param record Records the states of the sessions a run listed.
  * @param allowedRoots The workspaces whose sessions are observed.
  * @param locateTranscript Resolves to the workspace root of a session's indexed transcript, or null.
+ * @param owned Captures live controller revisions before the shared inventory and receives its evidence.
  * @returns A handle that sets the pace, reports each listed session's `cwd`, the terminal that runs
  * it and its background tasks from the latest run, reads a session's tasks again on request, and
  * whose close stops polling and waits for a run in progress.
@@ -63,6 +66,7 @@ export const observeClaudeAgents = (
   record: (sessions: IObservedSession[]) => Promise<void>,
   allowedRoots: string[],
   locateTranscript: (nativeId: string) => Promise<string | null>,
+  owned?: IClaudeOwnedObserver,
 ): IClaudeAgentsObserver => {
   const lifetime = new AbortController();
   // each session directory resolved inside an allowed workspace, or null outside them, once each
@@ -100,6 +104,7 @@ export const observeClaudeAgents = (
     }
   };
   const poll = async (): Promise<void> => {
+    const captured = owned?.begin() ?? [];
     let agents: IClaudeAgent[];
     try {
       const { stdout } = await run('claude', ['agents', '--json'], {
@@ -109,18 +114,31 @@ export const observeClaudeAgents = (
       });
       agents = ClaudeAgentsSchema.parse(JSON.parse(stdout));
     } catch {
+      owned?.complete(captured, null);
       return;
     }
     const sessions: IObservedSession[] = [];
     const listed = new Map<string, IListedSession>();
+    const observations: IControlObservation[] = [];
     /*
      * An entry without a PID isn't running, whatever its state says, so it counts as missing; the
      * processes this runtime started, managed sessions and the metadata process, are its own.
      */
     for (const agent of agents) {
-      if (agent.pid === undefined || isOwnedProcess(agent.pid)) continue;
+      if (agent.pid === undefined) continue;
+      const isOwned = isOwnedProcess(agent.pid);
+      if (isOwned && !owned) continue;
       const workspaceRoot = await resolveAllowed(agent.cwd);
       if (workspaceRoot !== null) {
+        if (owned)
+          observations.push({
+            nativeId: agent.sessionId,
+            workspaceRoot,
+            pid: agent.pid,
+            state: toAgentState(agent),
+            startedAt: agent.startedAt ?? null,
+          });
+        if (isOwned) continue;
         sessions.push({ nativeId: agent.sessionId, state: toAgentState(agent), workspaceRoot });
         listed.set(agent.sessionId, {
           cwd: agent.cwd,
@@ -151,6 +169,7 @@ export const observeClaudeAgents = (
     for (const nativeId of listedSessions.keys())
       if (!listed.has(nativeId)) background.forget(nativeId);
     listedSessions = listed;
+    owned?.complete(captured, observations);
     await record(sessions);
   };
   const running = (async () => {

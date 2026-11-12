@@ -1,18 +1,12 @@
 import type { IEvidenceItem, IHistoryItem, ISessionSettings } from '../../../contracts/index.js';
-import type { INativeObservation } from '../../../store/control/index.js';
-import type { INativePrompt, IProviderSkills, IAgentProviderOutcome } from '../../index.js';
+import type { IAgentProviderEvents, IProviderSkills } from '../../index.js';
 
 // normalized Claude evidence is consumed by the existing action and live-window owners
-export type IClaudeControlEvents = {
-  observe(observation: INativeObservation): void;
-  item(nativeId: string, item: IHistoryItem, isComplete: boolean, replacedIds?: string[]): void;
-  gap(nativeId: string): void;
-  background(nativeId: string, count: number): void;
-  delta(nativeId: string, turnId: string, itemId: string, text: string): void;
-  prompt(prompt: INativePrompt): void;
-  outcome(outcome: IAgentProviderOutcome): void;
-  unavailable(nativeId: string, controlScope?: string): void;
-};
+export type IClaudeControlEvents = Pick<
+  IAgentProviderEvents,
+  'observe' | 'item' | 'gap' | 'background' | 'delta' | 'prompt' | 'outcome' | 'unavailable'
+> &
+  Partial<Pick<IAgentProviderEvents, 'quarantined' | 'quiescent'>>;
 
 // per-process ownership and bounded native correlation metadata
 export type IClaudeInput = {
@@ -69,6 +63,14 @@ export type IClaudeSession = {
   settings: ISessionSettings;
   scope: string;
   isClosing: boolean;
+  // an admitted close owns release even if automatic shutdown began first
+  releaseActionId?: string;
+  // a semantic failure suspends HQ interpretation without ending this native process
+  isQuarantined?: boolean;
+  // independent lifecycle proof belongs to this process generation, never its transcript
+  monitor?: ReturnType<typeof import('./quarantine.js').createClaudeQuarantineMonitor>;
+  quiescentRevision?: number;
+  nativeStartedAt?: number;
   hasInput: boolean;
   // whether the current process resumed its conversation, whose recorded instructions Claude reuses
   isResumed: boolean;

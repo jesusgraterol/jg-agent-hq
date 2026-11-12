@@ -120,6 +120,46 @@ export class ControlLifecycle extends ControlModel {
     });
   }
 
+  /**
+   * Releases a quarantined controller's reservation only after its matching dispatch has ended.
+   * @returns The still-uncertain thread, or null for a changed action, identity or runtime.
+   */
+  public releaseEndedControlAction(
+    actionId: string,
+    nativeId: string,
+    workspaceRoot: string,
+    runtimeEpoch: string,
+  ): IManagedThread | null {
+    if (runtimeEpoch !== this._epoch) return null;
+    return this._transaction(() => {
+      const action = this._action(actionId);
+      if (
+        !action?.thread_id ||
+        action.runtime_epoch !== this._epoch ||
+        action.delivery === 'submitted' ||
+        action.delivery === 'queued'
+      )
+        return null;
+      const thread = this._thread(action.thread_id);
+      if (
+        !thread ||
+        thread.provider !== 'claude' ||
+        thread.native_id !== nativeId ||
+        thread.workspace_root !== workspaceRoot ||
+        thread.runtime_epoch !== this._epoch ||
+        thread.ownership !== 'uncertain' ||
+        thread.pending_action_id !== actionId
+      )
+        return null;
+      this._statements.run(
+        "UPDATE agent_hq_thread SET pending_action_id = NULL, state = 'unknown', updated_at = ? WHERE id = ?",
+        Date.now(),
+        thread.id,
+      );
+      return this._managedThread(thread.id);
+    });
+  }
+
   /** Lists the sessions another runtime left running, which this runtime rejoins, oldest first. */
   public listReattachable(): IManagedThread[] {
     return this._statements
