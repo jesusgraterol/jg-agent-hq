@@ -2384,7 +2384,7 @@ test('the next runtime answers the request a kept Codex turn still waits on', as
   }
 });
 
-test('a kept Codex session another client moved past its recorded turn is marked uncertain', async () => {
+test('a previously managed idle Codex session rejoins its verified latest turn without replay', async () => {
   const fixture = await setup();
   let reopened: IAgentHq | undefined;
   try {
@@ -2417,11 +2417,19 @@ test('a kept Codex session another client moved past its recorded turn is marked
     });
     await fixture.until(
       () => fixture.thread(thread.id),
-      (entry) => entry.ownership === 'uncertain' && entry.state === 'unknown',
+      (entry) => entry.ownership === 'managed' && entry.state === 'completed',
     );
+    await expect
+      .poll(async () => (await fixture.calls()).slice(callCount).map((call) => call.method))
+      .toContain('thread/resume');
     expect((await fixture.calls()).slice(callCount).map((call) => call.method)).not.toContain(
-      'thread/resume',
+      'turn/start',
     );
+    expect(await fixture.receipt(message.id)).toMatchObject({
+      delivery: 'acknowledged',
+      completion: 'completed',
+      nativeTurnId: finished.nativeTurnId,
+    });
   } finally {
     await reopened?.close();
     await fixture.close();
@@ -2894,7 +2902,7 @@ test('quarantined Codex sessions follow live CLI state without recovering contro
   });
 });
 
-test('startup keeps native status when a newer CLI turn prevents automatic reattachment', async () => {
+test('startup rejoins a verified changed turn for a previously managed Codex session', async () => {
   const fixture = await setup();
   let reopened: IAgentHq | undefined;
   try {
@@ -2912,19 +2920,19 @@ test('startup keeps native status when a newer CLI turn prevents automatic reatt
     await expect
       .poll(() => fixture.thread(running.thread.id))
       .toMatchObject({
-        ownership: 'uncertain',
-        state: 'unknown',
-        activeTurnId: running.turnId,
+        ownership: 'managed',
+        state: 'running',
+        activeTurnId: 'cli-turn',
       });
     await expect
       .poll(() => reopened!.request({ kind: 'active-sessions' }))
       .toMatchObject({
         result: {
-          data: [{ nativeId: running.nativeId, state: 'running', ownership: 'uncertain' }],
+          data: [{ nativeId: running.nativeId, state: 'running', ownership: 'managed' }],
         },
       });
     const calls = (await fixture.calls()).slice(before);
-    expect(calls.filter(({ method }) => method === 'thread/resume')).toStrictEqual([]);
+    expect(calls.filter(({ method }) => method === 'thread/resume')).toHaveLength(1);
     expect(calls.filter(({ method }) => method === 'turn/start')).toStrictEqual([]);
   } finally {
     await reopened?.close();
@@ -3072,7 +3080,7 @@ test.each(['event', 'reconnect'] as const)(
         disconnectOnce: true,
         ...reads(
           running.nativeId,
-          { type: 'active', activeFlags: [] },
+          { type: 'future-native-state' },
           'newly-observed-turn',
           'inProgress',
         ),
@@ -3314,9 +3322,7 @@ test.each(['active', 'idle', 'unloaded'] as const)(
         disconnectOnce: true,
         ...reads(
           running.nativeId,
-          nativeState === 'active'
-            ? { type: 'active', activeFlags: [] }
-            : { type: nativeState === 'unloaded' ? 'notLoaded' : 'idle' },
+          { type: 'future-native-state' },
           currentTurn,
           nativeState === 'active' ? 'inProgress' : 'completed',
         ),
@@ -3337,6 +3343,16 @@ test.each(['active', 'idle', 'unloaded'] as const)(
             );
         })
         .toBe(true);
+      await fixture.control(
+        reads(
+          running.nativeId,
+          nativeState === 'active'
+            ? { type: 'active', activeFlags: [] }
+            : { type: nativeState === 'unloaded' ? 'notLoaded' : 'idle' },
+          currentTurn,
+          nativeState === 'active' ? 'inProgress' : 'completed',
+        ),
+      );
       const recovery = fixture.envelope({
         kind: 'thread-recover',
         threadId: running.thread.id,
@@ -3410,7 +3426,7 @@ test('successive Codex connection restarts rejoin once per loss without another 
   }
 });
 
-test('Codex reconnect leaves a newer external turn and an unacknowledged send uncertain', async () => {
+test('Codex reconnect rejoins a changed known turn but leaves an unacknowledged send uncertain', async () => {
   const fixture = await setup();
   try {
     const changed = await startHeldTurn(fixture, 'reconnect-external-turn');
@@ -3445,7 +3461,7 @@ test('Codex reconnect leaves a newer external turn and an unacknowledged send un
       .toBe(true);
     await fixture.until(
       () => fixture.thread(changed.thread.id),
-      (entry) => entry.ownership === 'uncertain',
+      (entry) => entry.ownership === 'managed' && entry.activeTurnId === 'different-native-turn',
     );
     expect(await fixture.thread(unsettled.id)).toMatchObject({
       ownership: 'uncertain',
@@ -3465,14 +3481,14 @@ test('Codex reconnect leaves a newer external turn and an unacknowledged send un
           nativeId: changed.nativeId,
         }),
       )
-      .toMatchObject({ result: { state: 'waiting', ownership: 'uncertain' } });
+      .toMatchObject({ result: { state: 'running', ownership: 'managed' } });
     expect(await fixture.thread(changed.thread.id)).toMatchObject({
-      ownership: 'uncertain',
-      state: 'unknown',
+      ownership: 'managed',
+      activeTurnId: 'different-native-turn',
     });
     const calls = (await fixture.calls()).slice(before);
     expect(calls.filter((call) => call.method === 'turn/start')).toHaveLength(1);
-    expect(calls.filter((call) => call.method === 'thread/resume')).toStrictEqual([]);
+    expect(calls.filter((call) => call.method === 'thread/resume')).toHaveLength(1);
   } finally {
     await fixture.close();
   }
@@ -4932,3 +4948,99 @@ test('a Claude transcript that cannot be deleted reports PROVIDER_FAILED and sta
     }
   });
 });
+
+for (const source of ['connection', 'startup'] as const)
+  test.each(['running', 'completed'] as const)(
+    `automatic ${source} recovery rejoins a changed %s Codex turn without replay or queue release`,
+    async (nativeState) => {
+      const fixture = await setup();
+      let reopened: IAgentHq | undefined;
+      try {
+        const running = await startHeldTurn(fixture, 'automatic-changed-turn');
+        const queued = fixture.envelope({
+          kind: 'queue',
+          threadId: running.thread.id,
+          expectedTurnId: running.turnId,
+          input: { kind: 'text', text: 'Keep the old queue paused' },
+        });
+        await fixture.submit(queued);
+        if (source === 'startup') await fixture.runtime.close();
+        const before = (await fixture.calls()).length;
+        await fixture.control({
+          ...reads(
+            running.nativeId,
+            nativeState === 'running' ? { type: 'active', activeFlags: [] } : { type: 'idle' },
+            'daemon-continuation',
+            nativeState === 'running' ? 'inProgress' : 'completed',
+          ),
+          ...(source === 'connection' ? { disconnectOnce: true } : {}),
+          loadedThreads: [running.nativeId],
+        });
+        if (source === 'startup')
+          reopened = await createAgentHq({
+            stateRoot: fixture.stateRoot,
+            allowedRoots: [fixture.workspaceRoot],
+          });
+        else await fixture.request({ kind: 'usage', provider: 'codex' });
+        await expect
+          .poll(async () => {
+            await fixture.request({ kind: 'usage', provider: 'codex' });
+            return fixture.thread(running.thread.id);
+          })
+          .toMatchObject({
+            ownership: 'managed',
+            state: nativeState,
+            activeTurnId: nativeState === 'running' ? 'daemon-continuation' : null,
+          });
+        expect(await fixture.receipt(running.message.id)).toMatchObject({
+          delivery: 'acknowledged',
+          completion: null,
+        });
+        expect(await fixture.receipt(queued.id)).toMatchObject({
+          delivery: 'queued',
+        });
+        const rejoined = (await fixture.calls()).slice(before);
+        expect(
+          rejoined.filter(({ method }) => method === 'turn/start' || method === 'turn/steer'),
+        ).toStrictEqual([]);
+        expect(
+          rejoined.filter(({ method }) => method === 'thread/resume').map(({ params }) => params),
+        ).toStrictEqual([{ threadId: running.nativeId, excludeTurns: true }]);
+        await fixture.control({
+          disconnectOnce: true,
+          ...reads(running.nativeId, { type: 'idle' }, 'daemon-continuation', 'completed'),
+        });
+        await fixture.request({ kind: 'usage', provider: 'codex' });
+        await expect
+          .poll(async () => {
+            await fixture.request({ kind: 'usage', provider: 'codex' });
+            return (await fixture.calls())
+              .slice(before)
+              .filter(({ method }) => method === 'thread/resume').length;
+          })
+          .toBe(2);
+        await expect
+          .poll(() => fixture.thread(running.thread.id))
+          .toMatchObject({ ownership: 'managed', state: 'completed', activeTurnId: null });
+        expect(await fixture.receipt(queued.id)).toMatchObject({ delivery: 'queued' });
+        expect(
+          (await fixture.calls()).slice(before).filter(({ method }) => method === 'turn/start'),
+        ).toStrictEqual([]);
+        const runtimeEpoch = (await fixture.request({ kind: 'status' })).result.runtimeEpoch;
+        await fixture.submit({
+          id: randomUUID(),
+          runtimeEpoch,
+          command: { kind: 'queue-send', queuedActionId: queued.id },
+        });
+        await expect
+          .poll(() => fixture.receipt(queued.id))
+          .toMatchObject({ delivery: 'acknowledged' });
+        expect(
+          (await fixture.calls()).slice(before).filter(({ method }) => method === 'turn/start'),
+        ).toHaveLength(1);
+      } finally {
+        await reopened?.close();
+        await fixture.close();
+      }
+    },
+  );

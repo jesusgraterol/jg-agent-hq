@@ -824,6 +824,11 @@ test('maintenance drains admitted work that needs newly arriving native lifecycl
       async () => {
         started.resolve();
         await release.promise;
+        const thread = (await runtime.request({ kind: 'managed-thread', threadId })).result!;
+        // an unavailable native identity remains unresolved after automatic transport recovery
+        await writeFixtureControl(root, 'control.json', {
+          threadStatuses: { [thread.nativeId!]: { type: 'systemError' } },
+        });
         process.kill(pids.parent, 'SIGTERM');
         await expect
           .poll(() => runtime.request({ kind: 'managed-thread', threadId }))

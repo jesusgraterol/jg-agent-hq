@@ -362,7 +362,7 @@ test.each(['idle', 'active'] as const)(
       await writeFixtureControl(root, 'control.json', {
         disconnectOnce: true,
         holdTurn: true,
-        threadStatuses: { [held.nativeId!]: { type: nativeState, activeFlags: [] } },
+        threadStatuses: { [held.nativeId!]: { type: 'systemError' } },
         threadTurns: {
           [held.nativeId!]: [
             {
@@ -377,6 +377,18 @@ test.each(['idle', 'active'] as const)(
         .poll(() => runtime.request({ kind: 'managed-thread', threadId }))
         .toMatchObject({ result: { ownership: 'uncertain', state: 'unknown' } });
       await runtime.close();
+      await writeFixtureControl(root, 'control.json', {
+        holdTurn: true,
+        threadStatuses: { [held.nativeId!]: { type: nativeState, activeFlags: [] } },
+        threadTurns: {
+          [held.nativeId!]: [
+            {
+              id: 'external-turn-after-loss',
+              status: nativeState === 'active' ? 'inProgress' : 'completed',
+            },
+          ],
+        },
+      });
       const reopened = await createAgentHq({ stateRoot, allowedRoots: [workspaceRoot] });
       try {
         const retained = (await reopened.request({ kind: 'managed-thread', threadId })).result!;
