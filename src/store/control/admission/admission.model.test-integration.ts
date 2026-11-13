@@ -1,11 +1,13 @@
 // @vitest-environment node
 import { randomUUID } from 'node:crypto';
+import { writeFile } from 'node:fs/promises';
 import { expectToRejectCode } from 'jg-exception/testing';
 import type { IActionCommand, IActionReceipt, IManagedThread } from 'jg-agent-hq/contracts';
 import { expect, test } from 'vitest';
 
 import {
   withClaudeRuntime,
+  claudeRecord,
   writeFixtureControl,
   type IClaudeFixture,
 } from '../../../../scripts/test-support/index.js';
@@ -50,6 +52,63 @@ const actionsOf = async (fixture: IClaudeFixture) => {
   };
   return { submit, receipt, thread, createThread, expectFailed };
 };
+
+test.each(['claude', 'codex'] as const)(
+  '%s controller readiness never reports a completed turn before input',
+  async (provider) => {
+    await withClaudeRuntime(async (fixture) => {
+      const { submit, receipt, thread } = await actionsOf(fixture);
+      const created = await submit({
+        kind: 'thread-create',
+        provider,
+        workspaceRoot: fixture.workspaceRoot,
+        name: 'controller-readiness',
+      });
+      await expect.poll(async () => (await receipt(created.id))?.delivery).toBe('acknowledged');
+      const threadId = created.threadId!;
+      if (provider === 'claude') {
+        const nativeId = (await thread(threadId))!.nativeId!;
+        await writeFile(
+          fixture.transcript(nativeId),
+          `${JSON.stringify(claudeRecord(fixture.workspaceRoot, nativeId, { type: 'assistant', text: 'Earlier saved reply' }))}\n`,
+        );
+      }
+      const transitions = async () => {
+        const response = await fixture.runtime.request({ kind: 'session-states', limit: 128 });
+        if (response.kind !== 'session-states') throw new Error('Missing transitions');
+        expect(response.result.hasMore).toBe(false);
+        return response.result.data.filter((entry) => entry.threadId === threadId);
+      };
+      for (let reopening = 0; reopening < 2; reopening += 1) {
+        const closed = await submit({ kind: 'thread-close', threadId });
+        await expect.poll(async () => (await receipt(closed.id))?.delivery).toBe('acknowledged');
+        const resumed = await submit({
+          kind: 'thread-resume',
+          threadId,
+          operatorConfirmation: 'Other native controllers are closed',
+        });
+        await expect.poll(async () => (await receipt(resumed.id))?.delivery).toBe('acknowledged');
+        expect(await thread(threadId)).toMatchObject({ state: 'idle', activeTurnId: null });
+        expect(
+          (await transitions()).filter((entry) =>
+            ['turn-started', 'turn-completed'].includes(entry.reason),
+          ),
+        ).toStrictEqual([]);
+      }
+      const message = await submit({
+        kind: 'message',
+        threadId,
+        input: { kind: 'text', text: 'Complete one actual turn' },
+      });
+      await expect.poll(async () => (await receipt(message.id))?.completion).toBe('completed');
+      expect(
+        (await transitions())
+          .filter((entry) => ['turn-started', 'turn-completed'].includes(entry.reason))
+          .map((entry) => entry.reason),
+      ).toStrictEqual(['turn-started', 'turn-completed']);
+    });
+  },
+);
 
 test('a running turn refuses each kind that needs an idle thread, its exact turn, a queued entry or a free name', async () => {
   await withClaudeRuntime(async (fixture) => {
