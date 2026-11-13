@@ -1,5 +1,9 @@
 # Changelog
 
+## 13.5.1
+
+- Allow confirmed recovery of a known quarantined Codex identity in the current HQ runtime, including loaded active, idle and unloaded sessions, without restarting HQ. Verify the native turn before and after joining, retain paused queues and unresolved receipts, and send no settings or input. Healthy controls, pending dispatches and unverified identities remain refused.
+
 ## 13.5.0
 
 - Quarantine attributable Claude interpretation, registry and persisted-evidence failures without terminating native work or other controlled sessions. Suspend rich interpretation and controls; require fresh native idle, a known empty full task snapshot and no unresolved requests before automatic cleanup. Partial task activity invalidates older emptiness, and ordinary idle parking cannot bypass quarantine.

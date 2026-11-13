@@ -256,7 +256,7 @@ export class ControlLifecycle extends ControlModel {
         );
         if (canDispatchQueued)
           this._statements.run(
-            "UPDATE agent_hq_action SET queue_ready = 1 WHERE thread_id = ? AND expected_turn_id = ? AND delivery = 'queued'",
+            "UPDATE agent_hq_action SET queue_ready = 1 WHERE thread_id = ? AND expected_turn_id = ? AND delivery = 'queued' AND related_action_id IS NULL",
             thread.id,
             finished.nativeTurnId,
           );

@@ -213,9 +213,9 @@ export const createAdmission = (
           command.kind === 'thread-recover' &&
           command.recovery.kind === 'resume' &&
           thread.provider === 'codex' &&
-          !target.canAdopt;
+          (!target.canAdopt || thread.runtimeEpoch === epoch);
         if (isKnownCodexRecovery) {
-          if (thread.ownership !== 'uncertain' || thread.runtimeEpoch === epoch) conflict();
+          if (thread.ownership !== 'uncertain') conflict();
           if (!control.readReattachment || !control.reattachThread) capabilityUnavailable();
           const read = await control.readReattachment(nativeId, thread.workspaceRoot);
           assertKnownTurn(read);
@@ -223,7 +223,7 @@ export const createAdmission = (
             read.thread.nativeId !== nativeId ||
             (await resolveWorkspaceTarget(read.thread.workspaceRoot, roots)) !==
               thread.workspaceRoot ||
-            !['idle', 'active'].includes(read.thread.nativeState)
+            !['notLoaded', 'idle', 'active'].includes(read.thread.nativeState)
           )
             conflict();
           prepared.recoveryTurn = read.latestTurn && {
