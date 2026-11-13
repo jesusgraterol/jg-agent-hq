@@ -1,5 +1,10 @@
 # Changelog
 
+## 13.5.4
+
+- Keep Claude control when a steering message is replayed before the preceding turn's result but its own answer completes afterward. Match that completion only to an exact live replay observed by the same controller, retaining bounded correlation metadata and rejecting unknown or consumed identities.
+- Retire replay metadata on new explicit input, controller replacement and shutdown. Preserve existing action receipts, paused queues, storage schema and native history without sending input again.
+
 ## 13.5.3
 
 - Keep controller creation, adoption, resume and recovery in the existing preparation state until native readiness. Opening a session without input no longer reports a turn starting or completing, preventing false completion notifications. Genuine input and autonomous native turns retain their lifecycle events.

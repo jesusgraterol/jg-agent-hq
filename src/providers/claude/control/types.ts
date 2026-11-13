@@ -81,6 +81,8 @@ export type IClaudeSession = {
   nativeTurn?: IClaudeNativeTurn;
   // steers written into an active turn that Claude hasn't replayed yet, by their message UUID
   steers: Map<string, IClaudeSteer>;
+  // exact live replays retained only within this process generation for late turn results
+  replayedSteers?: Set<string>;
   // how many background commands Claude last reported running, which keep the session from parking
   backgroundTaskCount: number;
   // read from Claude's start and turn results, and kept while the session is parked

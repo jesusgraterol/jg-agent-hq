@@ -133,6 +133,7 @@ const acknowledge = (session: IClaudeSession, events: IClaudeControlEvents | und
   const input = session.input;
   if (!input || input.isAcknowledged) return;
   input.isAcknowledged = true;
+  session.replayedSteers?.clear();
   clearTimeout(input.timer);
   input.resolve({ id: input.id });
   const request = parseActionRequest(input.requestId);
@@ -192,6 +193,7 @@ export const failSteers = (
   turnId?: string,
   failure: unknown = HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } }),
 ): void => {
+  if (turnId === undefined) session.replayedSteers?.clear();
   for (const steer of session.steers.values()) {
     if (turnId !== undefined && steer.turnId !== turnId) continue;
     clearTimeout(steer.timer);
@@ -205,6 +207,8 @@ export const failSteers = (
  * result, at once; a steer still unreplayed this long after its turn ended fails.
  */
 const STEER_REPLAY_GRACE_MS = 30_000;
+// match the bounded late-control identity window; eviction never accepts an unknown result
+const MAX_REPLAYED_STEERS = 64;
 
 /** Gives the steers of a turn that just ended their grace period for a replay after its result. */
 const awaitLateSteers = (session: IClaudeSession, turnId: string): void => {
@@ -214,9 +218,9 @@ const awaitLateSteers = (session: IClaudeSession, turnId: string): void => {
 };
 
 /**
- * Takes in a steer's replay. During the turn it named, the steer joined it; after that turn's
- * result, the steer runs as the session's next turn, under its own UUID, which its result names.
- * Either way the steer is acknowledged against the turn it named.
+ * Takes in a steer's replay, which can precede the old result even when its answer runs next.
+ * With no active turn, the replay starts that following turn under its own UUID; otherwise keep
+ * its identity for a later native completion. Acknowledge delivery against the turn it named.
  */
 const acknowledgeSteer = (
   session: IClaudeSession,
@@ -225,6 +229,12 @@ const acknowledgeSteer = (
 ): void => {
   clearTimeout(steer.timer);
   session.steers.delete(steer.id);
+  const replayed = (session.replayedSteers ??= new Set<string>());
+  replayed.add(steer.id);
+  if (replayed.size > MAX_REPLAYED_STEERS) {
+    const oldest = replayed.values().next().value;
+    if (oldest !== undefined) replayed.delete(oldest);
+  }
   if (!getActiveTurn(session)) {
     session.nativeTurn = { id: steer.id, interruptRequested: false, hasInterruptionMarker: false };
     events?.observe({
@@ -410,10 +420,13 @@ export const receiveClaudeMessage = (
     // a turn Claude started, or one a steer runs after its turn, has no action to capture its result
     if (
       result.user_message_uuid === undefined ||
-      result.user_message_uuid === session.nativeTurn?.id
+      result.user_message_uuid === session.nativeTurn?.id ||
+      (session.nativeTurn !== undefined && session.replayedSteers?.has(result.user_message_uuid))
     ) {
       const turn = session.nativeTurn;
       if (!turn) unavailable();
+      if (result.user_message_uuid !== undefined)
+        session.replayedSteers?.delete(result.user_message_uuid);
       session.nativeTurn = undefined;
       endTurn(session, events);
       awaitLateSteers(session, turn.id);
