@@ -241,6 +241,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     if (isClosing || countOpen() >= 32) conflict();
     session.parked = undefined;
     session.scope = randomUUID();
+    session.replayedSteers?.clear();
     const scope = session.scope;
     session.opening = start(session, session.hasInput, signal);
     try {

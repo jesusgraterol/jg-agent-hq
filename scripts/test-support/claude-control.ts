@@ -95,13 +95,14 @@ export const startClaudeControl = () => {
   if(interrupted){const uuid=randomUUID(),content=[{type:'text',text:'[Request interrupted by user]'}];record(uuid,'user',content,leaf);leaf=uuid;out({type:'user',uuid,message:{role:'user',content}});}
   // a turn that starts a background command reports it, as Claude does, before its result
   if(!interrupted&&control().backgroundTask&&!isTaskRunning){isTaskRunning=true;out({type:'system',subtype:'background_tasks_changed',tasks:[{task_id:'task-1',run_id:'run-1',description:'sleep',task_type:'local_bash'}]});out({type:'system',subtype:'task_started',task_id:'task-1',run_id:'run-1',tool_use_id:'tool-task',description:'sleep',is_backgrounded:true,task_type:'local_bash'});}
+  const replayBeforeResult=control().steer==='before-result';
+  if(replayBeforeResult)for(const steer of steers){record(steer.uuid,'user',steer.message.content,leaf);leaf=steer.uuid;out({...steer,isReplay:true});}
   out({type:'result',subtype:interrupted?'error_during_execution':'success',is_error:interrupted,user_message_uuid:input.uuid,structured_output:control().structuredOutput,usage:control().usageMalformed?'unknown-usage':{input_tokens:7,output_tokens:3,cache_read_input_tokens:2},errors:interrupted?['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null']:undefined,...fastReport()});
   input=null;hasPrompt=false;
   if(control().afterResultFrames)for(const frame of control().afterResultFrames)out(frame);
   // a held steer then runs as the session's next turn, which its result names
   for(const steer of steers.splice(0)){
-   record(steer.uuid,'user',steer.message.content,leaf);leaf=steer.uuid;
-   out({...steer,isReplay:true});
+   if(!replayBeforeResult){record(steer.uuid,'user',steer.message.content,leaf);leaf=steer.uuid;out({...steer,isReplay:true});}
    const uuid=randomUUID(),text='Native response to '+steer.message.content;
    record(uuid,'assistant',[{type:'text',text}],leaf);leaf=uuid;
    out({type:'assistant',uuid,message:{id:'steer-message',role:'assistant',content:[{type:'text',text}]}});
@@ -176,7 +177,7 @@ export const startClaudeControl = () => {
    }
   }else if(message.type==='user'){
    if(input&&['join','saved','saved-next'].includes(settings.steer)){recordQueued(message);if(settings.steer==='join')out({...message,isReplay:true});if(settings.steer==='saved-next')steers.push(message);return;}
-   if(input&&settings.steer==='next'){steers.push(message);return;}
+   if(input&&['next','before-result'].includes(settings.steer)){steers.push(message);return;}
    if(input)throw new Error('Native input duplicated');
    input=message;
    record(message.uuid,'user',message.message.content,leaf);leaf=message.uuid;

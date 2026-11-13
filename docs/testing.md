@@ -1,5 +1,7 @@
 # Testing
 
+Claude replay-boundary coverage is essential. Unit cases cover a replay before its preceding result followed by a separately completed native answer, consumed/unknown UUID refusal, bounded metadata and retirement on new explicit input. Real runtime/SQLite/control integration exercises both before-result and after-result replay orderings through the native CLI double, retaining one input and steer delivery, matching saved provenance and usable idle control. Repeat the changed control integration file three times without retries. These deterministic frames reproduce a defect consistent with the 2026-11-13 operator transcript; its original rejected live frame was not retained, so the exact incident ordering remains unverified.
+
 Package tests consume built public exports. Run `pnpm build` before focused tests; `pnpm check:package` builds once, runs the unit and integration categories, typechecks, and checks formatting. `pnpm test:unit` and `pnpm test:integration` keep their complete categories. The website has its own README and verification boundary.
 
 The publication workflow runs only `pnpm check:package` on its two Node versions, then publishes the exact consumer-tested archive. It installs no browser. The separate Pages workflow verifies and deploys the site after successful main publication; website failure cannot fail the publication workflow.

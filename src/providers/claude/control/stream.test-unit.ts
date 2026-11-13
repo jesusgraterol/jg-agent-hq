@@ -511,13 +511,13 @@ const INPUT = '11111111-1111-4111-8111-111111111111';
 const STEER = '22222222-2222-4222-8222-222222222222';
 
 // a steer HQ wrote into the input's turn, with what it settled with
-const addSteer = (session: IClaudeSession) => {
+const addSteer = (session: IClaudeSession, id = STEER) => {
   session.input!.id = INPUT;
   const settled: { turnId?: string; error?: unknown } = {};
-  session.steers.set(STEER, {
+  session.steers.set(id, {
     inputSha256: 'a'.repeat(64),
     isAcknowledged: false,
-    id: STEER,
+    id,
     turnId: INPUT,
     resolve: (turnId) => {
       settled.turnId = turnId;
@@ -607,6 +607,121 @@ test("a steer Claude replays after its turn's result runs as the next turn, whic
     ['turn-completed', STEER],
   ]);
   expect(session.nativeTurn).toBeUndefined();
+});
+
+test('a steer replayed before the previous result can complete the following native turn once', () => {
+  const session = createSession();
+  const { events } = createEvents();
+  const observed: { kind: string; nativeTurnId?: string }[] = [];
+  events.observe = (observation) => observed.push(observation);
+  const settled = addSteer(session);
+  receiveClaudeMessage(session, userFrame(STEER, 'Continue after the final answer.'), events);
+  receiveClaudeMessage(session, resultFrame(INPUT), events);
+  const output = {
+    type: 'assistant',
+    session_id: 'session',
+    uuid: 'next-answer',
+    message: {
+      id: 'next-api-answer',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Completed follow-up.' }],
+    },
+  };
+  receiveClaudeMessage(session, output, events);
+  const nativeTurnId = session.nativeTurn!.id;
+  receiveClaudeMessage(session, resultFrame(STEER), events);
+  expect(settled).toStrictEqual({ turnId: INPUT });
+  expect(session.nativeTurn).toBeUndefined();
+  expect(observed.map(({ kind, nativeTurnId }) => [kind, nativeTurnId])).toStrictEqual([
+    ['turn-completed', INPUT],
+    ['turn-started', nativeTurnId],
+    ['turn-completed', nativeTurnId],
+  ]);
+  // consuming the replay cannot make a duplicate result authoritative for a later turn
+  receiveClaudeMessage(session, { ...output, uuid: 'later-answer' }, events);
+  expectToThrowCode(
+    () => receiveClaudeMessage(session, resultFrame(STEER), events),
+    'JG_AGENT_HQ_CLAUDE_FAILED',
+  );
+});
+
+test('a following native turn still refuses a result whose input was never replayed in this session', () => {
+  const session = createSession();
+  const { events } = createEvents();
+  addSteer(session);
+  receiveClaudeMessage(session, userFrame(STEER, 'Known steering input.'), events);
+  receiveClaudeMessage(session, resultFrame(INPUT), events);
+  receiveClaudeMessage(
+    session,
+    {
+      type: 'assistant',
+      session_id: 'session',
+      uuid: 'native-answer',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Native follow-up.' }] },
+    },
+    events,
+  );
+  expectToThrowCode(
+    () =>
+      receiveClaudeMessage(session, resultFrame('33333333-3333-4333-8333-333333333333'), events),
+    'JG_AGENT_HQ_CLAUDE_FAILED',
+  );
+});
+
+test('replayed steering identities remain bounded and retain the newest exact replay', () => {
+  const session = createSession();
+  const { events } = createEvents();
+  let newest = '';
+  for (let index = 0; index < 256; index++) {
+    newest = `44444444-4444-4444-8444-${index.toString(16).padStart(12, '0')}`;
+    addSteer(session, newest);
+    receiveClaudeMessage(session, userFrame(newest, 'Known input.'), events);
+  }
+  expect(session.replayedSteers?.size).toBe(64);
+  receiveClaudeMessage(session, resultFrame(INPUT), events);
+  receiveClaudeMessage(
+    session,
+    {
+      type: 'assistant',
+      session_id: 'session',
+      uuid: 'bounded-follow-up',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Final answer.' }] },
+    },
+    events,
+  );
+  receiveClaudeMessage(session, resultFrame(newest), events);
+  expect(session.nativeTurn).toBeUndefined();
+});
+
+test('a new explicit input retires the preceding steering replay identities', () => {
+  const session = createSession();
+  const { events } = createEvents();
+  addSteer(session);
+  receiveClaudeMessage(session, userFrame(STEER, 'Previous steering input.'), events);
+  receiveClaudeMessage(session, resultFrame(INPUT), events);
+  const next = createSession();
+  session.input = {
+    ...next.input!,
+    id: '55555555-5555-4555-8555-555555555555',
+    isAcknowledged: false,
+  };
+  receiveClaudeMessage(session, userFrame(session.input.id, 'New explicit input.'), events);
+  expect(session.replayedSteers?.size).toBe(0);
+  receiveClaudeMessage(session, resultFrame(session.input.id), events);
+  receiveClaudeMessage(
+    session,
+    {
+      type: 'assistant',
+      session_id: 'session',
+      uuid: 'later-native-turn',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Later work.' }] },
+    },
+    events,
+  );
+  expectToThrowCode(
+    () => receiveClaudeMessage(session, resultFrame(STEER), events),
+    'JG_AGENT_HQ_CLAUDE_FAILED',
+  );
 });
 
 test('a steer Claude never replays fails 30 seconds after the turn it named ended', () => {

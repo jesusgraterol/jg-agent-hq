@@ -641,76 +641,79 @@ test('Claude steers the running turn, which takes the text in and ends once, and
   });
 });
 
-test("a Claude steer written while the turn's answer streams runs as the next turn, once the turn ends", async () => {
-  await withClaudeRuntime(async (fixture) => {
-    const api = await actions(fixture),
-      { thread } = await api.create();
-    // Claude ends the turn first, then replays the text and answers it as a turn of its own
-    await fixture.control({ holdTurn: true, steer: 'next' });
-    const input = await api.message(thread.id),
-      accepted = await api.settled(input.id);
-    const steer = api.envelope({
-      kind: 'steer',
-      threadId: thread.id,
-      expectedTurnId: accepted.nativeTurnId!,
-      text: 'Add a summary at the end',
-    });
-    await api.submit(steer);
-    expect((await api.receipt(steer.id)).delivery).not.toBe('acknowledged');
-
-    await fixture.control({ release: true, steer: 'next' });
-    // the steer is acknowledged against the turn it named, which completed as it was
-    expect(await api.settled(steer.id)).toMatchObject({ nativeTurnId: accepted.nativeTurnId });
-    await api.until(
-      () => api.receipt(input.id),
-      (entry) => entry.completion === 'completed',
-    );
-    // the next turn answers the steer, and the session has no turn running once it ends
-    const readHistory = async () => {
-      const history = await fixture.request({
-        kind: 'items',
-        provider: 'claude',
-        workspaceRoot: fixture.workspaceRoot,
-        nativeId: thread.nativeId!,
+test.each(['next', 'before-result'])(
+  'a Claude steer runs as the next turn with replay ordering %s',
+  async (steerMode) => {
+    await withClaudeRuntime(async (fixture) => {
+      const api = await actions(fixture),
+        { thread } = await api.create();
+      // Claude replays the steer on either side of the old result, then answers it as a new turn
+      await fixture.control({ holdTurn: true, steer: steerMode });
+      const input = await api.message(thread.id),
+        accepted = await api.settled(input.id);
+      const steer = api.envelope({
+        kind: 'steer',
+        threadId: thread.id,
+        expectedTurnId: accepted.nativeTurnId!,
+        text: 'Add a summary at the end',
       });
-      if (history.kind !== 'items') throw new Error('Missing history');
-      return history.result.data.map(({ kind, text, turnId }) => ({ kind, text, turnId }));
-    };
-    const [answer, asked] = await api.until(
-      readHistory,
-      ([newest]) => newest?.text.startsWith('Native response to Add a summary') ?? false,
-    );
-    expect([answer, asked]).toStrictEqual([
-      {
-        kind: 'agent-message',
-        text: 'Native response to Add a summary at the end',
-        turnId: asked!.turnId,
-      },
-      { kind: 'user-message', text: 'Add a summary at the end', turnId: asked!.turnId },
-    ]);
-    // a turn of its own, after the turn the steer named
-    expect(asked!.turnId).not.toBe(accepted.nativeTurnId);
-    const persisted = (
-      await fixture.request({
-        kind: 'items',
-        provider: 'claude',
-        workspaceRoot: fixture.workspaceRoot,
-        nativeId: thread.nativeId!,
-      })
-    ).result.data.find((item) => item.nativeId === steer.id)!;
-    expect(persisted.provenance).toMatchObject({
-      actionId: steer.id,
-      nativeInputId: steer.id,
-      source: 'host-action',
-      origin: 'unknown',
-      grantsAuthority: false,
+      await api.submit(steer);
+      expect((await api.receipt(steer.id)).delivery).not.toBe('acknowledged');
+
+      await fixture.control({ release: true, steer: steerMode });
+      // the steer is acknowledged against the turn it named, which completed as it was
+      expect(await api.settled(steer.id)).toMatchObject({ nativeTurnId: accepted.nativeTurnId });
+      await api.until(
+        () => api.receipt(input.id),
+        (entry) => entry.completion === 'completed',
+      );
+      // the next turn answers the steer, and the session has no turn running once it ends
+      const readHistory = async () => {
+        const history = await fixture.request({
+          kind: 'items',
+          provider: 'claude',
+          workspaceRoot: fixture.workspaceRoot,
+          nativeId: thread.nativeId!,
+        });
+        if (history.kind !== 'items') throw new Error('Missing history');
+        return history.result.data.map(({ kind, text, turnId }) => ({ kind, text, turnId }));
+      };
+      const [answer, asked] = await api.until(
+        readHistory,
+        ([newest]) => newest?.text.startsWith('Native response to Add a summary') ?? false,
+      );
+      expect([answer, asked]).toStrictEqual([
+        {
+          kind: 'agent-message',
+          text: 'Native response to Add a summary at the end',
+          turnId: asked!.turnId,
+        },
+        { kind: 'user-message', text: 'Add a summary at the end', turnId: asked!.turnId },
+      ]);
+      // a turn of its own, after the turn the steer named
+      expect(asked!.turnId).not.toBe(accepted.nativeTurnId);
+      const persisted = (
+        await fixture.request({
+          kind: 'items',
+          provider: 'claude',
+          workspaceRoot: fixture.workspaceRoot,
+          nativeId: thread.nativeId!,
+        })
+      ).result.data.find((item) => item.nativeId === steer.id)!;
+      expect(persisted.provenance).toMatchObject({
+        actionId: steer.id,
+        nativeInputId: steer.id,
+        source: 'host-action',
+        origin: 'unknown',
+        grantsAuthority: false,
+      });
+      await api.until(
+        () => api.thread(thread.id),
+        (entry) => entry.activeTurnId === null && entry.state === 'completed',
+      );
     });
-    await api.until(
-      () => api.thread(thread.id),
-      (entry) => entry.activeTurnId === null && entry.state === 'completed',
-    );
-  });
-});
+  },
+);
 
 test('Claude question replies are scope-checked, acknowledged by matching tool results and excluded from SQLite', async () => {
   await withClaudeRuntime(async (fixture) => {
