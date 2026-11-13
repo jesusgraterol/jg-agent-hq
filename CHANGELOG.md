@@ -1,5 +1,10 @@
 # Changelog
 
+## 13.5.3
+
+- Keep controller creation, adoption, resume and recovery in the existing preparation state until native readiness. Opening a session without input no longer reports a turn starting or completing, preventing false completion notifications. Genuine input and autonomous native turns retain their lifecycle events.
+- Preserve the storage schema, action key, input receipts and queue admission without migration or replay.
+
 ## 13.5.2
 
 - Automatically rejoin previously managed Codex sessions after a shared connection loss or HQ restart when their verified latest native turn changed. Joining sends no input or settings, leaves earlier receipts unresolved and queues paused, and still refuses unverified state, pending submissions and turn changes during the join. Existing uncertain/external sessions still require explicit recovery.

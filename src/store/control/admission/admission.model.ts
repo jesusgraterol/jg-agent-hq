@@ -318,10 +318,9 @@ export class ControlAdmission extends ControlModel {
         }
         if (isCreating) phase = 'create';
         this._statements.run(
-          "UPDATE agent_hq_thread SET ownership = 'managed', runtime_epoch = ?, pending_action_id = ?, active_turn_id = NULL, state = ?, updated_at = ? WHERE id = ?",
+          "UPDATE agent_hq_thread SET ownership = 'managed', runtime_epoch = ?, pending_action_id = ?, active_turn_id = NULL, state = 'creating', updated_at = ? WHERE id = ?",
           this._epoch,
           action.id,
-          isCreating ? 'creating' : 'starting',
           now,
           threadId,
         );
@@ -527,7 +526,7 @@ export class ControlAdmission extends ControlModel {
       prepared.workspaceRoot,
       this._epoch,
       actionId,
-      nativeId ? 'starting' : 'creating',
+      'creating',
       actionId,
       now,
       now,

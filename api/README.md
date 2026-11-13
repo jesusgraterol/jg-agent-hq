@@ -405,6 +405,8 @@ Codex leaves `reasoning` items out as it reads them, so a Codex page can hold fe
 
 ## Session states
 
+Controller setup uses the managed record's existing `creating` preparation state for creation, adoption, resume and recovery. Until native readiness its session state is unknown, rather than a running inference turn. Readiness alone records `opened`, never `turn-completed`; `starting` is reserved for an action that actually submits turn input. Verified existing turns and autonomous native output still record their actual lifecycle.
+
 Every session has a live state: `running`, `waiting` (on the operator), `idle`, `closed`, `failed` or `unknown`. A managed session reports it from its managed record. A session another client drives is observed and listed with `ownership: 'external'`; the runtime sends it no input until `thread-adopt` records it as managed, and never stops, wakes or drives a session a terminal runs. A managed session the runtime closed is observed again, so a terminal that continues it shows its state.
 
 A retained session with uncertain ownership also takes its live state from native observation, including loaded Codex sessions found at startup and later status changes. Thread reads, discovery and active-session summaries retain its managed ID and `ownership: 'uncertain'`. Observation never changes its control record, settles uncertain input, advances queued input or restores execution authority. Without a native observation its state remains unknown; explicit recovery is still required to regain control.
