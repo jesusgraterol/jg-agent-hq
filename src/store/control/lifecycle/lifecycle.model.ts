@@ -188,9 +188,9 @@ export class ControlLifecycle extends ControlModel {
   /**
    * Binds a kept or reconnecting session to this runtime, as its native process reports
    * it before the runtime rejoins it. A turn that finished meanwhile completes its action and lets
-   * the session's queued input advance, which this runtime then delivers. A session whose latest
-   * turn isn't the one HQ recorded, because another client started one, has its ownership marked
-   * uncertain instead.
+   * the session's queued input advance, which this runtime then delivers. A different verified turn
+   * restores control without completing the earlier action or releasing its queued input.
+   * Unverifiable native state stays uncertain.
    * @returns The thread and whether its queue may advance, or null when it is no longer one to rejoin.
    * @throws
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
@@ -210,31 +210,37 @@ export class ControlLifecycle extends ControlModel {
       const now = Date.now();
       const latest = input.latestTurn;
       const isRunning = latest?.state === 'running';
-      if (
+      const hasChangedTurn =
         (latest?.nativeTurnId ?? null) !== (thread.active_turn_id ?? thread.last_turn_id) ||
-        (isRunning && thread.active_turn_id === null)
-      ) {
+        (isRunning && thread.active_turn_id === null);
+      if (hasChangedTurn && latest === null) {
         if (!input.isReconnect) this.__quarantine(thread.id, now);
         return { thread: this._managedThread(thread.id), canDispatchQueued: false };
       }
       this._availableSlot();
       // the turn HQ left running, when it has finished since
       const finished =
-        thread.active_turn_id !== null && latest && latest.state !== 'running'
+        !hasChangedTurn && thread.active_turn_id !== null && latest && latest.state !== 'running'
           ? { nativeTurnId: latest.nativeTurnId, state: latest.state }
           : null;
-      const state = isRunning
-        ? thread.state === 'stopping'
-          ? 'stopping'
-          : 'running'
-        : (finished?.state ??
-          (input.isReconnect ? (thread.last_turn_state ?? 'idle') : thread.state));
+      const state = hasChangedTurn
+        ? latest!.state
+        : isRunning
+          ? thread.state === 'stopping'
+            ? 'stopping'
+            : 'running'
+          : (finished?.state ??
+            (input.isReconnect ? (thread.last_turn_state ?? 'idle') : thread.state));
       this._statements.run(
         "UPDATE agent_hq_thread SET ownership = 'managed', runtime_epoch = ?, active_turn_id = ?, last_turn_id = ?, last_turn_state = ?, state = ?, updated_at = ? WHERE id = ?",
         this._epoch,
         isRunning ? latest.nativeTurnId : null,
-        finished?.nativeTurnId ?? thread.last_turn_id,
-        finished?.state ?? thread.last_turn_state,
+        hasChangedTurn && latest && !isRunning
+          ? latest.nativeTurnId
+          : (finished?.nativeTurnId ?? thread.last_turn_id),
+        hasChangedTurn && latest && !isRunning
+          ? latest.state
+          : (finished?.state ?? thread.last_turn_state),
         state,
         now,
         thread.id,
@@ -245,6 +251,11 @@ export class ControlLifecycle extends ControlModel {
         now,
         thread.id,
       );
+      if (hasChangedTurn)
+        this._statements.run(
+          "UPDATE agent_hq_action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
+          thread.id,
+        );
       const canDispatchQueued = finished?.state === 'completed' && thread.state !== 'stopping';
       if (finished) {
         this._statements.run(

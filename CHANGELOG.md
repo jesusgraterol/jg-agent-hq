@@ -1,5 +1,9 @@
 # Changelog
 
+## 13.5.2
+
+- Automatically rejoin previously managed Codex sessions after a shared connection loss or HQ restart when their verified latest native turn changed. Joining sends no input or settings, leaves earlier receipts unresolved and queues paused, and still refuses unverified state, pending submissions and turn changes during the join. Existing uncertain/external sessions still require explicit recovery.
+
 ## 13.5.1
 
 - Allow confirmed recovery of a known quarantined Codex identity in the current HQ runtime, including loaded active, idle and unloaded sessions, without restarting HQ. Verify the native turn before and after joining, retain paused queues and unresolved receipts, and send no settings or input. Healthy controls, pending dispatches and unverified identities remain refused.
