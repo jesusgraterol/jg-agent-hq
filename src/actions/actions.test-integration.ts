@@ -3054,43 +3054,112 @@ test.each(['idle', 'empty', 'active', 'same-turn'] as const)(
   },
 );
 
-test('explicit Codex recovery still refuses uncertainty from the current runtime', async () => {
-  const fixture = await setup();
-  try {
-    const running = await startHeldTurn(fixture, 'recover-current-runtime');
-    await fixture.control({
-      ...reads(running.nativeId, { type: 'idle' }, 'external-current-turn', 'completed'),
-      disconnectOnce: true,
-    });
-    await fixture.request({ kind: 'usage', provider: 'codex' });
-    await expect
-      .poll(async () => (await fixture.thread(running.thread.id)).ownership)
-      .toBe('uncertain');
-    await expect
-      .poll(async () =>
-        (await fixture.runtime.request({ kind: 'status' })).result.providers.find(
-          (entry) => entry.provider === 'codex',
+test.each(['event', 'reconnect'] as const)(
+  'explicit recovery keeps earlier queued input paused after the same recovered Codex turn completes through %s',
+  async (completionSource) => {
+    const fixture = await setup();
+    try {
+      const running = await startHeldTurn(fixture, 'recover-current-runtime');
+      const queued = fixture.envelope({
+        kind: 'queue',
+        threadId: running.thread.id,
+        expectedTurnId: running.turnId,
+        input: { kind: 'text', text: 'Keep this paused after recovery' },
+      });
+      await fixture.submit(queued);
+      const before = (await fixture.calls()).length;
+      await fixture.control({
+        disconnectOnce: true,
+        ...reads(
+          running.nativeId,
+          { type: 'active', activeFlags: [] },
+          'newly-observed-turn',
+          'inProgress',
         ),
-      )
-      .toMatchObject({ state: 'ready' });
-    const action = fixture.envelope({
-      kind: 'thread-recover',
-      threadId: running.thread.id,
-      recovery: { kind: 'resume' },
-      operatorConfirmation: 'The native session is idle, but this HQ still owns the evidence',
-    });
-    await expectToRejectCode(
-      fixture.runtime.request({ kind: 'action', action }),
-      'JG_AGENT_HQ_ACTION_CONFLICT',
-    );
-    expect((await fixture.calls()).filter((call) => call.method === 'thread/resume')).toHaveLength(
-      0,
-    );
-    expect((await fixture.calls()).filter((call) => call.method === 'turn/start')).toHaveLength(1);
-  } finally {
-    await fixture.close();
-  }
-});
+      });
+      await fixture.request({ kind: 'usage', provider: 'codex' });
+      await expect
+        .poll(async () => {
+          await fixture.request({ kind: 'usage', provider: 'codex' });
+          return (await fixture.calls())
+            .slice(before)
+            .some(
+              (call) =>
+                call.method === 'thread/turns/list' && call.params.threadId === running.nativeId,
+            );
+        })
+        .toBe(true);
+      await expect
+        .poll(async () => (await fixture.thread(running.thread.id)).ownership)
+        .toBe('uncertain');
+      await fixture.control(
+        reads(running.nativeId, { type: 'active', activeFlags: [] }, running.turnId, 'inProgress'),
+      );
+      const recovery = fixture.envelope({
+        kind: 'thread-recover',
+        threadId: running.thread.id,
+        recovery: { kind: 'resume' },
+        operatorConfirmation:
+          'Reconnect the same inspected session without replaying earlier input',
+      });
+      await fixture.submit(recovery);
+      await fixture.until(
+        () => fixture.receipt(recovery.id),
+        (entry) => entry.delivery === 'acknowledged',
+      );
+      expect(await fixture.receipt(queued.id)).toMatchObject({
+        delivery: 'queued',
+        relatedActionId: recovery.id,
+      });
+      if (completionSource === 'reconnect') {
+        await fixture.control({
+          disconnectOnce: true,
+          ...reads(running.nativeId, { type: 'idle' }, running.turnId, 'completed'),
+        });
+        await fixture.request({ kind: 'usage', provider: 'codex' });
+        await expect
+          .poll(async () => {
+            await fixture.request({ kind: 'usage', provider: 'codex' });
+            return (await fixture.calls()).filter((call) => call.method === 'thread/resume').length;
+          })
+          .toBe(2);
+      } else {
+        await emit(
+          fixture,
+          reads(running.nativeId, { type: 'idle' }, running.turnId, 'completed'),
+          [
+            {
+              method: 'turn/completed',
+              params: {
+                threadId: running.nativeId,
+                turn: { id: running.turnId, status: 'completed' },
+              },
+            },
+          ],
+        );
+      }
+      await fixture.until(
+        () => fixture.thread(running.thread.id),
+        (entry) => entry.state === 'completed',
+      );
+      expect(await fixture.receipt(queued.id)).toMatchObject({ delivery: 'queued' });
+      expect((await fixture.calls()).filter((call) => call.method === 'turn/start')).toHaveLength(
+        1,
+      );
+      const explicitSend = fixture.envelope({ kind: 'queue-send', queuedActionId: queued.id });
+      await fixture.submit(explicitSend);
+      await fixture.until(
+        () => fixture.receipt(queued.id),
+        (entry) => entry.delivery === 'acknowledged',
+      );
+      expect((await fixture.calls()).filter((call) => call.method === 'turn/start')).toHaveLength(
+        2,
+      );
+    } finally {
+      await fixture.close();
+    }
+  },
+);
 
 test.each(['unknown', 'active-without-turn', 'join-race'] as const)(
   'explicit Codex recovery refuses %s evidence without sending input',
@@ -3225,6 +3294,85 @@ test('a Codex connection restart rejoins matching managed sessions without repla
     await fixture.close();
   }
 });
+
+test.each(['active', 'idle', 'unloaded'] as const)(
+  'explicit recovery rejoins a changed %s Codex turn in the same runtime without replay',
+  async (nativeState) => {
+    const fixture = await setup();
+    try {
+      const running = await startHeldTurn(fixture, 'same-runtime-recovery');
+      const queued = fixture.envelope({
+        kind: 'queue',
+        threadId: running.thread.id,
+        expectedTurnId: running.turnId,
+        input: { kind: 'text', text: 'Keep this paused after reconnection' },
+      });
+      await fixture.submit(queued);
+      const before = (await fixture.calls()).length;
+      const currentTurn = 'native-restart-continuation';
+      await fixture.control({
+        disconnectOnce: true,
+        ...reads(
+          running.nativeId,
+          nativeState === 'active'
+            ? { type: 'active', activeFlags: [] }
+            : { type: nativeState === 'unloaded' ? 'notLoaded' : 'idle' },
+          currentTurn,
+          nativeState === 'active' ? 'inProgress' : 'completed',
+        ),
+      });
+      await fixture.request({ kind: 'usage', provider: 'codex' });
+      await fixture.until(
+        () => fixture.thread(running.thread.id),
+        (entry) => entry.ownership === 'uncertain',
+      );
+      await expect
+        .poll(async () => {
+          await fixture.request({ kind: 'usage', provider: 'codex' });
+          return (await fixture.calls())
+            .slice(before)
+            .some(
+              (call) =>
+                call.method === 'thread/turns/list' && call.params.threadId === running.nativeId,
+            );
+        })
+        .toBe(true);
+      const recovery = fixture.envelope({
+        kind: 'thread-recover',
+        threadId: running.thread.id,
+        recovery: { kind: 'resume' },
+        operatorConfirmation: 'Reconnect this exact session; no other client controls it',
+      });
+      await expect(fixture.submit(recovery)).resolves.toMatchObject({ id: recovery.id });
+      await fixture.until(
+        () => fixture.receipt(recovery.id),
+        (entry) => entry.delivery === 'acknowledged',
+      );
+      expect(await fixture.thread(running.thread.id)).toMatchObject({
+        id: running.thread.id,
+        nativeId: running.nativeId,
+        ownership: 'managed',
+        runtimeEpoch: recovery.runtimeEpoch,
+        state: nativeState === 'active' ? 'running' : 'completed',
+        activeTurnId: nativeState === 'active' ? currentTurn : null,
+      });
+      await fixture.submit(recovery);
+      const calls = (await fixture.calls()).slice(before);
+      expect(calls.filter((call) => call.method === 'turn/start')).toStrictEqual([]);
+      expect(calls.filter((call) => call.method === 'turn/steer')).toStrictEqual([]);
+      expect(
+        calls.filter((call) => call.method === 'thread/resume').map((call) => call.params),
+      ).toStrictEqual([{ threadId: running.nativeId, excludeTurns: true }]);
+      expect(await fixture.receipt(queued.id)).toMatchObject({ delivery: 'queued' });
+      expect(await fixture.receipt(running.message.id)).toMatchObject({
+        delivery: 'acknowledged',
+        completion: null,
+      });
+    } finally {
+      await fixture.close();
+    }
+  },
+);
 
 test('successive Codex connection restarts rejoin once per loss without another turn start', async () => {
   const fixture = await setup();

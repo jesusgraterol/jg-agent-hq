@@ -237,7 +237,7 @@ export class ControlObservations extends ControlModel {
           );
           if (mayAdvance)
             this._statements.run(
-              "UPDATE agent_hq_action SET queue_ready = 1 WHERE thread_id = ? AND expected_turn_id = ? AND delivery = 'queued' AND runtime_epoch = ?",
+              "UPDATE agent_hq_action SET queue_ready = 1 WHERE thread_id = ? AND expected_turn_id = ? AND delivery = 'queued' AND runtime_epoch = ? AND related_action_id IS NULL",
               thread.id,
               observation.nativeTurnId,
               this._epoch,

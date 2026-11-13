@@ -271,7 +271,18 @@ export class ControlAdmission extends ControlModel {
       thread.native_id === proof.nativeId &&
       thread.workspace_root === proof.workspaceRoot;
     if (proof && !isQuarantinedClose) this._conflict();
-    this.__requireControl(isQuarantinedClose ? 'attached' : rule.control, thread);
+    const isVerifiedCodexRecovery =
+      command.kind === 'thread-recover' &&
+      command.recovery.kind === 'resume' &&
+      thread.provider === 'codex' &&
+      thread.native_id !== null &&
+      thread.native_id === prepared.nativeId &&
+      prepared.recoveryTurn !== undefined;
+    this.__requireControl(
+      isQuarantinedClose ? 'attached' : rule.control,
+      thread,
+      isVerifiedCodexRecovery,
+    );
     if (isQuarantinedClose && thread.pending_action_id) this._conflict();
     if (rule.requiresNoPendingAction && thread.pending_action_id) this._conflict();
     // a close that interrupts a running turn first doesn't need an idle session
@@ -333,8 +344,11 @@ export class ControlAdmission extends ControlModel {
             latest?.state ?? 'idle',
             threadId,
           );
+          // retain the pause across later completions and automatic reconnects in this runtime
           this._statements.run(
-            "UPDATE agent_hq_action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
+            "UPDATE agent_hq_action SET queue_ready = 0, related_action_id = ?, updated_at = ? WHERE thread_id = ? AND delivery = 'queued'",
+            action.id,
+            now,
             threadId,
           );
         }
@@ -542,7 +556,11 @@ export class ControlAdmission extends ControlModel {
   }
 
   /** Requires the control the rule names over the thread. */
-  private __requireControl(control: IAdmissionRule['control'], thread: IThreadRow): void {
+  private __requireControl(
+    control: IAdmissionRule['control'],
+    thread: IThreadRow,
+    isVerifiedCodexRecovery = false,
+  ): void {
     if (control === null) return;
     if (control === 'owned') {
       if (
@@ -568,7 +586,10 @@ export class ControlAdmission extends ControlModel {
         !thread.native_id
       )
         this._conflict();
-    } else if (thread.ownership !== 'uncertain' || thread.runtime_epoch === this._epoch)
+    } else if (
+      thread.ownership !== 'uncertain' ||
+      (thread.runtime_epoch === this._epoch && !isVerifiedCodexRecovery)
+    )
       this._conflict();
   }
 
