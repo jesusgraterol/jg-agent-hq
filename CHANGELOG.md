@@ -1,5 +1,11 @@
 # Changelog
 
+## 13.5.5
+
+- Preserve queued Claude steers across intervening native turns. Unconfirmed delivery expires only after 30 continuous idle seconds; saved-history confirmations retain their identity until live replay or controller teardown.
+- Report rejected Claude results with bounded UUID-only correlation metadata and a rejection reason, without prompts, native output, file paths or credentials.
+- Preserve exact replay/result validation, action receipts, native history, storage schema and paused queues without resending input.
+
 ## 13.5.4
 
 - Keep Claude control when a steering message is replayed before the preceding turn's result but its own answer completes afterward. Match that completion only to an exact live replay observed by the same controller, retaining bounded correlation metadata and rejecting unknown or consumed identities.

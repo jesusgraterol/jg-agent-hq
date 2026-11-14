@@ -1,6 +1,6 @@
 {
   "name": "jg-agent-hq",
-  "version": "13.5.4",
+  "version": "13.5.5",
   "description": "Native Claude Code and Codex session control, history, usage and recoverable local storage for Node.js apps.",
   "type": "module",
   "license": "MIT",

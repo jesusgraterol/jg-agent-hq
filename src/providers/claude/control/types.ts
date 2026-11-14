@@ -33,7 +33,8 @@ export type IClaudeNativeTurn = {
  * Text HQ wrote into an active turn, which Claude replays once it takes it in: within that turn,
  * at its next tool boundary, or after the turn's result, when it runs as the session's next turn.
  * Saved input can also acknowledge it, retaining this identity for a later replay. The timer
- * releases it after the turn ended and rejects it only when delivery remains unconfirmed.
+ * expires only unconfirmed input after a continuous idle period. Saved confirmations stay until
+ * live replay or controller teardown.
  */
 export type IClaudeSteer = {
   id: string;
@@ -42,7 +43,6 @@ export type IClaudeSteer = {
   isAcknowledged: boolean;
   resolve(turnId: string): void;
   reject(error: unknown): void;
-  timer?: ReturnType<typeof setTimeout>;
 };
 
 // saved item/evidence identities, after the native reader validates the transcript and chain
@@ -81,6 +81,8 @@ export type IClaudeSession = {
   nativeTurn?: IClaudeNativeTurn;
   // steers written into an active turn that Claude hasn't replayed yet, by their message UUID
   steers: Map<string, IClaudeSteer>;
+  // one idle deadline shared by every unconfirmed steer, paused whenever a turn starts
+  steerReplayTimer?: ReturnType<typeof setTimeout>;
   // exact live replays retained only within this process generation for late turn results
   replayedSteers?: Set<string>;
   // how many background commands Claude last reported running, which keep the session from parking
