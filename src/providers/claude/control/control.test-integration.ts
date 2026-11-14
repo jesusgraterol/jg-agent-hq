@@ -641,6 +641,64 @@ test('Claude steers the running turn, which takes the text in and ends once, and
   });
 });
 
+test.each([
+  [2, false],
+  [3, true],
+] as const)(
+  'serial Claude queue of %d steers retains control with before-result replay %s',
+  async (count, serialBeforeResult) => {
+    await withClaudeRuntime(async (fixture) => {
+      const api = await actions(fixture),
+        { thread } = await api.create();
+      const settings = {
+        holdTurn: true,
+        steer: 'next',
+        serialSteers: true,
+        serialBeforeResult,
+        release: true,
+      };
+      await fixture.control({ ...settings, release: false });
+      const input = await api.message(thread.id),
+        accepted = await api.settled(input.id);
+      const steers = Array.from({ length: count }, (_, index) =>
+        api.envelope({
+          kind: 'steer',
+          threadId: thread.id,
+          expectedTurnId: accepted.nativeTurnId!,
+          text: `Serial follow-up ${index + 1}`,
+        }),
+      );
+      for (const steer of steers) await api.submit(steer);
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        await fixture.control(settings);
+        await api.settled(steers[0]!.id);
+        for (let index = 0; index < count; index++) {
+          vi.advanceTimersByTime(60_000);
+          expect(await api.thread(thread.id)).toMatchObject({
+            ownership: 'managed',
+            state: 'running',
+          });
+          await fixture.control({ ...settings, releaseSteer: index + 1 });
+          if (index + 1 < count) await api.settled(steers[index + 1]!.id);
+        }
+        await api.until(
+          () => api.thread(thread.id),
+          (entry) => entry.activeTurnId === null && entry.state === 'completed',
+        );
+        for (const steer of steers)
+          expect(await api.receipt(steer.id)).toMatchObject({
+            delivery: 'acknowledged',
+            failure: null,
+          });
+        expect((await api.calls()).filter((call) => call.type === 'user')).toHaveLength(count + 1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  },
+);
+
 test.each(['next', 'before-result'])(
   'a Claude steer runs as the next turn with replay ordering %s',
   async (steerMode) => {

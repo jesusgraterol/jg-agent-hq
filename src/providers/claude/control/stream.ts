@@ -16,6 +16,7 @@ import type {
   IClaudeTurn,
 } from './types.js';
 import { createClaudePrompt } from './permissions.js';
+import { reportRejectedClaudeResult } from './diagnostics.js';
 
 const FrameSchema = z.object({
   type: z.string(),
@@ -128,11 +129,18 @@ const unavailable: () => never = () => {
 export const getActiveTurn = (session: IClaudeSession): IClaudeTurn | undefined =>
   session.nativeTurn ?? (session.input?.isAcknowledged ? session.input : undefined);
 
+/** Cancels the idle-only replay deadline before a new native turn begins. */
+const pauseSteerExpiry = (session: IClaudeSession): void => {
+  clearTimeout(session.steerReplayTimer);
+  delete session.steerReplayTimer;
+};
+
 /** Acknowledges the single current input before forwarding its ordered turn evidence. */
 const acknowledge = (session: IClaudeSession, events: IClaudeControlEvents | undefined): void => {
   const input = session.input;
   if (!input || input.isAcknowledged) return;
   input.isAcknowledged = true;
+  pauseSteerExpiry(session);
   session.replayedSteers?.clear();
   clearTimeout(input.timer);
   input.resolve({ id: input.id });
@@ -156,6 +164,7 @@ const startNativeTurn = (
 ): IClaudeNativeTurn => {
   const turn = { id: randomUUID(), interruptRequested: false, hasInterruptionMarker: false };
   session.nativeTurn = turn;
+  pauseSteerExpiry(session);
   events?.observe({
     kind: 'turn-started',
     provider: 'claude',
@@ -193,28 +202,42 @@ export const failSteers = (
   turnId?: string,
   failure: unknown = HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } }),
 ): void => {
-  if (turnId === undefined) session.replayedSteers?.clear();
+  if (turnId === undefined) {
+    pauseSteerExpiry(session);
+    session.replayedSteers?.clear();
+  }
   for (const steer of session.steers.values()) {
     if (turnId !== undefined && steer.turnId !== turnId) continue;
-    clearTimeout(steer.timer);
     session.steers.delete(steer.id);
     if (!steer.isAcknowledged) steer.reject(failure);
   }
 };
 
-/*
- * Claude replays a steer written while a turn's final answer streams only after that turn's
- * result, at once; a steer still unreplayed this long after its turn ended fails.
- */
+// an unconfirmed steer expires only after a continuous idle window
 const STEER_REPLAY_GRACE_MS = 30_000;
 // match the bounded late-control identity window; eviction never accepts an unknown result
 const MAX_REPLAYED_STEERS = 64;
 
-/** Gives the steers of a turn that just ended their grace period for a replay after its result. */
-const awaitLateSteers = (session: IClaudeSession, turnId: string): void => {
+/** Retains saved confirmations and never expires an input while another turn is running. */
+const expireIdleSteers = (session: IClaudeSession): void => {
+  delete session.steerReplayTimer;
+  if (getActiveTurn(session) || session.isClosing || session.isQuarantined) return;
+  for (const [id, steer] of session.steers) {
+    if (steer.isAcknowledged) continue;
+    session.steers.delete(id);
+    steer.reject(HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } }));
+  }
+};
+
+/** Arms one idle deadline for every unconfirmed input, including steers of earlier turns. */
+const awaitLateSteers = (session: IClaudeSession): void => {
+  pauseSteerExpiry(session);
+  if (getActiveTurn(session) || session.isClosing || session.isQuarantined) return;
   for (const steer of session.steers.values())
-    if (steer.turnId === turnId && steer.timer === undefined)
-      steer.timer = setTimeout(() => failSteers(session, turnId), STEER_REPLAY_GRACE_MS);
+    if (!steer.isAcknowledged) {
+      session.steerReplayTimer = setTimeout(() => expireIdleSteers(session), STEER_REPLAY_GRACE_MS);
+      return;
+    }
 };
 
 /**
@@ -227,7 +250,6 @@ const acknowledgeSteer = (
   steer: IClaudeSteer,
   events: IClaudeControlEvents | undefined,
 ): void => {
-  clearTimeout(steer.timer);
   session.steers.delete(steer.id);
   const replayed = (session.replayedSteers ??= new Set<string>());
   replayed.add(steer.id);
@@ -236,6 +258,7 @@ const acknowledgeSteer = (
     if (oldest !== undefined) replayed.delete(oldest);
   }
   if (!getActiveTurn(session)) {
+    pauseSteerExpiry(session);
     session.nativeTurn = { id: steer.id, interruptRequested: false, hasInterruptionMarker: false };
     events?.observe({
       kind: 'turn-started',
@@ -415,7 +438,12 @@ export const receiveClaudeMessage = (
       events?.delta(session.id, turn.id, preview.id, event.delta.text);
     }
   } else if (frame.type === 'result') {
-    const result = ResultSchema.parse(raw);
+    const parsedResult = ResultSchema.safeParse(raw);
+    if (!parsedResult.success) {
+      reportRejectedClaudeResult(session, raw, 'invalid-result');
+      throw parsedResult.error;
+    }
+    const result = parsedResult.data;
     observeFastMode(session, raw);
     // a turn Claude started, or one a steer runs after its turn, has no action to capture its result
     if (
@@ -424,12 +452,15 @@ export const receiveClaudeMessage = (
       (session.nativeTurn !== undefined && session.replayedSteers?.has(result.user_message_uuid))
     ) {
       const turn = session.nativeTurn;
-      if (!turn) unavailable();
+      if (!turn) {
+        reportRejectedClaudeResult(session, result, 'no-active-turn');
+        unavailable();
+      }
       if (result.user_message_uuid !== undefined)
         session.replayedSteers?.delete(result.user_message_uuid);
       session.nativeTurn = undefined;
       endTurn(session, events);
-      awaitLateSteers(session, turn.id);
+      awaitLateSteers(session);
       events?.observe({
         kind: 'turn-completed',
         provider: 'claude',
@@ -440,12 +471,15 @@ export const receiveClaudeMessage = (
       return;
     }
     const input = session.input;
-    if (!input || input.id !== result.user_message_uuid || session.nativeTurn) unavailable();
+    if (!input || input.id !== result.user_message_uuid || session.nativeTurn) {
+      reportRejectedClaudeResult(session, result, 'input-mismatch');
+      unavailable();
+    }
     acknowledge(session, events);
     const state = toTurnState(result, input);
     session.input = undefined;
     endTurn(session, events);
-    awaitLateSteers(session, input.id);
+    awaitLateSteers(session);
     const observedUsage = UsageSchema.safeParse(result.usage);
     const usage: ITurnUsage | null = observedUsage.success
       ? {

@@ -718,8 +718,8 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
      * interrupting it. Claude takes it in at the turn's next tool boundary and replays it there,
      * or, for text written while the turn's final answer streams, replays it after the turn's
      * result and runs it as the session's next turn. Either replay acknowledges the steer against
-     * the turn it named; a stopped process, or no replay within 30 seconds of that turn's end,
-     * fails it.
+     * the turn it named. Unconfirmed input fails after 30 continuous idle seconds or process
+     * shutdown. Saved confirmations retain their identity for a later live replay.
      * @returns The turn the steer named, once Claude replayed it.
      * @throws
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state

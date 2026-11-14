@@ -75,6 +75,23 @@ export const startClaudeControl = () => {
  let heldReplay=null;
  let heldSettings=null;
  let heldNameResponse=null;
+ let serialOrdinal=0;
+ let heldSerialResult=null;
+ const replaySerial=message=>{record(message.uuid,'user',message.message.content,leaf);leaf=message.uuid;out({...message,isReplay:true});};
+ const startSerialSteer=(alreadyReplayed=false)=>{
+  const steer=steers.shift();if(!steer)return;
+  if(!alreadyReplayed)replaySerial(steer);
+  const uuid=randomUUID(),text='Native response to '+steer.message.content;
+  record(uuid,'assistant',[{type:'text',text}],leaf);leaf=uuid;
+  out({type:'assistant',uuid,message:{id:'serial-steer-message',role:'assistant',content:[{type:'text',text}]}});
+  heldSerialResult={ordinal:++serialOrdinal,finish:()=>{
+   const replayNext=control().serialBeforeResult&&steers.length>0;
+   if(replayNext)replaySerial(steers[0]);
+   out({type:'result',subtype:'success',is_error:false,user_message_uuid:steer.uuid,usage:{input_tokens:3,output_tokens:2},...fastReport()});
+   startSerialSteer(replayNext);
+  }};
+ };
+
  const complete=(interrupted=false)=>{
   if(!input||heldResult)return;
   // scripted frames are written to the transcript as the CLI would, with their result metadata
@@ -100,6 +117,7 @@ export const startClaudeControl = () => {
   out({type:'result',subtype:interrupted?'error_during_execution':'success',is_error:interrupted,user_message_uuid:input.uuid,structured_output:control().structuredOutput,usage:control().usageMalformed?'unknown-usage':{input_tokens:7,output_tokens:3,cache_read_input_tokens:2},errors:interrupted?['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null']:undefined,...fastReport()});
   input=null;hasPrompt=false;
   if(control().afterResultFrames)for(const frame of control().afterResultFrames)out(frame);
+  if(control().serialSteers){startSerialSteer();return;}
   // a held steer then runs as the session's next turn, which its result names
   for(const steer of steers.splice(0)){
    if(!replayBeforeResult){record(steer.uuid,'user',steer.message.content,leaf);leaf=steer.uuid;out({...steer,isReplay:true});}
@@ -115,6 +133,7 @@ export const startClaudeControl = () => {
   if(heldResult&&control().releaseResult){const held=heldResult;heldResult=null;held();}
   if(heldReplay&&control().releaseReplay){const held=heldReplay;heldReplay=null;held();}
   const settings=control();
+  if(heldSerialResult&&settings.releaseSteer>=heldSerialResult.ordinal){const held=heldSerialResult;heldSerialResult=null;held.finish();}
   if(heldNameResponse&&settings.releaseNameResponse){const held=heldNameResponse;heldNameResponse=null;held();}
   if(settings.frameBatch&&settings.frameBatch.id!==emittedBatch&&(!settings.frameBatch.nativeId||settings.frameBatch.nativeId===id)){emittedBatch=settings.frameBatch.id;for(const frame of settings.frameBatch.frames)out(frame);appendFileSync(join(root,'claude-calls.jsonl'),JSON.stringify({type:'fixture_frames_sent',uuid:id,batch:emittedBatch})+'\n');}
   if(heldSettings&&(!settings.holdSettings||settings.releaseSettings)){const held=heldSettings;heldSettings=null;held();}

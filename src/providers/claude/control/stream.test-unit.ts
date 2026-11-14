@@ -3,7 +3,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 
 import type { IHistoryItem } from '../../../contracts/index.js';
 
-import { receiveClaudeMessage } from './stream.js';
+import { failSteers, receiveClaudeMessage } from './stream.js';
 import type { IClaudeControlEvents, IClaudeSession } from './types.js';
 
 const createSession = (): IClaudeSession => ({
@@ -722,6 +722,135 @@ test('a new explicit input retires the preceding steering replay identities', ()
     () => receiveClaudeMessage(session, resultFrame(STEER), events),
     'JG_AGENT_HQ_CLAUDE_FAILED',
   );
+});
+
+test.each([
+  [2, 'before', false],
+  [2, 'after', false],
+  [3, 'before', false],
+  [3, 'after', false],
+  [2, 'before', true],
+  [2, 'after', true],
+  [3, 'before', true],
+  [3, 'after', true],
+] as const)(
+  '%d queued steers replay %s results with saved acknowledgement %s across long turns',
+  (count, ordering, isSaved) => {
+    vi.useFakeTimers();
+    const session = createSession();
+    const { events } = createEvents();
+    const ids = [
+      STEER,
+      '33333333-3333-4333-8333-333333333333',
+      '44444444-4444-4444-8444-444444444444',
+    ].slice(0, count);
+    const settled = ids.map((id) => addSteer(session, id));
+    if (isSaved) for (const steer of session.steers.values()) steer.isAcknowledged = true;
+    receiveClaudeMessage(session, resultFrame(INPUT), events);
+    receiveClaudeMessage(session, userFrame(ids[0]!, 'First follow-up'), events);
+    for (let index = 1; index < ids.length; index++) {
+      vi.advanceTimersByTime(60_000);
+      expect(session.steers.has(ids[index]!)).toBe(true);
+      expect(settled.every((entry) => entry.error === undefined)).toBe(true);
+      if (ordering === 'before')
+        receiveClaudeMessage(session, userFrame(ids[index]!, 'Next follow-up'), events);
+      receiveClaudeMessage(session, resultFrame(ids[index - 1]!), events);
+      if (ordering === 'after')
+        receiveClaudeMessage(session, userFrame(ids[index]!, 'Next follow-up'), events);
+      receiveClaudeMessage(
+        session,
+        {
+          type: 'assistant',
+          uuid: 'following-answer',
+          session_id: 'session',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'Following answer' }] },
+        },
+        events,
+      );
+    }
+    receiveClaudeMessage(session, resultFrame(ids.at(-1)!), events);
+    expect(session.nativeTurn).toBeUndefined();
+    expect(session.steers.size).toBe(0);
+    expect(settled).toStrictEqual(ids.map(() => ({ turnId: INPUT })));
+  },
+);
+
+test('a history-confirmed steer survives idle expiry until live replay and shutdown clears retained identities', () => {
+  vi.useFakeTimers();
+  const session = createSession();
+  const { events } = createEvents();
+  addSteer(session);
+  session.steers.get(STEER)!.isAcknowledged = true;
+  receiveClaudeMessage(session, resultFrame(INPUT), events);
+  vi.advanceTimersByTime(60_000);
+  expect(session.steers.has(STEER)).toBe(true);
+  failSteers(session);
+  expect(session.steers.size).toBe(0);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test('autonomous work restarts the full idle deadline for steers of earlier turns', () => {
+  vi.useFakeTimers();
+  const session = createSession();
+  const { events } = createEvents();
+  const settled = addSteer(session);
+  receiveClaudeMessage(session, resultFrame(INPUT), events);
+  vi.advanceTimersByTime(29_999);
+  receiveClaudeMessage(
+    session,
+    {
+      type: 'assistant',
+      uuid: 'native-answer',
+      session_id: 'session',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Background continuation' }] },
+    },
+    events,
+  );
+  vi.advanceTimersByTime(60_000);
+  expect(settled).toStrictEqual({});
+  receiveClaudeMessage(session, resultFrame(session.nativeTurn!.id), events);
+  vi.advanceTimersByTime(29_999);
+  expect(settled).toStrictEqual({});
+  vi.advanceTimersByTime(1);
+  expect(settled.error).toMatchObject({ code: 'JG_AGENT_HQ_CLAUDE_FAILED' });
+});
+
+test('result rejection diagnostics contain bounded UUID metadata without native content', () => {
+  const session = createSession();
+  const { events } = createEvents();
+  const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  try {
+    for (let index = 0; index < 256; index++)
+      addSteer(session, `44444444-4444-4444-8444-${index.toString(16).padStart(12, '0')}`);
+    session.nativeTurn = {
+      id: '55555555-5555-4555-8555-555555555555',
+      interruptRequested: false,
+      hasInterruptionMarker: false,
+    };
+    expectToThrowCode(
+      () =>
+        receiveClaudeMessage(
+          session,
+          { ...resultFrame(STEER), result: 'PRIVATE_NATIVE_BODY', secret: 'PRIVATE_TOKEN' },
+          events,
+        ),
+      'JG_AGENT_HQ_CLAUDE_FAILED',
+    );
+    const diagnostic = JSON.parse(spy.mock.calls[0]![1] as string) as {
+      reason: string;
+      userMessageUuid: string;
+      pendingSteerIds: string[];
+      pendingSteerCount: number;
+    };
+    expect(diagnostic.reason).toBe('input-mismatch');
+    expect(diagnostic.userMessageUuid).toBe(STEER);
+    expect(diagnostic.pendingSteerIds).toHaveLength(64);
+    expect(diagnostic.pendingSteerCount).toBe(256);
+    expect(JSON.stringify(spy.mock.calls)).not.toContain('PRIVATE_');
+  } finally {
+    spy.mockRestore();
+    failSteers(session);
+  }
 });
 
 test('a steer Claude never replays fails 30 seconds after the turn it named ended', () => {
