@@ -1,5 +1,9 @@
 # Changelog
 
+## 13.5.6
+
+- Forward creation model, reasoning effort, Fast mode and output schema to the session's first turn for Codex and Claude. Keep startup-only settings on session creation, and preserve the same action identity and input admission checks.
+
 ## 13.5.5
 
 - Preserve queued Claude steers across intervening native turns. Unconfirmed delivery expires only after 30 continuous idle seconds; saved-history confirmations retain their identity until live replay or controller teardown.
