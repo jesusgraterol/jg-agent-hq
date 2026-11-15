@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { TurnSettingsSchema } from '../../contracts/index.js';
+
 import type {
   IActionCommand,
   IActionEnvelope,
@@ -177,10 +179,13 @@ export const createAdmission = (
       prepared.workspaceRoot = await resolveWorkspaceTarget(command.workspaceRoot, roots);
     if (command.kind === 'thread-create' && command.input) {
       // a first input resolves a skill from the folder's catalog, as the new session's matches it
-      input = await prepareInput(command.input, {}, prepared.workspaceRoot!, {
-        provider: command.provider,
-        workspaceRoot: prepared.workspaceRoot!,
-      });
+      const { model, effort, fast, outputSchema } = command.settings ?? {};
+      input = await prepareInput(
+        command.input,
+        TurnSettingsSchema.parse({ model, effort, fast, outputSchema }),
+        prepared.workspaceRoot!,
+        { provider: command.provider, workspaceRoot: prepared.workspaceRoot! },
+      );
       await control.validateInput(undefined, input);
       prepared.input = input;
     } else if (command.kind === 'thread-delete') {

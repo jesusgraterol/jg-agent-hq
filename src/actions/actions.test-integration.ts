@@ -33,6 +33,89 @@ import {
   withClaudeRuntime,
 } from '../../scripts/test-support/index.js';
 
+test.each(['codex', 'claude'] as const)(
+  '%s forwards creation settings to its first turn without replaying input',
+  async (provider) => {
+    await withClaudeRuntime(async ({ runtime, request, workspaceRoot, root }) => {
+      await waitForWarmUp(runtime);
+      const action = {
+        id: randomUUID(),
+        runtimeEpoch: runtime.runtimeEpoch,
+        command: {
+          kind: 'thread-create' as const,
+          provider,
+          workspaceRoot,
+          name: 'explicit-first-turn',
+          settings: {
+            model: 'fake-model',
+            effort: 'high',
+            fast: false,
+            systemInstructions: 'Be concise.',
+          },
+          input: { kind: 'text' as const, text: 'First input with explicit settings' },
+        },
+      };
+      const admitted = (await request({ kind: 'action', action })).result;
+      const settled = (
+        await request({
+          kind: 'action-wait',
+          actionId: action.id,
+          until: 'settled',
+          timeoutMs: 5000,
+        })
+      ).result;
+      expect(settled).toMatchObject({
+        isTimedOut: false,
+        receipt: { delivery: 'acknowledged', threadId: admitted.threadId },
+      });
+      await request({ kind: 'action', action });
+      if (provider === 'codex') {
+        const calls = z
+          .array(z.object({ method: z.string(), params: z.record(z.string(), z.unknown()) }))
+          .parse(
+            (await readFile(join(root, 'calls.jsonl'), 'utf8'))
+              .trim()
+              .split('\n')
+              .map((line) => JSON.parse(line)),
+          );
+        const turns = calls.filter(({ method }) => method === 'turn/start');
+        expect(turns).toHaveLength(1);
+        expect(turns[0]!.params).toMatchObject({
+          model: 'fake-model',
+          effort: 'high',
+          serviceTier: 'default',
+        });
+        expect(turns[0]!.params).not.toHaveProperty('systemInstructions');
+      } else {
+        const calls = z
+          .array(
+            z.object({
+              type: z.string(),
+              request: z
+                .object({
+                  subtype: z.string(),
+                  settings: z.record(z.string(), z.unknown()).optional(),
+                })
+                .optional(),
+            }),
+          )
+          .parse(
+            (await readFile(join(root, 'claude-calls.jsonl'), 'utf8'))
+              .trim()
+              .split('\n')
+              .map((line) => JSON.parse(line)),
+          );
+        expect(
+          calls
+            .filter(({ request }) => request?.subtype === 'apply_flag_settings')
+            .map(({ request }) => request!.settings),
+        ).toStrictEqual([{ model: 'fake-model', effortLevel: 'high', fastMode: false }]);
+        expect(calls.filter(({ type }) => type === 'user')).toHaveLength(1);
+      }
+    });
+  },
+);
+
 test('64-character suggestions and concurrent admissions retain complete growing collision suffixes', async () => {
   await withClaudeRuntime(async ({ runtime, request, workspaceRoot }) => {
     await waitForWarmUp(runtime);
