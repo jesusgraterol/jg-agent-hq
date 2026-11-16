@@ -4,6 +4,8 @@ The private Astro workspace serves the public package overview, root README and 
 
 Run `pnpm install` from the repository root and `pnpm --dir website exec playwright install chromium`. Run `pnpm --dir website dev --ignore-lock` for foreground development. Restart development after editing canonical documents outside the website directory.
 
+Run root `pnpm build` before the focused homepage unit tests or a full website selection. Those tests validate advertised operations against the built public package contracts.
+
 `pnpm --dir website check` runs essential unit tests, Astro/TypeScript checks, lint, formatting, one production build with DOM verification, and essential artifact integration tests. `test` runs essential correctness coverage. `test:full` and `check:full` add ordinary content/asset cases and all production-browser journeys; full runs only on explicit local request. Granular unit, integration, E2E, and `:artifact` commands remain complete. The integration and E2E scripts build first when run independently; their `:artifact` variants reuse an already built artifact. Browser tests own their foreground preview server on port 4173 and refuse to reuse an existing server. Stop any server you own before running them.
 
 Essential protects source-access, unsafe-content, output-privacy and exact-release/deployment gates. The existing build verifier itself requires Chromium, including for essential. Presentation matrices and asset reproduction stay full-only. See [testing policy](../docs/testing.md) for classification, focused verification and the root essential/full commands.
