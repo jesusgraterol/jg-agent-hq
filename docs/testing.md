@@ -109,3 +109,13 @@ On 2026-11-04, for 12.0.0, the complete integration category, 544 cases across 3
 The essential native selection retains 323 of 338 unit cases and 543 of 544 integration cases. The essential integration selection passed in 230.84 seconds, with retries disabled. The 16 full-only native cases cover timestamps and extra history presentation examples; consequential integration families remain selected. Website essential selects 14 unit and 4 integration cases; complete categories retain 42 unit, 16 integration, and 26 browser E2E cases. The mixed output test was split without removing its privacy or image-dimension assertions.
 
 Changed-turn Codex recovery is essential: the real runtime, SQLite and native CLI boundary double verify automatic connection/startup rejoin of previously managed running and completed turns, unchanged earlier receipts and paused queues through a later matching reconnect, explicit queue-send, pending-submission exclusion and stable-turn verification. Repeat changed reconnect/startup scenarios three times without retries. Native turn IDs do not establish exclusive control; these fixtures do not qualify a real shared-daemon restart.
+
+## Package test lifecycle
+
+Tests consume built public exports. Unit tests cover application-owned decisions; integration tests use real temporary files, SQLite workers, IPC, child processes and an isolated tarball consumer. Synthetic CLIs replace only the external provider boundary. Every fixture removes its own resources. Production output excludes all test categories. `pnpm test` builds, then runs unit and integration suites. `pnpm check:package` is the task-completion check. Run changed integration files three consecutive times with retries disabled, using Vitest's `--repeats=2 --retry=0`.
+
+The website's README and `docs/website.md` define its build-once check composition, category-specific scripts and owned preview/browser lifecycle. Root and website checks must both pass for task completion when workspace configuration or canonical site content changes.
+
+The runtime fixture teardown is registered with the test runner as well as the callback, so a test timeout cannot restore environment variables during the next test.
+
+Current local checks establish the tested host only. Release qualification must include the Node engines floor and current LTS; macOS operation requires its own runtime evidence.

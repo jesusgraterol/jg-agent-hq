@@ -1,6 +1,6 @@
 # jg-agent-hq website
 
-The private Astro workspace serves the public package overview, root README and API reference. It has no application backend or provider/account access. Canonical documentation remains in the repository root and `api/README.md`.
+The private Astro workspace serves the public package overview, getting-started guide and API reference. It has no application backend or provider/account access. Canonical documentation lives in `docs/getting-started.md` and `api/README.md`. The root README is the repository overview/index.
 
 Run `pnpm install` from the repository root and `pnpm --dir website exec playwright install chromium`. Run `pnpm --dir website dev --ignore-lock` for foreground development. Restart development after editing canonical documents outside the website directory.
 

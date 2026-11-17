@@ -8,7 +8,7 @@ export type IMdastPlugin = Extract<
 
 // the exact two source documents that may enter the public website
 export const DOCUMENT_RECORDS = [
-  { id: 'getting-started', source: 'README.md' },
+  { id: 'getting-started', source: 'docs/getting-started.md' },
   { id: 'api', source: 'api/README.md' },
 ] as const;
 
