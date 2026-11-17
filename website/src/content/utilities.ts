@@ -42,6 +42,10 @@ export const resolveDocumentLink = (href: string, source: string): string => {
   if (
     ![
       'README.md',
+      'docs/getting-started.md',
+      'docs/development.md',
+      'docs/architecture.md',
+      'docs/testing.md',
       'api/README.md',
       'errors/README.md',
       'docs/recovery.md',
@@ -52,7 +56,7 @@ export const resolveDocumentLink = (href: string, source: string): string => {
     throw new Exception('The HQ website source is invalid', {
       code: 'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
     });
-  if (path === 'README.md') return `/docs/${url.hash}`;
+  if (path === 'docs/getting-started.md') return `/docs/${url.hash}`;
   if (path === 'api/README.md') return `/docs/api/${url.hash}`;
   const example = EXAMPLE_SOURCE_RECORDS.find((record) => record.source === path);
   if (example) return `/examples/#${example.id}`;
@@ -70,13 +74,13 @@ export const canonicalMarkdownPlugin: IMdastPlugin = {
   link: (node, context) => {
     const source = context.fileURL
       ? relative(REPOSITORY_ROOT, fileURLToPath(context.fileURL)).split(sep).join('/')
-      : 'README.md';
+      : 'docs/getting-started.md';
     context.setProperty(node, 'url', resolveDocumentLink(node.url, source));
   },
   definition: (node, context) => {
     const source = context.fileURL
       ? relative(REPOSITORY_ROOT, fileURLToPath(context.fileURL)).split(sep).join('/')
-      : 'README.md';
+      : 'docs/getting-started.md';
     context.setProperty(node, 'url', resolveDocumentLink(node.url, source));
   },
   image: () => {
@@ -140,7 +144,7 @@ export const readDocument = async (repositoryRoot: string, source: string): Prom
 };
 
 /**
- * Loads exactly the canonical README and API document, with one read and render each.
+ * Loads exactly the canonical getting-started guide and API document, with one read and render each.
  * @returns Astro's native content loader.
  * @throws
  * - JG_AGENT_HQ_WEBSITE_SOURCE_INVALID: The HQ website source is invalid

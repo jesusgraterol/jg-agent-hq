@@ -188,6 +188,9 @@ importers:
       '@types/node':
         specifier: 24.19.2
         version: 24.19.2
+      jg-plans:
+        specifier: 0.6.1
+        version: 0.6.1
       prettier:
         specifier: 3.4.2
         version: 3.4.2
@@ -1709,6 +1712,11 @@ packages:
     peerDependencies:
       tailwindcss: ^4.3.3
 
+  jg-plans@0.6.1:
+    resolution: {integrity: sha512-jlliFrcUMaDDrOiZtRwzdvqDXwTdPgPSi3dupCCU6TrmSL0WG1qXL5YuanjDwTVZDI8kbzeHZIaL+ZOQZa4PMQ==}
+    engines: {node: '>=24.15.0'}
+    hasBin: true
+
   jg-playwright@0.2.0:
     resolution: {integrity: sha512-WywX0texZg7QC4u6lqyoT7CMGXG8QdFbtT7deEa3+gTJe6PgIuEAbjp0h/S4YmzTmWWf6KLVf4wVlNCMhTS24Q==}
     engines: {node: '>=22.17.0'}
@@ -1721,6 +1729,10 @@ packages:
 
   jg-process@1.6.2:
     resolution: {integrity: sha512-Sb0C7C8f/3PPk/u9Viky74lXDvvEx09z2+l9O97G447lo27LjlUEpewmqLx6NAuU+F+WdNXdn759aRpsjfzgnA==}
+    engines: {node: '>=22.17.0'}
+
+  jg-process@1.7.0:
+    resolution: {integrity: sha512-U+hM01+3L6nf9EfTz7kp3Qo+5nrRZGXmbYOTE1Iw01Qz4mIFZxjG8+GAnIQnGnKK8bNLSDo38gQoj/vUeS0Q5Q==}
     engines: {node: '>=22.17.0'}
 
   jg-site@0.1.0:
@@ -4260,6 +4272,16 @@ snapshots:
       '@fontsource-variable/ubuntu-sans-mono': 5.3.0
       tailwindcss: 4.3.3
 
+  jg-plans@0.6.1:
+    dependencies:
+      jg-crypto: 0.3.0
+      jg-exception: 1.7.1
+      jg-fs: 1.7.0
+      jg-process: 1.7.0
+      jg-utilities: 1.8.0
+      yaml: 2.9.1
+      zod: 4.6.7
+
   jg-playwright@0.2.0(@axe-core/playwright@4.13.0(playwright-core@1.62.1))(@playwright/test@1.62.1):
     dependencies:
       '@playwright/test': 1.62.1
@@ -4268,6 +4290,11 @@ snapshots:
       '@axe-core/playwright': 4.13.0(playwright-core@1.62.1)
 
   jg-process@1.6.2:
+    dependencies:
+      jg-exception: 1.7.1
+      jg-utilities: 1.8.0
+
+  jg-process@1.7.0:
     dependencies:
       jg-exception: 1.7.1
       jg-utilities: 1.8.0

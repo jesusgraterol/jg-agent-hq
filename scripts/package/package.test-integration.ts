@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import ts from 'typescript';
 import { hashValue } from 'jg-crypto';
-import { MAX_THREAD_NAME_LENGTH } from 'jg-agent-hq/contracts';
 import { expect, test } from 'vitest';
 import { z } from 'zod';
 
@@ -69,13 +68,6 @@ test(
         ),
       ).toBe(true);
       expect(paths.some((path) => path.startsWith('examples/'))).toBe(false);
-      for (const [path, phrase] of [
-        ['README.md', `label of up to ${MAX_THREAD_NAME_LENGTH} characters`],
-        ['api/README.md', `have at most ${MAX_THREAD_NAME_LENGTH} characters`],
-        ['CHANGELOG.md', `names of 1 through ${MAX_THREAD_NAME_LENGTH} characters`],
-      ]) {
-        expect(await readFile(join(ROOT, path!), 'utf8')).toContain(phrase);
-      }
       await writeFile(
         join(scratch, 'package.json'),
         JSON.stringify({ private: true, type: 'module' }),

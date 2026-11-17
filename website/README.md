@@ -1,8 +1,10 @@
 # jg-agent-hq website
 
-The private Astro workspace serves the public package overview, root README and API reference. It has no application backend or provider/account access. Canonical documentation remains in the repository root and `api/README.md`.
+The private Astro workspace serves the public package overview, getting-started guide and API reference. It has no application backend or provider/account access. Canonical documentation lives in `docs/getting-started.md` and `api/README.md`. The root README is the repository overview/index.
 
 Run `pnpm install` from the repository root and `pnpm --dir website exec playwright install chromium`. Run `pnpm --dir website dev --ignore-lock` for foreground development. Restart development after editing canonical documents outside the website directory.
+
+Run root `pnpm build` before the focused homepage unit tests or a full website selection. Those tests validate advertised operations against the built public package contracts.
 
 `pnpm --dir website check` runs essential unit tests, Astro/TypeScript checks, lint, formatting, one production build with DOM verification, and essential artifact integration tests. `test` runs essential correctness coverage. `test:full` and `check:full` add ordinary content/asset cases and all production-browser journeys; full runs only on explicit local request. Granular unit, integration, E2E, and `:artifact` commands remain complete. The integration and E2E scripts build first when run independently; their `:artifact` variants reuse an already built artifact. Browser tests own their foreground preview server on port 4173 and refuse to reuse an existing server. Stop any server you own before running them.
 

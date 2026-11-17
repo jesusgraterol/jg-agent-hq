@@ -7,8 +7,13 @@ import { canonicalMarkdownPlugin, resolveDocumentLink } from './index.ts';
 
 describe('canonical source policy', () => {
   test.each([
-    ['api/README.md#claude-history', 'README.md', '/docs/api/#claude-history'],
-    ['../README.md', 'api/README.md', '/docs/'],
+    ['../api/README.md#claude-history', 'docs/getting-started.md', '/docs/api/#claude-history'],
+    ['../docs/getting-started.md', 'api/README.md', '/docs/'],
+    [
+      '../README.md',
+      'docs/getting-started.md',
+      'https://github.com/jesusgraterol/jg-agent-hq/blob/main/README.md',
+    ],
     ['#native-control', 'api/README.md', '#native-control'],
     [
       '../errors/README.md',
@@ -38,7 +43,7 @@ describe('canonical source policy', () => {
     '%2f%2fexample.com',
   ])('rejects unsafe URL %s', (href) => {
     expectToThrowCode(
-      () => resolveDocumentLink(href, 'README.md'),
+      () => resolveDocumentLink(href, 'docs/getting-started.md'),
       'JG_AGENT_HQ_WEBSITE_SOURCE_INVALID',
       'The HQ website source is invalid',
     );
@@ -67,7 +72,9 @@ describe('canonical source policy', () => {
       const processor = await createSatteriMarkdownProcessor({
         mdastPlugins: [canonicalMarkdownPlugin],
       });
-      const result = await processor.render('[API][api]\n\n[api]: api/README.md\n\n`<directory>`');
+      const result = await processor.render(
+        '[API][api]\n\n[api]: ../api/README.md\n\n`<directory>`',
+      );
       expect(result.code).toContain('href="/docs/api/"');
       expect(result.code).toContain('&lt;directory&gt;');
     },

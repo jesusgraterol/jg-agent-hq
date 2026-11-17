@@ -5,7 +5,7 @@ const DOCUMENTS = [
   {
     route: '/docs/',
     markdown: '/docs/index.md',
-    source: 'README.md',
+    source: 'docs/getting-started.md',
     heading: 'Installation',
     anchor: '#installation',
   },
