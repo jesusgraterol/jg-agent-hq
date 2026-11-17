@@ -1,5 +1,9 @@
 # Changelog
 
+## 13.5.7 — documentation navigation
+
+- Keep the package overview concise and route setup, runtime ownership and delivery details to their canonical guides. Runtime behavior and public APIs are unchanged.
+
 ## 13.5.6
 
 - Forward creation model, reasoning effort, Fast mode and output schema to the session's first turn for Codex and Claude. Keep startup-only settings on session creation, and preserve the same action identity and input admission checks.
