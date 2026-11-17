@@ -19,7 +19,7 @@
     "test:integration:artifact": "vitest run --config vitest/test-integration.config.ts",
     "test:e2e": "pnpm build && pnpm test:e2e:artifact",
     "test:e2e:artifact": "playwright test",
-    "typecheck": "astro check",
+    "typecheck": "pnpm --dir .. build && astro check",
     "lint": "eslint astro.config.ts eslint.config.js playwright.config.ts scripts src vitest",
     "format": "prettier --write --config .prettierrc .",
     "format:check": "prettier --check --config .prettierrc .",
