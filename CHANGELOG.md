@@ -1,5 +1,9 @@
 # Changelog
 
+## 13.5.8
+
+- Keep informational Codex messages in the transcript and out of question observers when their async delivery carries no questions. Preserve validation for question bundles.
+
 ## 13.5.7 — documentation navigation
 
 - Keep the package overview concise and route setup, runtime ownership and delivery details to their canonical guides. Runtime behavior and public APIs are unchanged.

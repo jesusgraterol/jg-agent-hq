@@ -35,8 +35,25 @@ test('explicit asynchronous questions retain their ordered native contract', () 
   });
 });
 
+test.each([{}, { questions: null }])(
+  'asynchronous notices with question fields %o retain their text without question metadata',
+  (questionFields) => {
+    const item = toHistoryItem({
+      turnId: 'turn',
+      item: {
+        id: 'notice',
+        type: 'agentMessage',
+        delivery: 'async',
+        text: 'The checks are running.',
+        ...questionFields,
+      },
+    });
+    expect(item).toMatchObject({ kind: 'agent-message', text: 'The checks are running.' });
+    expect(item).not.toHaveProperty('asyncInput');
+  },
+);
+
 test.each([
-  [undefined, 'invalid'],
   [[], 'invalid'],
   [[{ title: '' }], 'invalid'],
   [[{ title: 'x'.repeat(8193) }], 'invalid'],

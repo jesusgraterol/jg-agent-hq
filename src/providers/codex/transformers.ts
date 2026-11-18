@@ -125,9 +125,10 @@ const NativeAsyncQuestionSchema = AsyncQuestionSchema.extend({
   options: AsyncQuestionSchema.shape.options.nullable(),
 }).transform(({ options, ...question }) => (options == null ? question : { ...question, options }));
 
-/** Preserves explicit async delivery even when its structured presentation cannot be trusted. */
+/** Normalizes async question bundles and leaves informational notices as transcript messages. */
 const toAsyncInput = (item: INativeItem['item']): IAsyncInput | undefined => {
-  if (item.type !== 'agentMessage' || item.delivery !== 'async') return undefined;
+  if (item.type !== 'agentMessage' || item.delivery !== 'async' || item.questions == null)
+    return undefined;
   const questions = z.array(NativeAsyncQuestionSchema).min(1).max(32).safeParse(item.questions);
   if (!questions.success) return { delivery: 'async', state: 'unavailable', reason: 'invalid' };
   const input = AsyncInputSchema.safeParse({
@@ -267,6 +268,7 @@ export const toHistoryItem = (
   let end = fullBody ? text.length : Math.min(text.length, MAX_ITEM_TEXT_LENGTH);
   const last = text.charCodeAt(end - 1);
   if (end < text.length && last >= 0xd800 && last <= 0xdbff) end -= 1;
+  const asyncInput = toAsyncInput(item);
   return parseNative(HistoryItemSchema, {
     nativeId: item.id,
     turnId,
@@ -279,9 +281,7 @@ export const toHistoryItem = (
     ),
     text: text.slice(0, end),
     isTruncated: end < text.length,
-    ...(item.type === 'agentMessage' && item.delivery === 'async'
-      ? { asyncInput: toAsyncInput(item) }
-      : {}),
+    ...(asyncInput ? { asyncInput } : {}),
     // a Codex item holds its call and its result together
     callId: null,
     outcome,
