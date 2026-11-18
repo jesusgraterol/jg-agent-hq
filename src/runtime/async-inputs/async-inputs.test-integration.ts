@@ -75,10 +75,17 @@ test('trusted async observations preserve controlled identity and saved/live/det
       completedAtMs: 1_800_000_001_123,
       item,
     };
+    const notice = {
+      id: 'notice',
+      type: 'agentMessage',
+      delivery: 'async',
+      text: 'The checks are running.',
+    };
     await writeFixtureControl(fixture.root, 'control.json', {
       emitOnce: true,
       emit: [
         { method: 'item/completed', params: { ...target, threadId: 'external-session' } },
+        { method: 'item/completed', params: { ...target, item: notice } },
         { method: 'item/started', params: target },
         { method: 'item/completed', params: target },
       ],
@@ -113,6 +120,9 @@ test('trusted async observations preserve controlled identity and saved/live/det
       reason: 'listener-failed',
     });
     const live = await fixture.request({ kind: 'live-items', threadId });
+    const liveNotice = live.result.data.find((entry) => entry.nativeId === notice.id);
+    expect(liveNotice).toMatchObject({ text: notice.text });
+    expect(liveNotice).not.toHaveProperty('asyncInput');
     expect(live.result.data.find((entry) => entry.nativeId === item.id)?.asyncInput).toStrictEqual(
       observed.item.asyncInput,
     );
