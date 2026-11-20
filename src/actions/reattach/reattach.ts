@@ -73,6 +73,8 @@ export const createReattach = (
       if (bound?.thread?.ownership !== 'managed' || bound.thread.runtimeEpoch !== epoch) return;
       own(thread.provider, nativeId);
       isOwned = true;
+      const liveKey = key(thread.provider, nativeId);
+      const owner = context.controlled.get(liveKey);
       const joined = await control.reattachThread(
         `${randomUUID()}:reattach`,
         nativeId,
@@ -81,7 +83,34 @@ export const createReattach = (
       assertKnownTurn(joined);
       const turnId = bound.thread.activeTurnId;
       const latest = joined.latestTurn;
-      if ((latest?.nativeId ?? null) !== (read.latestTurn?.nativeId ?? null)) agentUnavailable();
+      if ((latest?.nativeId ?? null) !== (read.latestTurn?.nativeId ?? null)) {
+        if (!latest) agentUnavailable();
+        // Codex can interrupt the old turn and start its recovery while the join is in flight.
+        // Accept only the transition this same controller already recorded, without replaying it.
+        await state.lane;
+        const current = await store.call('reads', 'getThread', thread.id);
+        const recorded = await store.call('reads', 'getTurnRecord', thread.provider, nativeId);
+        const hasObservedTurn =
+          latest.state === 'running'
+            ? current?.activeTurnId === latest.nativeId &&
+              recorded?.activeTurnId === latest.nativeId
+            : current?.activeTurnId === null &&
+              current.state === latest.state &&
+              recorded?.lastTurnId === latest.nativeId;
+        if (
+          state.isClosing ||
+          state.isUnavailable ||
+          context.blockedProviders.has(thread.provider) ||
+          context.controlled.get(liveKey) !== owner ||
+          current?.ownership !== 'managed' ||
+          current.runtimeEpoch !== epoch ||
+          current.nativeId !== nativeId ||
+          recorded?.hasPendingAction !== false ||
+          !hasObservedTurn
+        )
+          agentUnavailable();
+        return;
+      }
       if (turnId && latest?.nativeId === turnId && latest.state !== 'running') {
         const { state: turnState } = latest;
         live.completeTurn(key(thread.provider, nativeId), turnId);

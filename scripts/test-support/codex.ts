@@ -167,10 +167,11 @@ else {
       respond(request.id,{thread,model:thread.model,reasoningEffort:thread.reasoningEffort,serviceTier:tiers.get(thread.id),approvalPolicy:params.approvalPolicy??'on-request',sandbox:{type:params.sandbox??'read-only'},instructionSources:[]});return;
     }
     if (method === 'thread/resume') {
-      if (control.resumeTurns) writeFileSync(join(directory,'control.json'),JSON.stringify({...control,threadTurns:control.resumeTurns,resumeTurns:undefined}));
+      if (control.resumeTurns) writeFileSync(join(directory,'control.json'),JSON.stringify({...control,threadTurns:control.resumeTurns,threadStatuses:control.resumeStatuses??control.threadStatuses,resumeTurns:undefined,resumeStatuses:undefined}));
+      if (control.resumeEmit) for (const event of control.resumeEmit) notify(event.method,event.params);
       const thread = managed.get(params.threadId) || { ...threads[0],id:params.threadId,activeTurn:null };
       // a session another runtime left running keeps its status and running turn when joined again
-      thread.status = control.threadStatuses?.[params.threadId] ?? {type:'idle'};thread.model=params.model??thread.model;thread.reasoningEffort=params.config?.model_reasoning_effort??thread.reasoningEffort; managed.set(thread.id,thread);
+      thread.status = control.resumeStatuses?.[params.threadId] ?? control.threadStatuses?.[params.threadId] ?? {type:'idle'};thread.model=params.model??thread.model;thread.reasoningEffort=params.config?.model_reasoning_effort??thread.reasoningEffort; managed.set(thread.id,thread);
       if (params.serviceTier != null || !tiers.has(thread.id)) tiers.set(thread.id,params.serviceTier??null);
       if (thread.status.type === 'active') thread.activeTurn = control.threadTurns?.[thread.id]?.at(-1)?.id ?? thread.activeTurn;
       respond(request.id,{thread,model:thread.model,reasoningEffort:thread.reasoningEffort,serviceTier:tiers.get(thread.id),approvalPolicy:params.approvalPolicy??'on-request',sandbox:{type:params.sandbox??'read-only'},instructionSources:[]});
