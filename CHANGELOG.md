@@ -1,5 +1,10 @@
 # Changelog
 
+## 13.5.10
+
+- Keep Claude control when a valid result arrives without a user-message UUID and without an active turn. Empty cycles produce no live turn or completion notice, and any input still waiting for replay completes under its own identity.
+- Include bounded result-shape metadata in empty-cycle and rejection diagnostics. Malformed results and conflicting turn or input evidence still quarantine the controller.
+
 ## 13.5.9
 
 - Retain Codex control when the same controller records a valid native recovery turn while rejoining after a connection loss or runtime restart. Reconcile the observed turn instead of quarantining it against the pre-join snapshot.

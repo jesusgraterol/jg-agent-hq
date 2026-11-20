@@ -1022,6 +1022,136 @@ test('a constructed Claude stream interpretation mismatch preserves its process 
   });
 });
 
+test('repeated Claude empty cycles keep managed control and leave the live window quiet', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create('empty-cycle');
+    const [pid] = await readPids(fixture);
+    const liveItems = async () => {
+      const response = await fixture.request({ kind: 'live-items', threadId: thread.id });
+      if (response.kind !== 'live-items') throw new Error('Missing live window');
+      return response.result;
+    };
+    const states = async (afterSequence?: number) => {
+      const response = await fixture.request({ kind: 'session-states', afterSequence });
+      if (response.kind !== 'session-states') throw new Error('Missing transitions');
+      return response.result;
+    };
+    const before = await liveItems();
+    const { latestSequence } = await states();
+    const notice = {
+      type: 'user',
+      queueTranscriptOnly: true,
+      promptSource: 'system',
+      message: {
+        role: 'user',
+        content: '<task-notification>Waiting on background work</task-notification>',
+      },
+    };
+    const empty = { type: 'result', subtype: 'success', is_error: false, num_turns: 0 };
+    await fixture.control({
+      frameBatch: {
+        id: randomUUID(),
+        nativeId: thread.nativeId!,
+        frames: [
+          { ...notice, uuid: randomUUID() },
+          empty,
+          { ...notice, uuid: randomUUID() },
+          empty,
+          // a background revision proves that both results have passed through the controller
+          { type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'barrier' }] },
+        ],
+      },
+    });
+    await expect.poll(async () => (await liveItems()).backgroundCommands).toBe(1);
+    expect(await api.thread(thread.id)).toMatchObject({
+      ownership: 'managed',
+      state: 'idle',
+      activeTurnId: null,
+    });
+    expect(await liveItems()).toMatchObject({
+      data: before.data,
+      hasGap: before.hasGap,
+      revision: before.revision + 1,
+    });
+    expect((await states(latestSequence)).data).toStrictEqual([]);
+    const active = await fixture.request({ kind: 'active-sessions' });
+    if (active.kind !== 'active-sessions') throw new Error('Missing active sessions');
+    expect(active.result.data.find((session) => session.managedId === thread.id)).toMatchObject({
+      state: 'idle',
+      backgroundCommands: 1,
+    });
+    expect(isRunning(-pid!)).toBe(true);
+    await fixture.control({});
+    const input = await api.message(thread.id);
+    await expect
+      .poll(() => api.receipt(input.id))
+      .toMatchObject({
+        delivery: 'acknowledged',
+        completion: 'completed',
+      });
+    expect(await api.thread(thread.id)).toMatchObject({
+      nativeId: thread.nativeId,
+      ownership: 'managed',
+    });
+  });
+});
+
+test.each([
+  'input-mismatch',
+  'invalid-result',
+  'missing-input-uuid',
+  'native-turn-replay',
+] as const)('Claude still quarantines conflicting turn evidence: %s', async (conflict) => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture);
+    const { thread } = await api.create('result-conflict');
+    const [pid] = await readPids(fixture);
+    const result = { type: 'result', subtype: 'success', is_error: false };
+    let frames: object[];
+    switch (conflict) {
+      case 'input-mismatch':
+        frames = [{ ...result, user_message_uuid: randomUUID() }];
+        break;
+      case 'invalid-result':
+        frames = [{ ...result, is_error: 'invalid' }];
+        break;
+      case 'missing-input-uuid': {
+        await fixture.control({ holdTurn: true });
+        const input = await api.message(thread.id);
+        await api.settled(input.id);
+        frames = [result];
+        break;
+      }
+      case 'native-turn-replay': {
+        await fixture.control({ holdReplay: true });
+        await api.message(thread.id);
+        const uuid = await api.until(
+          async () => (await api.calls()).find((call) => call.type === 'user')?.uuid,
+          (id) => id !== undefined,
+        );
+        frames = [
+          { type: 'stream_event', event: { type: 'message_start', message: { id: 'native' } } },
+          { type: 'user', uuid, message: { role: 'user', content: 'Please inspect this example' } },
+        ];
+        break;
+      }
+    }
+    await fixture.control({
+      holdTurn: true,
+      holdReplay: true,
+      frameBatch: { id: randomUUID(), nativeId: thread.nativeId!, frames },
+    });
+    await expect
+      .poll(() => api.thread(thread.id))
+      .toMatchObject({
+        state: 'unknown',
+        ownership: 'uncertain',
+      });
+    expect(isRunning(-pid!)).toBe(true);
+  });
+});
+
 test('a constructed conflicting Claude observation quarantines only its controller and keeps both processes alive', async () => {
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture);
@@ -1271,7 +1401,14 @@ test('Claude quarantine leaves a held settings response unanswered and a later r
         frameBatch: {
           id: randomUUID(),
           nativeId: thread.nativeId,
-          frames: [{ type: 'result', subtype: 'success', is_error: false }],
+          frames: [
+            {
+              type: 'result',
+              subtype: 'success',
+              is_error: false,
+              user_message_uuid: randomUUID(),
+            },
+          ],
         },
       });
       await expect
@@ -1940,7 +2077,14 @@ test('late Claude interpretation loss during an admitted healthy close cannot st
         frameBatch: {
           id: batch,
           nativeId: left.nativeId,
-          frames: [{ type: 'result', subtype: 'success', is_error: false }],
+          frames: [
+            {
+              type: 'result',
+              subtype: 'success',
+              is_error: false,
+              user_message_uuid: randomUUID(),
+            },
+          ],
         },
       });
       await expect

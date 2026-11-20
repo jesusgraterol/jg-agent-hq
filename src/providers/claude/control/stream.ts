@@ -16,7 +16,7 @@ import type {
   IClaudeTurn,
 } from './types.js';
 import { createClaudePrompt } from './permissions.js';
-import { reportRejectedClaudeResult } from './diagnostics.js';
+import { reportEmptyClaudeCycle, reportRejectedClaudeResult } from './diagnostics.js';
 
 const FrameSchema = z.object({
   type: z.string(),
@@ -312,9 +312,9 @@ const resolveRequests = (
 };
 
 /**
- * Normalizes native stream evidence without retaining another conversation buffer. A turn frame
- * that arrives while no turn is active, and isn't the waiting input's replay, starts a turn of
- * Claude's own; frames then belong to the active turn until its result.
+ * Normalizes native stream evidence without retaining another conversation buffer. Autonomous
+ * output starts a native turn, and a valid UUID-free result with no active turn ends an empty
+ * cycle without publishing a turn or acknowledging input still waiting for replay.
  * @throws
  * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
  */
@@ -445,6 +445,13 @@ export const receiveClaudeMessage = (
     }
     const result = parsedResult.data;
     observeFastMode(session, raw);
+    if (result.user_message_uuid === undefined && getActiveTurn(session) === undefined) {
+      // an empty cycle never started a turn, so the waiting input and idle steer deadline still apply
+      delete session.apiMessageId;
+      endTurn(session, events);
+      reportEmptyClaudeCycle(session, raw);
+      return;
+    }
     // a turn Claude started, or one a steer runs after its turn, has no action to capture its result
     if (
       result.user_message_uuid === undefined ||
@@ -453,7 +460,7 @@ export const receiveClaudeMessage = (
     ) {
       const turn = session.nativeTurn;
       if (!turn) {
-        reportRejectedClaudeResult(session, result, 'no-active-turn');
+        reportRejectedClaudeResult(session, raw, 'missing-input-uuid');
         unavailable();
       }
       if (result.user_message_uuid !== undefined)
@@ -472,7 +479,7 @@ export const receiveClaudeMessage = (
     }
     const input = session.input;
     if (!input || input.id !== result.user_message_uuid || session.nativeTurn) {
-      reportRejectedClaudeResult(session, result, 'input-mismatch');
+      reportRejectedClaudeResult(session, raw, 'input-mismatch');
       unavailable();
     }
     acknowledge(session, events);
