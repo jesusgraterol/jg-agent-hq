@@ -157,7 +157,7 @@ export const startClaudeControl = () => {
      const body={effective:{model,effortLevel:'stale-effort',agent:flag('--agent'),...(fast===null?{}:{fastMode:fast}),secret:'must-not-leak'},applied:settings.unavailableSettings?{model:null,effort:null}:{model,effort}};
      if(control().mismatchAfterSettings)process.stdout.write([
       {type:'control_response',response:{subtype:'success',request_id:message.request_id,response:body}},
-      {type:'result',subtype:'success',is_error:false}
+      {type:'result',subtype:'success',is_error:false,user_message_uuid:randomUUID()}
      ].map(frame=>JSON.stringify({...frame,session_id:id})).join('\n')+'\n');
      else response(body);
     };

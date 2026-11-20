@@ -50,49 +50,45 @@ const createEvents = () => {
 };
 const streamEvent = (event: unknown) => ({ type: 'stream_event', session_id: 'session', event });
 
-test('a constructed peer handback, result, dequeue and transcript-only notification candidate creates no phantom turn', () => {
+test('transcript-only task notifications and their repeated empty results leave no live turn', () => {
   const session = createSession();
   clearTimeout(session.input!.timer);
   session.input = undefined;
-  const { events } = createEvents();
-  const transitions: string[] = [];
-  events.observe = (observation) => {
-    transitions.push(observation.kind);
-  };
-  // transcript metadata informed this candidate; the original rejected live frame was not retained
-  for (const frame of [
-    {
-      type: 'assistant',
-      uuid: 'peer-handback',
-      origin: { kind: 'peer' },
-      message: { role: 'assistant', content: [{ type: 'text', text: 'Background task finished' }] },
-    },
-    { type: 'result', subtype: 'success', is_error: false },
-    { type: 'queue-operation', operation: 'dequeue' },
-    {
-      type: 'user',
-      uuid: 'task-notification',
-      queueTranscriptOnly: true,
-      isSynthetic: true,
-      origin: { kind: 'task-notification', taskId: 'same-task' },
-      message: {
-        role: 'user',
-        content: '<task-notification>Background task finished</task-notification>',
-      },
-    },
-    {
-      type: 'assistant',
-      uuid: 'sidechain-message',
-      parent_tool_use_id: 'agent-tool',
-      message: { role: 'assistant', content: [{ type: 'text', text: 'Sidechain output' }] },
-      additive: { version: 'future' },
-    },
-    { type: 'system', subtype: 'background_tasks_changed', tasks: [], additive: true },
-  ])
-    receiveClaudeMessage(session, { ...frame, session_id: session.id }, events);
-  expect(transitions).toStrictEqual(['turn-started', 'turn-completed']);
-  expect(session.nativeTurn).toBeUndefined();
-  expect(session.backgroundTaskCount).toBe(0);
+  session.backgroundTaskCount = 1;
+  session.apiMessageId = 'previous-message';
+  const { events, items } = createEvents();
+  const observe = vi.spyOn(events, 'observe');
+  const diagnostic = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    for (const uuid of ['first-notice', 'repeat-notice']) {
+      receiveClaudeMessage(
+        session,
+        {
+          ...userFrame(uuid, '<task-notification>Waiting on background work</task-notification>'),
+          queueTranscriptOnly: true,
+          promptSource: 'system',
+        },
+        events,
+      );
+      receiveClaudeMessage(session, emptyResult, events);
+    }
+    expect(observe).not.toHaveBeenCalled();
+    expect(items).toStrictEqual([]);
+    expect(session.nativeTurn).toBeUndefined();
+    expect(session.apiMessageId).toBeUndefined();
+    expect(session.backgroundTaskCount).toBe(1);
+    expect(diagnostic).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(diagnostic.mock.calls[0]![1])).toMatchObject({
+      subtype: 'success',
+      isError: false,
+      numTurns: 0,
+      hasUserMessageUuid: false,
+      hasDurationApiMs: true,
+      hasUsage: true,
+    });
+  } finally {
+    diagnostic.mockRestore();
+  }
 });
 
 afterEach(() => {
@@ -325,18 +321,52 @@ test('an MCP tool request prompts for approval and writes nothing', async () => 
   expect(prompts).toHaveLength(1);
 });
 
-test("a result without a user message while no turn of Claude's own runs makes the session unavailable", () => {
+test('a UUID-free result during an acknowledged HQ input makes the session unavailable', () => {
+  const session = createSession();
+  clearTimeout(session.input!.timer);
   const { events } = createEvents();
   expectToThrowCode(
-    () =>
-      receiveClaudeMessage(
-        { ...createSession(), input: undefined },
-        { type: 'result', session_id: 'session', subtype: 'success', is_error: false },
-        events,
-      ),
+    () => receiveClaudeMessage(session, emptyResult, events),
     'JG_AGENT_HQ_CLAUDE_FAILED',
     'The Claude integration failed',
   );
+});
+
+test('an empty result before replay leaves the waiting input to complete its own turn', () => {
+  const session = createSession();
+  const input = session.input!;
+  input.id = INPUT;
+  input.isAcknowledged = false;
+  input.resolve = vi.fn();
+  const { events, items } = createEvents();
+  const observe = vi.spyOn(events, 'observe');
+  const diagnostic = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    receiveClaudeMessage(session, emptyResult, events);
+    expect(session.input).toBe(input);
+    expect(input.isAcknowledged).toBe(false);
+    expect(input.resolve).not.toHaveBeenCalled();
+    expect(observe).not.toHaveBeenCalled();
+    expect(items).toStrictEqual([]);
+
+    receiveClaudeMessage(session, userFrame(INPUT, 'The actual request'), events);
+    receiveClaudeMessage(session, resultFrame(INPUT), events);
+    expect(input.resolve).toHaveBeenCalledExactlyOnceWith({ id: INPUT });
+    expect(observe.mock.calls.map(([event]) => event)).toEqual([
+      expect.objectContaining({ kind: 'turn-started', nativeTurnId: INPUT }),
+      expect.objectContaining({
+        kind: 'turn-completed',
+        nativeTurnId: INPUT,
+        state: 'completed',
+        result: expect.objectContaining({ text: 'Done' }),
+      }),
+    ]);
+    expect(items.map(({ item }) => item.text)).toStrictEqual(['The actual request']);
+    expect(session.input).toBeUndefined();
+  } finally {
+    clearTimeout(input.timer);
+    diagnostic.mockRestore();
+  }
 });
 
 test.each([
@@ -534,6 +564,15 @@ const userFrame = (uuid: string, content: unknown) => ({
   uuid,
   message: { role: 'user', content },
 });
+const emptyResult = {
+  type: 'result',
+  session_id: 'session',
+  subtype: 'success',
+  is_error: false,
+  num_turns: 0,
+  duration_api_ms: 0,
+  usage: { input_tokens: 0, output_tokens: 0 },
+};
 const resultFrame = (userMessageUuid: string) => ({
   type: 'result',
   session_id: 'session',
@@ -831,7 +870,15 @@ test('result rejection diagnostics contain bounded UUID metadata without native 
       () =>
         receiveClaudeMessage(
           session,
-          { ...resultFrame(STEER), result: 'PRIVATE_NATIVE_BODY', secret: 'PRIVATE_TOKEN' },
+          {
+            ...resultFrame(STEER),
+            subtype: 'PRIVATE_SUBTYPE',
+            result: 'PRIVATE_NATIVE_BODY',
+            num_turns: 12,
+            duration_api_ms: 42,
+            usage: { extra: 'PRIVATE_USAGE' },
+            secret: 'PRIVATE_TOKEN',
+          },
           events,
         ),
       'JG_AGENT_HQ_CLAUDE_FAILED',
@@ -842,14 +889,44 @@ test('result rejection diagnostics contain bounded UUID metadata without native 
       pendingSteerIds: string[];
       pendingSteerCount: number;
     };
-    expect(diagnostic.reason).toBe('input-mismatch');
-    expect(diagnostic.userMessageUuid).toBe(STEER);
+    expect(diagnostic).toMatchObject({
+      reason: 'input-mismatch',
+      userMessageUuid: STEER,
+      hasUserMessageUuid: true,
+      subtype: null,
+      subtypeFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+      isError: false,
+      numTurns: 12,
+      hasDurationApiMs: true,
+      hasUsage: true,
+    });
     expect(diagnostic.pendingSteerIds).toHaveLength(64);
     expect(diagnostic.pendingSteerCount).toBe(256);
     expect(JSON.stringify(spy.mock.calls)).not.toContain('PRIVATE_');
   } finally {
     spy.mockRestore();
     failSteers(session);
+  }
+});
+
+test('an empty result preserves the continuous idle deadline and exact steer replays', () => {
+  vi.useFakeTimers();
+  const session = createSession();
+  const { events } = createEvents();
+  const settled = addSteer(session);
+  const replayed = '55555555-5555-4555-8555-555555555555';
+  session.replayedSteers = new Set([replayed]);
+  receiveClaudeMessage(session, resultFrame(INPUT), events);
+  const diagnostic = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    vi.advanceTimersByTime(29_999);
+    receiveClaudeMessage(session, emptyResult, events);
+    expect(settled).toStrictEqual({});
+    expect(session.replayedSteers).toStrictEqual(new Set([replayed]));
+    vi.advanceTimersByTime(1);
+    expect(settled.error).toMatchObject({ code: 'JG_AGENT_HQ_CLAUDE_FAILED' });
+  } finally {
+    diagnostic.mockRestore();
   }
 });
 
