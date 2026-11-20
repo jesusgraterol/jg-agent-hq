@@ -1,5 +1,10 @@
 # Changelog
 
+## 13.5.9
+
+- Retain Codex control when the same controller records a valid native recovery turn while rejoining after a connection loss or runtime restart. Reconcile the observed turn instead of quarantining it against the pre-join snapshot.
+- Keep unverified and overlapping turn changes quarantined, earlier receipts unchanged and queued input paused, without repeating input, settings or native joins.
+
 ## 13.5.8
 
 - Keep informational Codex messages in the transcript and out of question observers when their async delivery carries no questions. Preserve validation for question bundles.

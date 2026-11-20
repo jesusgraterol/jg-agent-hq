@@ -3619,30 +3619,181 @@ test.each([
   },
 );
 
-test('Codex reconnect quarantines a turn that changes while its subscription is rejoined', async () => {
-  const fixture = await setup();
-  try {
-    const running = await startHeldTurn(fixture, 'reconnect-join-race');
-    await fixture.control({
-      ...reads(running.nativeId, { type: 'active', activeFlags: [] }, running.turnId, 'inProgress'),
-      disconnectOnce: true,
-      resumeTurns: { [running.nativeId]: [{ id: 'new-turn-during-join', status: 'inProgress' }] },
-    });
-    await fixture.request({ kind: 'usage', provider: 'codex' });
-    await expect
-      .poll(
-        async () =>
-          (await fixture.calls()).filter((call) => call.method === 'thread/resume').length,
-      )
-      .toBe(1);
-    await expect
-      .poll(async () => (await fixture.thread(running.thread.id)).ownership)
-      .toBe('uncertain');
-    expect((await fixture.calls()).filter((call) => call.method === 'turn/start')).toHaveLength(1);
-  } finally {
-    await fixture.close();
-  }
-});
+test.each([
+  ['running', 'active'],
+  ['running', 'idle'],
+  ['completed', 'active'],
+  ['completed', 'idle'],
+] as const)(
+  'Codex reconnect preserves an observed %s recovery turn after reading %s during its join',
+  async (state, initialStatus) => {
+    const fixture = await setup();
+    try {
+      const running = await startHeldTurn(fixture, 'reconnect-observed-recovery');
+      const queued = fixture.envelope({
+        kind: 'queue',
+        threadId: running.thread.id,
+        expectedTurnId: running.turnId,
+        input: { kind: 'text', text: 'Keep the interrupted turn input paused' },
+      });
+      await fixture.submit(queued);
+      const recoveredTurnId = 'observed-daemon-recovery';
+      const nativeStatus = state === 'running' ? 'inProgress' : 'completed';
+      await fixture.control({
+        ...reads(
+          running.nativeId,
+          initialStatus === 'active' ? { type: 'active', activeFlags: [] } : { type: 'idle' },
+          running.turnId,
+          'inProgress',
+        ),
+        disconnectOnce: true,
+        resumeTurns: { [running.nativeId]: [{ id: recoveredTurnId, status: nativeStatus }] },
+        resumeStatuses: {
+          [running.nativeId]:
+            state === 'running' ? { type: 'active', activeFlags: [] } : { type: 'idle' },
+        },
+        resumeEmit: [
+          {
+            method: 'turn/completed',
+            params: {
+              threadId: running.nativeId,
+              turn: { id: running.turnId, status: 'interrupted' },
+            },
+          },
+          {
+            method: 'turn/started',
+            params: {
+              threadId: running.nativeId,
+              turn: { id: recoveredTurnId, status: 'inProgress' },
+            },
+          },
+          ...(state === 'completed'
+            ? [
+                {
+                  method: 'turn/completed',
+                  params: {
+                    threadId: running.nativeId,
+                    turn: { id: recoveredTurnId, status: 'completed' },
+                  },
+                },
+              ]
+            : []),
+        ],
+      });
+      await fixture.request({ kind: 'usage', provider: 'codex' });
+      await expect
+        .poll(
+          async () =>
+            (await fixture.calls()).filter((call) => call.method === 'thread/resume').length,
+        )
+        .toBe(1);
+      // wait for native completion evidence instead of accepting the early control bind
+      await expect
+        .poll(async () => (await fixture.receipt(running.message.id)).completion)
+        .toBe('interrupted');
+      await expect
+        .poll(async () => fixture.thread(running.thread.id))
+        .toMatchObject({
+          ownership: 'managed',
+          state,
+          activeTurnId: state === 'running' ? recoveredTurnId : null,
+        });
+      expect(await fixture.receipt(queued.id)).toMatchObject({ delivery: 'queued' });
+      expect((await fixture.calls()).filter((call) => call.method === 'turn/start')).toHaveLength(
+        1,
+      );
+      expect(
+        (await fixture.calls())
+          .filter((call) => call.method === 'thread/resume')
+          .map((call) => call.params),
+      ).toStrictEqual([{ threadId: running.nativeId, excludeTurns: true }]);
+
+      if (state === 'running')
+        await emit(
+          fixture,
+          reads(running.nativeId, { type: 'idle' }, recoveredTurnId, 'completed'),
+          [
+            {
+              method: 'turn/completed',
+              params: {
+                threadId: running.nativeId,
+                turn: { id: recoveredTurnId, status: 'completed' },
+              },
+            },
+          ],
+        );
+      await expect
+        .poll(async () => (await fixture.thread(running.thread.id)).state)
+        .toBe('completed');
+      expect(await fixture.receipt(running.message.id)).toMatchObject({
+        completion: 'interrupted',
+      });
+      expect(await fixture.receipt(queued.id)).toMatchObject({ delivery: 'queued' });
+      await fixture.control({ turnPrefix: 'after-recovery-' });
+      const next = fixture.envelope({
+        kind: 'message',
+        threadId: running.thread.id,
+        input: { kind: 'text', text: 'Continue under the existing HQ control' },
+      });
+      await fixture.submit(next);
+      await expect.poll(async () => (await fixture.receipt(next.id)).completion).toBe('completed');
+      expect(await fixture.thread(running.thread.id)).toMatchObject({ ownership: 'managed' });
+      expect(await fixture.receipt(queued.id)).toMatchObject({ delivery: 'queued' });
+      expect((await fixture.calls()).filter((call) => call.method === 'turn/start')).toHaveLength(
+        2,
+      );
+    } finally {
+      await fixture.close();
+    }
+  },
+);
+
+test.each(['unobserved', 'overlapping'] as const)(
+  'Codex reconnect quarantines an %s turn change during its join',
+  async (observation) => {
+    const fixture = await setup();
+    try {
+      const running = await startHeldTurn(fixture, 'reconnect-join-race');
+      await fixture.control({
+        ...reads(
+          running.nativeId,
+          { type: 'active', activeFlags: [] },
+          running.turnId,
+          'inProgress',
+        ),
+        disconnectOnce: true,
+        resumeTurns: { [running.nativeId]: [{ id: 'new-turn-during-join', status: 'inProgress' }] },
+        resumeEmit:
+          observation === 'overlapping'
+            ? [
+                {
+                  method: 'turn/started',
+                  params: {
+                    threadId: running.nativeId,
+                    turn: { id: 'new-turn-during-join', status: 'inProgress' },
+                  },
+                },
+              ]
+            : [],
+      });
+      await fixture.request({ kind: 'usage', provider: 'codex' });
+      await expect
+        .poll(
+          async () =>
+            (await fixture.calls()).filter((call) => call.method === 'thread/resume').length,
+        )
+        .toBe(1);
+      await expect
+        .poll(async () => (await fixture.thread(running.thread.id)).ownership)
+        .toBe('uncertain');
+      expect((await fixture.calls()).filter((call) => call.method === 'turn/start')).toHaveLength(
+        1,
+      );
+    } finally {
+      await fixture.close();
+    }
+  },
+);
 
 test.each([
   ['identical', false],
