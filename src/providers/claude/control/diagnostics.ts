@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { hashValue } from 'jg-crypto';
 import { z } from 'zod';
 
 import type { IClaudeSession } from './types.js';
@@ -57,7 +57,7 @@ const describeResult = (session: IClaudeSession, result: unknown) => {
     subtype: knownSubtype.success ? knownSubtype.data : null,
     subtypeFingerprint:
       !knownSubtype.success && typeof subtype === 'string' && subtype.length <= 64
-        ? createHash('sha256').update(subtype).digest('hex')
+        ? hashValue(subtype, 'sha256')
         : null,
     isError: typeof metadata?.is_error === 'boolean' ? metadata.is_error : null,
     numTurns: TurnCountSchema.safeParse(metadata?.num_turns).data ?? null,

@@ -872,7 +872,7 @@ test('result rejection diagnostics contain bounded UUID metadata without native 
           session,
           {
             ...resultFrame(STEER),
-            subtype: 'PRIVATE_SUBTYPE',
+            subtype: 'PRIVATE_SUBTYPE_é🔐−短',
             result: 'PRIVATE_NATIVE_BODY',
             num_turns: 12,
             duration_api_ms: 42,
@@ -894,7 +894,7 @@ test('result rejection diagnostics contain bounded UUID metadata without native 
       userMessageUuid: STEER,
       hasUserMessageUuid: true,
       subtype: null,
-      subtypeFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+      subtypeFingerprint: '12cb29403d58ef6980ab0cae793afbdc3660e23a412da15db049be18ae8e481c',
       isError: false,
       numTurns: 12,
       hasDurationApiMs: true,
