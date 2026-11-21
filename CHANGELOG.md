@@ -1,5 +1,9 @@
 # Changelog
 
+## 13.5.11
+
+- Reuse shared SHA-256 hashing for redacted Claude result subtype fingerprints.
+
 ## 13.5.10
 
 - Keep Claude control when a valid result arrives without a user-message UUID and without an active turn. Empty cycles produce no live turn or completion notice, and any input still waiting for replay completes under its own identity.
