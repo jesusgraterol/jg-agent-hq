@@ -1,6 +1,6 @@
 import { signHmac } from 'jg-crypto';
 
-import type { IManagedThread } from '../../../contracts/index.js';
+import { MAX_RESULT_BYTES, type IManagedThread } from '../../../contracts/index.js';
 
 import { ControlModel } from '../control.model.js';
 import { CONTROLLED_THREAD_CAPACITY } from '../constants.js';
@@ -151,7 +151,11 @@ export class ControlObservations extends ControlModel {
          * other only fills in a result the first lacked
          */
         if (prior.digest !== digest && observation.kind !== 'turn-completed') this._conflict();
-        if (prior.digest !== digest && observation.kind === 'turn-completed' && observation.result)
+        if (
+          prior.digest !== digest &&
+          observation.kind === 'turn-completed' &&
+          observation.result
+        ) {
           this._statements.run(
             "UPDATE agent_hq_action SET result = ?, updated_at = ? WHERE thread_id = ? AND native_turn_id = ? AND kind IN ('message', 'queue', 'thread-create') AND result IS NULL",
             JSON.stringify(observation.result),
@@ -159,6 +163,28 @@ export class ControlObservations extends ControlModel {
             thread.id,
             observation.nativeTurnId,
           );
+          if (observation.result.error) {
+            const error = JSON.stringify(observation.result.error);
+            const oversized = JSON.stringify({
+              ...observation.result,
+              failure: 'result-too-large',
+              isComplete: false,
+              text: null,
+              structuredOutput: null,
+            });
+            // a late diagnostic fills its own field without losing an earlier body or recovery fence.
+            this._statements.run(
+              "UPDATE agent_hq_action SET result = CASE WHEN length(CAST(result AS BLOB)) + ? <= ? THEN json_set(result, '$.error', json(?)) ELSE ? END, updated_at = ? WHERE thread_id = ? AND native_turn_id = ? AND kind IN ('message', 'queue', 'thread-create') AND completion = 'failed' AND result IS NOT NULL AND json_extract(result, '$.error') IS NULL",
+              Buffer.byteLength(error) + 32,
+              MAX_RESULT_BYTES,
+              error,
+              oversized,
+              now,
+              thread.id,
+              observation.nativeTurnId,
+            );
+          }
+        }
         return { thread: toManagedThread(thread), canDispatchQueued: false };
       }
       if (observation.kind === 'turn-started') {

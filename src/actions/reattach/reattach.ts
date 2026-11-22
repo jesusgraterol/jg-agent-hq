@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { IManagedThread } from '../../contracts/index.js';
 import { capabilityUnavailable } from '../../providers/registry/index.js';
+import { toTurnResult } from '../../providers/results/index.js';
 
 import type { createDispatch } from '../dispatch/index.js';
 import type { createEvents } from '../events/index.js';
@@ -121,6 +122,9 @@ export const createReattach = (
             nativeThreadId: nativeId,
             nativeTurnId: turnId,
             state: turnState,
+            ...(turnState === 'failed' && latest.error
+              ? { result: toTurnResult('failed', null, undefined, undefined, null, latest.error) }
+              : {}),
           }),
         );
       }

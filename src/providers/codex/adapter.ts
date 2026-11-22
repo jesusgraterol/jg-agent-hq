@@ -112,7 +112,12 @@ export const createCodexProviderFactory = (
       const [turn] = (await native.listTurns(thread.nativeId, 1)).data;
       if (!turn) return null;
       if (turn.state !== 'inProgress' && turn.state !== 'unknown')
-        return { nativeId: turn.nativeId, state: turn.state, isInferred: false };
+        return {
+          nativeId: turn.nativeId,
+          state: turn.state,
+          isInferred: false,
+          ...(turn.error ? { error: turn.error } : {}),
+        };
       /*
        * A turn cut short when the daemon stopped stays in progress in its saved history, and so
        * does one whose end the history hasn't saved yet, so its state comes from the status.

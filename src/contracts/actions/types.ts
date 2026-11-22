@@ -82,6 +82,8 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
     threadId: ThreadIdSchema,
     input: MessageInputSchema,
     settings: TurnSettingsSchema.optional(),
+    // one conditional continuation of this exact failed action, never a replay of its input
+    continueAfterActionId: z.uuid().optional(),
   }),
   z.strictObject({
     kind: z.literal('steer'),

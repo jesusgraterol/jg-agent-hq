@@ -53,5 +53,6 @@ export type {
   IOutputSchema,
   ITurnUsage,
   ITurnResult,
+  ITurnError,
   IPreparedInput,
 } from './contracts/index.js';

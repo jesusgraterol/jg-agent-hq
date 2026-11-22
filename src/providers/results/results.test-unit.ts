@@ -62,6 +62,27 @@ test('result budgets reject complete payload overflow without substituting a tru
   });
 });
 
+test('native diagnostics share the result byte budget and survive oversized result removal', () => {
+  const error = {
+    code: 'internalServerError',
+    message: 'Temporary failure',
+    details: 'd'.repeat(8192),
+    httpStatusCode: null,
+    retryable: true,
+    willRetry: false,
+  };
+  const result = toTurnResult(
+    'failed',
+    'x'.repeat(MAX_RESULT_BYTES - 256),
+    undefined,
+    undefined,
+    null,
+    error,
+  );
+  expect(result).toMatchObject({ failure: 'result-too-large', text: null, error });
+  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(MAX_RESULT_BYTES);
+});
+
 test('a complete 1 MiB report survives worst-case JSON escaping without duplicate text', () => {
   const output = { report: '\u0001'.repeat(1_048_576) };
   const outputSchema = {

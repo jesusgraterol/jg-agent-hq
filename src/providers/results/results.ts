@@ -5,6 +5,7 @@ import {
   type IOutputSchema,
   type ITurnResult,
   type ITurnUsage,
+  type ITurnError,
 } from '../../contracts/index.js';
 
 /**
@@ -17,6 +18,7 @@ export const toTurnResult = (
   structuredOutput: unknown,
   schema: IOutputSchema | undefined,
   usage: ITurnUsage | null,
+  error?: ITurnError,
 ): ITurnResult => {
   const result: ITurnResult = {
     state,
@@ -26,6 +28,7 @@ export const toTurnResult = (
     isComplete: true,
     failure: state === 'failed' ? 'native-error' : null,
     usage,
+    ...(error ? { error } : {}),
   };
   try {
     if (Buffer.byteLength(JSON.stringify([text, structuredOutput ?? null])) > MAX_RESULT_BYTES) {

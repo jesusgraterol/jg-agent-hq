@@ -5,8 +5,10 @@ import { z } from 'zod';
 
 import {
   ErrorKindSchema,
+  MAX_RESULT_BYTES,
   type IActionEnvelope,
   type IActionPhase,
+  type ITurnResult,
 } from '../../../contracts/index.js';
 import { toActionFailure } from '../../../errors/index.js';
 
@@ -380,6 +382,9 @@ export class ControlAdmission extends ControlModel {
         );
         break;
       case 'message':
+        if (command.continueAfterActionId !== undefined) {
+          this.__claimContinuation(action.id, thread, command);
+        }
         this.__beginTurn(action.id, threadId);
         break;
       case 'queue':
@@ -599,6 +604,65 @@ export class ControlAdmission extends ControlModel {
       !['idle', 'completed', 'failed', 'interrupted'].includes(thread.state)
     )
       this._conflict();
+  }
+
+  /**
+   * Claims one continuation inside admission, before any native input can start.
+   * @throws
+   * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
+   */
+  private __claimContinuation(
+    actionId: string,
+    thread: IThreadRow,
+    command: Extract<ICommand, { kind: 'message' }>,
+  ): void {
+    const source = this._action(command.continueAfterActionId!);
+    const result = source?.result ? (JSON.parse(source.result) as ITurnResult) : null;
+    if (
+      thread.provider !== 'codex' ||
+      thread.state !== 'failed' ||
+      thread.last_turn_state !== 'failed' ||
+      !source ||
+      source.thread_id !== thread.id ||
+      source.runtime_epoch !== this._epoch ||
+      !['message', 'queue', 'thread-create'].includes(source.kind) ||
+      source.delivery !== 'acknowledged' ||
+      source.completion !== 'failed' ||
+      source.native_turn_id !== thread.last_turn_id ||
+      source.related_action_id !== null ||
+      result?.failure !== 'native-error' ||
+      result.error?.retryable !== true ||
+      result.error.willRetry ||
+      result.recoveryActionId !== undefined ||
+      command.input.kind !== 'text' ||
+      command.input.text !== 'continue' ||
+      (command.input.files?.length ?? 0) !== 0 ||
+      command.settings !== undefined
+    )
+      this._conflict();
+    const pending = this._statements.get<{ id: string }>(
+      "SELECT id FROM agent_hq_action WHERE thread_id = ? AND delivery IN ('queued', 'submitted', 'uncertain') AND id <> ? LIMIT 1",
+      thread.id,
+      actionId,
+    );
+    const approval = this._statements.get<{ id: string }>(
+      "SELECT id FROM agent_hq_native_approval WHERE thread_id = ? AND state = 'pending' LIMIT 1",
+      thread.id,
+    );
+    if (pending || approval) this._conflict();
+    const claimedResult = JSON.stringify({ ...result, recoveryActionId: actionId });
+    if (Buffer.byteLength(claimedResult) > MAX_RESULT_BYTES) this._conflict();
+    this._statements.run(
+      'UPDATE agent_hq_action SET result = ?, updated_at = ? WHERE id = ?',
+      claimedResult,
+      Date.now(),
+      source.id,
+    );
+    this._statements.run(
+      'UPDATE agent_hq_action SET related_action_id = ? WHERE id = ?',
+      source.id,
+      actionId,
+    );
   }
 
   /** Starts the turn an action's input begins, holding the thread until native acknowledges it. */

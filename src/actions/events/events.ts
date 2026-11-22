@@ -17,6 +17,7 @@ import type {
   IStoppedControl,
 } from '../../providers/index.js';
 import { capabilityUnavailable } from '../../providers/registry/index.js';
+import { toTurnResult } from '../../providers/results/index.js';
 import type { INativeObservation } from '../../store/control/index.js';
 import { correlateEvidenceOrigins } from '../../sessions/index.js';
 
@@ -477,6 +478,9 @@ export const createEvents = (
         nativeThreadId: nativeId,
         nativeTurnId: decision.nativeTurnId,
         state: decision.state,
+        ...(decision.state === 'failed' && latest?.error
+          ? { result: toTurnResult('failed', null, undefined, undefined, null, latest.error) }
+          : {}),
       });
     else if (decision.kind === 'gap') live.markGap(key(provider, nativeId));
     else if (decision.kind === 'watch') {
