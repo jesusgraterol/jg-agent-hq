@@ -4,6 +4,7 @@ import {
   MAX_PAGE_SIZE,
   UsageCreditsSchema,
   UsageResetCreditsSchema,
+  TurnErrorSchema,
   type IHistoryItem,
   type IItemDetail,
   type IItemImage,
@@ -19,6 +20,7 @@ import {
 } from '../../contracts/index.js';
 import type { IProviderInputFile } from '../inputs/index.js';
 import type { IProviderSkills } from '../types.js';
+import { CodexTurnErrorSchema } from './turn-error/index.js';
 
 // a session's status, which may name one newer than this adapter knows
 export const NativeThreadStatusSchema = z.object({
@@ -45,6 +47,7 @@ export const NativeTurnSchema = z.object({
   status: z.enum(['completed', 'interrupted', 'failed', 'inProgress']),
   startedAt: z.number().int().safe().nullable().optional(),
   completedAt: z.number().int().safe().nullable().optional(),
+  error: CodexTurnErrorSchema.nullish().catch(null),
 });
 // a turn's state and times in Unix milliseconds, as HQ reads them from a native turn
 export const TurnSummarySchema = z.object({
@@ -52,6 +55,7 @@ export const TurnSummarySchema = z.object({
   state: z.enum(['completed', 'interrupted', 'failed', 'inProgress', 'unknown']),
   startedAt: z.number().int().nullable(),
   completedAt: z.number().int().nullable(),
+  error: TurnErrorSchema.optional(),
 });
 export type ITurnSummary = z.infer<typeof TurnSummarySchema>;
 // recorded native item lifecycle times are milliseconds; older producers may omit them

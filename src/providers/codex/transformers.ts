@@ -38,6 +38,7 @@ import {
 } from './types.js';
 import { KNOWN_NATIVE_STATES } from './constants.js';
 import { parseNative } from './validations.js';
+import { toTurnError } from './turn-error/index.js';
 
 /** Preserves exact native tree identities independently of managed-agent relationships. */
 export const toNativeLineage = (thread: INativeThread): INativeLineage => ({
@@ -106,6 +107,7 @@ export const toTurnSummary = (turn: INativeTurn): ITurnSummary =>
     state: turn.status,
     startedAt: turn.startedAt == null ? null : turn.startedAt * 1000,
     completedAt: turn.completedAt == null ? null : turn.completedAt * 1000,
+    ...(turn.status === 'failed' && turn.error ? { error: toTurnError(turn.error, false) } : {}),
   });
 
 const TextPartsSchema = z.object({

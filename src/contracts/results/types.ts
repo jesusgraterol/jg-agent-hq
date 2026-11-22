@@ -44,6 +44,18 @@ export const TurnUsageSchema = z.object({
   scope: z.enum(['turn', 'thread']),
 });
 export type ITurnUsage = z.infer<typeof TurnUsageSchema>;
+
+// redacted native diagnostics; retryability never authorizes replaying the original input.
+export const TurnErrorSchema = z.object({
+  code: z.string().min(1).max(256).nullable(),
+  message: z.string().min(1).max(4096),
+  details: z.string().max(8192).nullable(),
+  httpStatusCode: z.number().int().min(100).max(599).nullable(),
+  retryable: z.boolean(),
+  willRetry: z.boolean(),
+});
+export type ITurnError = z.infer<typeof TurnErrorSchema>;
+
 export const TurnResultSchema = z
   .object({
     state: z.enum(['completed', 'failed', 'interrupted']),
@@ -55,6 +67,8 @@ export const TurnResultSchema = z
       .enum(['native-error', 'invalid-structured-output', 'result-too-large', 'missing-result'])
       .nullable(),
     usage: TurnUsageSchema.nullable(),
+    error: TurnErrorSchema.optional(),
+    recoveryActionId: z.uuid().optional(),
   })
   .refine((result) => new TextEncoder().encode(JSON.stringify(result)).length <= MAX_RESULT_BYTES);
 export type ITurnResult = z.infer<typeof TurnResultSchema>;

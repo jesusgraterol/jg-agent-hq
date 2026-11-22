@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
-import { SkillPageSchema, SkillSchema, ThreadSummarySchema } from '../contracts/index.js';
+import {
+  SkillPageSchema,
+  SkillSchema,
+  ThreadSummarySchema,
+  TurnErrorSchema,
+} from '../contracts/index.js';
 import { NativeIdSchema } from '../contracts/identities/index.js';
 import type {
   IActionCommand,
@@ -52,6 +57,7 @@ export const ProviderReattachmentSchema = z.object({
       state: z.enum(['running', 'completed', 'failed', 'interrupted']),
       // the saved turn is still in progress, so its state comes from the session's status
       isInferred: z.boolean().optional(),
+      error: TurnErrorSchema.optional(),
     })
     .nullable(),
 });

@@ -176,9 +176,10 @@ export {
   MAX_RESULT_BYTES,
   OutputSchemaSchema,
   TurnUsageSchema,
+  TurnErrorSchema,
   TurnResultSchema,
 } from './results/index.js';
-export type { IOutputSchema, ITurnUsage, ITurnResult } from './results/index.js';
+export type { IOutputSchema, ITurnUsage, ITurnResult, ITurnError } from './results/index.js';
 
 // bounded historical evidence
 export {

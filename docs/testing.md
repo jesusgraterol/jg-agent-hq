@@ -14,6 +14,8 @@ The publication workflow runs only `pnpm check:package` on its two Node versions
 
 ## Essential and full selections
 
+Native failure coverage is essential: the public runtime retains diagnostics before, inside and after terminal completion, redacts credentials and bounds results, rejects unknown/non-transient classifications, and fences competing conditional continuations. Newer or queued input, native retries and policy failures prevent continuation; a failed continuation cannot chain. Repeat the changed ordering and admission scenarios three times without retries. Synthetic native frames establish application behavior, not reproduction of a real provider refusal.
+
 Essential protects consequential guarantees, including expensive ones. All unassessed cases remain selected until their family is reviewed. Granular and focused commands stay complete by default; native `full` tags exclude secondary coverage only when an essential filter is explicitly applied.
 
 | Assessed boundary                              | Essential guarantee                                                                                                                                                                                                                      |

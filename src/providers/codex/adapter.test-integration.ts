@@ -80,6 +80,233 @@ const createThread = async (fixture: IClaudeFixture, name: string) => {
   return (await thread(fixture, created.threadId!))!;
 };
 
+test.each([
+  ['before', 'internalServerError', 'Temporary service failure', false, true],
+  ['after', 'serverOverloaded', 'Service unavailable', false, true],
+  ['terminal', { responseStreamDisconnected: { httpStatusCode: 503 } }, 'Stream lost', false, true],
+  ['before', 'internalServerError', 'Invalid prompt: usage policy rejection', false, false],
+  ['before', { responseStreamDisconnected: { httpStatusCode: 401 } }, 'Stream lost', false, false],
+  ['before', 'unknownFutureError', 'Unknown failure', false, false],
+  ['before', { responseStreamDisconnected: {} }, 'Malformed status', false, false],
+  ['before', '', 'Error without a classification', false, false],
+  ['before', 'internalServerError', 'Native retry in progress', true, false],
+] as const)(
+  'native turn diagnostics %s %o remain visible with conservative recovery',
+  async (ordering, code, message, willRetry, retryable) => {
+    await withClaudeRuntime(async (fixture) => {
+      const managed = await createThread(fixture, 'failed-turn');
+      await codex(fixture, { holdTurn: true });
+      const sent = await submit(fixture, {
+        kind: 'message',
+        threadId: managed.id,
+        input: { kind: 'text', text: 'Work' },
+      });
+      await expect
+        .poll(async () => (await receipt(fixture, sent.id))?.delivery)
+        .toBe('acknowledged');
+      const turnId = (await thread(fixture, managed.id))!.activeTurnId!;
+      const error = {
+        message,
+        codexErrorInfo: code,
+        additionalDetails:
+          'Authorization: Bearer secret-value https://user:password@example.com/error?token=private-value',
+      };
+      const failed = {
+        method: 'turn/completed',
+        params: {
+          threadId: managed.nativeId,
+          turn: { id: turnId, status: 'failed', ...(ordering === 'terminal' ? { error } : {}) },
+        },
+      };
+      const diagnostic = {
+        method: 'error',
+        params: { threadId: managed.nativeId, turnId, error, willRetry },
+      };
+      await codex(fixture, {
+        holdTurn: true,
+        emitOnce: true,
+        emit: [
+          {
+            method: 'item/completed',
+            params: {
+              threadId: managed.nativeId,
+              turnId,
+              item: {
+                id: 'partial-final',
+                type: 'agentMessage',
+                phase: 'final_answer',
+                text: 'Partial report',
+              },
+            },
+          },
+          {
+            method: 'thread/tokenUsage/updated',
+            params: {
+              threadId: managed.nativeId,
+              turnId,
+              tokenUsage: { last: { inputTokens: 12, outputTokens: 3, cachedInputTokens: 2 } },
+            },
+          },
+          ...(ordering === 'terminal'
+            ? [failed]
+            : ordering === 'after'
+              ? [failed, diagnostic]
+              : [diagnostic, failed]),
+        ],
+      });
+      await fixture.runtime.request({ kind: 'usage', provider: 'codex' });
+      await expect.poll(async () => (await receipt(fixture, sent.id))?.result?.error).toBeTruthy();
+      const result = (await receipt(fixture, sent.id))!.result!;
+      expect(result.text).toBe('Partial report');
+      expect(result.usage).toStrictEqual({
+        inputTokens: 12,
+        outputTokens: 3,
+        cachedInputTokens: 2,
+        scope: 'turn',
+      });
+      expect(result.error).toMatchObject({
+        message,
+        retryable,
+        willRetry: ordering === 'terminal' ? false : willRetry,
+      });
+      expect(result.error!.details).not.toContain('secret-value');
+      expect(result.error!.details).not.toContain('private-value');
+      expect(result.error!.details).not.toContain('user:password');
+      expect((await thread(fixture, managed.id))?.state).toBe('failed');
+    });
+  },
+);
+
+test('conditional continuation admits one competing attempt and never chains a failed recovery', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const managed = await createThread(fixture, 'recover-once');
+    const fail = async (actionId: string) => {
+      await expect
+        .poll(async () => (await receipt(fixture, actionId))?.delivery)
+        .toBe('acknowledged');
+      const turnId = (await thread(fixture, managed.id))!.activeTurnId!;
+      await codex(fixture, {
+        holdTurn: true,
+        emitOnce: true,
+        emit: [
+          {
+            method: 'turn/completed',
+            params: {
+              threadId: managed.nativeId,
+              turn: {
+                id: turnId,
+                status: 'failed',
+                error: { message: 'Service unavailable', codexErrorInfo: 'serverOverloaded' },
+              },
+            },
+          },
+        ],
+      });
+      await fixture.runtime.request({ kind: 'usage', provider: 'codex' });
+      await expect.poll(async () => (await receipt(fixture, actionId))?.completion).toBe('failed');
+    };
+    await codex(fixture, { holdTurn: true });
+    const first = await submit(fixture, {
+      kind: 'message',
+      threadId: managed.id,
+      input: { kind: 'text', text: 'Work' },
+    });
+    await fail(first.id);
+    const command = {
+      kind: 'message' as const,
+      threadId: managed.id,
+      input: { kind: 'text' as const, text: 'continue' },
+      continueAfterActionId: first.id,
+    };
+    const attempts = await Promise.all([submit(fixture, command), submit(fixture, command)]);
+    const accepted = attempts.filter((action) => action.delivery !== 'failed');
+    expect(accepted).toHaveLength(1);
+    const recovery = accepted[0]!;
+    expect((await receipt(fixture, first.id))?.result?.recoveryActionId).toBe(recovery.id);
+    expect(recovery.relatedActionId).toBe(first.id);
+    await fail(recovery.id);
+    const again = await submit(fixture, { ...command, continueAfterActionId: recovery.id });
+    expect(again.delivery).toBe('failed');
+    expect(again.failure).toBe('state-conflict');
+    const stale = await submit(fixture, command);
+    expect(stale.delivery).toBe('failed');
+  });
+});
+
+test.each(['newer-input', 'queued-input', 'native-retry', 'policy'] as const)(
+  'conditional continuation refuses %s without sending input',
+  async (scenario) => {
+    await withClaudeRuntime(async (fixture) => {
+      const managed = await createThread(fixture, 'stale-recovery');
+      await codex(fixture, { holdTurn: true });
+      const failed = await submit(fixture, {
+        kind: 'message',
+        threadId: managed.id,
+        input: { kind: 'text', text: 'Original' },
+      });
+      await expect
+        .poll(async () => (await receipt(fixture, failed.id))?.delivery)
+        .toBe('acknowledged');
+      const turnId = (await thread(fixture, managed.id))!.activeTurnId!;
+      if (scenario === 'queued-input')
+        await submit(fixture, {
+          kind: 'queue',
+          threadId: managed.id,
+          expectedTurnId: turnId,
+          input: { kind: 'text', text: 'Queued input' },
+        });
+      await codex(fixture, {
+        holdTurn: true,
+        emitOnce: true,
+        emit: [
+          {
+            method: 'error',
+            params: {
+              threadId: managed.nativeId,
+              turnId,
+              error: {
+                message:
+                  scenario === 'policy'
+                    ? 'Invalid prompt: usage policy rejection'
+                    : 'Temporary failure',
+                codexErrorInfo: 'internalServerError',
+              },
+              willRetry: scenario === 'native-retry',
+            },
+          },
+          {
+            method: 'turn/completed',
+            params: { threadId: managed.nativeId, turn: { id: turnId, status: 'failed' } },
+          },
+        ],
+      });
+      await fixture.runtime.request({ kind: 'usage', provider: 'codex' });
+      await expect.poll(async () => (await receipt(fixture, failed.id))?.completion).toBe('failed');
+      if (scenario === 'newer-input') {
+        const newer = await submit(fixture, {
+          kind: 'message',
+          threadId: managed.id,
+          input: { kind: 'text', text: 'Newer input' },
+        });
+        await expect
+          .poll(async () => (await receipt(fixture, newer.id))?.delivery)
+          .toBe('acknowledged');
+      }
+      const before = (await calls(fixture)).filter(({ method }) => method === 'turn/start').length;
+      const recovery = await submit(fixture, {
+        kind: 'message',
+        threadId: managed.id,
+        input: { kind: 'text', text: 'continue' },
+        continueAfterActionId: failed.id,
+      });
+      expect(recovery).toMatchObject({ delivery: 'failed', failure: 'state-conflict' });
+      expect((await calls(fixture)).filter(({ method }) => method === 'turn/start')).toHaveLength(
+        before,
+      );
+    });
+  },
+);
+
 test.each(['after', 'before', 'oversized', 'only'])(
   'async question %s an ordinary final cannot become the turn result',
   async (ordering) => {

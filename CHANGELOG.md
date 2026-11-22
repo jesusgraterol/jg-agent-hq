@@ -1,5 +1,10 @@
 # Changelog
 
+## 13.6.0
+
+- Retain bounded, redacted Codex turn diagnostics on selected receipts, including late completion errors and native reattachment reads.
+- Add conditional continuation admission that atomically fences one host-requested recovery of the latest confirmed transient failure. Newer or queued input, pending approvals, native retries and manual-review failures prevent recovery; continuations cannot chain.
+
 ## 13.5.11
 
 - Reuse shared SHA-256 hashing for redacted Claude result subtype fingerprints.

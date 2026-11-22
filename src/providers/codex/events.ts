@@ -7,6 +7,7 @@ import {
   type IOutputSchema,
   type ISessionState,
   type ITurnUsage,
+  type ITurnError,
 } from '../../contracts/index.js';
 import { HQ_ERRORS } from '../../errors/index.js';
 import { toTurnResult } from '../results/index.js';
@@ -26,6 +27,7 @@ import {
 import { parseNative } from './validations.js';
 import { toHistoryItem, toNativeLineage, toNativeState, toSessionState } from './transformers.js';
 import { buildCodexReply, parseCodexPrompt, toApprovalPresentation } from './approvals/index.js';
+import { CodexTurnErrorSchema, toTurnError } from './turn-error/index.js';
 
 const TargetSchema = z.object({ threadId: NativeIdSchema, turnId: NativeIdSchema });
 const DeltaSchema = TargetSchema.extend({ itemId: NativeIdSchema, delta: z.string() });
@@ -61,6 +63,14 @@ export const createCodexEvents = (
       usage: ITurnUsage | null;
     }
   >();
+  // bounded per-turn diagnostics also retain a failed end long enough to accept a late error.
+  const turnErrors = new Map<string, { terminal: boolean; error?: ITurnError }>();
+  const errorKey = (threadId: string, turnId: string): string => JSON.stringify([threadId, turnId]);
+  const rememberError = (key: string, value: { terminal: boolean; error?: ITurnError }): void => {
+    if (!turnErrors.has(key) && turnErrors.size >= 128)
+      turnErrors.delete(turnErrors.keys().next().value!);
+    turnErrors.set(key, value);
+  };
   /**
    * Keeps HQ's result capture in step with a turn whose start or end failed validation: a lost
    * start still binds the capture prepared for HQ's input, and a lost end drops its turn's capture,
@@ -102,9 +112,22 @@ export const createCodexEvents = (
       } else if (turn.status !== 'inProgress') {
         const pending = turns.get(threadId);
         const captured = pending?.turnId === turn.id ? pending : undefined;
-        const result = captured
-          ? toTurnResult(turn.status, captured.text, undefined, captured.schema, captured.usage)
-          : undefined;
+        const key = errorKey(threadId, turn.id);
+        const diagnostic = turn.error ? toTurnError(turn.error, false) : turnErrors.get(key)?.error;
+        const result =
+          captured || turn.status === 'failed'
+            ? toTurnResult(
+                turn.status,
+                captured?.text ?? null,
+                undefined,
+                captured?.schema,
+                captured?.usage ?? null,
+                turn.status === 'failed' ? diagnostic : undefined,
+              )
+            : undefined;
+        if (turn.status === 'failed') {
+          rememberError(key, { terminal: true, ...(diagnostic ? { error: diagnostic } : {}) });
+        } else turnErrors.delete(key);
         if (result && captured?.oversized) {
           result.state = 'failed';
           result.failure = 'result-too-large';
@@ -123,6 +146,29 @@ export const createCodexEvents = (
           ...(result ? { result } : {}),
         });
       } else parseNative(z.never(), params);
+    } else if (method === 'error') {
+      const { threadId, turnId, error, willRetry } = parseNative(
+        TargetSchema.extend({
+          error: CodexTurnErrorSchema,
+          willRetry: z.boolean(),
+        }),
+        params,
+      );
+      const key = errorKey(threadId, turnId);
+      const terminal = turnErrors.get(key)?.terminal ?? false;
+      const diagnostic = toTurnError(error, willRetry);
+      rememberError(key, { terminal, error: diagnostic });
+      if (terminal) {
+        const result = toTurnResult('failed', null, undefined, undefined, null, diagnostic);
+        events.observe({
+          kind: 'turn-completed',
+          provider: 'codex',
+          nativeThreadId: threadId,
+          nativeTurnId: turnId,
+          state: 'failed',
+          result,
+        });
+      }
     } else if (method === 'item/started' || method === 'item/completed') {
       const { threadId, turnId, item, startedAtMs, completedAtMs } = parseNative(
         TargetSchema.extend({
@@ -341,6 +387,7 @@ export const createCodexEvents = (
       connectionId = randomUUID();
       // a disconnected stream cannot supply a complete result from its partial capture
       turns.clear();
+      turnErrors.clear();
       events.unavailable();
     },
     connected: () => observeLoaded(),
