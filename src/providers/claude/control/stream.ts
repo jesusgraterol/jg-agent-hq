@@ -140,6 +140,7 @@ const acknowledge = (session: IClaudeSession, events: IClaudeControlEvents | und
   const input = session.input;
   if (!input || input.isAcknowledged) return;
   input.isAcknowledged = true;
+  session.historyTurnId = input.id;
   pauseSteerExpiry(session);
   session.replayedSteers?.clear();
   clearTimeout(input.timer);
@@ -259,6 +260,7 @@ const acknowledgeSteer = (
   }
   if (!getActiveTurn(session)) {
     pauseSteerExpiry(session);
+    session.historyTurnId = steer.id;
     session.nativeTurn = { id: steer.id, interruptRequested: false, hasInterruptionMarker: false };
     events?.observe({
       kind: 'turn-started',

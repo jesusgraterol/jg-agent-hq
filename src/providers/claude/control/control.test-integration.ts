@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as wait } from 'node:timers/promises';
@@ -3388,6 +3388,103 @@ test.each(['turn completion', 'history read'])(
     });
   },
 );
+
+test('saved Claude steers confirm an autonomous follow-up under its original history turn', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const api = await actions(fixture),
+      { thread } = await api.create();
+    await fixture.control({ backgroundTask: true });
+    const input = await api.message(thread.id, 'Start a background command');
+    await expect.poll(() => api.receipt(input.id)).toMatchObject({ completion: 'completed' });
+    await fixture.control({
+      finishBackgroundTask: true,
+      nativeTurn: 'follow-up-with-saved-steer',
+      nativeHold: true,
+      steer: 'saved',
+    });
+    const turnId = await awaitNativeTurn(api, thread.id);
+    const steer = api.envelope({
+      kind: 'steer',
+      threadId: thread.id,
+      expectedTurnId: turnId,
+      text: 'Also inspect the old stored state',
+    });
+    const submitted = api.submit(steer);
+    try {
+      await expect.poll(async () => (await writtenInputs(api)).length).toBe(2);
+      const transcript = fixture.transcript(thread.nativeId!);
+      const records = (await readFile(transcript, 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { uuid: string; attachment?: { source_uuid?: string } });
+      let parentUuid = records.find((record) => record.attachment?.source_uuid === steer.id)!.uuid;
+      for (const [sourceId, text] of [
+        [steer.id, 'Different content'],
+        [randomUUID(), 'Also inspect the old stored state'],
+      ]) {
+        const uuid = randomUUID();
+        await appendFile(
+          transcript,
+          JSON.stringify({
+            ...claudeRecord(fixture.workspaceRoot, thread.nativeId!, { uuid, parentUuid }),
+            type: 'attachment',
+            message: undefined,
+            attachment: {
+              type: 'queued_command',
+              commandMode: 'prompt',
+              source_uuid: sourceId,
+              prompt: text,
+            },
+          }) + '\n',
+        );
+        await fixture.request({
+          kind: 'session-evidence',
+          provider: 'claude',
+          workspaceRoot: fixture.workspaceRoot,
+          nativeId: thread.nativeId!,
+          nativeItemId: uuid,
+          limit: 1,
+        });
+        expect((await api.receipt(steer.id)).delivery).not.toBe('acknowledged');
+        parentUuid = uuid;
+      }
+      const history = await fixture.request({
+        kind: 'items',
+        provider: 'claude',
+        workspaceRoot: fixture.workspaceRoot,
+        nativeId: thread.nativeId!,
+      });
+      const saved = history.result.data.find(
+        (item) =>
+          item.provenance.nativeInputId === steer.id &&
+          item.text === 'Also inspect the old stored state',
+      );
+      expect(saved?.turnId).toBe((await api.receipt(input.id)).nativeTurnId);
+      expect(saved?.turnId).not.toBe(turnId);
+      expect(saved?.provenance.actionId).toBe(steer.id);
+      await expect
+        .poll(() => api.receipt(steer.id), { timeout: 1000 })
+        .toMatchObject({
+          delivery: 'acknowledged',
+          nativeTurnId: turnId,
+        });
+      await fixture.control({ nativeRelease: true });
+      await expect
+        .poll(() => api.receipt(steer.id), { timeout: 1000 })
+        .toMatchObject({
+          delivery: 'acknowledged',
+          completion: 'completed',
+        });
+      expect(await writtenInputs(api)).toHaveLength(2);
+      expect((await api.thread(thread.id)).ownership).toBe('managed');
+    } finally {
+      await api.submit(
+        api.envelope({ kind: 'thread-close', threadId: thread.id, interrupt: true }),
+      );
+      await submitted;
+    }
+  });
+});
 
 test('Stop interrupts a turn Claude started on its own and completes it as interrupted', async () => {
   await withClaudeRuntime(async (fixture) => {

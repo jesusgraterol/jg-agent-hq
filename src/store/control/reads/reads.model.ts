@@ -7,7 +7,12 @@ import type {
 import type { IEvidenceOriginsRequest } from '../../../sessions/evidence/index.js';
 
 import { ControlModel } from '../control.model.js';
-import { ACTION_METADATA_COLUMNS, THREAD_COLUMNS, UNSTARTED_CONDITION } from '../constants.js';
+import {
+  ACTION_METADATA_COLUMNS,
+  CLAUDE_STEER_TURN_CONDITION,
+  THREAD_COLUMNS,
+  UNSTARTED_CONDITION,
+} from '../constants.js';
 import { toActionSummary, toManagedThread } from '../transformers.js';
 import type {
   IActionPage,
@@ -69,11 +74,12 @@ export class ControlReads extends ControlModel {
       WHERE a.id = ? AND t.provider = 'claude' AND t.native_id = ?
       AND a.kind = 'steer' AND a.phase = 'steer' AND a.delivery = 'acknowledged'
       AND a.native_turn_id IS NOT NULL AND a.native_turn_id = a.expected_turn_id
-      AND a.input_sha256 = ? AND (a.native_turn_id = ? OR a.id = ?)
+      AND a.input_sha256 = ? AND ${CLAUDE_STEER_TURN_CONDITION}
       LIMIT 1`,
           item.nativeInputId,
           command.nativeId,
           item.sha256,
+          item.turnId,
           item.turnId,
           item.turnId,
         );

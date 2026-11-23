@@ -269,13 +269,44 @@ test('Claude browser steering correlates its exact action in live and persisted 
   });
 });
 
-test.each(['submitted', 'uncertain'] as const)(
-  'Claude saved steering acknowledges %s delivery without a live replay or another send',
+test.each([
+  ['submitted', false],
+  ['uncertain', false],
+  ['submitted', true],
+  ['uncertain', true],
+] as const)(
+  'Claude saved steering acknowledges %s delivery for autonomous %s without a live replay or another send',
   // shutdown drains the native steer's real 30-second acknowledgement deadline
   { timeout: 45_000 },
-  async (delivery) => {
+  async (delivery, autonomous) => {
     await withClaudeRuntime(async (fixture) => {
       const input = await startBrowserInput(fixture, false, 'claude');
+      let turnId = input.turnId;
+      if (autonomous) {
+        await fixture.control({ release: true });
+        await expect
+          .poll(
+            async () =>
+              (await fixture.request({ kind: 'managed-thread', threadId: input.thread.id })).result
+                ?.state,
+          )
+          .toBe('completed');
+        await fixture.control({
+          nativeTurn: 'saved-autonomous-steer',
+          nativeHold: true,
+          steer: 'saved',
+        });
+        await expect
+          .poll(
+            async () =>
+              (await fixture.request({ kind: 'managed-thread', threadId: input.thread.id })).result
+                ?.state,
+          )
+          .toBe('running');
+        turnId = (await fixture.request({ kind: 'managed-thread', threadId: input.thread.id }))
+          .result!.activeTurnId!;
+        expect(turnId).not.toBe(input.turnId);
+      }
       await fixture.control({ holdTurn: true, steer: 'saved' });
       const id = randomUUID();
       const text = 'Confirm the saved steering receipt.';
@@ -284,7 +315,7 @@ test.each(['submitted', 'uncertain'] as const)(
         action: {
           id,
           runtimeEpoch: input.browser.runtimeEpoch,
-          command: { kind: 'steer', threadId: input.thread.id, expectedTurnId: input.turnId, text },
+          command: { kind: 'steer', threadId: input.thread.id, expectedTurnId: turnId, text },
         },
       });
       await expect
@@ -325,7 +356,7 @@ test.each(['submitted', 'uncertain'] as const)(
         });
         expect((await runtime.request({ kind: 'receipt', actionId: id })).result).toMatchObject({
           delivery: 'acknowledged',
-          nativeTurnId: input.turnId,
+          nativeTurnId: turnId,
           failure: null,
         });
         expect(waited.result).toMatchObject({

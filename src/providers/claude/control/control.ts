@@ -333,6 +333,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     session.isResumed = isResume;
     // a new process has no turn of its own and no background commands yet
     session.nativeTurn = undefined;
+    delete session.historyTurnId;
     setBackgroundCommands(session, 0, nativeEvents);
     const connection = await createClaudeRpc(
       (reason) => {
@@ -509,7 +510,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
           steer.isAcknowledged ||
           item.kind !== 'user-message' ||
           item.provenance.nativeInputSha256 !== steer.inputSha256 ||
-          (turnId !== steer.turnId && turnId !== steer.id)
+          (turnId !== steer.turnId && turnId !== steer.id && turnId !== steer.historyTurnId)
         )
           continue;
         // a later live replay still needs its exact identity to start its own native turn
@@ -752,6 +753,9 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
             session.steers.set(id, {
               id,
               turnId,
+              ...(session.nativeTurn?.id === turnId && session.historyTurnId !== undefined
+                ? { historyTurnId: session.historyTurnId }
+                : {}),
               inputSha256: hashValue(text),
               isAcknowledged: false,
               resolve,
