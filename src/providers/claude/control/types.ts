@@ -39,6 +39,8 @@ export type IClaudeNativeTurn = {
 export type IClaudeSteer = {
   id: string;
   turnId: string;
+  // an autonomous follow-up is saved under the last acknowledged input in this controller
+  historyTurnId?: string;
   inputSha256: string;
   isAcknowledged: boolean;
   resolve(turnId: string): void;
@@ -79,6 +81,8 @@ export type IClaudeSession = {
   skills?: IProviderSkills | null;
   input?: IClaudeInput;
   nativeTurn?: IClaudeNativeTurn;
+  // the saved-history anchor established by this process's last acknowledged input
+  historyTurnId?: string;
   // steers written into an active turn that Claude hasn't replayed yet, by their message UUID
   steers: Map<string, IClaudeSteer>;
   // one idle deadline shared by every unconfirmed steer, paused whenever a turn starts

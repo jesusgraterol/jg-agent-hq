@@ -2,6 +2,7 @@ import type { IActionReceipt } from '../../../contracts/index.js';
 import type { IEvidenceOriginsRequest } from '../../../sessions/evidence/index.js';
 
 import { ControlModel } from '../control.model.js';
+import { CLAUDE_STEER_TURN_CONDITION } from '../constants.js';
 import { toActionReceipt } from '../transformers.js';
 import type { INativeOutcome } from '../types.js';
 
@@ -21,17 +22,18 @@ export class ControlOutcomes extends ControlModel {
       for (const item of command.items) {
         if (item.nativeInputId === null || item.sha256 === null) continue;
         const updated = this._statements.get<{ thread_id: string }>(
-          `UPDATE agent_hq_action SET delivery = 'acknowledged', failure = NULL, updated_at = ?
+          `UPDATE agent_hq_action AS a SET delivery = 'acknowledged', failure = NULL, updated_at = ?
           WHERE id = ? AND provider = 'claude' AND kind = 'steer' AND phase = 'steer'
           AND delivery IN ('submitted', 'uncertain') AND input_sha256 = ?
           AND native_turn_id IS NOT NULL AND native_turn_id = expected_turn_id
-          AND (native_turn_id = ? OR id = ?)
+          AND ${CLAUDE_STEER_TURN_CONDITION}
           AND thread_id IN (SELECT id FROM agent_hq_thread
             WHERE provider = 'claude' AND native_id = ? AND workspace_root = ?)
           RETURNING thread_id`,
           Date.now(),
           item.nativeInputId,
           item.sha256,
+          item.turnId,
           item.turnId,
           item.turnId,
           command.nativeId,
