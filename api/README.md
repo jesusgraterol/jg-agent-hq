@@ -115,6 +115,8 @@ Shutdown preserves a quarantined Codex record's uncertain ownership, producing r
 
 A failed Claude connection first makes its conversation uncertain. Once the runtime proves the exact owned process group has exited and releases that controller, the matching known conversation becomes managed and inactive in the same runtime. Its producing epoch, active turn and pending action reference clear; pending approvals expire, submitted deliveries stay uncertain and queued entries stay paused. This proof does not complete an acknowledged turn or establish whether uncertain input ran. A stale controller, changed runtime/workspace/native identity, or competing native terminal cannot release a replacement owner. Failed shutdown proof retains uncertainty and prevents runtime ownership release. An explicit `thread-resume` can reopen the inactive conversation under its existing native identity without replaying earlier input.
 
+An initialized owned Claude connection outlives the request that opened it. An input acknowledgment timeout leaves delivery uncertain and preserves that connection, including after reopening a parked session. A matching late replay confirms the original action without sending its text again. Startup cancellation still closes a process that has not initialized.
+
 Codex approval identities are scoped to their native connection, because a replacement daemon may reuse request IDs. A reissued request opens a new approval; earlier approvals stay expired. A response prepared for an earlier connection cannot write to or decline a request on its replacement. The native response still uses the exact request ID supplied by Codex.
 
 ## Providers and capabilities

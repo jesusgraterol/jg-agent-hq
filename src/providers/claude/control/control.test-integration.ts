@@ -2549,27 +2549,36 @@ test('Claude external adoption requires qualified workspace history and an expli
   });
 });
 
-test('Claude late input acknowledgement reconciles uncertainty without resending the text', async () => {
-  await withClaudeRuntime(async (fixture) => {
-    const api = await actions(fixture),
-      { thread } = await api.create();
-    await fixture.control({ lateAck: true });
-    const input = await api.message(thread.id);
-    const uncertain = await api.until(
-      () => api.receipt(input.id),
-      (entry) => entry.delivery === 'uncertain',
-      32000,
-    );
-    expect(uncertain.completion).toBeNull();
-    await api.submit(input);
-    const final = await api.until(
-      () => api.receipt(input.id),
-      (entry) => entry.completion === 'completed',
-    );
-    expect(final.delivery).toBe('acknowledged');
-    expect((await api.calls()).filter((call) => call.type === 'user')).toHaveLength(1);
-  });
-}, 40000);
+test.each([false, true])(
+  'Claude late input acknowledgement reconciles uncertainty without resending the text (parked: %s)',
+  async (isParked) => {
+    await withClaudeRuntime(async (fixture) => {
+      const api = await actions(fixture),
+        { thread } = await api.create();
+      if (isParked) await parkIdleSessions(fixture);
+      await fixture.control({ lateAck: true });
+      const input = await api.message(thread.id);
+      const uncertain = await api.until(
+        () => api.receipt(input.id),
+        (entry) => entry.delivery === 'uncertain',
+        32000,
+      );
+      expect(uncertain.completion).toBeNull();
+      await api.submit(input);
+      const final = await api.until(
+        () => api.receipt(input.id),
+        (entry) => entry.completion === 'completed',
+      );
+      expect(final.delivery).toBe('acknowledged');
+      expect((await api.calls()).filter((call) => call.type === 'user')).toHaveLength(1);
+      expect(await api.thread(thread.id)).toMatchObject({
+        ownership: 'managed',
+        state: 'completed',
+      });
+    });
+  },
+  40000,
+);
 
 test.each([false, true])(
   'Claude question multi-select policy is visible and enforced (%s)',

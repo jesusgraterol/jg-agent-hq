@@ -1,5 +1,9 @@
 # Changelog
 
+## 13.6.2
+
+- Preserve an initialized Claude connection when the request that reopened its parked process times out waiting for input acknowledgment. A matching late replay confirms the original send without repeating its text.
+
 ## 13.6.1
 
 - Confirm Claude steers consumed by autonomous background follow-ups using the saved-history anchor captured by their current controller. Exact input identity, content, workspace and controller checks remain required.

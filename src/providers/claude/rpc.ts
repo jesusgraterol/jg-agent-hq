@@ -267,6 +267,8 @@ export const createClaudeRpc = async (
         data: { kind: 'agent-unavailable' },
         cause: initialized.error,
       });
+    // owned sessions outlive the operation that opened them, including a late input replay
+    if (control) signal?.removeEventListener('abort', cancel);
     isInitialized = true;
     return {
       version: initialized.data.claude_code_version ?? null,
