@@ -144,7 +144,6 @@ const acknowledge = (session: IClaudeSession, events: IClaudeControlEvents | und
   pauseSteerExpiry(session);
   session.replayedSteers?.clear();
   clearTimeout(input.timer);
-  input.resolve({ id: input.id });
   const request = parseActionRequest(input.requestId);
   if (request) events?.outcome({ kind: 'turn-accepted', ...request, nativeTurnId: input.id });
   events?.observe({

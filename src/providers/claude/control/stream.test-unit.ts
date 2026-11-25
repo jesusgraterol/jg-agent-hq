@@ -23,12 +23,12 @@ const createSession = (): IClaudeSession => ({
     id: 'input',
     requestId: 'request',
     isAcknowledged: true,
+    isEnqueued: true,
+    isExpired: false,
     interruptRequested: false,
     hasInterruptionMarker: false,
     finalText: null,
     isOutputOversized: false,
-    resolve: () => undefined,
-    reject: () => undefined,
     timer: setTimeout(() => undefined, 0),
   },
 });
@@ -336,22 +336,28 @@ test('an empty result before replay leaves the waiting input to complete its own
   const session = createSession();
   const input = session.input!;
   input.id = INPUT;
+  input.requestId = '4ec5f704-12d2-4556-97ae-7459571da548:turn';
   input.isAcknowledged = false;
-  input.resolve = vi.fn();
   const { events, items } = createEvents();
   const observe = vi.spyOn(events, 'observe');
+  const outcome = vi.spyOn(events, 'outcome');
   const diagnostic = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   try {
     receiveClaudeMessage(session, emptyResult, events);
     expect(session.input).toBe(input);
     expect(input.isAcknowledged).toBe(false);
-    expect(input.resolve).not.toHaveBeenCalled();
+    expect(outcome).not.toHaveBeenCalled();
     expect(observe).not.toHaveBeenCalled();
     expect(items).toStrictEqual([]);
 
     receiveClaudeMessage(session, userFrame(INPUT, 'The actual request'), events);
     receiveClaudeMessage(session, resultFrame(INPUT), events);
-    expect(input.resolve).toHaveBeenCalledExactlyOnceWith({ id: INPUT });
+    expect(outcome).toHaveBeenCalledExactlyOnceWith({
+      kind: 'turn-accepted',
+      actionId: '4ec5f704-12d2-4556-97ae-7459571da548',
+      phase: 'turn',
+      nativeTurnId: INPUT,
+    });
     expect(observe.mock.calls.map(([event]) => event)).toEqual([
       expect.objectContaining({ kind: 'turn-started', nativeTurnId: INPUT }),
       expect.objectContaining({

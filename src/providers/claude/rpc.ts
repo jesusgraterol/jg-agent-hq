@@ -287,6 +287,33 @@ export const createClaudeRpc = async (
         );
       },
       /**
+       * Queues a turn input without holding dispatch until the pipe drains.
+       * @returns Completion once the frame is buffered locally, before native acknowledgement.
+       * @throws
+       * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
+       * - JG_AGENT_HQ_TRANSPORT_FAILED: The HQ transport failed
+       */
+      async enqueueInput(message: unknown, beforeWrite: () => void): Promise<void> {
+        pendingWrites += 1;
+        try {
+          await transport.enqueue(
+            message,
+            () => {
+              beforeWrite();
+              if (isQuarantined)
+                throw HQ_ERRORS.create('claudeFailed', { data: { kind: 'agent-unavailable' } });
+            },
+            () => {
+              pendingWrites -= 1;
+            },
+          );
+        } catch (cause) {
+          pendingWrites -= 1;
+          throw cause;
+        }
+        control?.written?.(message);
+      },
+      /**
        * Writes native input only while rich control remains available.
        * @returns Confirmation that the transport accepted the write, never native consumption.
        * @throws

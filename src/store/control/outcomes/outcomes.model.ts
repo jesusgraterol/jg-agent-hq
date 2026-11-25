@@ -80,7 +80,8 @@ export class ControlOutcomes extends ControlModel {
         thread.ownership === 'uncertain' &&
         !ownsQuarantinedClose &&
         outcome.kind !== 'failed' &&
-        outcome.kind !== 'uncertain'
+        outcome.kind !== 'uncertain' &&
+        outcome.kind !== 'unconfirmed-stop-refused'
       )
         return toActionReceipt(action);
       const now = Date.now();
@@ -110,12 +111,84 @@ export class ControlOutcomes extends ControlModel {
       } else if (outcome.kind === 'cleaned') {
         if ((!ownsThread && !ownsQuarantinedClose) || thread!.pending_action_id !== action.id)
           this._conflict();
+        if (action.kind === 'thread-close' && action.related_action_id) {
+          this._statements.run(
+            "UPDATE agent_hq_thread SET state = 'stopping', updated_at = ? WHERE id = ?",
+            now,
+            thread!.id,
+          );
+          this._statements.run(
+            "UPDATE agent_hq_action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
+            thread!.id,
+          );
+        }
         // a cleaned session is closed next
         this._statements.run(
           "UPDATE agent_hq_action SET delivery = 'submitted', phase = 'close', updated_at = ? WHERE id = ?",
           now,
           action.id,
         );
+      } else if (outcome.kind === 'unconfirmed-stop-refused') {
+        if (action.kind !== 'thread-close' || !action.related_action_id || action.phase !== 'clean')
+          this._conflict();
+        this._statements.run(
+          "UPDATE agent_hq_action SET delivery = 'failed', failure = 'state-conflict', updated_at = ? WHERE id = ?",
+          now,
+          action.id,
+        );
+        if (thread?.runtime_epoch === this._epoch && thread.pending_action_id === action.id) {
+          const original = this._isUnconfirmedInput(thread, action.related_action_id)
+            ? action.related_action_id
+            : null;
+          this._statements.run(
+            'UPDATE agent_hq_thread SET pending_action_id = ?, updated_at = ? WHERE id = ?',
+            original,
+            now,
+            thread.id,
+          );
+        }
+      } else if (
+        outcome.kind === 'turn-enqueued' ||
+        outcome.kind === 'turn-acknowledgement-expired' ||
+        outcome.kind === 'turn-not-enqueued'
+      ) {
+        if (
+          !ownsThread ||
+          thread.provider !== 'claude' ||
+          thread.pending_action_id !== action.id ||
+          action.phase !== 'turn' ||
+          action.delivery !== 'submitted'
+        )
+          return toActionReceipt(action);
+        if (outcome.kind === 'turn-enqueued') {
+          if (thread.active_turn_id === null)
+            this._statements.run(
+              "UPDATE agent_hq_thread SET state = 'starting', updated_at = ? WHERE id = ?",
+              now,
+              thread.id,
+            );
+        } else if (outcome.kind === 'turn-acknowledgement-expired') {
+          this._statements.run(
+            "UPDATE agent_hq_action SET delivery = 'uncertain', updated_at = ? WHERE id = ?",
+            now,
+            action.id,
+          );
+        } else {
+          this._statements.run(
+            "UPDATE agent_hq_action SET delivery = 'failed', failure = 'agent-unavailable', updated_at = ? WHERE id = ?",
+            now,
+            action.id,
+          );
+          this._statements.run(
+            'UPDATE agent_hq_thread SET pending_action_id = NULL, updated_at = ? WHERE id = ?',
+            now,
+            thread.id,
+          );
+          this._statements.run(
+            "UPDATE agent_hq_action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
+            thread.id,
+          );
+        }
       } else if (outcome.kind === 'uncertain' || outcome.kind === 'failed') {
         this._statements.run(
           'UPDATE agent_hq_action SET delivery = ?, failure = ?, updated_at = ? WHERE id = ?',
@@ -170,11 +243,12 @@ export class ControlOutcomes extends ControlModel {
           now,
           thread.id,
         );
-        this._statements.run(
-          "UPDATE agent_hq_thread SET state = 'starting', updated_at = ? WHERE id = ?",
-          now,
-          thread.id,
-        );
+        if (thread.provider !== 'claude')
+          this._statements.run(
+            "UPDATE agent_hq_thread SET state = 'starting', updated_at = ? WHERE id = ?",
+            now,
+            thread.id,
+          );
         this._statements.run(
           "UPDATE agent_hq_action SET delivery = 'submitted', phase = 'turn', updated_at = ? WHERE id = ?",
           now,
@@ -234,14 +308,20 @@ export class ControlOutcomes extends ControlModel {
           action.id,
         );
         if (ownsThread || ownsQuarantinedClose) {
-          if (outcome.kind === 'closed')
+          if (outcome.kind === 'closed') {
             this._statements.run(
               "UPDATE agent_hq_thread SET runtime_epoch = NULL, pending_action_id = NULL, active_turn_id = NULL, ownership = 'managed', state = 'inactive', updated_at = ? WHERE id = ? AND pending_action_id = ?",
               now,
               thread!.id,
               action.id,
             );
-          else if (outcome.kind === 'resumed') {
+            if (action.kind === 'thread-close' && action.related_action_id)
+              this._statements.run(
+                "UPDATE agent_hq_native_approval SET state = 'expired', updated_at = ? WHERE thread_id = ? AND state = 'pending'",
+                now,
+                thread!.id,
+              );
+          } else if (outcome.kind === 'resumed') {
             if (outcome.latestTurn !== undefined) {
               const latest = outcome.latestTurn;
               const hasFinished =

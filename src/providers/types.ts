@@ -76,6 +76,8 @@ export type IResyncLoss = z.infer<typeof ResyncLossSchema>;
 // adapters must honor cancellation and keep delivery uncertain when native consumption is unproven
 export type IProviderCall = {
   signal: AbortSignal;
+  checkDeadline?(): void;
+  onEnqueued?(): void;
   controlScope?: string;
   requiresQuiescence?: boolean;
 };
@@ -154,7 +156,7 @@ export type IAgentProviderEvents = {
   ): void;
   unavailable(nativeId?: string, controlScope?: string, source?: IControlSource): void;
   // interpretation loss is separate from native transport failure and shutdown proof
-  quarantined(source: IControlSource): void;
+  quarantined(source: IControlSource, enqueuedActionId?: string): void;
   quiescent(source: IControlSource): void;
 };
 
@@ -182,6 +184,8 @@ export type IAgentProviderFactory = {
 export type IAgentProvider = {
   /** @returns The exact current owned controller, without opening or changing native execution. */
   getControlSource?(nativeId: string): IControlSource | undefined;
+  /** Identifies the current controller's expired, still-unacknowledged ordinary input. */
+  getUnconfirmedInputActionId?(nativeId: string): string | undefined;
   /** @returns Whether the exact controller has suspended rich interpretation. */
   isControlQuarantined?(source: IControlSource): boolean;
   /** @returns Whether the exact owned controller contained the interpretation failure. */
@@ -289,7 +293,7 @@ export type IAgentProvider = {
   ): Promise<void>;
   /**
    * Starts one native turn; completion arrives separately.
-   * @returns The acknowledged native turn identity.
+   * @returns The acknowledged native turn identity or Claude's bounded submission outcome.
    * @throws
    * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
    * - JG_AGENT_HQ_CAPABILITY_UNAVAILABLE: The HQ capability is unavailable
@@ -306,7 +310,7 @@ export type IAgentProvider = {
     settings: ITurnSettings,
     files: IProviderInputFile[],
     call: IProviderCall,
-  ): Promise<{ id: string }>;
+  ): Promise<{ id: string } | { kind: 'submitted' | 'not-enqueued' }>;
   /**
    * Sends text and qualified attachments to the exact active turn.
    * @returns The acknowledged active turn identity, without creating a new turn.
@@ -333,10 +337,20 @@ export type IAgentProvider = {
     nativeTurnId: string,
     call: IProviderCall,
   ): Promise<void>;
-  /** @returns Native cleanup acknowledgement for the selected owned session. */
-  cleanThread(requestId: string, nativeId: string, call: IProviderCall): Promise<void>;
+  /** @returns Native cleanup acknowledgement, or false if the exact input no longer permits Stop. */
+  cleanThread(
+    requestId: string,
+    nativeId: string,
+    stop: { scope: string; actionId: string; onStarted: () => void } | undefined,
+    call: IProviderCall,
+  ): Promise<void | false>;
   /** @returns Confirmed cleanup and release of the selected owned native controller. */
-  releaseThread(requestId: string, nativeId: string, call: IProviderCall): Promise<void>;
+  releaseThread(
+    requestId: string,
+    nativeId: string,
+    expectedScope: string | undefined,
+    call: IProviderCall,
+  ): Promise<void>;
   /**
    * Deletes a session no process runs from the provider's storage, in the workspace it ran in. A
    * session already gone counts as deleted.
@@ -373,6 +387,8 @@ export type IProviderProcess = {
   readonly isRunning: boolean;
   readonly pid: number | undefined;
   write(message: unknown): Promise<void>;
+  /** Queues one frame and reports its eventual write settlement independently. */
+  enqueue(message: unknown, beforeWrite: () => void, finished: () => void): Promise<void>;
   close(): Promise<void>;
 };
 

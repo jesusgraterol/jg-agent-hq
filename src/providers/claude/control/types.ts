@@ -13,13 +13,13 @@ export type IClaudeInput = {
   id: string;
   requestId: string;
   isAcknowledged: boolean;
+  isEnqueued: boolean;
+  isExpired: boolean;
   interruptRequested: boolean;
   hasInterruptionMarker: boolean;
   finalText: string | null;
   isOutputOversized: boolean;
-  resolve(turn: { id: string }): void;
-  reject(error: unknown): void;
-  timer: ReturnType<typeof setTimeout>;
+  timer?: ReturnType<typeof setTimeout>;
 };
 
 // a turn Claude starts with no HQ input, such as after a background command finishes

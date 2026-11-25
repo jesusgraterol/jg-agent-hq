@@ -79,6 +79,10 @@ export type INativeOutcome = IOutcomeFields &
     | { kind: 'deleted'; nativeId: string }
     | { kind: 'renamed' }
     | { kind: 'turn-accepted'; nativeTurnId: string }
+    | { kind: 'turn-enqueued' }
+    | { kind: 'turn-acknowledgement-expired' }
+    | { kind: 'turn-not-enqueued' }
+    | { kind: 'unconfirmed-stop-refused' }
     | { kind: 'steer-accepted'; nativeTurnId: string }
     | { kind: 'interrupt-accepted' }
     | { kind: 'reply-written' }
@@ -112,6 +116,7 @@ export type IAdmission = {
     input?: IPreparedInput;
     recoveryTurn?: IReattachment['latestTurn'];
     quarantinedControl?: IControlSource;
+    unconfirmedControl?: IControlSource;
   };
 };
 export type IAdmissionResult = {

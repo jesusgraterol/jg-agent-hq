@@ -265,7 +265,19 @@ export const createAdmission = (
       const source = target?.nativeId
         ? registry.getControlSource(provider, target.nativeId)
         : undefined;
-      if (source && registry.isControlQuarantined(provider, source)) {
+      if (command.expectedUnconfirmedActionId !== undefined) {
+        if (
+          !source ||
+          target?.runtimeEpoch !== epoch ||
+          target.ownership !== 'managed' ||
+          target.workspaceRoot !== source.workspaceRoot ||
+          claudeTerminalOf(source.nativeId) ||
+          registry.getUnconfirmedInputActionId(source.nativeId) !==
+            command.expectedUnconfirmedActionId
+        )
+          conflict();
+        prepared.unconfirmedControl = source;
+      } else if (source && registry.isControlQuarantined(provider, source)) {
         await state.lane.catch(() => undefined);
         const current = await store.call('reads', 'getThread', command.threadId);
         if (
@@ -341,6 +353,7 @@ export const createAdmission = (
           input,
           prepared.recoveryTurn,
           prepared.quarantinedControl,
+          prepared.unconfirmedControl,
         );
       });
     }

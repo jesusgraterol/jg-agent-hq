@@ -53,12 +53,18 @@ export const ActionCommandSchema = z.discriminatedUnion('kind', [
     operatorConfirmation: z.string().trim().min(1).max(1024),
     settings: SessionSettingsSchema.optional(),
   }),
-  // `interrupt` stops a running turn first, instead of refusing a session that isn't idle
-  z.strictObject({
-    kind: z.literal('thread-close'),
-    threadId: ThreadIdSchema,
-    interrupt: z.boolean().optional(),
-  }),
+  // an explicit Stop can name the exact expired input instead of an acknowledged running turn
+  z
+    .strictObject({
+      kind: z.literal('thread-close'),
+      threadId: ThreadIdSchema,
+      interrupt: z.boolean().optional(),
+      expectedUnconfirmedActionId: z.uuid().optional(),
+    })
+    .refine(
+      ({ expectedUnconfirmedActionId, interrupt }) =>
+        expectedUnconfirmedActionId === undefined || interrupt === true,
+    ),
   // a session no process runs, by its native identity, whether HQ manages it or not
   z.strictObject({
     kind: z.literal('thread-delete'),
@@ -209,6 +215,7 @@ export const ManagedThreadSchema = z.object({
   ownership: z.enum(['managed', 'uncertain']),
   runtimeEpoch: z.uuid().nullable(),
   activeTurnId: NativeIdSchema.nullable(),
+  unconfirmedInputActionId: z.uuid().optional(),
   state: z.enum([
     'creating',
     'inactive',

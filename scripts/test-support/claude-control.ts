@@ -2,7 +2,7 @@
 export const CLAUDE_CONTROL_SOURCE = String.raw`
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
-import {appendFileSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs';
+import {appendFileSync,closeSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {createInterface} from 'node:readline';
 // the commands initialize reports, from claude-control.json, the same for a session and a read
@@ -128,15 +128,26 @@ export const startClaudeControl = () => {
   }
  };
  const lines=createInterface({input:process.stdin});
+ let inputPaused=false;
  const interval=setInterval(()=>{
   if(input&&!native&&control().release&&!hasPrompt){if(control().releaseOnce)writeFileSync(join(root,'claude-control.json'),JSON.stringify({...control(),release:false,releaseOnce:false}));complete();}
   if(heldResult&&control().releaseResult){const held=heldResult;heldResult=null;held();}
   if(heldReplay&&control().releaseReplay){const held=heldReplay;heldReplay=null;held();}
   const settings=control();
+  if(settings.exitSession===id){shutdown();return;}
+  if(settings.pauseSession===id&&!inputPaused&&!settings.resumeInput&&!settings.breakInput){
+   inputPaused=true;lines.pause();
+   appendFileSync(join(root,'claude-calls.jsonl'),JSON.stringify({type:'fixture_input_paused',uuid:id})+'\n');
+  }
+  if(inputPaused&&settings.breakInput){
+   lines.removeListener('close',shutdown);lines.close();process.stdin.destroy();
+   // A Node process keeps its original standard descriptors open after stream destruction.
+   closeSync(0);inputPaused=false;
+  }else if(inputPaused&&settings.resumeInput){inputPaused=false;lines.resume();}
   if(heldSerialResult&&settings.releaseSteer>=heldSerialResult.ordinal){const held=heldSerialResult;heldSerialResult=null;held.finish();}
   if(heldNameResponse&&settings.releaseNameResponse){const held=heldNameResponse;heldNameResponse=null;held();}
   if(settings.frameBatch&&settings.frameBatch.id!==emittedBatch&&(!settings.frameBatch.nativeId||settings.frameBatch.nativeId===id)){emittedBatch=settings.frameBatch.id;for(const frame of settings.frameBatch.frames)out(frame);appendFileSync(join(root,'claude-calls.jsonl'),JSON.stringify({type:'fixture_frames_sent',uuid:id,batch:emittedBatch})+'\n');}
-  if(heldSettings&&(!settings.holdSettings||settings.releaseSettings)){const held=heldSettings;heldSettings=null;held();}
+  if(heldSettings&&(!settings.holdSettings&&!settings.holdFlagSettings||settings.releaseSettings)){const held=heldSettings;heldSettings=null;held();}
   if(shutdownHeld&&(!settings.holdShutdown||settings.releaseShutdown)){shutdown();return;}
   if(isTaskRunning&&settings.finishBackgroundTask){isTaskRunning=false;out({type:'system',subtype:'task_updated',task_id:'task-1',run_id:'run-1',patch:{status:'completed',end_time:Date.now()}});out({type:'system',subtype:'task_notification',task_id:'task-1',run_id:'run-1',tool_use_id:'tool-task',status:'completed',output_file:'',summary:'done'});out({type:'system',subtype:'background_tasks_changed',tasks:[]});}
   if(native&&!native.hasPrompt&&settings.nativeRelease)endNative(false);
@@ -165,6 +176,7 @@ export const startClaudeControl = () => {
     answer();return;
    }
    if(subtype==='apply_flag_settings'){
+    if(settings.holdFlagSettings&&!settings.releaseSettings){heldSettings=()=>response();appendFileSync(join(root,'claude-calls.jsonl'),JSON.stringify({type:'fixture_flags_held',uuid:id})+'\n');return;}
     model=message.request.settings.model??model;effort=message.request.settings.effortLevel??effort;fast=message.request.settings.fastMode??fast;
     if(settings.modelNotice&&message.request.settings.model){
      const command=randomUUID();record(command,'user','<command-name>/model</command-name>\n<command-args>'+model+'</command-args>',leaf);leaf=command;
@@ -220,7 +232,7 @@ export const startClaudeControl = () => {
    // nativeBeforeReplay starts a turn of Claude's own once, just as input arrives
    else if(settings.nativeBeforeReplay&&!hasRaced){hasRaced=true;startNative(acknowledge);}
    else if(settings.holdReplay)heldReplay=acknowledge;
-   else if(settings.lateAck)setTimeout(acknowledge,31000);else acknowledge();
+   else acknowledge();
   }else if(message.type==='control_response'){
    if(settings.holdReply)return;
    if(native&&message.response.request_id==='native-turn-request'){

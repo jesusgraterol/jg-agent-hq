@@ -1,4 +1,4 @@
-import { isException } from 'jg-exception';
+import { hasErrorCode, isException } from 'jg-exception';
 import { abortable, createDeadline } from 'jg-utilities';
 import { z } from 'zod';
 
@@ -71,11 +71,23 @@ const unavailableCapabilities = (): IProviderCapabilitySet => {
 const bounded = async <T>(
   operation: (call: IProviderCall) => Promise<T>,
   signal?: AbortSignal,
+  onDeadline?: () => T,
 ): Promise<T> => {
   const deadline = createDeadline({ timeoutSeconds: 30, ...(signal ? { signal } : {}) });
   try {
     deadline.throwIfStopped();
-    return await abortable(operation({ signal: deadline.signal }), { signal: deadline.signal });
+    return await abortable(
+      operation({ signal: deadline.signal, checkDeadline: deadline.throwIfStopped }),
+      { signal: deadline.signal },
+    );
+  } catch (error) {
+    if (
+      onDeadline &&
+      deadline.stopReason() === 'deadline' &&
+      (error === deadline.signal.reason || hasErrorCode(error, 'DEADLINE_EXCEEDED'))
+    )
+      return onDeadline();
+    throw error;
   } finally {
     deadline.dispose();
   }
@@ -307,7 +319,8 @@ export const createProviderRegistry = (
           true,
           nativeId,
         ),
-      quarantined: (source) => deliver(() => handlers?.quarantined(provider, source), source, true),
+      quarantined: (source, enqueuedActionId) =>
+        deliver(() => handlers?.quarantined(provider, source, enqueuedActionId), source, true),
       quiescent: (source) => deliver(() => handlers?.quiescent(provider, source), source, true),
     };
   };
@@ -343,10 +356,13 @@ export const createProviderRegistry = (
           return opened;
         }, lifetime.signal);
         if (entry.failure) throw entry.failure;
-        const invoke = async <T>(operation: (call: IProviderCall) => Promise<T>): Promise<T> => {
+        const invoke = async <T>(
+          operation: (call: IProviderCall) => Promise<T>,
+          onDeadline?: () => T,
+        ): Promise<T> => {
           if (entry.failure || isClosing) capabilityUnavailable();
           try {
-            const result = await bounded(operation, lifetime.signal);
+            const result = await bounded(operation, lifetime.signal, onDeadline);
             if (entry.failure) throw entry.failure;
             return result;
           } catch (cause) {
@@ -357,6 +373,7 @@ export const createProviderRegistry = (
         const invokeControl = async <T>(
           operation: (call: IProviderCall) => Promise<T>,
           nativeId?: string,
+          onDeadline?: () => T,
         ): Promise<T> =>
           invoke(async (call) => {
             const source = nativeId ? adapter.getControlSource?.(nativeId) : undefined;
@@ -374,7 +391,7 @@ export const createProviderRegistry = (
               }
               throw cause;
             }
-          });
+          }, onDeadline);
         return {
           get state() {
             return adapter.state;
@@ -421,11 +438,22 @@ export const createProviderRegistry = (
             invokeControl((call) => adapter.nameThread(requestId, nativeId, name, call), nativeId),
           validateInput: (nativeId, input) =>
             invoke((call) => adapter.validateInput(nativeId, input, call)),
-          startTurn: (requestId, nativeId, text, skill, settings, files) =>
-            invokeControl(
-              (call) => adapter.startTurn(requestId, nativeId, text, skill, settings, files, call),
+          startTurn: (requestId, nativeId, text, skill, settings, files) => {
+            let hasEnqueued = false;
+            return invokeControl(
+              (call) =>
+                adapter.startTurn(requestId, nativeId, text, skill, settings, files, {
+                  ...call,
+                  onEnqueued: () => {
+                    hasEnqueued = true;
+                  },
+                }),
               nativeId,
-            ),
+              entry.factory.id === 'claude'
+                ? () => ({ kind: hasEnqueued ? 'submitted' : 'not-enqueued' })
+                : undefined,
+            );
+          },
           steer: (requestId, nativeId, expectedTurnId, text, files) =>
             invokeControl(
               (call) => adapter.steer(requestId, nativeId, expectedTurnId, text, files, call),
@@ -436,10 +464,13 @@ export const createProviderRegistry = (
               (call) => adapter.interrupt(requestId, nativeId, nativeTurnId, call),
               nativeId,
             ),
-          cleanThread: (requestId, nativeId) =>
-            invokeControl((call) => adapter.cleanThread(requestId, nativeId, call), nativeId),
-          releaseThread: (requestId, nativeId) =>
-            invokeControl((call) => adapter.releaseThread(requestId, nativeId, call), nativeId),
+          cleanThread: (requestId, nativeId, stop) =>
+            invokeControl((call) => adapter.cleanThread(requestId, nativeId, stop, call), nativeId),
+          releaseThread: (requestId, nativeId, expectedScope) =>
+            invokeControl(
+              (call) => adapter.releaseThread(requestId, nativeId, expectedScope, call),
+              nativeId,
+            ),
           deleteThread: (requestId, nativeId, workspaceRoot) =>
             invokeControl(
               (call) => adapter.deleteThread(requestId, nativeId, workspaceRoot, call),
@@ -466,6 +497,12 @@ export const createProviderRegistry = (
     /** @returns The private current controller identity without starting the adapter. */
     getControlSource(provider: IProviderId, nativeId: string): IControlSource | undefined {
       return entries.get(provider)?.adapter?.getControlSource?.(nativeId);
+    },
+    /** Reads only the current available Claude controller's eligible Stop target. */
+    getUnconfirmedInputActionId(nativeId: string): string | undefined {
+      const entry = entries.get('claude');
+      if (isClosing || entry?.failure) return;
+      return entry?.adapter?.getUnconfirmedInputActionId?.(nativeId);
     },
     /** @returns Whether the exact owned controller remains quarantined in this runtime. */
     isControlQuarantined(provider: IProviderId, source: IControlSource): boolean {

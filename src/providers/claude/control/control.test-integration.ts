@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import fs, { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as wait } from 'node:timers/promises';
@@ -15,6 +16,7 @@ import { writeFixtureControl } from '../../../../scripts/test-support/index.js';
 
 import {
   claudeRecord,
+  waitForWarmUp,
   withClaudeRuntime,
   type IClaudeFixture,
 } from '../../../../scripts/test-support/claude-runtime.js';
@@ -105,9 +107,9 @@ const actions = async (fixture: IClaudeFixture) => {
     ready: (result: T) => boolean,
     timeout = 5000,
   ): Promise<T> => {
-    const deadline = Date.now() + timeout;
+    const deadline = performance.now() + timeout;
     let result = await read();
-    while (!ready(result) && Date.now() < deadline) {
+    while (!ready(result) && performance.now() < deadline) {
       await wait(10);
       result = await read();
     }
@@ -2549,6 +2551,68 @@ test('Claude external adoption requires qualified workspace history and an expli
   });
 });
 
+// Advance only this controller's acknowledgement timer. The registry, shutdown and inventory
+// timers still use the real clock so a five-minute jump cannot manufacture unrelated failures.
+const holdInputExpiry = () => {
+  const setTimer = globalThis.setTimeout;
+  let expire: (() => void) | undefined;
+  const timers = vi
+    .spyOn(globalThis, 'setTimeout')
+    .mockImplementation((callback, delay, ...args) => {
+      const timer = setTimer(callback, delay, ...args);
+      if (delay === 300_000) {
+        expire = () => {
+          clearTimeout(timer);
+          callback(...args);
+        };
+      }
+      return timer;
+    });
+  return {
+    expire() {
+      expect(expire).toBeTypeOf('function');
+      expire?.();
+    },
+    restore: () => timers.mockRestore(),
+  };
+};
+
+test('silent Claude compaction can outlast dispatch without losing control', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    await waitForWarmUp(fixture.runtime);
+    const api = await actions(fixture);
+    const { thread } = await api.create();
+    await fixture.control({ holdReplay: true });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const input = await api.message(thread.id);
+      await api.until(api.calls, (calls) => calls.some(({ type }) => type === 'user'));
+      await api.until(
+        () => api.thread(thread.id),
+        (entry) => entry.state === 'starting',
+      );
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(await api.receipt(input.id)).toMatchObject({ delivery: 'submitted' });
+      expect(await api.thread(thread.id)).toMatchObject({
+        ownership: 'managed',
+        state: 'starting',
+      });
+      await fixture.control({ releaseReplay: true });
+      await api.until(
+        () => api.receipt(input.id),
+        (entry) => entry.completion === 'completed',
+      );
+      expect((await api.calls()).filter(({ type }) => type === 'user')).toHaveLength(1);
+      const { result } = await fixture.request({ kind: 'session-states', limit: 128 });
+      expect(
+        result.data.filter(({ threadId, state }) => threadId === thread.id && state === 'unknown'),
+      ).toStrictEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 test.each([false, true])(
   'Claude late input acknowledgement reconciles uncertainty without resending the text (parked: %s)',
   async (isParked) => {
@@ -2556,29 +2620,438 @@ test.each([false, true])(
       const api = await actions(fixture),
         { thread } = await api.create();
       if (isParked) await parkIdleSessions(fixture);
-      await fixture.control({ lateAck: true });
-      const input = await api.message(thread.id);
-      const uncertain = await api.until(
-        () => api.receipt(input.id),
-        (entry) => entry.delivery === 'uncertain',
-        32000,
+      await fixture.control({ holdReplay: true });
+      const expiry = holdInputExpiry();
+      try {
+        const input = await api.message(thread.id);
+        await api.until(
+          () => writtenInputs(api),
+          (written) => written.length === 1,
+        );
+        expiry.expire();
+        const uncertain = await api.until(
+          () => api.receipt(input.id),
+          (entry) => entry.delivery === 'uncertain',
+        );
+        expect(uncertain.completion).toBeNull();
+        expect(await api.thread(thread.id)).toMatchObject({
+          ownership: 'managed',
+          state: 'starting',
+          unconfirmedInputActionId: input.id,
+        });
+        await api.submit(input);
+        await fixture.control({ releaseReplay: true });
+        const final = await api.until(
+          () => api.receipt(input.id),
+          (entry) => entry.completion === 'completed',
+        );
+        const [written] = await writtenInputs(api);
+        expect(final).toMatchObject({ delivery: 'acknowledged', nativeTurnId: written!.uuid });
+        expect(await writtenInputs(api)).toHaveLength(1);
+        expect(await api.thread(thread.id)).toMatchObject({
+          ownership: 'managed',
+          state: 'completed',
+        });
+      } finally {
+        expiry.restore();
+      }
+    });
+  },
+);
+
+test('a held Claude settings response expires without writing input or losing control', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    await waitForWarmUp(fixture.runtime);
+    const api = await actions(fixture);
+    const { thread } = await api.create();
+    await fixture.control({ holdFlagSettings: true });
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    try {
+      const action = api.envelope({
+        kind: 'message',
+        threadId: thread.id,
+        input: { kind: 'text', text: 'Never written' },
+        settings: { model: 'model-0001' },
+      });
+      await api.submit(action);
+      await api.until(api.calls, (calls) =>
+        calls.some(({ type }) => type === 'fixture_flags_held'),
       );
-      expect(uncertain.completion).toBeNull();
-      await api.submit(input);
-      const final = await api.until(
+      await vi.advanceTimersByTimeAsync(30_001);
+      expect(await api.receipt(action.id)).toMatchObject({
+        delivery: 'failed',
+        failure: 'agent-unavailable',
+      });
+      expect(await api.thread(thread.id)).toMatchObject({ ownership: 'managed', state: 'idle' });
+      await fixture.control({ releaseSettings: true });
+      const next = await api.message(thread.id, 'Only this input should be written');
+      const accepted = await api.settled(next.id);
+      const written = await writtenInputs(api);
+      expect(written.map(({ uuid }) => uuid)).toStrictEqual([accepted.nativeTurnId]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+test.each([false, true])(
+  'a Claude process exit leaves the original input uncertain (after expiry: %s)',
+  async (isExpired) => {
+    await withClaudeRuntime(async (fixture) => {
+      await waitForWarmUp(fixture.runtime);
+      const api = await actions(fixture);
+      const { thread } = await api.create();
+      await fixture.control({ holdReplay: true });
+      const expiry = holdInputExpiry();
+      try {
+        const input = await api.message(thread.id);
+        await api.until(
+          () => writtenInputs(api),
+          (written) => written.length === 1,
+        );
+        if (isExpired) {
+          expiry.expire();
+          expect(await api.thread(thread.id)).toMatchObject({
+            ownership: 'managed',
+            unconfirmedInputActionId: input.id,
+          });
+        }
+        await fixture.control({ exitSession: thread.nativeId });
+        const { result } = await api.until(
+          () => fixture.request({ kind: 'session-states', limit: 128 }),
+          ({ result }) =>
+            result.data.some(
+              ({ threadId, state }) => threadId === thread.id && state === 'unknown',
+            ),
+        );
+        expect(
+          result.data.filter(
+            ({ threadId, state }) => threadId === thread.id && state === 'unknown',
+          ),
+        ).toHaveLength(1);
+        expect(await api.receipt(input.id)).toMatchObject({
+          delivery: 'uncertain',
+          nativeTurnId: null,
+        });
+        expect(await writtenInputs(api)).toHaveLength(1);
+        await api.until(
+          () => api.thread(thread.id),
+          (entry) => entry.state === 'inactive',
+        );
+      } finally {
+        expiry.restore();
+      }
+    });
+  },
+);
+
+// Advance the dispatch deadlines without firing unrelated IPC and store timers.
+const holdDispatchDeadlines = () => {
+  const schedule = globalThis.setTimeout;
+  const cancel = globalThis.clearTimeout;
+  const callbacks = new Map<NodeJS.Timeout, () => void>();
+  const scheduling = vi
+    .spyOn(globalThis, 'setTimeout')
+    .mockImplementation((callback, delay, ...args) => {
+      const timer = schedule(callback, delay, ...args);
+      if (delay !== undefined && delay >= 29_990 && delay <= 30_000)
+        callbacks.set(timer, () => callback(...args));
+      return timer;
+    });
+  const cancellation = vi.spyOn(globalThis, 'clearTimeout').mockImplementation((timer) => {
+    if (typeof timer === 'object') callbacks.delete(timer);
+    cancel(timer);
+  });
+  vi.useFakeTimers({ toFake: ['Date'] });
+  return {
+    elapse() {
+      vi.setSystemTime(Date.now() + 31_000);
+      for (const [timer, callback] of [...callbacks]) {
+        if (!callbacks.has(timer)) continue;
+        clearTimeout(timer);
+        callback();
+      }
+    },
+    restore() {
+      scheduling.mockRestore();
+      cancellation.mockRestore();
+      vi.useRealTimers();
+    },
+  };
+};
+
+test.each(['resume', 'break'] as const)(
+  'Claude stdin backpressure outlasts the dispatch deadline before the pipe can %s',
+  async (pipe) => {
+    await withClaudeRuntime(async (fixture) => {
+      await waitForWarmUp(fixture.runtime);
+      const api = await actions(fixture);
+      const { thread } = await api.create();
+      const attachment = 'large-frame.txt';
+      await writeFile(join(fixture.workspaceRoot, attachment), '\u0001'.repeat(262_144));
+      await fixture.control({ pauseSession: thread.nativeId });
+      await api.until(api.calls, (calls) =>
+        calls.some(({ type }) => type === 'fixture_input_paused'),
+      );
+      const deadlines = holdDispatchDeadlines();
+      try {
+        const input = api.envelope({
+          kind: 'message',
+          threadId: thread.id,
+          input: {
+            kind: 'text',
+            text: 'Large input',
+            files: [{ path: attachment, mediaType: 'text/plain' }],
+          },
+        });
+        await api.submit(input);
+        await api.until(
+          () => api.thread(thread.id),
+          (entry) => entry.state === 'starting',
+        );
+        deadlines.elapse();
+        expect(await api.receipt(input.id)).toMatchObject({ delivery: 'submitted' });
+        expect(await api.thread(thread.id)).toMatchObject({ ownership: 'managed' });
+        expect(await writtenInputs(api)).toHaveLength(0);
+        expect((await api.submit(input)).id).toBe(input.id);
+        const conflictingInput = await api.message(thread.id);
+        expect(await api.receipt(conflictingInput.id)).toMatchObject({
+          delivery: 'failed',
+          failure: 'state-conflict',
+        });
+
+        if (pipe === 'break') {
+          await fixture.control({ breakInput: true });
+          await api.until(
+            () => fixture.request({ kind: 'session-states', limit: 128 }),
+            ({ result }) =>
+              result.data.some(
+                ({ threadId, state }) => threadId === thread.id && state === 'unknown',
+              ),
+          );
+          expect(await api.receipt(input.id)).toMatchObject({
+            delivery: 'uncertain',
+            nativeTurnId: null,
+          });
+          expect(await writtenInputs(api)).toHaveLength(0);
+          await fixture.control({ exitSession: thread.nativeId });
+          await api.until(
+            () => api.thread(thread.id),
+            (entry) => entry.state === 'inactive',
+          );
+        } else {
+          await fixture.control({ resumeInput: true, holdTurn: true });
+          const accepted = await api.settled(input.id);
+          const written = await writtenInputs(api);
+          expect(written.map(({ uuid }) => uuid)).toStrictEqual([accepted.nativeTurnId]);
+          expect(await api.thread(thread.id)).toMatchObject({ ownership: 'managed' });
+        }
+      } finally {
+        deadlines.restore();
+        await fixture.control({ resumeInput: true });
+      }
+    });
+  },
+);
+
+test('an expired Claude input authorizes Stop for only its controller and preserves its receipt and queue', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    await waitForWarmUp(fixture.runtime);
+    const api = await actions(fixture);
+    const { thread } = await api.create('selected-session');
+    const { thread: peer } = await api.create('peer-session');
+    const [pid, peerPid] = await readPids(fixture);
+    await fixture.control({ nativeBeforeReplay: true, nativeHold: true });
+    const expiry = holdInputExpiry();
+    try {
+      const input = await api.message(thread.id);
+      const turnId = await awaitNativeTurn(api, thread.id);
+      const queued = api.envelope({
+        kind: 'queue',
+        threadId: thread.id,
+        expectedTurnId: turnId,
+        input: { kind: 'text', text: 'Keep this queued' },
+      });
+      await api.submit(queued);
+      expiry.expire();
+      await api.until(
+        () => api.thread(thread.id),
+        (entry) => entry.unconfirmedInputActionId === input.id,
+      );
+      await expectToRejectCode(
+        api.submit(
+          api.envelope({
+            kind: 'thread-close',
+            threadId: peer.id,
+            interrupt: true,
+            expectedUnconfirmedActionId: input.id,
+          }),
+        ),
+        'JG_AGENT_HQ_CLIENT_STATE_CONFLICT',
+      );
+      const stop = api.envelope({
+        kind: 'thread-close',
+        threadId: thread.id,
+        interrupt: true,
+        expectedUnconfirmedActionId: input.id,
+      });
+      await api.submit(stop);
+      await api.settled(stop.id);
+      expect(isRunning(-pid!)).toBe(false);
+      expect(isRunning(-peerPid!)).toBe(true);
+      expect((await api.submit(stop)).delivery).toBe('acknowledged');
+      expect(await api.thread(thread.id)).toMatchObject({
+        state: 'inactive',
+        nativeId: thread.nativeId,
+      });
+      expect(await api.receipt(input.id)).toMatchObject({
+        delivery: 'uncertain',
+        nativeTurnId: null,
+        completion: null,
+      });
+      expect(await api.receipt(queued.id)).toMatchObject({ delivery: 'queued' });
+      expect(await writtenInputs(api)).toHaveLength(1);
+      await fixture.control({});
+      const resume = api.envelope({
+        kind: 'thread-resume',
+        threadId: thread.id,
+        operatorConfirmation: 'Resume this session',
+      });
+      await api.submit(resume);
+      await api.settled(resume.id);
+      expect(await api.thread(thread.id)).toMatchObject({
+        state: 'idle',
+        nativeId: thread.nativeId,
+      });
+      expect(await writtenInputs(api)).toHaveLength(1);
+    } finally {
+      expiry.restore();
+    }
+  });
+});
+
+test('a matching Claude acknowledgement after Stop admission wins before shutdown is reserved', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    await waitForWarmUp(fixture.runtime);
+    const api = await actions(fixture);
+    const { thread } = await api.create();
+    const [pid] = await readPids(fixture);
+    await fixture.control({ holdReplay: true });
+    const stop = api.envelope({
+      kind: 'thread-close',
+      threadId: thread.id,
+      interrupt: true,
+      expectedUnconfirmedActionId: randomUUID(),
+    });
+    const originalRealpath = fs.realpath;
+    const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
+    const reservation = database.prepare('SELECT phase FROM agent_hq_action WHERE id = ?');
+    let isCheckingStop = false;
+    let allowStopCheck = () => {};
+    const mayCheckStop = new Promise<void>((resolve) => {
+      allowStopCheck = resolve;
+    });
+    // Dispatch revalidates the workspace after admission. Hold only that recheck for this Stop.
+    fs.realpath = new Proxy(originalRealpath, {
+      async apply(target, receiver: unknown, args: [path: string]) {
+        if (
+          !isCheckingStop &&
+          args[0] === fixture.workspaceRoot &&
+          reservation.get(stop.id)?.phase === 'clean'
+        ) {
+          isCheckingStop = true;
+          await mayCheckStop;
+        }
+        return Reflect.apply(target, receiver, args);
+      },
+    });
+    syncBuiltinESMExports();
+    const expiry = holdInputExpiry();
+    try {
+      const input = await api.message(thread.id);
+      await api.until(
+        () => writtenInputs(api),
+        (written) => written.length === 1,
+      );
+      expiry.expire();
+      await api.until(
+        () => api.thread(thread.id),
+        (entry) => entry.unconfirmedInputActionId === input.id,
+      );
+      if (stop.command.kind !== 'thread-close') throw new Error('Expected Stop command');
+      stop.command.expectedUnconfirmedActionId = input.id;
+      expect(await api.submit(stop)).toMatchObject({ delivery: 'submitted', phase: 'clean' });
+      await api.until(async () => isCheckingStop, Boolean, 2000);
+      await fixture.control({ releaseReplay: true });
+      await api.until(
         () => api.receipt(input.id),
         (entry) => entry.completion === 'completed',
       );
-      expect(final.delivery).toBe('acknowledged');
-      expect((await api.calls()).filter((call) => call.type === 'user')).toHaveLength(1);
+      allowStopCheck();
+      expect(
+        await api.until(
+          () => api.receipt(stop.id),
+          (entry) => entry.delivery === 'failed',
+        ),
+      ).toMatchObject({
+        failure: 'state-conflict',
+      });
       expect(await api.thread(thread.id)).toMatchObject({
         ownership: 'managed',
         state: 'completed',
       });
+      expect(isRunning(-pid!)).toBe(true);
+      await fixture.control({});
+      const next = await api.message(thread.id, 'The Stop reservation is clear');
+      await api.settled(next.id);
+      expect(await writtenInputs(api)).toHaveLength(2);
+    } finally {
+      allowStopCheck();
+      fs.realpath = originalRealpath;
+      syncBuiltinESMExports();
+      database.close();
+      expiry.restore();
+    }
+  });
+});
+
+test('runtime shutdown releases a Claude controller with an acknowledgement still pending', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    await waitForWarmUp(fixture.runtime);
+    const api = await actions(fixture);
+    const { thread } = await api.create();
+    const [pid] = await readPids(fixture);
+    await fixture.control({ holdReplay: true });
+    const input = await api.message(thread.id);
+    await api.until(
+      () => writtenInputs(api),
+      (written) => written.length === 1,
+    );
+    expect(await api.receipt(input.id)).toMatchObject({
+      delivery: 'submitted',
+      nativeTurnId: null,
     });
-  },
-  40000,
-);
+
+    await fixture.runtime.close();
+    const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
+    try {
+      expect(
+        database
+          .prepare('SELECT delivery, native_turn_id FROM agent_hq_action WHERE id = ?')
+          .get(input.id),
+      ).toMatchObject({ delivery: 'uncertain', native_turn_id: null });
+      expect(
+        database
+          .prepare('SELECT state, pending_action_id FROM agent_hq_thread WHERE id = ?')
+          .get(thread.id),
+      ).toMatchObject({ state: 'inactive', pending_action_id: null });
+    } finally {
+      database.close();
+    }
+    expect(await writtenInputs(api)).toHaveLength(1);
+    expect(isRunning(-pid!)).toBe(false);
+  });
+});
 
 test.each([false, true])(
   'Claude question multi-select policy is visible and enforced (%s)',
@@ -3585,34 +4058,42 @@ test('input written just before a turn Claude starts that outlasts the acknowled
   await withClaudeRuntime(async (fixture) => {
     const api = await actions(fixture),
       { thread } = await api.create();
-    await fixture.control({ nativeBeforeReplay: true, nativeTurnMs: 31_000 });
-    const input = await api.message(thread.id, 'Early request');
-    await api.until(
-      () => api.receipt(input.id),
-      (entry) => entry.delivery === 'uncertain',
-      32_000,
-    );
-    const done = await api.until(
-      () => api.receipt(input.id),
-      (entry) => entry.completion !== null,
-      8_000,
-    );
-    const [written] = await writtenInputs(api);
-    expect(done).toMatchObject({
-      delivery: 'acknowledged',
-      nativeTurnId: written!.uuid,
-      completion: 'completed',
-      result: { text: 'Native response to Early request' },
-    });
-    expect(await api.thread(thread.id)).toMatchObject({
-      ownership: 'managed',
-      state: 'completed',
-      activeTurnId: null,
-    });
-    expect(await writtenInputs(api)).toHaveLength(1);
+    await fixture.control({ nativeBeforeReplay: true, nativeHold: true });
+    const expiry = holdInputExpiry();
+    try {
+      const input = await api.message(thread.id, 'Early request');
+      await api.until(
+        () => api.thread(thread.id),
+        (entry) => entry.state === 'running',
+      );
+      expiry.expire();
+      await api.until(
+        () => api.receipt(input.id),
+        (entry) => entry.delivery === 'uncertain',
+      );
+      await fixture.control({ nativeRelease: true });
+      const done = await api.until(
+        () => api.receipt(input.id),
+        (entry) => entry.completion !== null,
+      );
+      const [written] = await writtenInputs(api);
+      expect(done).toMatchObject({
+        delivery: 'acknowledged',
+        nativeTurnId: written!.uuid,
+        completion: 'completed',
+        result: { text: 'Native response to Early request' },
+      });
+      expect(await api.thread(thread.id)).toMatchObject({
+        ownership: 'managed',
+        state: 'completed',
+        activeTurnId: null,
+      });
+      expect(await writtenInputs(api)).toHaveLength(1);
+    } finally {
+      expiry.restore();
+    }
   });
-  // the turn Claude starts outlasts the 30-second acknowledgement deadline on purpose
-}, 45_000);
+});
 
 test.each([false, true])(
   'a permission prompt during a turn Claude started reaches the operator under that turn, and its reply is written (input waiting: %s)',

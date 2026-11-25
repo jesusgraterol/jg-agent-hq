@@ -273,6 +273,20 @@ export class ControlAdmission extends ControlModel {
       thread.native_id === proof.nativeId &&
       thread.workspace_root === proof.workspaceRoot;
     if (proof && !isQuarantinedClose) this._conflict();
+    const unconfirmedActionId =
+      command.kind === 'thread-close' ? command.expectedUnconfirmedActionId : undefined;
+    const isUnconfirmedStop = unconfirmedActionId !== undefined;
+    if (isUnconfirmedStop) {
+      const source = prepared.unconfirmedControl;
+      if (
+        !source?.scope ||
+        source.nativeId !== thread.native_id ||
+        source.workspaceRoot !== thread.workspace_root ||
+        thread.pending_action_id !== unconfirmedActionId ||
+        !this._isUnconfirmedInput(thread, unconfirmedActionId)
+      )
+        this._conflict();
+    }
     const isVerifiedCodexRecovery =
       command.kind === 'thread-recover' &&
       command.recovery.kind === 'resume' &&
@@ -292,8 +306,10 @@ export class ControlAdmission extends ControlModel {
       command.kind === 'thread-close' &&
       command.interrupt === true &&
       !isQuarantinedClose &&
+      !isUnconfirmedStop &&
       thread.active_turn_id !== null;
-    if (rule.requiresIdle && !isInterrupting && !isQuarantinedClose) this.__requireIdle(thread);
+    if (rule.requiresIdle && !isInterrupting && !isQuarantinedClose && !isUnconfirmedStop)
+      this.__requireIdle(thread);
     const expectedTurnId = 'expectedTurnId' in command ? command.expectedTurnId : null;
     if (rule.requiresActiveTurn && thread.active_turn_id !== expectedTurnId) this._conflict();
     let phase = rule.phase;
@@ -375,6 +391,12 @@ export class ControlAdmission extends ControlModel {
           if (thread.pending_action_id) this._conflict();
           phase = 'interrupt';
         }
+        if (isUnconfirmedStop)
+          this._statements.run(
+            'UPDATE agent_hq_action SET related_action_id = ? WHERE id = ?',
+            unconfirmedActionId,
+            action.id,
+          );
         this._statements.run(
           'UPDATE agent_hq_thread SET pending_action_id = ? WHERE id = ?',
           action.id,
@@ -422,7 +444,7 @@ export class ControlAdmission extends ControlModel {
         break;
       }
     }
-    if (rule.stops) {
+    if (rule.stops && !isUnconfirmedStop) {
       this._statements.run(
         "UPDATE agent_hq_thread SET state = 'stopping', updated_at = ? WHERE id = ?",
         now,
@@ -675,7 +697,7 @@ export class ControlAdmission extends ControlModel {
       actionId,
     );
     this._statements.run(
-      "UPDATE agent_hq_thread SET state = 'starting', pending_action_id = ?, updated_at = ? WHERE id = ?",
+      "UPDATE agent_hq_thread SET state = CASE WHEN provider = 'claude' THEN state ELSE 'starting' END, pending_action_id = ?, updated_at = ? WHERE id = ?",
       actionId,
       now,
       threadId,

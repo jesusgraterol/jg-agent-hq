@@ -108,7 +108,14 @@ export const readControl = async (
   }
   const thread = await store.call('reads', 'getThread', command.threadId);
   await authorize(thread);
-  if (command.kind === 'managed-thread') return { kind: command.kind, result: thread };
+  if (command.kind === 'managed-thread') {
+    if (!thread) return { kind: command.kind, result: null };
+    const actionId = await actions.getUnconfirmedInputActionId(thread);
+    return {
+      kind: command.kind,
+      result: actionId ? { ...thread, unconfirmedInputActionId: actionId } : thread,
+    };
+  }
   if (!thread)
     throw HQ_ERRORS.create('actionConflict', {
       data: { kind: 'state-conflict' },

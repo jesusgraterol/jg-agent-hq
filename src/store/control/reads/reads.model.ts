@@ -105,6 +105,12 @@ export class ControlReads extends ControlModel {
     return this._managedThread(id);
   }
 
+  /** Checks that the exact unresolved input still holds this session's pending slot. */
+  public hasPendingUnconfirmedInput(threadId: string, actionId: string): boolean {
+    const thread = this._thread(threadId);
+    return thread?.pending_action_id === actionId && this._isUnconfirmedInput(thread, actionId);
+  }
+
   /** Finds a free label against assigned names and pending native renames. */
   public suggestName(name: string): string {
     return this._suggestName(name);
