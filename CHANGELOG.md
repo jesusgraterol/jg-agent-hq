@@ -1,5 +1,10 @@
 # Changelog
 
+## 13.7.0
+
+- Keep ordinary Claude input submitted for up to five minutes after its stdin write is accepted. Late acknowledgement settles the original input, and actual connection failure still updates control immediately.
+- Expose scoped Stop for an expired, unconfirmed Claude input. Confirm the selected process group has exited before releasing its controller and keep earlier delivery evidence and queued entries intact.
+
 ## 13.6.2
 
 - Preserve an initialized Claude connection when the request that reopened its parked process times out waiting for input acknowledgment. A matching late replay confirms the original send without repeating its text.

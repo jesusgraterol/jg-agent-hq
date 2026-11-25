@@ -101,6 +101,9 @@ export const createDispatch = (
     if (thread?.nativeId && outcome.kind === 'closed') {
       controlled.delete(context.key(thread.provider, thread.nativeId));
       watched.delete(context.key(thread.provider, thread.nativeId));
+      if (receipt.kind === 'thread-close' && receipt.relatedActionId)
+        for (const [id, prompt] of context.prompts)
+          if (prompt.threadId === thread.id) context.prompts.delete(id);
     }
     if (thread?.state === 'completed') advanceQueue(thread.id, thread.provider);
     return receipt;
@@ -126,6 +129,7 @@ export const createDispatch = (
    * @param input The prepared input of a turn, unless the receipt holds it as queued input.
    * @param recoveryTurn The verified current turn for explicit recovery of a loaded Codex session.
    * @param quarantinedControl The exact owned Claude controller admitted for an explicit Stop.
+   * @param unconfirmedControl The exact owned Claude controller admitted for an expired input.
    * @returns A promise resolved after delivery evidence or uncertainty is persisted, to the
    * failure it recorded, if any.
    * @throws
@@ -139,10 +143,15 @@ export const createDispatch = (
     input?: IPreparedInput,
     recoveryTurn?: Extract<INativeOutcome, { kind: 'resumed' }>['latestTurn'],
     quarantinedControl?: IControlSource,
+    unconfirmedControl?: IControlSource,
   ): Promise<unknown> => {
     let receipt = initial;
     let thread = originalThread;
     let hasDispatched = false;
+    const unconfirmedActionId =
+      command?.kind === 'thread-close' ? command.expectedUnconfirmedActionId : undefined;
+    const refuseUnconfirmedStop = () =>
+      applyAfterEvents({ kind: 'unconfirmed-stop-refused', actionId: initial.id, phase: 'clean' });
     let owner = thread?.nativeId
       ? controlled.get(context.key(thread.provider, thread.nativeId))
       : undefined;
@@ -151,22 +160,26 @@ export const createDispatch = (
       if (!provider) conflict();
       const control = await registry.get(provider);
       if (state.isClosing) {
-        await apply({
-          kind: 'failed',
-          actionId: receipt.id,
-          phase: receipt.phase!,
-          failure: 'state-conflict',
-        });
+        if (unconfirmedControl) await refuseUnconfirmedStop();
+        else
+          await apply({
+            kind: 'failed',
+            actionId: receipt.id,
+            phase: receipt.phase!,
+            failure: 'state-conflict',
+          });
         return HQ_ERRORS.create('runtimeNotRunning', { data: { kind: 'state-conflict' } });
       }
       if (thread) await validateRoot(thread);
       if (state.isClosing) {
-        await apply({
-          kind: 'failed',
-          actionId: receipt.id,
-          phase: receipt.phase!,
-          failure: 'state-conflict',
-        });
+        if (unconfirmedControl) await refuseUnconfirmedStop();
+        else
+          await apply({
+            kind: 'failed',
+            actionId: receipt.id,
+            phase: receipt.phase!,
+            failure: 'state-conflict',
+          });
         return HQ_ERRORS.create('runtimeNotRunning', { data: { kind: 'state-conflict' } });
       }
       const prompt =
@@ -295,6 +308,14 @@ export const createDispatch = (
             turnInput.settings,
             files,
           );
+          if ('kind' in turn) {
+            await applyAfterEvents({
+              kind: turn.kind === 'submitted' ? 'turn-enqueued' : 'turn-not-enqueued',
+              actionId: receipt.id,
+              phase,
+            });
+            return undefined;
+          }
           next = await applyAfterEvents({
             kind: 'turn-accepted',
             actionId: receipt.id,
@@ -324,11 +345,31 @@ export const createDispatch = (
           next = await apply({ kind: 'interrupt-accepted', actionId: receipt.id, phase });
         } else if (phase === 'clean') {
           if (!nativeId) conflict();
-          await control.cleanThread(requestId, nativeId);
+          if (unconfirmedControl && unconfirmedActionId) {
+            hasDispatched = false;
+            const refused =
+              context.claudeTerminalOf(nativeId) ||
+              thread?.runtimeEpoch !== context.epoch ||
+              thread.workspaceRoot !== unconfirmedControl.workspaceRoot ||
+              nativeId !== unconfirmedControl.nativeId ||
+              controlled.get(context.key(provider, nativeId)) !== owner ||
+              !registry.isCurrentControl('claude', unconfirmedControl) ||
+              (await control.cleanThread(requestId, nativeId, {
+                scope: unconfirmedControl.scope,
+                actionId: unconfirmedActionId,
+                onStarted: () => {
+                  hasDispatched = true;
+                },
+              })) === false;
+            if (refused) {
+              await refuseUnconfirmedStop();
+              return HQ_ERRORS.create('actionConflict', { data: { kind: 'state-conflict' } });
+            }
+          } else await control.cleanThread(requestId, nativeId, undefined);
           next = await apply({ kind: 'cleaned', actionId: receipt.id, phase });
         } else if (phase === 'close') {
           if (!nativeId) conflict();
-          await control.releaseThread(requestId, nativeId);
+          await control.releaseThread(requestId, nativeId, unconfirmedControl?.scope);
           next = await apply({ kind: 'closed', actionId: receipt.id, phase });
         } else if (phase === 'delete') {
           // a session HQ manages is deleted where its record says; another, where admission checked
@@ -356,6 +397,10 @@ export const createDispatch = (
         if (thread) thread = (await store.call('reads', 'getThread', thread.id)) ?? thread;
       }
     } catch (error) {
+      if (unconfirmedControl && !hasDispatched && receipt.phase === 'clean') {
+        await refuseUnconfirmedStop();
+        return error;
+      }
       if (recoveryTurn !== undefined && thread?.nativeId) {
         await store.call('observations', 'observe', {
           kind: 'native-unavailable',

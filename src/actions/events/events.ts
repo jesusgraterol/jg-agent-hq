@@ -506,7 +506,7 @@ export const createEvents = (
 
   registry.setEvents({
     observe: receiveObservation,
-    quarantined(provider, source) {
+    quarantined(provider, source, enqueuedActionId) {
       if (state.isClosing || provider !== 'claude' || !registry.isCurrentControl(provider, source))
         return;
       const owner = controlled.get(key(provider, source.nativeId));
@@ -537,6 +537,18 @@ export const createEvents = (
           provider,
           nativeThreadId: source.nativeId,
         });
+        // A locally enqueued turn has already released its dispatch task.
+        if (enqueuedActionId) {
+          const released = await store.call(
+            'lifecycle',
+            'releaseEndedControlAction',
+            enqueuedActionId,
+            source.nativeId,
+            source.workspaceRoot,
+            epoch,
+          );
+          if (released) waits.notifyThread(released.id);
+        }
       });
       void state.lane.catch(failEvents);
     },

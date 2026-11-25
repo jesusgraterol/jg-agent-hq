@@ -36,6 +36,7 @@ export const createClaudeProviderFactory = (
     control.setEvents(context.events);
     return {
       getControlSource: control.getControlSource,
+      getUnconfirmedInputActionId: control.getUnconfirmedInputActionId,
       isControlQuarantined: control.isControlQuarantined,
       quarantineControl: control.quarantineControl,
       snapshotControls: control.snapshotControls,
@@ -173,21 +174,23 @@ export const createClaudeProviderFactory = (
         if (nativeId) control.validateInput(nativeId, input.settings);
       },
       startTurn: (requestId, nativeId, text, _skill, settings, files, call) =>
-        control.startTurn(requestId, nativeId, text, settings, call.signal, files),
+        control.startTurn(requestId, nativeId, text, settings, call, files),
       steer: (requestId, nativeId, expectedTurnId, text, files) =>
         control.steer(requestId, nativeId, expectedTurnId, text, files),
       interrupt: (requestId, nativeId, nativeTurnId) =>
         control.interrupt(requestId, nativeId, nativeTurnId),
-      cleanThread: (requestId, nativeId) =>
-        control.stopSession(requestId, nativeId, undefined, false, true),
-      releaseThread: (requestId, nativeId) => control.releaseSession(requestId, nativeId),
+      cleanThread: (requestId, nativeId, stop, call) =>
+        control.stopSession(requestId, nativeId, stop?.scope, false, true, stop, call),
+      releaseThread: (requestId, nativeId, expectedScope) =>
+        control.releaseSession(requestId, nativeId, expectedScope),
       // a session's files go before its index rows, so no scan indexes them again once forgotten
       async deleteThread(_requestId, nativeId, workspaceRoot) {
         await deleteTranscript(workspaceRoot, nativeId);
         await store.call('claudeHistory', 'forget', nativeId);
       },
-      prepareShutdown: (nativeId) =>
-        control.stopSession(`${randomUUID()}:shutdown-clean`, nativeId),
+      async prepareShutdown(nativeId) {
+        await control.stopSession(`${randomUUID()}:shutdown-clean`, nativeId);
+      },
       async stopControl(nativeId, call) {
         if (!nativeId) {
           await control.close();

@@ -74,6 +74,24 @@ export abstract class ControlModel {
     );
   }
 
+  /** Checks the ledger half of a current controller's unresolved ordinary input. */
+  protected _isUnconfirmedInput(thread: IThreadRow, actionId: string): boolean {
+    if (
+      thread.provider !== 'claude' ||
+      thread.runtime_epoch !== this._epoch ||
+      thread.ownership !== 'managed'
+    )
+      return false;
+    const input = this._action(actionId);
+    return (
+      input?.thread_id === thread.id &&
+      input.runtime_epoch === this._epoch &&
+      input.phase === 'turn' &&
+      input.delivery === 'uncertain' &&
+      input.native_turn_id === null
+    );
+  }
+
   protected _nativeThread(
     provider: IManagedThread['provider'],
     nativeId: string,

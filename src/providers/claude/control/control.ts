@@ -11,7 +11,12 @@ import type {
   ITurnSettings,
 } from '../../../contracts/index.js';
 import type { IProviderInputFile } from '../../inputs/index.js';
-import type { IControlObservation, IControlSnapshot, IControlSource } from '../../index.js';
+import type {
+  IControlObservation,
+  IControlSnapshot,
+  IControlSource,
+  IProviderCall,
+} from '../../index.js';
 import { parseActionRequest } from '../../utilities.js';
 import { capabilityUnavailable } from '../../registry/index.js';
 import { toClaudeConfiguration } from '../configuration/index.js';
@@ -20,7 +25,12 @@ import { createClaudeRpc } from '../rpc.js';
 import { HQ_ERRORS, isCleanupUnconfirmed } from '../../../errors/index.js';
 
 import { CLAUDE_STEER_MEDIA_TYPES } from './constants.js';
-import type { IClaudeControlEvents, IClaudeSavedInput, IClaudeSession } from './types.js';
+import type {
+  IClaudeControlEvents,
+  IClaudeInput,
+  IClaudeSavedInput,
+  IClaudeSession,
+} from './types.js';
 import {
   failSteers,
   getActiveTurn,
@@ -55,6 +65,7 @@ const toFileBlocks = (files: IProviderInputFile[], isSteer = false) =>
 
 // a session idle this long since its last turn ended gives up its process until it is needed
 const IDLE_STOP_SECONDS = 3_600;
+const INPUT_ACKNOWLEDGEMENT_TIMEOUT_MS = 300_000;
 
 /**
  * Owns one persistent native CLI per explicitly controlled Claude session.
@@ -73,6 +84,22 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     throw HQ_ERRORS.create('actionConflict', {
       data: { kind: 'state-conflict' },
     });
+  };
+  /** Reads a Stop target only while this controller can still act on the unresolved input. */
+  const getUnconfirmedInputActionId = (nativeId: string): string | undefined => {
+    const session = sessions.get(nativeId);
+    const input = session?.input;
+    if (
+      isClosing ||
+      !session?.connection?.isAvailable ||
+      session.isClosing ||
+      session.isQuarantined ||
+      !input?.isExpired ||
+      input.isAcknowledged
+    )
+      return;
+    const request = parseActionRequest(input.requestId);
+    return request?.phase === 'turn' ? request.actionId : undefined;
   };
   const get = (id: string, isParkedAllowed = false): IClaudeSession => {
     const session = sessions.get(id);
@@ -121,12 +148,15 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       { code: 'JG_AGENT_HQ_CLAUDE_FAILED', data: { kind: 'agent-unavailable' }, cause },
     );
     failSteers(session, undefined, failure);
-    if (session.input) {
-      clearTimeout(session.input.timer);
-      session.input.reject(failure);
-    }
+    clearTimeout(session.input?.timer);
     session.connection?.quarantine(cause);
-    events?.quarantined?.({ nativeId: session.id, workspaceRoot: session.workspaceRoot, scope });
+    const input = session.input;
+    const request =
+      input?.isEnqueued && !input.isAcknowledged ? parseActionRequest(input.requestId) : null;
+    events?.quarantined?.(
+      { nativeId: session.id, workspaceRoot: session.workspaceRoot, scope },
+      request?.phase === 'turn' ? request.actionId : undefined,
+    );
     return true;
   };
   /** Stops the wait that parks an idle session, as a turn or a stop does. */
@@ -346,14 +376,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
         )
           return;
         failSteers(session);
-        if (session.input) {
-          clearTimeout(session.input.timer);
-          session.input.reject(
-            HQ_ERRORS.create('claudeFailed', {
-              data: { kind: 'agent-unavailable' },
-            }),
-          );
-        }
+        clearTimeout(session.input?.timer);
         nativeEvents.unavailable(session.id, scope);
       },
       {
@@ -472,6 +495,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     return { id: nativeId, cwd: workspaceRoot, status: { type: 'idle' as const } };
   };
   return {
+    getUnconfirmedInputActionId,
     get isAvailable() {
       return !isClosing;
     },
@@ -628,10 +652,8 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
     },
     validateInput,
     /**
-     * Writes input once and waits for its matching native echo or result. Input written while a
-     * turn Claude started runs is replayed only after that turn's result, so a long turn can
-     * outlast the wait, and the late replay reconciles it.
-     * @returns The native user-message identity after acknowledgement.
+     * Buffers an ordinary input once and keeps its identity for the matching native echo or result.
+     * @returns Local submission. Ordered evidence settles delivery separately.
      * @throws
      * - JG_AGENT_HQ_ACTION_CONFLICT: The HQ action conflicts with its recorded state
      * - JG_AGENT_HQ_CLAUDE_FAILED: The Claude integration failed
@@ -642,11 +664,12 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       requestId: string,
       nativeId: string,
       text: string,
-      settings: ITurnSettings = {},
-      signal?: AbortSignal,
+      settings: ITurnSettings,
+      call: IProviderCall,
       files: IProviderInputFile[] = [],
-    ): Promise<{ id: string }> {
+    ): Promise<{ kind: 'submitted' }> {
       validateInput(nativeId, settings);
+      const { signal } = call;
       return withSession(
         nativeId,
         true,
@@ -662,6 +685,8 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
                 ...(settings.fast !== undefined ? { fastMode: settings.fast } : {}),
               },
             });
+            call.checkDeadline?.();
+            if (signal.aborted || session.isClosing) unavailable();
             // a parked session reopens with what was applied, so it keeps these choices
             if (settings.model) session.settings.model = settings.model;
             if (settings.effort) session.settings.effort = settings.effort;
@@ -670,45 +695,56 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
           if (signal?.aborted || session.isClosing || !session.connection?.isAvailable)
             unavailable();
           if (session.input) conflict();
-          return new Promise((resolve, reject) => {
-            const id = randomUUID();
-            const timer = setTimeout(
-              () =>
-                reject(
-                  new Exception(
-                    'The Claude integration failed: input acknowledgement deadline exceeded',
-                    { code: 'JG_AGENT_HQ_CLAUDE_FAILED', data: { kind: 'agent-unavailable' } },
-                  ),
-                ),
-              30_000,
-            );
-            session.input = {
-              id,
-              requestId,
-              isAcknowledged: false,
-              interruptRequested: false,
-              hasInterruptionMarker: false,
-              finalText: null,
-              isOutputOversized: false,
-              resolve,
-              reject,
-              timer,
-            };
-            session.hasInput = true;
-            cancelIdleStop(session);
-            void session
-              .connection!.write({
+          const input: IClaudeInput = {
+            id: randomUUID(),
+            requestId,
+            isAcknowledged: false,
+            isEnqueued: false,
+            isExpired: false,
+            interruptRequested: false,
+            hasInterruptionMarker: false,
+            finalText: null,
+            isOutputOversized: false,
+          };
+          session.input = input;
+          try {
+            await session.connection!.enqueueInput(
+              {
                 type: 'user',
-                uuid: id,
+                uuid: input.id,
                 session_id: nativeId,
                 message: {
                   role: 'user',
                   content: files.length ? [{ type: 'text', text }, ...toFileBlocks(files)] : text,
                 },
                 parent_tool_use_id: null,
-              })
-              .catch(reject);
-          });
+              },
+              () => {
+                call.checkDeadline?.();
+                signal.throwIfAborted();
+                if (session.isClosing) unavailable();
+              },
+            );
+          } catch (cause) {
+            if (session.input === input) session.input = undefined;
+            throw cause;
+          }
+          input.isEnqueued = true;
+          call.onEnqueued?.();
+          session.hasInput = true;
+          if (session.input === input && !input.isAcknowledged) {
+            cancelIdleStop(session);
+            const nativeEvents = eventsFor(session);
+            input.timer = setTimeout(() => {
+              if (session.input !== input || input.isAcknowledged) return;
+              input.isExpired = true;
+              const request = parseActionRequest(input.requestId);
+              if (request?.phase === 'turn')
+                nativeEvents.outcome({ kind: 'turn-acknowledgement-expired', ...request });
+            }, INPUT_ACKNOWLEDGEMENT_TIMEOUT_MS);
+            input.timer.unref();
+          }
+          return { kind: 'submitted' };
         },
         signal,
         true,
@@ -948,13 +984,28 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
       expectedScope?: string,
       requiresQuiescence = false,
       ownsRelease = false,
-    ): Promise<void> {
+      stop?: { actionId: string; onStarted: () => void },
+      call?: IProviderCall,
+    ): Promise<void | false> {
       const session = sessions.get(nativeId);
+      if (stop) {
+        if (
+          call?.signal.aborted ||
+          session?.scope !== expectedScope ||
+          getUnconfirmedInputActionId(nativeId) !== stop.actionId
+        )
+          return false;
+        call?.checkDeadline?.();
+      }
       if (!session || (expectedScope !== undefined && session.scope !== expectedScope)) conflict();
       if (ownsRelease) session.releaseActionId = requestId;
       cancelIdleStop(session);
       if (requiresQuiescence && !canStopQuarantined(session)) conflict();
-      if (!requiresQuiescence) session.isClosing = true;
+      if (!requiresQuiescence) {
+        session.isClosing = true;
+        stop?.onStarted();
+        clearTimeout(session.input?.timer);
+      }
       // a closing controller accepts no more steers, but its group is not proven stopped yet
       failSteers(session);
       // a parked session finishes without a process
@@ -1007,14 +1058,7 @@ export const createClaudeControl = (additionalDirectories: string[] = []) => {
           cancelIdleStop(session);
           session.isClosing = true;
           failSteers(session);
-          if (session.input) {
-            clearTimeout(session.input.timer);
-            session.input.reject(
-              HQ_ERRORS.create('claudeFailed', {
-                data: { kind: 'agent-unavailable' },
-              }),
-            );
-          }
+          clearTimeout(session.input?.timer);
           await session.opening.catch((cause: unknown) => {
             if (isCleanupUnconfirmed(cause)) throw cause;
           });

@@ -131,6 +131,21 @@ export const createActions = (
         admissions.delete(admission);
       }
     },
+    /** Derives the exact expired input eligible for an explicit, current-controller Stop. */
+    async getUnconfirmedInputActionId(thread: IManagedThread): Promise<string | undefined> {
+      if (thread.provider !== 'claude' || thread.runtimeEpoch !== epoch || !thread.nativeId) return;
+      const source = registry.getControlSource('claude', thread.nativeId);
+      if (source?.workspaceRoot !== thread.workspaceRoot || claudeTerminalOf(thread.nativeId))
+        return;
+      const actionId = registry.getUnconfirmedInputActionId(thread.nativeId);
+      if (
+        actionId &&
+        (await store.call('reads', 'hasPendingUnconfirmedInput', thread.id, actionId)) &&
+        registry.isCurrentControl('claude', source) &&
+        registry.getUnconfirmedInputActionId(thread.nativeId) === actionId
+      )
+        return actionId;
+    },
     /** Attaches sensitive presentation only to the exact current native request. */
     approvalPresentation(approval: INativeApprovalSummary): INativeApproval {
       const prompt = prompts.get(approval.id);

@@ -123,6 +123,14 @@ export const createProviderProcess = (
   });
   if (framing.preamble) child.stdin.write(framing.preamble);
 
+  /** Enforces the same frame bound for draining and enqueue-only writes. */
+  const encode = (message: unknown): Buffer => {
+    const content = framing.encode(message);
+    if (!isRunning || !child.stdin.writable || content.length > MAX_FRAME_BYTES)
+      throw HQ_ERRORS.create('transportFailed', { data: { kind: 'agent-unavailable' } });
+    return content;
+  };
+
   return {
     pid,
     get isRunning() {
@@ -130,11 +138,18 @@ export const createProviderProcess = (
     },
     async write(message): Promise<void> {
       await opened.catch(() => undefined);
-      const content = framing.encode(message);
-      if (!isRunning || content.length > MAX_FRAME_BYTES)
-        throw HQ_ERRORS.create('transportFailed', { data: { kind: 'agent-unavailable' } });
-      if (!child.stdin.write(content))
+      if (!child.stdin.write(encode(message)))
         await once(child.stdin, 'drain', { signal: AbortSignal.timeout(30_000) });
+    },
+    async enqueue(message, beforeWrite, finished): Promise<void> {
+      await opened.catch(() => undefined);
+      const content = encode(message);
+      beforeWrite();
+      // false signals backpressure; the callback still settles this exact buffered write
+      child.stdin.write(content, (error) => {
+        finished();
+        if (error) fail(error);
+      });
     },
     close,
   };
