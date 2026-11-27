@@ -82,6 +82,111 @@ test('a create records its create phase, then continues in its name phase once t
   });
 });
 
+test('a rejected Codex resume remains recoverable in the same runtime without replaying input', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const { envelope, submit, receipt, thread, startedTurns, createThread } =
+      await actionsOf(fixture);
+    const { threadId } = await createThread('rejected-resume');
+    const nativeId = (await thread(threadId))!.nativeId!;
+    const control = { unsubscribeState: 'idle', threadTurns: { [nativeId]: [] } };
+    await writeFixtureControl(fixture.root, 'control.json', control);
+    const close = envelope({ kind: 'thread-close', threadId });
+    await submit(close);
+    await expect.poll(async () => (await receipt(close.id))?.delivery).toBe('acknowledged');
+    expect(await thread(threadId)).toMatchObject({ state: 'inactive' });
+
+    // another native observer keeps it loaded, so applying resume settings is refused
+    const resume = envelope({
+      kind: 'thread-resume',
+      threadId,
+      operatorConfirmation: 'Resume the existing conversation',
+      settings: { model: 'model-0000', effort: 'native-effort', fast: false },
+    });
+    await submit(resume);
+    await expect.poll(async () => (await receipt(resume.id))?.delivery).toBe('failed');
+    expect(await receipt(resume.id)).toMatchObject({ failure: 'agent-unavailable' });
+    expect(await thread(threadId)).toMatchObject({
+      nativeId,
+      ownership: 'uncertain',
+      state: 'unknown',
+      activeTurnId: null,
+    });
+
+    // a refused recovery must also release its own failed slot for an explicit later recovery
+    await writeFixtureControl(fixture.root, 'control.json', { ...control, rejectResume: true });
+    const refused = envelope({
+      kind: 'thread-recover',
+      threadId,
+      recovery: { kind: 'resume' },
+      operatorConfirmation: 'Recover only this known conversation',
+    });
+    await submit(refused);
+    await expect.poll(async () => (await receipt(refused.id))?.delivery).toBe('failed');
+    expect(await receipt(refused.id)).toMatchObject({ failure: 'agent-unavailable' });
+    expect(await thread(threadId)).toMatchObject({ nativeId, ownership: 'uncertain' });
+
+    await writeFixtureControl(fixture.root, 'control.json', control);
+    const recovery = envelope({
+      kind: 'thread-recover',
+      threadId,
+      recovery: { kind: 'resume' },
+      operatorConfirmation: 'Recover only this known conversation',
+    });
+    await submit(recovery);
+    await expect.poll(async () => (await receipt(recovery.id))?.delivery).toBe('acknowledged');
+    expect(await thread(threadId)).toMatchObject({ nativeId, ownership: 'managed', state: 'idle' });
+    expect(await startedTurns()).toStrictEqual([]);
+    expect(await submit(resume)).toMatchObject({ delivery: 'failed' });
+    expect(await thread(threadId)).toMatchObject({ ownership: 'managed', state: 'idle' });
+
+    const message = envelope({
+      kind: 'message',
+      threadId,
+      input: { kind: 'text', text: 'A new explicit message after recovery' },
+    });
+    await submit(message);
+    await expect.poll(async () => (await receipt(message.id))?.completion).toBe('completed');
+    expect(await startedTurns()).toStrictEqual([{ clientUserMessageId: `${message.id}:turn` }]);
+  });
+});
+
+test('an unconfirmed Codex resume remains fenced instead of becoming retryable', async () => {
+  await withClaudeRuntime(async (fixture) => {
+    const { envelope, submit, receipt, thread, createThread } = await actionsOf(fixture);
+    const { threadId } = await createThread('unconfirmed-resume');
+    const close = envelope({ kind: 'thread-close', threadId });
+    await submit(close);
+    await expect.poll(async () => (await receipt(close.id))?.delivery).toBe('acknowledged');
+    await writeFixtureControl(fixture.root, 'control.json', { malformedResume: true });
+    const resume = envelope({
+      kind: 'thread-resume',
+      threadId,
+      operatorConfirmation: 'Resume the existing conversation',
+    });
+    await submit(resume);
+    await expect.poll(async () => (await receipt(resume.id))?.delivery).toBe('uncertain');
+    expect(await thread(threadId)).toMatchObject({ ownership: 'uncertain', state: 'unknown' });
+    const database = new DatabaseSync(join(fixture.stateRoot, 'hq.sqlite'), { readOnly: true });
+    try {
+      expect(
+        database.prepare('SELECT pending_action_id FROM agent_hq_thread WHERE id = ?').get(threadId)
+          ?.pending_action_id,
+      ).toBe(resume.id);
+    } finally {
+      database.close();
+    }
+    const recovery = envelope({
+      kind: 'thread-recover',
+      threadId,
+      recovery: { kind: 'resume' },
+      operatorConfirmation: 'Do not repeat an unconfirmed native resume',
+    });
+    await expect(submit(recovery)).rejects.toThrow();
+    expect(await receipt(recovery.id)).toBeNull();
+    expect(await receipt(resume.id)).toMatchObject({ delivery: 'uncertain' });
+  });
+});
+
 test("a message records its turn phase, and Codex receives the turn's input under the action and that phase", async () => {
   await withClaudeRuntime(async (fixture) => {
     const { envelope, submit, receipt, storedPhase, startedTurns, createThread } =

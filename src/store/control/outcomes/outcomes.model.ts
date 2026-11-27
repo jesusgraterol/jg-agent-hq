@@ -211,7 +211,25 @@ export class ControlOutcomes extends ControlModel {
             now,
             thread.id,
           );
-        else if (ownsThread && thread.pending_action_id === action.id) {
+        else if (
+          outcome.kind === 'failed' &&
+          action.phase === 'resume' &&
+          thread?.provider === 'codex' &&
+          thread.native_id !== null &&
+          thread.runtime_epoch === this._epoch &&
+          thread.pending_action_id === action.id
+        ) {
+          // a rejected binding stays quarantined, but its settled failure cannot hold recovery's slot
+          this._statements.run(
+            "UPDATE agent_hq_thread SET ownership = 'uncertain', pending_action_id = NULL, state = 'unknown', updated_at = ? WHERE id = ?",
+            now,
+            thread.id,
+          );
+          this._statements.run(
+            "UPDATE agent_hq_action SET queue_ready = 0 WHERE thread_id = ? AND delivery = 'queued'",
+            thread.id,
+          );
+        } else if (ownsThread && thread.pending_action_id === action.id) {
           if (action.kind === 'thread-rename' && outcome.kind === 'failed')
             this._statements.run(
               'UPDATE agent_hq_thread SET pending_action_id = NULL, updated_at = ? WHERE id = ?',

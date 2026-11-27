@@ -18,6 +18,8 @@ The publication workflow runs only `pnpm check:package` on its two Node versions
 
 ## Essential and full selections
 
+Rejected Codex resume coverage is essential: the real runtime, SQLite and synthetic native CLI boundary verify rejection after close, a rejected recovery followed by successful explicit recovery in the same runtime, unchanged failed receipts, preserved native identity and no input replay. A malformed native resume result remains uncertain and blocks another current-runtime recovery. Repeat the changed outcomes integration file three times without retries. These fixtures establish the recovery state transitions, not the exact native refusal that triggered a historical incident.
+
 Native failure coverage is essential: the public runtime retains diagnostics before, inside and after terminal completion, redacts credentials and bounds results, rejects unknown/non-transient classifications, and fences competing conditional continuations. Newer or queued input, native retries and policy failures prevent continuation; a failed continuation cannot chain. Repeat the changed ordering and admission scenarios three times without retries. Synthetic native frames establish application behavior, not reproduction of a real provider refusal.
 
 Essential protects consequential guarantees, including expensive ones. All unassessed cases remain selected until their family is reviewed. Granular and focused commands stay complete by default; native `full` tags exclude secondary coverage only when an essential filter is explicitly applied.
