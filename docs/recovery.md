@@ -64,6 +64,8 @@ For a known Codex session left uncertain, inspect its native identity and close 
 
 Quarantined Codex records retain their producing epoch and turn evidence across shutdown. Earlier releases could instead leave a known record managed and inactive after shutdown; inspect that state and use a confirmed `thread-resume` only once its native session is idle or unloaded. Do not change ownership records by hand or replace the identity to bypass the native-state checks.
 
+A definitively rejected Codex resume, including a recovery resume, leaves its failed receipt intact and quarantines the same native identity while releasing the settled action's reservation. After inspection, explicit recovery can rejoin it without restarting HQ or repeating input. Earlier queued input remains paused. An unconfirmed dispatched resume retains its reservation: an uncertain outcome does not establish rejection or permit another current-runtime resume.
+
 ## Off-machine durability
 
 The development helper examples/shared-storage.ts demonstrates a host-owned application table, maintenance, capture and offline restore using public exports. Capture already returns verified metadata, so the helper avoids an immediate extra full-database inspection. Its application transaction commits independently of capture. Inspect the restored values before starting a recovered runtime with explicitly chosen roots.

@@ -1,5 +1,10 @@
 # Changelog
 
+## 13.7.1
+
+- Release the settled reservation after a definitively rejected Codex resume and quarantine its known native identity. Explicit recovery can rejoin that same session without restarting HQ or replaying input, including after a rejected recovery attempt.
+- Keep unconfirmed resume outcomes fenced, failed receipts intact and earlier queued input paused.
+
 ## 13.7.0
 
 - Keep ordinary Claude input submitted for up to five minutes after its stdin write is accepted. Late acknowledgement settles the original input, and actual connection failure still updates control immediately.
